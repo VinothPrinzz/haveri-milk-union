@@ -1,0 +1,23 @@
+{
+    "name": "haveri-milk-union",
+    "private": true,
+    "workspaces": [
+      "apps/*",
+      "packages/*"
+    ],
+    "scripts": {
+      "dev:api": "pnpm --filter api dev",
+      "dev:web": "pnpm --filter web dev",
+      "dev:worker": "pnpm --filter worker dev",
+      "db:generate": "pnpm --filter @hmu/db generate",
+      "db:migrate": "pnpm --filter @hmu/db migrate",
+      "db:studio": "pnpm --filter @hmu/db studio"
+    },
+    "devDependencies": {
+      "typescript": "^5.4.5"
+    },
+    "engines": {
+      "node": ">=20.0.0",
+      "pnpm": ">=9.0.0"
+    }
+  }

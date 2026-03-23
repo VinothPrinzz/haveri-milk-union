@@ -1,0 +1,59 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        "lib": [
+            "ES2022"
+        ],
+        "strict": true,
+        "exactOptionalPropertyTypes": true,
+        "noUncheckedIndexedAccess": true,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "declaration": true,
+        "declarationMap": true,
+        "sourceMap": true
+    }
+}
+  ```
+  
+  ---
+  
+  ### 1.5 — Root `.gitignore`
+  ```
+  # Dependencies
+  node_modules/
+  .pnpm-store/
+  
+  # Build outputs
+  dist/
+  .next/
+  out/
+  
+  # Env files — never commit these
+  .env
+  .env.local
+  .env.*.local
+  
+  # Expo
+  .expo/
+  apps/mobile/.expo/
+  
+  # OS
+  .DS_Store
+  Thumbs.db
+  
+  # Editor
+  .vscode/settings.json
+  .idea/
+  
+  # Logs
+  *.log
+  npm-debug.log*
+  
+  # Supabase
+  supabase/.temp/
