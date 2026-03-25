@@ -1,35 +1,35 @@
-  ### 1.5 — Root `.gitignore`
+### 1.5 — Root `.gitignore`
 
-  # Dependencies
-  node_modules/
-  apps/api/node_modules/
-  .pnpm-store/
-  
-  # Build outputs
-  dist/
-  .next/
-  out/
-  
-  # Env files — never commit these
-  .env
-  .env.local
-  .env.*.local
-  
-  # Expo
-  .expo/
-  apps/mobile/.expo/
-  
-  # OS
-  .DS_Store
-  Thumbs.db
-  
-  # Editor
-  .vscode/settings.json
-  .idea/
-  
-  # Logs
-  *.log
-  npm-debug.log*
-  
-  # Supabase
-  supabase/.temp/
+# Dependencies
+node_modules/
+apps/api/node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.next/
+out/
+
+# Env files — never commit these
+.env
+.env.local
+.env.*.local
+
+# Expo
+.expo/
+apps/mobile/.expo/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Supabase
+supabase/.temp/
