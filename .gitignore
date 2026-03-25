@@ -1,11 +1,8 @@
-  ```
-  
-  ---
-  
   ### 1.5 — Root `.gitignore`
-  ```
+
   # Dependencies
   node_modules/
+  apps/api/node_modules/
   .pnpm-store/
   
   # Build outputs
