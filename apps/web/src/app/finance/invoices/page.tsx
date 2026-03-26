@@ -1,7 +1,7 @@
 "use client";
-import { PageHeader, Badge, Button, TableCard, Th, Td, EmptyState } from "@/components/ui";
-import { Download, Eye, Printer, Search } from "lucide-react";
-import { formatCurrency } from "@/lib/utils";
+import { PageHeader, Badge, Button, TableCard, Th, Td } from "@/components/ui";
+import { Download, Eye, Printer, Search, Filter } from "lucide-react";
+import { formatCurrency, cn } from "@/lib/utils";
 import { useState } from "react";
 
 const INVOICES = [
@@ -11,49 +11,32 @@ const INVOICES = [
   { no: "INV-HMU-2025-0250", order: "#HMU-2025-08250", dealer: "Laxmi Traders", date: "21 Jan 2025", amount: 650, gst: 32.5, total: 682.5, status: "cancelled" },
   { no: "INV-HMU-2025-0210", order: "#HMU-2025-08210", dealer: "Ganesh Dairy", date: "20 Jan 2025", amount: 980, gst: 58.8, total: 1038.8, status: "generated" },
 ];
+const DEALERS = ["All", "Raju Agencies", "Krishna Stores", "Laxmi Traders", "Ganesh Dairy"];
 
 export default function InvoicesPage() {
   const [search, setSearch] = useState("");
-  const filtered = INVOICES.filter(i => search ? i.no.toLowerCase().includes(search.toLowerCase()) || i.dealer.toLowerCase().includes(search.toLowerCase()) : true);
+  const [dealerFilter, setDealerFilter] = useState("All");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  let filtered = INVOICES;
+  if (search) filtered = filtered.filter(i => i.no.toLowerCase().includes(search.toLowerCase()));
+  if (dealerFilter !== "All") filtered = filtered.filter(i => i.dealer === dealerFilter);
 
   return (
     <>
       <PageHeader icon="🧾" title="All Invoices" subtitle="View and download all generated GST invoices"
         actions={<Button variant="outline" size="sm"><Download className="h-3.5 w-3.5" /> Export All</Button>} />
-
-      <div className="mb-5">
-        <div className="flex items-center gap-2 bg-card border border-border rounded-lg px-3 py-2 max-w-md">
-          <Search className="h-4 w-4 text-muted-fg" />
-          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search invoices..."
-            className="bg-transparent text-[12px] text-fg placeholder-muted-fg outline-none w-full font-medium" />
-        </div>
+      <div className="flex flex-wrap items-center gap-3 mb-5">
+        <div className="flex items-center gap-2 bg-card border border-border rounded-lg px-3 py-2 w-56"><Search className="h-3.5 w-3.5 text-muted-fg" /><input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search invoices..." className="bg-transparent text-[11px] text-fg placeholder-muted-fg outline-none w-full font-medium" /></div>
+        <select value={dealerFilter} onChange={e => setDealerFilter(e.target.value)} className="h-8 bg-card border border-border rounded-lg px-2 text-[11px] font-medium outline-none">{DEALERS.map(d => <option key={d} value={d}>{d}</option>)}</select>
+        <div className="flex items-center gap-1.5"><input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-8 bg-card border border-border rounded-lg px-2 text-[10px] font-medium outline-none" /><span className="text-[10px] text-muted-fg">to</span><input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-8 bg-card border border-border rounded-lg px-2 text-[10px] font-medium outline-none" /></div>
       </div>
-
       <TableCard>
-        <thead><tr>
-          <Th>Invoice No.</Th><Th>Order</Th><Th>Dealer</Th><Th>Date</Th><Th className="text-right">Amount</Th><Th className="text-right">GST</Th><Th className="text-right">Total</Th><Th>Status</Th><Th>Actions</Th>
-        </tr></thead>
-        <tbody>
-          {filtered.map(inv => (
-            <tr key={inv.no} className="hover:bg-muted/50">
-              <Td className="font-mono text-[10px] font-semibold">{inv.no}</Td>
-              <Td className="text-muted-fg text-[10px]">{inv.order}</Td>
-              <Td className="font-semibold">{inv.dealer}</Td>
-              <Td className="text-muted-fg">{inv.date}</Td>
-              <Td className="text-right">{formatCurrency(inv.amount)}</Td>
-              <Td className="text-right text-muted-fg">{formatCurrency(inv.gst)}</Td>
-              <Td className="text-right font-bold">{formatCurrency(inv.total)}</Td>
-              <Td><Badge variant={inv.status === "generated" ? "active" : "cancelled"}>{inv.status}</Badge></Td>
-              <Td>
-                <div className="flex gap-1">
-                  <button className="p-1.5 rounded-md border border-border hover:bg-muted"><Eye className="h-3.5 w-3.5 text-muted-fg" /></button>
-                  <button className="p-1.5 rounded-md border border-border hover:bg-muted"><Download className="h-3.5 w-3.5 text-muted-fg" /></button>
-                  <button className="p-1.5 rounded-md border border-border hover:bg-muted"><Printer className="h-3.5 w-3.5 text-muted-fg" /></button>
-                </div>
-              </Td>
-            </tr>
-          ))}
-        </tbody>
+        <thead><tr><Th>Invoice No.</Th><Th>Order</Th><Th>Dealer</Th><Th>Date</Th><Th className="text-right">Amount</Th><Th className="text-right">GST</Th><Th className="text-right">Total</Th><Th>Status</Th><Th>Actions</Th></tr></thead>
+        <tbody>{filtered.map(inv => (
+          <tr key={inv.no} className="hover:bg-muted/50"><Td className="font-mono text-[10px] font-semibold">{inv.no}</Td><Td className="text-muted-fg text-[10px]">{inv.order}</Td><Td className="font-semibold">{inv.dealer}</Td><Td className="text-muted-fg">{inv.date}</Td><Td className="text-right">{formatCurrency(inv.amount)}</Td><Td className="text-right text-muted-fg">{formatCurrency(inv.gst)}</Td><Td className="text-right font-bold">{formatCurrency(inv.total)}</Td><Td><Badge variant={inv.status==="generated"?"active":"cancelled"}>{inv.status}</Badge></Td>
+            <Td><div className="flex gap-1"><button className="p-1.5 rounded-md border border-border hover:bg-muted"><Eye className="h-3.5 w-3.5 text-muted-fg" /></button><button className="p-1.5 rounded-md border border-border hover:bg-muted"><Download className="h-3.5 w-3.5 text-muted-fg" /></button><button className="p-1.5 rounded-md border border-border hover:bg-muted"><Printer className="h-3.5 w-3.5 text-muted-fg" /></button></div></Td></tr>
+        ))}</tbody>
       </TableCard>
     </>
   );
