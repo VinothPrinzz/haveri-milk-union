@@ -12,6 +12,10 @@ import { orderRoutes } from "./routes/orders.js";
 import { dealerRoutes } from "./routes/dealers.js";
 import { inventoryRoutes } from "./routes/inventory.js";
 import { distributionRoutes } from "./routes/distribution.js";
+import { cancellationRoutes } from "./routes/cancellations.js";
+import { financeRoutes } from "./routes/finance.js";
+import { crudRoutes } from "./routes/crud.js";
+import { systemRoutes } from "./routes/system.js";
 
 const app = Fastify({
   logger: {
@@ -26,8 +30,8 @@ const app = Fastify({
 // ── Plugins ──
 await app.register(cors, {
   origin: env.NODE_ENV === "production"
-    ? ["https://erp.haverimunion.coop"] // production domain
-    : true, // allow all in development
+    ? ["https://erp.haverimunion.coop"]
+    : true,
   credentials: true,
 });
 
@@ -37,9 +41,8 @@ await app.register(cookie, {
 
 await app.register(sensible);
 
-// ── Global error handler (Zod validation errors) ──
+// ── Global error handler ──
 app.setErrorHandler((error, request, reply) => {
-  // Zod validation errors
   if (error.name === "ZodError") {
     return reply.status(400).send({
       error: "Validation Error",
@@ -48,7 +51,6 @@ app.setErrorHandler((error, request, reply) => {
     });
   }
 
-  // Fastify validation errors
   if (error.validation) {
     return reply.status(400).send({
       error: "Validation Error",
@@ -56,7 +58,6 @@ app.setErrorHandler((error, request, reply) => {
     });
   }
 
-  // Log unexpected errors
   request.log.error(error);
 
   return reply.status(error.statusCode ?? 500).send({
@@ -75,7 +76,8 @@ app.get("/api/v1/health", async () => ({
   version: "0.0.1",
 }));
 
-// ── Register Routes ──
+// ── Register All Routes ──
+// Core (from Step 3)
 await app.register(authRoutes);
 await app.register(windowRoutes);
 await app.register(productRoutes);
@@ -83,6 +85,12 @@ await app.register(orderRoutes);
 await app.register(dealerRoutes);
 await app.register(inventoryRoutes);
 await app.register(distributionRoutes);
+
+// Phase A additions
+await app.register(cancellationRoutes);  // approve/reject cancellations with wallet refund
+await app.register(financeRoutes);        // invoices, reports, admin-placed orders
+await app.register(crudRoutes);           // categories, price revision, route update, dispatch status
+await app.register(systemRoutes);         // users CRUD, registrations, notification config
 
 // ── Start Server ──
 try {
