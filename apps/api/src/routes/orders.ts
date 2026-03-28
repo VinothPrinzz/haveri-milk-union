@@ -269,37 +269,28 @@ export async function orderRoutes(app: FastifyInstance) {
       const query = querySchema.parse(request.query);
       const offset = offsetFromPage(query.page, query.limit);
 
-      // Build conditions
-      const conditions: any[] = [];
-      if (query.status) {
-        conditions.push(sql`o.status = ${query.status}::order_status`);
-      }
-      if (query.zoneId) {
-        conditions.push(sql`o.zone_id = ${query.zoneId}::uuid`);
-      }
+      const statusFilter = query.status ?? null;
+      const zoneFilter = query.zoneId ?? null;
 
-      const whereClause =
-        conditions.length > 0
-          ? sql`WHERE ${sql.join(conditions, sql` AND `)}`
-          : sql``;
+      const dataRows = await pgClient`
+        SELECT o.id, o.dealer_id, o.zone_id, o.status, o.payment_mode,
+               o.grand_total, o.item_count, o.created_at,
+               d.name AS dealer_name, d.phone AS dealer_phone,
+               z.name AS zone_name
+        FROM orders o
+        JOIN dealers d ON d.id = o.dealer_id
+        JOIN zones z ON z.id = o.zone_id
+        WHERE (${statusFilter}::text IS NULL OR o.status::text = ${statusFilter ?? ''})
+          AND (${zoneFilter}::uuid IS NULL OR o.zone_id = ${zoneFilter ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+        ORDER BY o.created_at DESC
+        LIMIT ${query.limit} OFFSET ${offset}
+      `;
 
-      const [dataRows, [countRow]] = await Promise.all([
-        pgClient`
-          SELECT o.id, o.dealer_id, o.zone_id, o.status, o.payment_mode,
-                 o.grand_total, o.item_count, o.created_at,
-                 d.name AS dealer_name, d.phone AS dealer_phone,
-                 z.name AS zone_name
-          FROM orders o
-          JOIN dealers d ON d.id = o.dealer_id
-          JOIN zones z ON z.id = o.zone_id
-          ${whereClause}
-          ORDER BY o.created_at DESC
-          LIMIT ${query.limit} OFFSET ${offset}
-        `,
-        pgClient`
-          SELECT count(*)::int AS count FROM orders o ${whereClause}
-        `,
-      ]);
+      const [countRow] = await pgClient`
+        SELECT count(*)::int AS count FROM orders o
+        WHERE (${statusFilter}::text IS NULL OR o.status::text = ${statusFilter ?? ''})
+          AND (${zoneFilter}::uuid IS NULL OR o.zone_id = ${zoneFilter ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+      `;
 
       return reply.status(200).send({
         data: dataRows,

@@ -19,27 +19,29 @@ export async function financeRoutes(app: FastifyInstance) {
       });
       const query = querySchema.parse(request.query);
       const offset = offsetFromPage(query.page, query.limit);
+      const dealerSearch = query.dealer ? `%${query.dealer}%` : null;
+      const dateFrom = query.dateFrom ?? null;
+      const dateTo = query.dateTo ? query.dateTo + "T23:59:59Z" : null;
 
-      const conditions: string[] = [];
-      const params: any[] = [];
-      if (query.dealer) { conditions.push(`d.name ILIKE $${params.length + 1}`); params.push(`%${query.dealer}%`); }
-      if (query.dateFrom) { conditions.push(`i.invoice_date >= $${params.length + 1}::timestamptz`); params.push(query.dateFrom); }
-      if (query.dateTo) { conditions.push(`i.invoice_date <= $${params.length + 1}::timestamptz`); params.push(query.dateTo + "T23:59:59Z"); }
-
-      // Use raw SQL for dynamic conditions
-      const [rows, [countRow]] = await Promise.all([
-        pgClient`
-          SELECT i.id, i.invoice_number, i.order_id, i.invoice_date, i.taxable_amount,
-                 i.cgst, i.sgst, i.total_tax, i.total_amount, i.pdf_url,
-                 i.dealer_name, i.dealer_gst_number
-          FROM invoices i
-          JOIN dealers d ON d.id = i.dealer_id
-          ORDER BY i.invoice_date DESC
-          LIMIT ${query.limit} OFFSET ${offset}
-        `,
-        pgClient`SELECT count(*)::int AS count FROM invoices`,
-      ]);
-
+      const rows = await pgClient`
+        SELECT i.id, i.invoice_number, i.order_id, i.invoice_date, i.taxable_amount,
+               i.cgst, i.sgst, i.total_tax, i.total_amount, i.pdf_url,
+               i.dealer_name, i.dealer_gst_number
+        FROM invoices i
+        JOIN dealers d ON d.id = i.dealer_id
+        WHERE (${dealerSearch}::text IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
+          AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
+          AND (${dateTo}::timestamptz IS NULL OR i.invoice_date <= ${dateTo ?? '2099-12-31'}::timestamptz)
+        ORDER BY i.invoice_date DESC
+        LIMIT ${query.limit} OFFSET ${offset}
+      `;
+      const [countRow] = await pgClient`
+        SELECT count(*)::int AS count FROM invoices i
+        JOIN dealers d ON d.id = i.dealer_id
+        WHERE (${dealerSearch}::text IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
+          AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
+          AND (${dateTo}::timestamptz IS NULL OR i.invoice_date <= ${dateTo ?? '2099-12-31'}::timestamptz)
+      `;
       return reply.send({ data: rows, ...paginationMeta(countRow?.count ?? 0, query.page, query.limit) });
     }
   );
@@ -251,6 +253,103 @@ export async function financeRoutes(app: FastifyInstance) {
         }
         throw err;
       }
+    }
+  );
+
+  // ═══ SETTLEMENTS ═══
+
+  // GET /api/v1/settlements
+  app.get(
+    "/api/v1/settlements",
+    { preHandler: [adminAuth, requireRole("finance.view")] },
+    async (request, reply) => {
+      const query = paginationSchema.parse(request.query);
+      const offset = offsetFromPage(query.page, query.limit);
+      const rows = await pgClient`
+        SELECT id, settlement_date, total_amount, dealer_count, status, bank_reference, notes, processed_at, created_at
+        FROM settlements ORDER BY settlement_date DESC
+        LIMIT ${query.limit} OFFSET ${offset}
+      `;
+      const [countRow] = await pgClient`SELECT count(*)::int AS count FROM settlements`;
+      return reply.send({ data: rows, ...paginationMeta(countRow?.count ?? 0, query.page, query.limit) });
+    }
+  );
+
+  // ═══ OUTSTANDING / DUES ═══
+
+  // GET /api/v1/outstanding
+  app.get(
+    "/api/v1/outstanding",
+    { preHandler: [adminAuth, requireRole("finance.view")] },
+    async (request, reply) => {
+      const rows = await pgClient`
+        SELECT d.id, d.name, d.city, z.name AS zone_name,
+               COALESCE(SUM(CASE WHEN o.status IN ('pending','confirmed','dispatched') THEN o.grand_total ELSE 0 END), 0)::numeric AS outstanding,
+               COALESCE(SUM(CASE WHEN o.status = 'pending' AND o.created_at < now() - interval '3 days' THEN o.grand_total ELSE 0 END), 0)::numeric AS overdue,
+               MAX(o.created_at) AS last_order_date,
+               CASE
+                 WHEN SUM(CASE WHEN o.status = 'pending' AND o.created_at < now() - interval '7 days' THEN 1 ELSE 0 END) > 0 THEN 'critical'
+                 WHEN SUM(CASE WHEN o.status = 'pending' AND o.created_at < now() - interval '3 days' THEN 1 ELSE 0 END) > 0 THEN 'overdue'
+                 ELSE 'current'
+               END AS payment_status
+        FROM dealers d
+        JOIN zones z ON z.id = d.zone_id
+        LEFT JOIN orders o ON o.dealer_id = d.id AND o.payment_mode = 'credit' AND o.status != 'cancelled'
+        WHERE d.deleted_at IS NULL
+        GROUP BY d.id, d.name, d.city, z.name
+        HAVING SUM(CASE WHEN o.status IN ('pending','confirmed','dispatched') THEN o.grand_total ELSE 0 END) > 0
+        ORDER BY outstanding DESC
+      `;
+      const totalOut = rows.reduce((a: number, r: any) => a + parseFloat(r.outstanding), 0);
+      const totalOvd = rows.reduce((a: number, r: any) => a + parseFloat(r.overdue), 0);
+      return reply.send({ data: rows, summary: { totalOutstanding: totalOut, totalOverdue: totalOvd } });
+    }
+  );
+
+  // ═══ PAYMENT OVERVIEW ═══
+
+  // GET /api/v1/payments/overview
+  app.get(
+    "/api/v1/payments/overview",
+    { preHandler: [adminAuth, requireRole("finance.view")] },
+    async (request, reply) => {
+      const querySchema = z.object({
+        search: z.string().optional(),
+        method: z.string().optional(),
+        dateFrom: z.string().optional(),
+        dateTo: z.string().optional(),
+      });
+      const query = querySchema.parse(request.query);
+      const searchTerm = query.search ? `%${query.search}%` : null;
+      const methodFilter = query.method ?? null;
+      const dateFrom = query.dateFrom ?? null;
+      const dateTo = query.dateTo ? query.dateTo + "T23:59:59Z" : null;
+
+      const rows = await pgClient`
+        SELECT o.id, o.payment_mode, o.grand_total, o.status, o.created_at,
+               d.name AS dealer_name
+        FROM orders o
+        JOIN dealers d ON d.id = o.dealer_id
+        WHERE o.status != 'cancelled'
+          AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ''})
+          AND (${methodFilter}::text IS NULL OR o.payment_mode::text = ${methodFilter ?? ''})
+          AND (${dateFrom}::timestamptz IS NULL OR o.created_at >= ${dateFrom ?? '1970-01-01'}::timestamptz)
+          AND (${dateTo}::timestamptz IS NULL OR o.created_at <= ${dateTo ?? '2099-12-31'}::timestamptz)
+        ORDER BY o.created_at DESC LIMIT 100
+      `;
+
+      const [summary] = await pgClient`
+        SELECT COALESCE(SUM(grand_total), 0)::numeric AS total_collected,
+               count(*)::int AS total_transactions
+        FROM orders WHERE status != 'cancelled'
+      `;
+
+      const [walletSum] = await pgClient`SELECT COALESCE(SUM(balance), 0)::numeric AS total FROM dealer_wallets`;
+
+      return reply.send({
+        data: rows,
+        summary: { totalCollected: summary?.total_collected ?? 0, totalTransactions: summary?.total_transactions ?? 0, totalWalletBalance: walletSum?.total ?? 0 },
+      });
     }
   );
 }
