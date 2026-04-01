@@ -1,10 +1,5 @@
 import { config } from "dotenv";
-import { resolve } from "path";
-import { fileURLToPath } from "url";
-
-// Walk up: src/lib → src → api → apps → repo root
-const root = resolve(fileURLToPath(import.meta.url), "../../../../../");
-config({ path: resolve(root, ".env") });
+config();
 
 import { z } from "zod";
 
