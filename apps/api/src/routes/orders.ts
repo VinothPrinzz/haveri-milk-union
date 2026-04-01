@@ -308,21 +308,29 @@ export async function orderRoutes(app: FastifyInstance) {
       const offset = offsetFromPage(query.page, query.limit);
       const dealerId = request.dealer!.dealerId;
 
-      const [dataRows, [countRow]] = await Promise.all([
-        pgClient`
-          SELECT id, status, payment_mode, grand_total, item_count, created_at
-          FROM orders
-          WHERE dealer_id = ${dealerId}
-          ORDER BY created_at DESC
-          LIMIT ${query.limit} OFFSET ${offset}
-        `,
-        pgClient`
-          SELECT count(*)::int AS count FROM orders WHERE dealer_id = ${dealerId}
-        `,
-      ]);
+      const orders = await pgClient`
+        SELECT id, status, payment_mode, subtotal, total_gst, grand_total, item_count, created_at
+        FROM orders
+        WHERE dealer_id = ${dealerId}
+        ORDER BY created_at DESC
+        LIMIT ${query.limit} OFFSET ${offset}
+      `;
+
+      // Fetch items for each order
+      for (const order of orders) {
+        const items = await pgClient`
+          SELECT product_name, quantity, unit_price, gst_percent, line_total
+          FROM order_items WHERE order_id = ${order.id} ORDER BY product_name
+        `;
+        (order as any).items = items;
+      }
+
+      const [countRow] = await pgClient`
+        SELECT count(*)::int AS count FROM orders WHERE dealer_id = ${dealerId}
+      `;
 
       return reply.status(200).send({
-        data: dataRows,
+        data: orders,
         ...paginationMeta(countRow?.count ?? 0, query.page, query.limit),
       });
     }

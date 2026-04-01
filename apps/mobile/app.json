@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Haveri Milk Union",
+    "slug": "haveri-milk-union",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "hmu",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#1448CC",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "coop.haverimunion.dealer"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1448CC"
+      },
+      "package": "coop.haverimunion.dealer"
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

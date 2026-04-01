@@ -16,6 +16,7 @@ import { cancellationRoutes } from "./routes/cancellations.js";
 import { financeRoutes } from "./routes/finance.js";
 import { crudRoutes } from "./routes/crud.js";
 import { systemRoutes } from "./routes/system.js";
+import { dealerAppRoutes } from "./routes/dealer-app.js";
 
 const app = Fastify({
   logger: {
@@ -91,6 +92,7 @@ await app.register(cancellationRoutes);  // approve/reject cancellations with wa
 await app.register(financeRoutes);        // invoices, reports, admin-placed orders
 await app.register(crudRoutes);           // categories, price revision, route update, dispatch status
 await app.register(systemRoutes);         // users CRUD, registrations, notification config
+await app.register(dealerAppRoutes);       // banners, invoices/my, reorder
 
 // ── Start Server ──
 try {

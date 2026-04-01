@@ -85,21 +85,21 @@ export async function crudRoutes(app: FastifyInstance) {
   // ═══ ROUTE UPDATES ═══
 
   // PATCH /api/v1/routes/:id
-  app.patch(
-    "/api/v1/routes/:id",
-    { preHandler: [adminAuth, requireRole("distribution.manage")] },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const schema = z.object({
-        name: z.string().optional(), code: z.string().optional(), zoneId: z.string().uuid().optional(),
-        stops: z.number().int().optional(), distanceKm: z.string().optional(), active: z.boolean().optional(),
-      });
-      const body = schema.parse(request.body);
-      const [updated] = await db.update(routes).set({ ...body, updatedAt: new Date() }).where(and(eq(routes.id, id), isNull(routes.deletedAt))).returning();
-      if (!updated) return reply.status(404).send({ error: "Route not found" });
-      return reply.send({ route: updated });
-    }
-  );
+  // app.patch(
+  //   "/api/v1/routes/:id",
+  //   { preHandler: [adminAuth, requireRole("distribution.manage")] },
+  //   async (request, reply) => {
+  //     const { id } = request.params as { id: string };
+  //     const schema = z.object({
+  //       name: z.string().optional(), code: z.string().optional(), zoneId: z.string().uuid().optional(),
+  //       stops: z.number().int().optional(), distanceKm: z.string().optional(), active: z.boolean().optional(),
+  //     });
+  //     const body = schema.parse(request.body);
+  //     const [updated] = await db.update(routes).set({ ...body, updatedAt: new Date() }).where(and(eq(routes.id, id), isNull(routes.deletedAt))).returning();
+  //     if (!updated) return reply.status(404).send({ error: "Route not found" });
+  //     return reply.send({ route: updated });
+  //   }
+  // );
 
   // ═══ DISPATCH STATUS UPDATE ═══
 
