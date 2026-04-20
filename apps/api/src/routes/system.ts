@@ -6,10 +6,10 @@ import { users, approvalRequests, notificationConfig, dealers, dealerWallets } f
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { hashPassword } from "../lib/auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { enqueuePushNotification } from "../lib/queue.js";
 
 export async function systemRoutes(app: FastifyInstance) {
   // ═══ ADMIN USERS ═══
-
   // GET /api/v1/users
   app.get(
     "/api/v1/users",
@@ -76,7 +76,6 @@ export async function systemRoutes(app: FastifyInstance) {
   );
 
   // ═══ REGISTRATIONS ═══
-
   // GET /api/v1/registrations
   app.get(
     "/api/v1/registrations",
@@ -96,10 +95,7 @@ export async function systemRoutes(app: FastifyInstance) {
       const [req] = await db.select().from(approvalRequests).where(eq(approvalRequests.id, id)).limit(1);
       if (!req) return reply.status(404).send({ error: "Not found" });
       if (req.status !== "pending") return reply.status(400).send({ error: "Already processed" });
-
       await db.update(approvalRequests).set({ status: "approved", reviewedBy: request.admin!.userId, reviewedAt: new Date() }).where(eq(approvalRequests.id, id));
-
-      // If new registration, create the dealer
       if (req.type === "new_registration") {
         const data = JSON.parse(req.submittedData);
         const [dealer] = await pgClient`
@@ -111,7 +107,6 @@ export async function systemRoutes(app: FastifyInstance) {
           await pgClient`INSERT INTO dealer_wallets (dealer_id, balance) VALUES (${dealer.id}, 0)`;
         }
       }
-
       return reply.send({ message: "Registration approved" });
     }
   );
@@ -130,7 +125,6 @@ export async function systemRoutes(app: FastifyInstance) {
   );
 
   // ═══ NOTIFICATION CONFIG ═══
-
   // GET /api/v1/notifications/config
   app.get(
     "/api/v1/notifications/config",
@@ -138,6 +132,39 @@ export async function systemRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const configs = await db.select().from(notificationConfig);
       return reply.send({ data: configs });
+    }
+  );
+
+  // ═══ NOTIFICATIONS SEND ═══
+  // POST /api/v1/notifications/send — send notification to dealers
+  app.post(
+    "/api/v1/notifications/send",
+    { preHandler: [adminAuth, requireRole("system.manage")] },
+    async (request, reply) => {
+      const schema = z.object({
+        title: z.string().min(1),
+        message: z.string().min(1),
+        target: z.object({
+          type: z.enum(["all", "dealer", "zone"]).default("all"),
+          id: z.string().uuid().optional(),
+        }).optional(),
+        channel: z.enum(["push", "sms", "email"]).default("push"),
+      });
+      const body = schema.parse(request.body);
+      const targetType = body.target?.type ?? "all";
+      const targetId = body.target?.id ?? null;
+      const [logged] = await pgClient`
+        INSERT INTO notifications_log (target_type, target_id, channel, title, message, status, sent_at)
+        VALUES (${targetType}, ${targetId}::uuid, ${body.channel}::notif_channel,
+                ${body.title}, ${body.message}, 'queued', now())
+        RETURNING id, created_at
+      `;
+      return reply.status(200).send({
+        message: "Notification queued for sending",
+        id: logged.id,
+        targetType,
+        targetId,
+      });
     }
   );
 
@@ -160,6 +187,100 @@ export async function systemRoutes(app: FastifyInstance) {
         `;
       }
       return reply.send({ message: "Notification config updated" });
+    }
+  );
+
+  // ═══ TIME WINDOWS (FIX #24) ═══
+  // GET /api/v1/time-windows — all time windows for admin config
+  app.get(
+    "/api/v1/time-windows",
+    { preHandler: [adminAuth, requireRole("system.view")] },
+    async (request, reply) => {
+      const windows = await pgClient`
+        SELECT tw.id, tw.zone_id, tw.open_time, tw.warning_minutes,
+               tw.close_time, tw.active,
+               z.name AS zone_name
+        FROM time_windows tw
+        JOIN zones z ON z.id = tw.zone_id
+        ORDER BY z.name
+      `;
+      return reply.send({ windows });
+    }
+  );
+
+  // PATCH /api/v1/time-windows/:id — update time window
+  app.patch(
+    "/api/v1/time-windows/:id",
+    { preHandler: [adminAuth, requireRole("system.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const schema = z.object({
+        openTime: z.string().optional(),
+        warningMinutes: z.number().int().optional(),
+        closeTime: z.string().optional(),
+        active: z.boolean().optional(),
+      });
+      const body = schema.parse(request.body);
+      const [updated] = await pgClient`
+        UPDATE time_windows SET
+          open_time = COALESCE(${body.openTime ?? null}::time, open_time),
+          warning_minutes = COALESCE(${body.warningMinutes ?? null}::int, warning_minutes),
+          close_time = COALESCE(${body.closeTime ?? null}::time, close_time),
+          active = COALESCE(${body.active ?? null}::boolean, active),
+          updated_at = now()
+        WHERE id = ${id}
+        RETURNING *
+      `;
+      if (!updated) return reply.status(404).send({ error: "Time window not found" });
+      return reply.send({ window: updated });
+    }
+  );
+
+  // ═══ NOTIFICATION CONFIG (FIX #25) ═══
+  // GET /api/v1/notification-config — list notification settings
+  app.get(
+    "/api/v1/notification-config",
+    { preHandler: [adminAuth, requireRole("system.view")] },
+    async (request, reply) => {
+      const config = await pgClient`
+        SELECT id,
+              event_name AS event,
+              description,
+              target_channel,
+              push_enabled, sms_enabled, email_enabled,
+              (push_enabled = 'true') AS enabled
+        FROM notification_config
+        ORDER BY event_name
+      `;
+      return reply.send({ config });
+    }
+  );
+
+  // ═══ SYSTEM SETTINGS HELPER — NEW ENDPOINT ═══
+  // GET /api/v1/system-settings/marketing
+  app.get(
+    "/api/v1/system-settings/marketing",
+    { preHandler: [adminAuth] },
+    async (_request, reply) => {
+      const rows = await pgClient`
+        SELECT key, value FROM system_settings WHERE category = 'marketing'
+      `;
+      const out: Record<string, any> = {};
+      for (const r of rows as any[]) {
+        try {
+          out[r.key] = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
+        } catch {
+          out[r.key] = r.value;
+        }
+      }
+      return reply.send(out);
+      // Expected shape:
+      // {
+      //   states: [...],
+      //   address_types: [...],
+      //   talukas: [...],
+      //   cities: [...]
+      // }
     }
   );
 }

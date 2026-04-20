@@ -24,6 +24,8 @@ import { products } from "./products.js";
 //
 // Partitioning keeps report queries fast by scanning only the relevant month's partition.
 // A BullMQ job creates next month's partition on the 25th of each month.
+//
+// Phase 2: Added officer_id for sales officer tracking on call-desk / officer-placed orders.
 export const orders = pgTable("orders", {
   id: uuid("id").defaultRandom().notNull(),
   dealerId: uuid("dealer_id").notNull(), // FK enforced via migration SQL (partitioned tables need manual FK)
@@ -37,6 +39,7 @@ export const orders = pgTable("orders", {
   itemCount: integer("item_count").notNull().default(0),
   notes: text("notes"), // dealer's order notes
   placedBy: uuid("placed_by"), // null = dealer placed it; set to admin user ID if Call Desk placed
+  officerId: uuid("officer_id"), // Phase 2: sales officer who processed this order (no FK on partitioned table)
   confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
   deliveredAt: timestamp("delivered_at", { withTimezone: true }),
@@ -56,16 +59,16 @@ export const orders = pgTable("orders", {
 // Each line item in an order. Stores snapshot of price at time of order (not current price).
 export const orderItems = pgTable("order_items", {
   id: uuid("id").defaultRandom().primaryKey(),
-  orderId: uuid("order_id").notNull(), // FK to orders — enforced in migration SQL
+  orderId: uuid("order_id").notNull(), // references orders(id) — no FK because orders is partitioned
   productId: uuid("product_id")
     .notNull()
     .references(() => products.id, { onDelete: "restrict" }),
-  productName: text("product_name").notNull(), // snapshot at order time
+  productName: text("product_name").notNull(), // snapshot: product name at order time
   quantity: integer("quantity").notNull(),
-  unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(), // base price at order time
-  gstPercent: numeric("gst_percent", { precision: 5, scale: 2 }).notNull(), // GST % at order time
-  gstAmount: numeric("gst_amount", { precision: 10, scale: 2 }).notNull(), // computed GST for this line
-  lineTotal: numeric("line_total", { precision: 10, scale: 2 }).notNull(), // (unitPrice * quantity) + gstAmount
+  unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
+  gstPercent: numeric("gst_percent", { precision: 5, scale: 2 }).notNull(),
+  gstAmount: numeric("gst_amount", { precision: 10, scale: 2 }).notNull(),
+  lineTotal: numeric("line_total", { precision: 10, scale: 2 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("idx_order_items_order").on(table.orderId),
@@ -73,7 +76,6 @@ export const orderItems = pgTable("order_items", {
 ]);
 
 // ── Cancellation Requests ──
-// Dealer-initiated cancellation requests that need admin approval.
 export const cancellationRequests = pgTable("cancellation_requests", {
   id: uuid("id").defaultRandom().primaryKey(),
   orderId: uuid("order_id").notNull(), // reference to order

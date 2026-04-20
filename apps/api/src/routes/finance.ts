@@ -46,6 +46,27 @@ export async function financeRoutes(app: FastifyInstance) {
     }
   );
 
+  // GET /api/v1/invoices/:id — invoice detail with order items
+  app.get(
+    "/api/v1/invoices/:id",
+    { preHandler: [adminAuth, requireRole("finance.view")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const [invoice] = await pgClient`
+        SELECT i.*, o.status AS order_status, o.payment_mode, o.item_count
+        FROM invoices i
+        JOIN orders o ON o.id = i.order_id
+        WHERE i.id = ${id} LIMIT 1
+      `;
+      if (!invoice) return reply.status(404).send({ error: "Invoice not found" });
+      const items = await pgClient`
+        SELECT product_name, quantity, unit_price, gst_percent, gst_amount, line_total
+        FROM order_items WHERE order_id = ${invoice.order_id} ORDER BY product_name
+      `;
+      return reply.send({ invoice, items });
+    }
+  );
+
   // ═══ REPORTS ═══
 
   // GET /api/v1/reports/sales

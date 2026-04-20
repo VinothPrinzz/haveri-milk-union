@@ -17,6 +17,7 @@ export const notificationsLog = pgTable("notifications_log", {
   channel: notifChannelEnum("channel").notNull(),
   title: text("title").notNull(),
   message: text("message").notNull(),
+  description: text("description"),
   data: text("data"), // JSON payload for deep linking
   status: deliveryStatusEnum("status").notNull().default("queued"),
   errorMessage: text("error_message"), // error details if failed

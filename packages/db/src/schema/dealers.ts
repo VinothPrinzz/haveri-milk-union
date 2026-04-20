@@ -1,53 +1,116 @@
+// ═══════════════════════════════════════════════════════════════════════
+// Dealers schema — Updated with Marketing Module fields
+// ═══════════════════════════════════════════════════════════════════════
+
 import {
   pgTable,
+  pgEnum,
   uuid,
   text,
   boolean,
-  timestamp,
   numeric,
+  timestamp,
   index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
-import { registrationStatusEnum, approvalTypeEnum } from "./enums.js";
-import { zones } from "./zones.js";
 
-// ── Dealers ──
-// Registered agencies. Each belongs to a zone. Has GST number, phone, address.
-export const dealers = pgTable("dealers", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  name: text("name").notNull(),
-  phone: text("phone").notNull().unique(), // primary login identifier (OTP-based)
-  email: text("email"),
-  gstNumber: text("gst_number"), // GSTIN — can be null for dealers without GST
-  zoneId: uuid("zone_id")
-    .notNull()
-    .references(() => zones.id, { onDelete: "restrict" }),
-  address: text("address"),
-  city: text("city"),
-  pinCode: text("pin_code"),
-  locationLabel: text("location_label"), // e.g. "Haveri Main Market" — shown in app header
-  contactPerson: text("contact_person"),
-  creditLimit: numeric("credit_limit", { precision: 10, scale: 2 }).notNull().default("0"),
-  fcmToken: text("fcm_token"), // Firebase Cloud Messaging token for push notifications
-  languagePreference: text("language_preference").notNull().default("en"), // "en" | "kn" (Kannada)
-  biometricEnabled: boolean("biometric_enabled").notNull().default(false),
-  notificationsEnabled: boolean("notifications_enabled").notNull().default(true),
-  active: boolean("active").notNull().default(true),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }), // soft delete
-});
+import { zones } from "./zones.js";
+import { routes } from "./distribution.js";
+import { registrationStatusEnum, approvalTypeEnum } from "./enums.js";
+
+// ── Enums ──
+export const customerTypeEnum = pgEnum("customer_type", [
+  "Retail-Dealer",
+  "Credit Inst-MRP",
+  "Credit Inst-Dealer",
+  "Parlour-Dealer",
+]);
+
+export const payModeEnum = pgEnum("pay_mode", ["Cash", "Credit"]);
+
+// ── Dealers Table ──
+export const dealers = pgTable(
+  "dealers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: text("name").notNull(),
+    phone: text("phone").notNull().unique(),
+    email: text("email"),
+    gstNumber: text("gst_number"),
+
+    zoneId: uuid("zone_id")
+      .notNull()
+      .references(() => zones.id, { onDelete: "restrict" }),
+
+    // ── Marketing Module fields ──
+    code: text("code").unique(), // e.g. "A1", "B3"
+    customerType: customerTypeEnum("customer_type")
+      .notNull()
+      .default("Retail-Dealer"),
+    rateCategory: text("rate_category")
+      .notNull()
+      .default("Retail-Dealer"),
+    payMode: payModeEnum("pay_mode").notNull().default("Cash"),
+    routeId: uuid("route_id").references(() => routes.id, { onDelete: "set null" }),
+    bank: text("bank"),
+    officerName: text("officer_name"),
+
+    // ── Original fields ──
+    address: text("address"),
+    city: text("city"),
+    pinCode: text("pin_code"),
+    locationLabel: text("location_label"),
+    contactPerson: text("contact_person"),
+    creditLimit: numeric("credit_limit", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    fcmToken: text("fcm_token"),
+    languagePreference: text("language_preference")
+      .notNull()
+      .default("en"),
+    biometricEnabled: boolean("biometric_enabled")
+      .notNull()
+      .default(false),
+    notificationsEnabled: boolean("notifications_enabled")
+      .notNull()
+      .default(true),
+    active: boolean("active").notNull().default(true),
+
+    // Marketing v1.4
+    accountNo:     text("account_no"),
+    addressType:   text("address_type"), // "Office" | "Residence"
+    state:         text("state").default("Karnataka"),
+    area:          text("area"),
+    houseNo:       text("house_no"),
+    street:        text("street"),
+    lastIndentAt:  timestamp("last_indent_at", { withTimezone: true }),
+
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }), // soft delete
+  },
+  (table) => [
+    index("idx_dealers_code").on(table.code),
+    index("idx_dealers_route").on(table.routeId),
+    index("idx_dealers_customer_type").on(table.customerType),
+    index("idx_dealers_pay_mode").on(table.payMode),
+  ]
+);
 
 // ── Dealer Wallets ──
-// One row per dealer. balance, last_topup_at, last_topup_amount.
-// Updated atomically: UPDATE ... SET balance = balance - $1 WHERE balance >= $1 RETURNING balance;
 export const dealerWallets = pgTable("dealer_wallets", {
   id: uuid("id").defaultRandom().primaryKey(),
   dealerId: uuid("dealer_id")
     .notNull()
     .references(() => dealers.id, { onDelete: "restrict" })
-    .unique(), // one wallet per dealer
-  balance: numeric("balance", { precision: 12, scale: 2 }).notNull().default("0"),
+    .unique(),
+  balance: numeric("balance", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
   lastTopupAt: timestamp("last_topup_at", { withTimezone: true }),
   lastTopupAmount: numeric("last_topup_amount", { precision: 10, scale: 2 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -55,44 +118,46 @@ export const dealerWallets = pgTable("dealer_wallets", {
 });
 
 // ── Dealer OTPs ──
-// Short-lived OTP for dealer login. Auto-expires.
 export const dealerOtps = pgTable("dealer_otps", {
   id: uuid("id").defaultRandom().primaryKey(),
   phone: text("phone").notNull(),
-  otp: text("otp").notNull(), // 6-digit OTP (hashed in production)
+  otp: text("otp").notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   verified: boolean("verified").notNull().default(false),
-  attempts: numeric("attempts").notNull().default("0"), // rate limit brute force
+  attempts: numeric("attempts").notNull().default("0"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ── Dealer Refresh Tokens ──
-// JWT refresh token rotation. 30-day tokens stored in Expo SecureStore.
-export const dealerRefreshTokens = pgTable("dealer_refresh_tokens", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  dealerId: uuid("dealer_id")
-    .notNull()
-    .references(() => dealers.id, { onDelete: "cascade" }),
-  token: text("token").notNull().unique(),
-  family: text("family").notNull(), // token family for rotation detection
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  revokedAt: timestamp("revoked_at", { withTimezone: true }), // null = active
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
-  index("idx_dealer_refresh_tokens_dealer").on(table.dealerId),
-  index("idx_dealer_refresh_tokens_family").on(table.family),
-]);
+export const dealerRefreshTokens = pgTable(
+  "dealer_refresh_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    dealerId: uuid("dealer_id")
+      .notNull()
+      .references(() => dealers.id, { onDelete: "cascade" }),
+    token: text("token").notNull().unique(),
+    family: text("family").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_dealer_refresh_tokens_dealer").on(table.dealerId),
+    index("idx_dealer_refresh_tokens_family").on(table.family),
+  ]
+);
 
-// ── Dealer Registrations / Approval Requests ──
-// New dealer registrations and change requests that need admin approval.
+// ── Dealer Approval Requests ──
 export const approvalRequests = pgTable("approval_requests", {
   id: uuid("id").defaultRandom().primaryKey(),
-  dealerId: uuid("dealer_id").references(() => dealers.id, { onDelete: "set null" }), // null for new registrations
+  dealerId: uuid("dealer_id").references(() => dealers.id, { onDelete: "set null" }),
   type: approvalTypeEnum("type").notNull(),
   status: registrationStatusEnum("status").notNull().default("pending"),
-  // Submitted data as JSON — flexible for different request types
   submittedData: text("submitted_data").notNull(), // JSON string
-  reviewedBy: uuid("reviewed_by"), // admin user who reviewed
+  reviewedBy: uuid("reviewed_by"),
   reviewNote: text("review_note"),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -104,6 +169,10 @@ export const dealersRelations = relations(dealers, ({ one, many }) => ({
   zone: one(zones, {
     fields: [dealers.zoneId],
     references: [zones.id],
+  }),
+  route: one(routes, {
+    fields: [dealers.routeId],
+    references: [routes.id],
   }),
   wallet: one(dealerWallets, {
     fields: [dealers.id],
@@ -120,12 +189,15 @@ export const dealerWalletsRelations = relations(dealerWallets, ({ one }) => ({
   }),
 }));
 
-export const dealerRefreshTokensRelations = relations(dealerRefreshTokens, ({ one }) => ({
-  dealer: one(dealers, {
-    fields: [dealerRefreshTokens.dealerId],
-    references: [dealers.id],
-  }),
-}));
+export const dealerRefreshTokensRelations = relations(
+  dealerRefreshTokens,
+  ({ one }) => ({
+    dealer: one(dealers, {
+      fields: [dealerRefreshTokens.dealerId],
+      references: [dealers.id],
+    }),
+  })
+);
 
 export const approvalRequestsRelations = relations(approvalRequests, ({ one }) => ({
   dealer: one(dealers, {

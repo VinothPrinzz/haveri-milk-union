@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, and, gt, desc, isNull } from "drizzle-orm";
-import { db } from "../lib/db.js";
+import { db, pgClient } from "../lib/db.js";
 import {
   dealers,
   dealerWallets,
@@ -35,7 +35,12 @@ export async function authRoutes(app: FastifyInstance) {
 
     // Check dealer exists and is active
     const [dealer] = await db
-      .select({ id: dealers.id, name: dealers.name, active: dealers.active, deletedAt: dealers.deletedAt })
+      .select({
+        id: dealers.id,
+        name: dealers.name,
+        active: dealers.active,
+        deletedAt: dealers.deletedAt,
+      })
       .from(dealers)
       .where(eq(dealers.phone, body.phone))
       .limit(1);
@@ -87,8 +92,8 @@ export async function authRoutes(app: FastifyInstance) {
         and(
           eq(dealerOtps.phone, body.phone),
           eq(dealerOtps.verified, false),
-          gt(dealerOtps.expiresAt, new Date())
-        )
+          gt(dealerOtps.expiresAt, new Date()),
+        ),
       )
       .orderBy(desc(dealerOtps.createdAt))
       .limit(1);
@@ -180,8 +185,8 @@ export async function authRoutes(app: FastifyInstance) {
       .where(
         and(
           eq(dealerRefreshTokens.token, body.refreshToken),
-          isNull(dealerRefreshTokens.revokedAt)
-        )
+          isNull(dealerRefreshTokens.revokedAt),
+        ),
       )
       .limit(1);
 
@@ -194,7 +199,7 @@ export async function authRoutes(app: FastifyInstance) {
 
       request.log.warn(
         { dealerId: payload.dealerId, family: payload.family },
-        "Refresh token reuse detected — entire family revoked"
+        "Refresh token reuse detected — entire family revoked",
       );
 
       return reply.status(401).send({
@@ -345,8 +350,8 @@ export async function authRoutes(app: FastifyInstance) {
       .where(
         and(
           eq(adminSessions.token, sessionToken),
-          gt(adminSessions.expiresAt, new Date())
-        )
+          gt(adminSessions.expiresAt, new Date()),
+        ),
       )
       .limit(1);
 

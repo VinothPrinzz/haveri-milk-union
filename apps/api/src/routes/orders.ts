@@ -157,6 +157,28 @@ export async function orderRoutes(app: FastifyInstance) {
 
       // ── 4. ATOMIC wallet deduction (if wallet payment) ──
       // Single query with WHERE balance >= amount — Postgres row-level lock handles concurrency.
+
+      // Credit-mode pre-check (Issue #8): block if order would exceed dealer credit_limit
+      if (body.paymentMode === "credit") {
+        const [d] = await pgClient`
+          SELECT COALESCE(credit_limit, 0)::numeric AS credit_limit,
+                 COALESCE((SELECT SUM(grand_total) FROM orders o
+                           WHERE o.dealer_id = dealers.id
+                             AND o.payment_mode = 'credit'
+                             AND o.status NOT IN ('cancelled','delivered')), 0)::numeric AS outstanding
+          FROM dealers WHERE id = ${body.dealerId}
+        `;
+        const available = parseFloat(d.credit_limit) - parseFloat(d.outstanding);
+        if (grandTotal > available) {
+          return reply.status(402).send({
+            error: "Credit limit exceeded",
+            message: `Dealer credit limit ₹${d.credit_limit}, outstanding ₹${d.outstanding}, available ₹${available.toFixed(2)}, this order ₹${grandTotal.toFixed(2)}`,
+            availableCredit: available.toFixed(2),
+            requestedAmount: grandTotal.toFixed(2),
+          });
+        }
+      }
+
       if (body.paymentMode === "wallet") {
         const result = await pgClient`
           UPDATE dealer_wallets
@@ -231,15 +253,27 @@ export async function orderRoutes(app: FastifyInstance) {
           return order;
         });
 
+        // Re-fetch the order with items so the UI can show the receipt without an extra request.
+        const items = await pgClient`
+          SELECT product_id, product_name, quantity,
+                unit_price, gst_percent, gst_amount, line_total
+          FROM order_items WHERE order_id = ${result!.id}
+          ORDER BY product_name
+        `;
+
         return reply.status(201).send({
           message: "Order placed successfully",
           order: {
-            id: result!.id,
-            createdAt: result!.created_at,
-            grandTotal: grandTotal.toFixed(2),
-            itemCount: orderItemsData.length,
+            id:         result!.id,
+            createdAt:  result!.created_at,
+            dealerId:   body.dealerId,
+            status:     "pending",
             paymentMode: body.paymentMode,
-            status: "pending",
+            subtotal:   subtotal.toFixed(2),
+            totalGst:   totalGst.toFixed(2),
+            grandTotal: grandTotal.toFixed(2),
+            itemCount:  orderItemsData.length,
+            items,
           },
         });
       } catch (err) {
@@ -263,43 +297,79 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("orders.view")] },
     async (request, reply) => {
       const querySchema = paginationSchema.extend({
-        status: z.string().optional(),
-        zoneId: z.string().uuid().optional(),
+        status:   z.enum(["pending","confirmed","dispatched","delivered","cancelled"]).optional(),
+        dealerId: z.string().uuid().optional(),
+        zoneId:   z.string().uuid().optional(),
+        routeId:  z.string().uuid().optional(),       // Issue #9
+        batchId:  z.string().uuid().optional(),       // Issue #9
+        date:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),  // Issue #9
+        search:   z.string().optional(),
       });
-      const query = querySchema.parse(request.query);
-      const offset = offsetFromPage(query.page, query.limit);
+      const q = querySchema.parse(request.query);
+      const offset = offsetFromPage(q.page, q.limit);
+      const search = q.search ? `%${q.search}%` : null;
 
-      const statusFilter = query.status ?? null;
-      const zoneFilter = query.zoneId ?? null;
-
-      const dataRows = await pgClient`
+      const rows = await pgClient`
         SELECT o.id, o.dealer_id, o.zone_id, o.status, o.payment_mode,
-               o.grand_total, o.item_count, o.created_at,
-               d.name AS dealer_name, d.phone AS dealer_phone,
-               z.name AS zone_name
+               o.subtotal, o.total_gst, o.grand_total, o.item_count,
+               o.created_at, o.confirmed_at, o.dispatched_at,
+               d.name  AS dealer_name,
+               d.phone AS dealer_phone,
+               d.code  AS agent_code,
+               d.route_id,
+               r.code  AS route_code,
+               r.name  AS route_name,
+               z.name  AS zone_name,
+               COALESCE(
+                (SELECT json_agg(json_build_object(
+                    'product_id',   oi.product_id,
+                    'product_name', oi.product_name,
+                    'quantity',     oi.quantity,
+                    'unit_price',   oi.unit_price,
+                    'line_total',   oi.line_total
+                  ) ORDER BY oi.product_name)
+                FROM order_items oi WHERE oi.order_id = o.id),
+                '[]'::json
+              ) AS items
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
-        JOIN zones z ON z.id = o.zone_id
-        WHERE (${statusFilter}::text IS NULL OR o.status::text = ${statusFilter ?? ''})
-          AND (${zoneFilter}::uuid IS NULL OR o.zone_id = ${zoneFilter ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+        LEFT JOIN routes r ON r.id = d.route_id
+        LEFT JOIN zones  z ON z.id = o.zone_id
+        WHERE (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
+          AND (${q.dealerId ?? null}::uuid IS NULL OR o.dealer_id = ${q.dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.zoneId   ?? null}::uuid IS NULL OR o.zone_id   = ${q.zoneId   ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.routeId  ?? null}::uuid IS NULL OR d.route_id  = ${q.routeId  ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.date     ?? null}::date IS NULL OR o.created_at::date = ${q.date ?? '1970-01-01'}::date)
+          AND (${q.batchId  ?? null}::uuid IS NULL OR EXISTS (
+                SELECT 1 FROM batch_routes br
+                WHERE br.batch_id = ${q.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
+                  AND br.route_id = d.route_id))
+          AND (${search}::text IS NULL OR d.name ILIKE ${search ?? ''} OR d.phone ILIKE ${search ?? ''})
         ORDER BY o.created_at DESC
-        LIMIT ${query.limit} OFFSET ${offset}
+        LIMIT ${q.limit} OFFSET ${offset}
       `;
 
       const [countRow] = await pgClient`
-        SELECT count(*)::int AS count FROM orders o
-        WHERE (${statusFilter}::text IS NULL OR o.status::text = ${statusFilter ?? ''})
-          AND (${zoneFilter}::uuid IS NULL OR o.zone_id = ${zoneFilter ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+        SELECT count(*)::int AS count
+        FROM orders o
+        JOIN dealers d ON d.id = o.dealer_id
+        WHERE (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
+          AND (${q.dealerId ?? null}::uuid IS NULL OR o.dealer_id = ${q.dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.zoneId   ?? null}::uuid IS NULL OR o.zone_id   = ${q.zoneId   ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.routeId  ?? null}::uuid IS NULL OR d.route_id  = ${q.routeId  ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.date     ?? null}::date IS NULL OR o.created_at::date = ${q.date ?? '1970-01-01'}::date)
+          AND (${q.batchId  ?? null}::uuid IS NULL OR EXISTS (
+                SELECT 1 FROM batch_routes br
+                WHERE br.batch_id = ${q.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
+                  AND br.route_id = d.route_id))
+          AND (${search}::text IS NULL OR d.name ILIKE ${search ?? ''} OR d.phone ILIKE ${search ?? ''})
       `;
 
-      return reply.status(200).send({
-        data: dataRows,
-        ...paginationMeta(countRow?.count ?? 0, query.page, query.limit),
-      });
+      return reply.send({ data: rows, ...paginationMeta(countRow?.count ?? 0, q.page, q.limit) });
     }
   );
 
-  // GET /api/v1/orders/my — dealer's own orders
+  // GET /api/v1/orders/my — dealer's own orders (unchanged)
   app.get(
     "/api/v1/orders/my",
     { preHandler: [dealerAuth] },
@@ -336,7 +406,7 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /api/v1/orders/:id — order detail with items
+  // GET /api/v1/orders/:id — order detail with items (unchanged)
   app.get("/api/v1/orders/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
 
@@ -361,7 +431,7 @@ export async function orderRoutes(app: FastifyInstance) {
     return reply.status(200).send({ order, items });
   });
 
-  // PATCH /api/v1/orders/:id/status — update order status (admin)
+  // PATCH /api/v1/orders/:id/status — update order status (admin) (unchanged)
   app.patch(
     "/api/v1/orders/:id/status",
     { preHandler: [adminAuth, requireRole("orders.update")] },
@@ -398,7 +468,7 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  // POST /api/v1/orders/:id/cancel — dealer requests cancellation
+  // POST /api/v1/orders/:id/cancel — dealer requests cancellation (unchanged)
   app.post(
     "/api/v1/orders/:id/cancel",
     { preHandler: [dealerAuth] },
@@ -437,6 +507,110 @@ export async function orderRoutes(app: FastifyInstance) {
       return reply.status(201).send({
         message: "Cancellation request submitted",
         cancellationRequest: cr,
+      });
+    }
+  );
+
+  // PATCH /api/v1/orders/:id/items — modify items on an existing pending order
+  app.patch(
+    "/api/v1/orders/:id/items",
+    { preHandler: [adminAuth, requireRole("orders.create")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const schema = z.object({
+        items: z.array(z.object({
+          productId: z.string().uuid(),
+          quantity:  z.number().int().min(0),    // 0 = remove
+        })).min(1),
+      });
+      const body = schema.parse(request.body);
+
+      // Lock the order, verify it's modifiable.
+      const [existing] = await pgClient`
+        SELECT id, dealer_id, status, payment_mode, grand_total, created_at
+        FROM orders WHERE id = ${id} FOR UPDATE
+      `;
+      if (!existing) return reply.status(404).send({ error: "Order not found" });
+      if (!["pending", "confirmed"].includes(existing.status)) {
+        return reply.status(409).send({ error: `Cannot modify ${existing.status} order` });
+      }
+
+      // Fetch current product info for the new items.
+      const productIds = body.items.filter(i => i.quantity > 0).map(i => i.productId);
+      const productRows = productIds.length
+        ? await pgClient`SELECT id, name, base_price, gst_percent, stock FROM products WHERE id = ANY(${productIds}::uuid[])`
+        : [];
+      const productMap = new Map(productRows.map((p: any) => [p.id, p]));
+
+      let newSubtotal = 0, newGst = 0;
+      const newLines: any[] = [];
+      for (const item of body.items) {
+        if (item.quantity === 0) continue;        // remove
+        const p = productMap.get(item.productId);
+        if (!p) return reply.status(400).send({ error: `Product ${item.productId} not found` });
+        const price = parseFloat(p.base_price);
+        const gstPct = parseFloat(p.gst_percent);
+        const lineSub = price * item.quantity;
+        const lineGst = lineSub * (gstPct / 100);
+        newSubtotal += lineSub; newGst += lineGst;
+        newLines.push({ productId: item.productId, productName: p.name, quantity: item.quantity,
+          unitPrice: price.toFixed(2), gstPercent: gstPct.toFixed(2),
+          gstAmount: lineGst.toFixed(2), lineTotal: (lineSub + lineGst).toFixed(2) });
+      }
+      const newGrandTotal = newSubtotal + newGst;
+      const oldGrandTotal = parseFloat(existing.grand_total);
+      const delta = newGrandTotal - oldGrandTotal;
+
+      // Restore stock for the OLD items (we'll deduct fresh for the new items).
+      const oldItems = await pgClient`SELECT product_id, quantity FROM order_items WHERE order_id = ${id}`;
+
+      await pgClient.begin(async (tx) => {
+        for (const oi of oldItems) {
+          await tx`UPDATE products SET stock = stock + ${oi.quantity}, updated_at = now() WHERE id = ${oi.product_id}`;
+        }
+        // Insert new items (and re-deduct stock).
+        await tx`DELETE FROM order_items WHERE order_id = ${id}`;
+        for (const li of newLines) {
+          await tx`INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total)
+                   VALUES (${id}, ${li.productId}, ${li.productName}, ${li.quantity},
+                           ${li.unitPrice}::numeric, ${li.gstPercent}::numeric, ${li.gstAmount}::numeric, ${li.lineTotal}::numeric)`;
+          await tx`UPDATE products SET stock = stock - ${li.quantity}, updated_at = now() WHERE id = ${li.productId}`;
+        }
+        // Update the order header.
+        await tx`UPDATE orders SET subtotal = ${newSubtotal.toFixed(2)}::numeric,
+                                    total_gst = ${newGst.toFixed(2)}::numeric,
+                                    grand_total = ${newGrandTotal.toFixed(2)}::numeric,
+                                    item_count = ${newLines.length},
+                                    updated_at = now()
+                  WHERE id = ${id}`;
+
+        // Wallet adjustment if applicable: refund or charge the delta.
+        if (existing.payment_mode === "wallet" && delta !== 0) {
+          if (delta > 0) {
+            // charge more
+            const r = await tx`UPDATE dealer_wallets SET balance = balance - ${delta.toFixed(2)}::numeric, updated_at = now()
+                               WHERE dealer_id = ${existing.dealer_id} AND balance >= ${delta.toFixed(2)}::numeric
+                               RETURNING balance`;
+            if (r.length === 0) throw new Error("Insufficient wallet balance for upward modification");
+            const [w] = r as any;
+            await tx`INSERT INTO dealer_ledger (dealer_id, type, amount, reference_id, reference_type, description, balance_after, performed_by)
+                    VALUES (${existing.dealer_id}, 'debit', ${delta.toFixed(2)}::numeric, ${id},
+                            'adjustment', ${'Modify order ' + id}, ${w.balance}::numeric, ${request.admin!.userId})`;
+          } else {
+            const refund = Math.abs(delta);
+            await tx`UPDATE dealer_wallets SET balance = balance + ${refund.toFixed(2)}::numeric, updated_at = now() WHERE dealer_id = ${existing.dealer_id}`;
+            const [w] = await tx`SELECT balance FROM dealer_wallets WHERE dealer_id = ${existing.dealer_id}`;
+            await tx`INSERT INTO dealer_ledger (dealer_id, type, amount, reference_id, reference_type, description, balance_after, performed_by)
+                    VALUES (${existing.dealer_id}, 'credit', ${refund.toFixed(2)}::numeric, ${id},
+                            'adjustment', ${'Modify refund ' + id}, ${w!.balance}::numeric, ${request.admin!.userId})`;
+          }
+        }
+      });
+
+      const items = await pgClient`SELECT product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total FROM order_items WHERE order_id = ${id} ORDER BY product_name`;
+      return reply.send({
+        message: "Order modified successfully",
+        order: { id, subtotal: newSubtotal.toFixed(2), totalGst: newGst.toFixed(2), grandTotal: newGrandTotal.toFixed(2), itemCount: newLines.length, items },
       });
     }
   );

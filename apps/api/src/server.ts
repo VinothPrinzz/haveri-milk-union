@@ -4,7 +4,7 @@ import cookie from "@fastify/cookie";
 import sensible from "@fastify/sensible";
 import { env } from "./lib/env.js";
 
-// Route modules
+// Route modules — Phase 1
 import { authRoutes } from "./routes/auth.js";
 import { windowRoutes } from "./routes/window.js";
 import { productRoutes } from "./routes/products.js";
@@ -18,13 +18,25 @@ import { crudRoutes } from "./routes/crud.js";
 import { systemRoutes } from "./routes/system.js";
 import { dealerAppRoutes } from "./routes/dealer-app.js";
 
+// Route modules — Phase 2
+import { dashboardRoutes } from "./routes/dashboard.js";
+import { contractorRoutes } from "./routes/contractors.js";
+import { batchRoutes } from "./routes/batches.js";
+import { priceChartRoutes } from "./routes/price-chart.js";
+import { directSalesRoutes } from "./routes/direct-sales.js";
+import { routeSheetRoutes } from "./routes/route-sheets.js";
+import { salesReportRoutes } from "./routes/sales-reports.js";
+import { dispatchSheetRoutes }   from "./routes/dispatch-sheet.js";
+
+import { zoneRoutes } from "./routes/zones.js";
+import { reportsRoutes } from "./routes/reports.js";
+
 const app = Fastify({
   logger: {
     level: env.NODE_ENV === "production" ? "info" : "debug",
-    transport:
-      env.NODE_ENV === "development"
-        ? { target: "pino-pretty", options: { colorize: true } }
-        : undefined,
+    ...(env.NODE_ENV === "development"
+      ? { transport: { target: "pino-pretty", options: { colorize: true } } }
+      : {}),
   },
 });
 
@@ -74,11 +86,12 @@ app.setErrorHandler((error, request, reply) => {
 app.get("/api/v1/health", async () => ({
   status: "ok",
   timestamp: new Date().toISOString(),
-  version: "0.0.1",
+  version: "0.0.2",
 }));
 
 // ── Register All Routes ──
-// Core (from Step 3)
+
+// Core (Phase 1)
 await app.register(authRoutes);
 await app.register(windowRoutes);
 await app.register(productRoutes);
@@ -87,12 +100,25 @@ await app.register(dealerRoutes);
 await app.register(inventoryRoutes);
 await app.register(distributionRoutes);
 
-// Phase A additions
-await app.register(cancellationRoutes);  // approve/reject cancellations with wallet refund
-await app.register(financeRoutes);        // invoices, reports, admin-placed orders
-await app.register(crudRoutes);           // categories, price revision, route update, dispatch status
-await app.register(systemRoutes);         // users CRUD, registrations, notification config
+// Phase 1 additions
+await app.register(cancellationRoutes);   // approve/reject cancellations with wallet refund
+await app.register(financeRoutes);         // invoices, reports, admin-placed orders
+await app.register(crudRoutes);            // categories, price revision, route update, dispatch status
+await app.register(systemRoutes);          // users CRUD, registrations, notification config
 await app.register(dealerAppRoutes);       // banners, invoices/my, reorder
+
+// Phase 2 — Marketing Module
+await app.register(dashboardRoutes);       // GET /dashboard/summary — aggregate stats
+await app.register(contractorRoutes);      // contractors CRUD
+await app.register(batchRoutes);           // batches CRUD + batch↔route associations
+await app.register(priceChartRoutes);      // rate categories + price chart CRUD
+await app.register(directSalesRoutes);     // gate pass, cash customer, returns
+await app.register(routeSheetRoutes);      // route sheet generation + management
+await app.register(reportsRoutes);           // Route Sheet + Gate Pass Report
+await app.register(salesReportRoutes);     // 9 sales report endpoints
+await app.register(dispatchSheetRoutes);
+
+await app.register(zoneRoutes);           // zones CRUD
 
 // ── Start Server ──
 try {
