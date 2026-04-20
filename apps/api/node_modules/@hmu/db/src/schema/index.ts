@@ -1,6 +1,9 @@
 // ══════════════════════════════════════════════════════════════════
 // @hmu/db — Schema Barrel Export
 // Import everything from here: import { zones, dealers, orders } from "@hmu/db/schema"
+//
+// Phase 2: Added contractors, batches, batchRoutes, rateCategories, priceChart,
+// cashCustomers, directSales, directSaleItems, gatePassItems, routeSheets
 // ══════════════════════════════════════════════════════════════════
 
 // ── Enums ──
@@ -17,6 +20,10 @@ export {
   deliveryStatusEnum,
   notifChannelEnum,
   settlementStatusEnum,
+  // Phase 2 enums
+  batchStatusEnum,
+  directSaleCustomerTypeEnum,
+  routeSheetStatusEnum,
 } from "./enums.js";
 
 // ── Zones & Time Windows ──
@@ -118,3 +125,39 @@ export {
   systemSettings,
   notificationConfig,
 } from "./settings.js";
+
+// ┌─────────────────────────────────────────┐
+// │   PHASE 2 — Marketing Module             │
+// └─────────────────────────────────────────┘
+
+// ── Contractors ──
+export {
+  contractors,
+  contractorsRelations,
+} from "./contractors.js";
+
+// ── Batches & Batch Routes ──
+export {
+  batches,
+  batchRoutes,
+  batchesRelations,
+  batchRoutesRelations,
+} from "./batches.js";
+
+// ── Rate Categories, Price Chart, Cash Customers, Direct Sales, Route Sheets ──
+export {
+  rateCategories,
+  priceChart,
+  cashCustomers,
+  directSales,
+  directSaleItems,
+  gatePassItems,
+  routeSheets,
+  rateCategoriesRelations,
+  priceChartRelations,
+  cashCustomersRelations,
+  directSalesRelations,
+  directSaleItemsRelations,
+  gatePassItemsRelations,
+  routeSheetsRelations,
+} from "./marketing.js";

@@ -8,48 +8,43 @@ import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/paginat
 
 export async function cancellationRoutes(app: FastifyInstance) {
   // GET /api/v1/cancellations — list all cancellation requests
+  // FIXED #18: Added agent_code, route info, and kept items fetching
   app.get(
     "/api/v1/cancellations",
     { preHandler: [adminAuth, requireRole("orders.view")] },
     async (request, reply) => {
-      const query = paginationSchema.parse(request.query);
-      const offset = offsetFromPage(query.page, query.limit);
-
-      const [rows, [countRow]] = await Promise.all([
-        pgClient`
-          SELECT cr.id, cr.order_id, cr.reason, cr.status, cr.review_note,
-                 cr.created_at, cr.reviewed_at,
-                 d.name AS dealer_name, d.phone AS dealer_phone,
-                 z.name AS zone_name,
-                 o.grand_total, o.item_count, o.status AS order_status
-          FROM cancellation_requests cr
-          JOIN dealers d ON d.id = cr.dealer_id
-          JOIN zones z ON z.id = d.zone_id
-          LEFT JOIN orders o ON o.id = cr.order_id
-          ORDER BY
-            CASE WHEN cr.status = 'pending' THEN 0 ELSE 1 END,
-            cr.created_at DESC
-          LIMIT ${query.limit} OFFSET ${offset}
-        `,
-        pgClient`SELECT count(*)::int AS count FROM cancellation_requests`,
-      ]);
-
-      // Get order items for each cancellation
-      for (const row of rows) {
-        const items = await pgClient`
-          SELECT product_name, quantity FROM order_items WHERE order_id = ${row.order_id}
-        `;
-        (row as any).items = items;
-      }
-
-      return reply.send({
-        data: rows,
-        ...paginationMeta(countRow?.count ?? 0, query.page, query.limit),
-      });
+      const rows = await pgClient`
+      SELECT cr.id, cr.order_id, cr.dealer_id, cr.reason, cr.status,
+             cr.review_note, cr.created_at, cr.reviewed_at,
+             d.name  AS dealer_name,
+             d.code  AS agent_code,
+             d.route_id,
+             r.code  AS route_code,
+             r.name  AS route_name,
+             o.grand_total,
+             o.subtotal, o.total_gst,
+             COALESCE(
+               (SELECT json_agg(json_build_object(
+                  'product_id',   oi.product_id,
+                  'product_name', oi.product_name,
+                  'quantity',     oi.quantity,
+                  'unit_price',   oi.unit_price,
+                  'line_total',   oi.line_total)
+                 ORDER BY oi.product_name)
+                FROM order_items oi WHERE oi.order_id = cr.order_id),
+               '[]'::json
+             ) AS items
+      FROM cancellation_requests cr
+      JOIN dealers d ON d.id = cr.dealer_id
+      LEFT JOIN routes r ON r.id = d.route_id
+      LEFT JOIN orders o ON o.id = cr.order_id
+      ORDER BY cr.created_at DESC
+    `;
+    return reply.send({ data: rows });
     }
   );
 
-  // PATCH /api/v1/cancellations/:id/approve — approve + cancel order + refund wallet
+  // PATCH /api/v1/cancellations/:id/approve — approve + cancel order + refund wallet (unchanged)
   app.patch(
     "/api/v1/cancellations/:id/approve",
     { preHandler: [adminAuth, requireRole("orders.cancel")] },
@@ -105,7 +100,7 @@ export async function cancellationRoutes(app: FastifyInstance) {
     }
   );
 
-  // PATCH /api/v1/cancellations/:id/reject
+  // PATCH /api/v1/cancellations/:id/reject (unchanged)
   app.patch(
     "/api/v1/cancellations/:id/reject",
     { preHandler: [adminAuth, requireRole("orders.cancel")] },

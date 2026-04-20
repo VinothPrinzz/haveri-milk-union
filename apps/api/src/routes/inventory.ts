@@ -11,6 +11,46 @@ export async function inventoryRoutes(app: FastifyInstance) {
     "/api/v1/fgs/overview",
     { preHandler: [adminAuth, requireRole("inventory.view")] },
     async (request, reply) => {
+      const querySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() });
+      const { date } = querySchema.parse(request.query);
+
+      // If date is given, return that day's snapshot from fgs_stock_log,
+      // joined with products (some products may not have an entry that day).
+      if (date) {
+        const stockData = await pgClient`
+          SELECT p.id, p.name, p.icon, p.unit, p.available,
+                 p.low_stock_threshold, p.critical_stock_threshold,
+                 c.name AS category_name,
+                 COALESCE(fsl.opening,    0) AS opening,
+                 COALESCE(fsl.received,   0) AS received,
+                 COALESCE(fsl.dispatched, 0) AS dispatched,
+                 COALESCE(fsl.wastage,    0) AS wastage,
+                 COALESCE(fsl.closing,    p.stock) AS closing,
+                 COALESCE(fsl.closing,    p.stock) AS stock,
+                 ${date}::date AS date,
+                 CASE
+                   WHEN COALESCE(fsl.closing, p.stock) = 0 THEN 'out_of_stock'
+                   WHEN COALESCE(fsl.closing, p.stock) <= p.critical_stock_threshold THEN 'critical'
+                   WHEN COALESCE(fsl.closing, p.stock) <= p.low_stock_threshold THEN 'low'
+                   ELSE 'healthy'
+                 END AS stock_status
+          FROM products p
+          JOIN categories c ON c.id = p.category_id
+          LEFT JOIN fgs_stock_log fsl ON fsl.product_id = p.id AND fsl.date = ${date}::date
+          WHERE p.deleted_at IS NULL
+          ORDER BY p.sort_order
+        `;
+        const summary = {
+          totalProducts: stockData.length,
+          outOfStock: stockData.filter(p => p.stock_status === "out_of_stock").length,
+          critical:   stockData.filter(p => p.stock_status === "critical").length,
+          low:        stockData.filter(p => p.stock_status === "low").length,
+          healthy:    stockData.filter(p => p.stock_status === "healthy").length,
+        };
+        return reply.send({ summary, products: stockData, date });
+      }
+
+      // No date → current stock (existing behaviour).
       const stockData = await pgClient`
         SELECT p.id, p.name, p.icon, p.unit, p.stock, p.available,
                p.low_stock_threshold, p.critical_stock_threshold,
@@ -26,16 +66,14 @@ export async function inventoryRoutes(app: FastifyInstance) {
         WHERE p.deleted_at IS NULL
         ORDER BY p.sort_order
       `;
-
       const summary = {
         totalProducts: stockData.length,
-        outOfStock: stockData.filter((p) => p.stock_status === "out_of_stock").length,
-        critical: stockData.filter((p) => p.stock_status === "critical").length,
-        low: stockData.filter((p) => p.stock_status === "low").length,
-        healthy: stockData.filter((p) => p.stock_status === "healthy").length,
+        outOfStock: stockData.filter(p => p.stock_status === "out_of_stock").length,
+        critical:   stockData.filter(p => p.stock_status === "critical").length,
+        low:        stockData.filter(p => p.stock_status === "low").length,
+        healthy:    stockData.filter(p => p.stock_status === "healthy").length,
       };
-
-      return reply.status(200).send({ summary, products: stockData });
+      return reply.send({ summary, products: stockData });
     }
   );
 

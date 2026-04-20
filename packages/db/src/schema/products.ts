@@ -31,6 +31,19 @@ export const products = pgTable("products", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }), // soft delete
+
+  // === ADD THESE MISSING COLUMNS ===
+  code:                    text("code"),
+  hsnNo:                   text("hsn_no"),
+  packSize:                numeric("pack_size", { precision: 8, scale: 2 }),
+  printDirection:          text("print_direction").default("Across"),
+  packetsCrate:            integer("packets_crate").default(0),
+  reportAlias:             text("report_alias"),
+  retailDealerPrice:       numeric("retail_dealer_price",      { precision: 10, scale: 2 }),
+  creditInstMrpPrice:      numeric("credit_inst_mrp_price",    { precision: 10, scale: 2 }),
+  creditInstDealerPrice:   numeric("credit_inst_dealer_price", { precision: 10, scale: 2 }),
+  parlourDealerPrice:      numeric("parlour_dealer_price",     { precision: 10, scale: 2 }),
+
 });
 
 // ── Price Revisions ──

@@ -10,7 +10,7 @@ import { adminSessions, users } from "@hmu/db/schema";
  * Usage in route: { preHandler: [adminAuth] }
  */
 
-type UserRole = "super_admin" | "manager" | "dispatch_officer" | "accountant" | "call_desk";
+type UserRole = "super_admin" | "manager" | "dispatch_officer" | "accountant" | "call_desk" | "officer";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -107,11 +107,11 @@ export async function adminAuth(
 
 const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // Dashboard — everyone
-  dashboard: ["super_admin", "manager", "dispatch_officer", "accountant", "call_desk"],
+  dashboard: ["super_admin", "manager", "dispatch_officer", "accountant", "call_desk", "officer"],
 
   // Orders
-  "orders.view":   ["super_admin", "manager", "call_desk"],
-  "orders.create": ["super_admin", "call_desk"],
+  "orders.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "orders.create": ["super_admin", "call_desk", "officer"],
   "orders.update": ["super_admin", "manager"],
   "orders.cancel": ["super_admin", "manager"],
 
@@ -128,7 +128,7 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "distribution.manage": ["super_admin", "manager", "dispatch_officer"],
 
   // Dealers
-  "dealers.view":   ["super_admin", "manager", "call_desk"],
+  "dealers.view":   ["super_admin", "manager", "call_desk", "officer"],
   "dealers.manage": ["super_admin", "manager"],
   "dealers.wallet": ["super_admin", "call_desk"],
 
@@ -137,12 +137,41 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "finance.manage": ["super_admin", "accountant"],
 
   // Reports
-  "reports.view": ["super_admin", "manager", "accountant"],
+  "reports.view": ["super_admin", "manager", "dispatch_officer", "accountant"],
 
   // System
   "system.view":   ["super_admin"],
   "system.manage": ["super_admin"],
   "system.users":  ["super_admin"],
+
+  // ── Phase 2 Permissions ──
+
+  // Contractors (Masters → Contractors)
+  "contractors.view":   ["super_admin", "manager", "dispatch_officer"],
+  "contractors.manage": ["super_admin", "manager"],
+
+  // Batches (Masters → Batches)
+  "batches.view":   ["super_admin", "manager", "dispatch_officer"],
+  "batches.manage": ["super_admin", "manager", "dispatch_officer"],
+
+  // Direct Sales (Sales Operations → Gate Pass / Cash Customer)
+  "direct_sales.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "direct_sales.manage": ["super_admin", "manager", "call_desk", "officer"],
+
+  // Price Chart (Masters → Price Chart)
+  "price_chart.view":   ["super_admin", "manager", "accountant", "officer"],
+  "price_chart.manage": ["super_admin", "manager"],
+
+  // Route Sheets (Reports → Route Sheet)
+  "route_sheets.view":   ["super_admin", "manager", "dispatch_officer"],
+  "route_sheets.manage": ["super_admin", "manager", "dispatch_officer"],
+
+  // Sales Reports (9 report types)
+  "sales_reports.view": ["super_admin", "manager", "accountant"],
+
+  // Cash Customers (used by Direct Sales)
+  "cash_customers.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "cash_customers.manage": ["super_admin", "manager", "call_desk", "officer"],
 };
 
 /**
