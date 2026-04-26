@@ -433,7 +433,7 @@ export async function financeRoutes(app: FastifyInstance) {
           const pdfResult = await generateInvoicePdfSync(result!.id);
 
           // Extract the URL from the returned object
-          invoicePdfUrl = pdfResult?.pdfUrl ?? pdfResult?.url ?? null;
+          invoicePdfUrl = pdfResult?.pdfUrl ??  null;
 
           const [inv] = await pgClient`
             SELECT invoice_number FROM invoices WHERE order_id = ${result!.id} LIMIT 1
