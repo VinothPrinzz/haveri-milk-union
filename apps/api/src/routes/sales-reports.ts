@@ -318,7 +318,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
     "/api/v1/reports/sales-reports/cash-sales",
     { preHandler: [adminAuth, requireRole("sales_reports.view")] },
     async (request, reply) => {
-      const q = dateRangeSchema.parse(request.query);
+      const q = dateRangeSchema.parse(request.query) as { from: string; to: string };
       const cfg = await loadReportConfig();
       return reply.send(await buildSalesGrid({ q, cfg, onlyCash: true }));
     }
@@ -331,7 +331,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
     "/api/v1/reports/sales-reports/register",
     { preHandler: [adminAuth, requireRole("sales_reports.view")] },
     async (request, reply) => {
-      const q = dateRangeSchema.parse(request.query);
+      const q = dateRangeSchema.parse(request.query) as { from: string; to: string };
       const cfg = await loadReportConfig();
       return reply.send(await buildSalesGrid({ q, cfg, onlyCash: false }));
     }
