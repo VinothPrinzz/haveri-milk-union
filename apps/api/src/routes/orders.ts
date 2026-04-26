@@ -584,7 +584,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const productRows = productIds.length
         ? await pgClient`SELECT id, name, base_price, gst_percent, stock FROM products WHERE id = ANY(${productIds}::uuid[])`
         : [];
-      const productMap = new Map(productRows.map((p: any) => [p.id, p]));
+      const productMap = new Map<string, any>(productRows.map((p: any) => [p.id, p] as [string, any]));
 
       let newSubtotal = 0, newGst = 0;
       const newLines: any[] = [];
