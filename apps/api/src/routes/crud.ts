@@ -16,7 +16,7 @@ export async function crudRoutes(app: FastifyInstance) {
       const schema = z.object({ name: z.string().min(1), icon: z.string().optional() });
       const body = schema.parse(request.body);
       const maxOrder = await pgClient`SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM categories`;
-      const [cat] = await db.insert(categories).values({ ...body, sortOrder: maxOrder[0]?.next ?? 1 }).returning();
+      const [cat] = await db.insert(categories).values({ name: body.name, icon: body.icon, sortOrder: maxOrder[0]?.next ?? 1 }).returning();
       return reply.status(201).send({ category: cat });
     }
   );
