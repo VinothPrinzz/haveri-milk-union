@@ -6,6 +6,8 @@ import {
   Settings, XCircle, Bell, Image, Shield, UserCog,
   Timer, FileText, BookOpen, Receipt, Zap, CreditCard, Send,
   LayoutList,
+  Plus,
+  Wallet,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent,
@@ -110,6 +112,7 @@ export function AppSidebar() {
                 </NavSection>
                 <NavSection label="Price Chart">
                   <NavItem to="/masters/price-chart" icon={TrendingUp} label="View Price Chart" />
+                  <NavItem to="/masters/price-revisions" icon={TrendingUp} label="Price Revisions" /> 
                 </NavSection>
               </CollapsibleGroup>
 
@@ -128,6 +131,10 @@ export function AppSidebar() {
                   <NavItem to="/sales/direct-sales/modify" icon={ClipboardList} label="Modify Indent" />
                   <NavItem to="/sales/direct-sales/recent" icon={Receipt} label="Recent Sales" />
                 </NavSection>
+                {/* Invoices */}
+                <NavSection label="Invoices">
+                  <NavItem to="/sales/invoices" icon={Receipt} label="All Invoices" />
+                </NavSection>
                 <NavSection label="Cancellations">
                   <NavItem to="/sales/cancellations" icon={XCircle} label="Cancellation Requests" />
                 </NavSection>
@@ -139,6 +146,7 @@ export function AppSidebar() {
                 <NavItem to="/fgs/stock-entry" icon={Warehouse} label="Stock Entry" />
                 <NavItem to="/fgs/reports" icon={FileSpreadsheet} label="Stock Reports" />
                 <NavItem to="/fgs/dispatch-sheet" icon={ClipboardList} label="Dispatch Sheet" />
+                <NavItem to="/fgs/dispatch/create" icon={Plus} label="Create Dispatch" />
               </CollapsibleGroup>
 
               {/* Reports */}
@@ -158,6 +166,12 @@ export function AppSidebar() {
                 <NavItem to="/sales-reports/taluka-agent" icon={FileSpreadsheet} label="Taluka/Agent Wise" />
                 <NavItem to="/sales-reports/adhoc" icon={FileSpreadsheet} label="Adhoc Sales" />
                 <NavItem to="/sales-reports/gst" icon={FileSpreadsheet} label="GST Statement" />
+              </CollapsibleGroup>
+
+              {/* Finance */}
+              <CollapsibleGroup icon={Wallet} label="Finance">
+                <NavItem to="/finance/payments" icon={Wallet} label="Payments Overview" />
+                <NavItem to="/finance/ledger"   icon={BookOpen} label="Dealer Ledger" />
               </CollapsibleGroup>
 
               {/* System */}

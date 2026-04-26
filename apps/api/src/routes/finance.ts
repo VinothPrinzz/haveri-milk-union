@@ -3,6 +3,8 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
+import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
 
 export async function financeRoutes(app: FastifyInstance) {
   // ═══ INVOICES ═══
@@ -13,36 +15,87 @@ export async function financeRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("finance.view")] },
     async (request, reply) => {
       const querySchema = paginationSchema.extend({
-        dealer: z.string().optional(),
-        dateFrom: z.string().optional(),
-        dateTo: z.string().optional(),
+        dealer:        z.string().optional(),
+        dateFrom:      z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        dateTo:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        routeId:       z.string().uuid().optional(),
+        paymentStatus: z.enum(["paid","unpaid","partial"]).optional(),
+        search:        z.string().optional(),  // matches invoice_number too
       });
-      const query = querySchema.parse(request.query);
-      const offset = offsetFromPage(query.page, query.limit);
-      const dealerSearch = query.dealer ? `%${query.dealer}%` : null;
-      const dateFrom = query.dateFrom ?? null;
-      const dateTo = query.dateTo ? query.dateTo + "T23:59:59Z" : null;
-
+      const q = querySchema.parse(request.query);
+      const offset = offsetFromPage(q.page, q.limit);
+   
+      const dealerSearch  = q.dealer ? `%${q.dealer}%` : null;
+      const generalSearch = q.search ? `%${q.search}%` : null;
+      const dateFrom      = q.dateFrom ?? null;
+      const dateTo        = q.dateTo   ? q.dateTo + "T23:59:59Z" : null;
+      const routeId       = q.routeId  ?? null;
+      const status        = q.paymentStatus ?? null;
+   
       const rows = await pgClient`
-        SELECT i.id, i.invoice_number, i.order_id, i.invoice_date, i.taxable_amount,
-               i.cgst, i.sgst, i.total_tax, i.total_amount, i.pdf_url,
-               i.dealer_name, i.dealer_gst_number
+        SELECT
+          i.id,
+          i.invoice_number         AS "invoiceNumber",
+          i.order_id               AS "orderId",
+          i.invoice_date           AS "invoiceDate",
+          i.due_date               AS "dueDate",
+          i.taxable_amount         AS "taxableAmount",
+          i.cgst,
+          i.sgst,
+          i.total_tax              AS "totalTax",
+          i.total_amount           AS "totalAmount",
+          i.paid_amount            AS "paidAmount",
+          i.payment_status         AS "paymentStatus",
+          i.pdf_url                AS "pdfUrl",
+          i.dealer_name            AS "dealerName",
+          i.dealer_gst_number      AS "dealerGstNumber",
+          d.id                     AS "dealerId",
+          d.code                   AS "dealerCode",
+          i.route_id               AS "routeId",
+          r.code                   AS "routeCode",
+          r.name                   AS "routeName",
+          o.payment_mode           AS "paymentMode",
+          o.item_count             AS "itemCount",
+          -- Overdue days: only for unpaid/partial with a due_date in the past
+          CASE
+            WHEN i.payment_status <> 'paid' AND i.due_date IS NOT NULL
+            THEN GREATEST(0, (CURRENT_DATE - i.due_date))
+            ELSE 0
+          END                      AS "overdueDays"
+        FROM invoices i
+        JOIN dealers d       ON d.id = i.dealer_id
+        LEFT JOIN orders o   ON o.id = i.order_id
+        LEFT JOIN routes r   ON r.id = i.route_id
+        WHERE (${dealerSearch}::text  IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
+          AND (${generalSearch}::text IS NULL OR
+               d.name ILIKE ${generalSearch ?? ''} OR
+               i.invoice_number ILIKE ${generalSearch ?? ''})
+          AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
+          AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
+          AND (${routeId}::uuid IS NULL OR i.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
+        ORDER BY i.invoice_date DESC
+        LIMIT ${q.limit} OFFSET ${offset}
+      `;
+   
+      const [countRow] = await pgClient`
+        SELECT count(*)::int AS count
         FROM invoices i
         JOIN dealers d ON d.id = i.dealer_id
-        WHERE (${dealerSearch}::text IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
+        WHERE (${dealerSearch}::text  IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
+          AND (${generalSearch}::text IS NULL OR
+               d.name ILIKE ${generalSearch ?? ''} OR
+               i.invoice_number ILIKE ${generalSearch ?? ''})
           AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
-          AND (${dateTo}::timestamptz IS NULL OR i.invoice_date <= ${dateTo ?? '2099-12-31'}::timestamptz)
-        ORDER BY i.invoice_date DESC
-        LIMIT ${query.limit} OFFSET ${offset}
+          AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
+          AND (${routeId}::uuid IS NULL OR i.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
       `;
-      const [countRow] = await pgClient`
-        SELECT count(*)::int AS count FROM invoices i
-        JOIN dealers d ON d.id = i.dealer_id
-        WHERE (${dealerSearch}::text IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
-          AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
-          AND (${dateTo}::timestamptz IS NULL OR i.invoice_date <= ${dateTo ?? '2099-12-31'}::timestamptz)
-      `;
-      return reply.send({ data: rows, ...paginationMeta(countRow?.count ?? 0, query.page, query.limit) });
+   
+      return reply.send({
+        data: rows,
+        ...paginationMeta(countRow?.count ?? 0, q.page, q.limit),
+      });
     }
   );
 
@@ -52,18 +105,97 @@ export async function financeRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("finance.view")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+   
       const [invoice] = await pgClient`
-        SELECT i.*, o.status AS order_status, o.payment_mode, o.item_count
+        SELECT
+          i.id,
+          i.invoice_number      AS "invoiceNumber",
+          i.order_id            AS "orderId",
+          i.invoice_date        AS "invoiceDate",
+          i.due_date            AS "dueDate",
+          i.taxable_amount      AS "taxableAmount",
+          i.cgst,
+          i.sgst,
+          i.total_tax           AS "totalTax",
+          i.total_amount        AS "totalAmount",
+          i.paid_amount         AS "paidAmount",
+          i.payment_status      AS "paymentStatus",
+          i.pdf_url             AS "pdfUrl",
+          i.dealer_name         AS "dealerName",
+          i.dealer_gst_number   AS "dealerGstNumber",
+          i.dealer_address      AS "dealerAddressSnapshot",
+          i.route_id            AS "routeId",
+          o.status              AS "orderStatus",
+          o.payment_mode        AS "paymentMode",
+          o.item_count          AS "itemCount",
+          o.subtotal            AS "orderSubtotal",
+          o.total_gst           AS "orderTotalGst",
+          o.grand_total         AS "orderGrandTotal",
+          -- Dealer block (live, not snapshot — use dealer_* fields on
+          -- invoice itself for GST number / name at invoice time)
+          d.id                  AS "dealerId",
+          d.code                AS "dealerCode",
+          d.name                AS "currentDealerName",
+          d.phone               AS "dealerPhone",
+          d.gst_number          AS "dealerCurrentGst",
+          d.address             AS "dealerAddress",
+          d.city                AS "dealerCity",
+          d.state               AS "dealerState",
+          d.pin_code            AS "dealerPincode",
+          -- Route block
+          r.code                AS "routeCode",
+          r.name                AS "routeName"
         FROM invoices i
-        JOIN orders o ON o.id = i.order_id
-        WHERE i.id = ${id} LIMIT 1
+        JOIN dealers d     ON d.id = i.dealer_id
+        LEFT JOIN orders o ON o.id = i.order_id
+        LEFT JOIN routes r ON r.id = i.route_id
+        WHERE i.id = ${id}
+        LIMIT 1
       `;
       if (!invoice) return reply.status(404).send({ error: "Invoice not found" });
+   
+      // Line items with HSN + pack size from products (fallbacks for
+      // products that have been soft-deleted since the order).
       const items = await pgClient`
-        SELECT product_name, quantity, unit_price, gst_percent, gst_amount, line_total
-        FROM order_items WHERE order_id = ${invoice.order_id} ORDER BY product_name
+        SELECT
+          oi.product_id     AS "productId",
+          oi.product_name   AS "productName",
+          COALESCE(p.hsn_no, '')      AS "hsnNo",
+          COALESCE(p.pack_size::text, '') AS "packSize",
+          oi.quantity,
+          oi.unit_price     AS "unitPrice",
+          oi.gst_percent    AS "gstPercent",
+          -- CGST/SGST split = half each of total GST
+          (oi.gst_amount / 2)::numeric(10,2) AS "cgstAmount",
+          (oi.gst_amount / 2)::numeric(10,2) AS "sgstAmount",
+          (oi.gst_percent / 2)::numeric(5,2) AS "cgstPercent",
+          (oi.gst_percent / 2)::numeric(5,2) AS "sgstPercent",
+          oi.gst_amount     AS "gstAmount",
+          oi.line_total     AS "lineTotal",
+          -- Basic = line subtotal before GST
+          (oi.quantity * oi.unit_price)::numeric(10,2) AS "basic"
+        FROM order_items oi
+        LEFT JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ${(invoice as any).orderId}
+        ORDER BY oi.product_name
       `;
-      return reply.send({ invoice, items });
+   
+      // Payments recorded against this invoice (may be empty).
+      const payments = await pgClient`
+        SELECT
+          id,
+          received_date    AS "receivedDate",
+          amount,
+          mode,
+          reference,
+          notes,
+          created_at       AS "createdAt"
+        FROM payments
+        WHERE invoice_id = ${id}
+        ORDER BY received_date DESC, created_at DESC
+      `;
+   
+      return reply.send({ invoice, items, payments });
     }
   );
 
@@ -186,7 +318,7 @@ export async function financeRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const schema = z.object({ dateFrom: z.string().optional(), dateTo: z.string().optional() });
       const query = schema.parse(request.query);
-      const targetDate = query.dateFrom || new Date().toISOString().split("T")[0];
+      const targetDate = (query.dateFrom ?? new Date().toISOString().split("T")[0]) as string;
 
       const rows = await pgClient`
         SELECT p.id, p.name, p.icon, c.name AS category_name,
@@ -238,7 +370,15 @@ export async function financeRoutes(app: FastifyInstance) {
         const price = parseFloat(product.base_price), gstPct = parseFloat(product.gst_percent);
         const lineSub = price * item.quantity, lineGst = lineSub * (gstPct / 100);
         subtotal += lineSub; totalGst += lineGst;
-        orderItemsData.push({ productId: item.productId, productName: product.name, quantity: item.quantity, unitPrice: price.toFixed(2), gstPercent: gstPct.toFixed(2), gstAmount: lineGst.toFixed(2), lineTotal: (lineSub + lineGst).toFixed(2) });
+        orderItemsData.push({ 
+          productId: item.productId, 
+          productName: product.name, 
+          quantity: item.quantity, 
+          unitPrice: price.toFixed(2), 
+          gstPercent: gstPct.toFixed(2), 
+          gstAmount: lineGst.toFixed(2), 
+          lineTotal: (lineSub + lineGst).toFixed(2) 
+        });
       }
       const grandTotal = subtotal + totalGst;
 
@@ -267,7 +407,53 @@ export async function financeRoutes(app: FastifyInstance) {
           }
           return order;
         });
-        return reply.status(201).send({ message: "Order placed successfully", order: { id: result!.id, grandTotal: grandTotal.toFixed(2), itemCount: orderItemsData.length } });
+
+        // ── Auto-generate GST Invoice + Push Notification ──
+        try {
+          await enqueuePDFInvoice(result.id);
+        } catch (err) {
+          console.warn("[orders] PDF enqueue failed:", err);
+        }
+
+        try {
+          await enqueuePushNotification({
+            event: "order.confirmed",
+            dealerId: body.dealerId,
+            orderId: result.id,
+          });
+        } catch (err) {
+          console.warn("[orders] Push enqueue failed:", err);
+        }
+
+        // === SYNCHRONOUS INVOICE GENERATION (as requested) ===
+        let invoiceNumber: string | null = null;
+        let invoicePdfUrl: string | null = null;
+
+        try {
+          const pdfResult = await generateInvoicePdfSync(result!.id);
+
+          // Extract the URL from the returned object
+          invoicePdfUrl = pdfResult?.pdfUrl ?? pdfResult?.url ?? null;
+
+          const [inv] = await pgClient`
+            SELECT invoice_number FROM invoices WHERE order_id = ${result!.id} LIMIT 1
+          `;
+          invoiceNumber = inv?.invoice_number ?? null;
+        } catch (err) {
+          console.error("[admin-place] Invoice generation failed:", err);
+          // Order still succeeds
+        }
+
+        return reply.status(201).send({ 
+          message: "Order placed successfully", 
+          order: { 
+            id: result!.id, 
+            grandTotal: grandTotal.toFixed(2), 
+            itemCount: orderItemsData.length 
+          },
+          invoiceNumber,
+          invoicePdfUrl
+        });
       } catch (err) {
         if (body.paymentMode === "wallet") {
           await pgClient`UPDATE dealer_wallets SET balance = balance + ${grandTotal.toFixed(2)}::numeric, updated_at = now() WHERE dealer_id = ${body.dealerId}`;
@@ -328,6 +514,267 @@ export async function financeRoutes(app: FastifyInstance) {
   );
 
   // ═══ PAYMENT OVERVIEW ═══
+
+  // ┌─────────────────────────────────────────────────┐
+  // │   GET /api/v1/payments                            │
+  // │   Payments Overview list                          │
+  // └─────────────────────────────────────────────────┘
+  app.get(
+    "/api/v1/payments",
+    { preHandler: [adminAuth, requireRole("finance.view")] },
+    async (request, reply) => {
+      const querySchema = paginationSchema.extend({
+        dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        dateTo:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        mode:     z.enum(["cash","upi","cheque","neft","rtgs","credit","wallet"]).optional(),
+        dealerId: z.string().uuid().optional(),
+        search:   z.string().optional(),  // dealer name OR invoice number OR reference
+      });
+      const q = querySchema.parse(request.query);
+      const offset = offsetFromPage(q.page, q.limit);
+  
+      const dateFrom = q.dateFrom ?? null;
+      const dateTo   = q.dateTo   ?? null;
+      const mode     = q.mode     ?? null;
+      const dealerId = q.dealerId ?? null;
+      const search   = q.search ? `%${q.search}%` : null;
+  
+      // Column order in the SELECT matches the UI spec:
+      // Received date → Overdue → Customer → Mode → Reference → Amount → Invoice No.
+      const rows = await pgClient`
+        SELECT
+          p.id,
+          p.received_date                    AS "receivedDate",
+          CASE
+            WHEN i.due_date IS NOT NULL AND i.payment_status <> 'paid'
+            THEN GREATEST(0, (p.received_date - i.due_date))
+            ELSE 0
+          END                                AS "overdueDays",
+          d.id                               AS "dealerId",
+          d.name                             AS "dealerName",
+          d.code                             AS "dealerCode",
+          p.mode,
+          p.reference,
+          p.amount,
+          p.invoice_id                       AS "invoiceId",
+          i.invoice_number                   AS "invoiceNumber",
+          p.notes,
+          u.name                             AS "receivedByName",
+          p.created_at                       AS "createdAt"
+        FROM payments p
+        JOIN dealers d        ON d.id = p.dealer_id
+        LEFT JOIN invoices i  ON i.id = p.invoice_id
+        LEFT JOIN users u     ON u.id = p.received_by
+        WHERE (${dateFrom}::date IS NULL OR p.received_date >= ${dateFrom ?? '1970-01-01'}::date)
+          AND (${dateTo}::date   IS NULL OR p.received_date <= ${dateTo   ?? '9999-12-31'}::date)
+          AND (${mode}::text     IS NULL OR p.mode = ${mode ?? 'cash'})
+          AND (${dealerId}::uuid IS NULL OR p.dealer_id = ${dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${search}::text   IS NULL OR
+              d.name ILIKE ${search ?? ''} OR
+              i.invoice_number ILIKE ${search ?? ''} OR
+              p.reference ILIKE ${search ?? ''})
+        ORDER BY p.received_date DESC, p.created_at DESC
+        LIMIT ${q.limit} OFFSET ${offset}
+      `;
+  
+      const [countRow] = await pgClient`
+        SELECT count(*)::int AS count
+        FROM payments p
+        JOIN dealers d        ON d.id = p.dealer_id
+        LEFT JOIN invoices i  ON i.id = p.invoice_id
+        WHERE (${dateFrom}::date IS NULL OR p.received_date >= ${dateFrom ?? '1970-01-01'}::date)
+          AND (${dateTo}::date   IS NULL OR p.received_date <= ${dateTo   ?? '9999-12-31'}::date)
+          AND (${mode}::text     IS NULL OR p.mode = ${mode ?? 'cash'})
+          AND (${dealerId}::uuid IS NULL OR p.dealer_id = ${dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${search}::text   IS NULL OR
+              d.name ILIKE ${search ?? ''} OR
+              i.invoice_number ILIKE ${search ?? ''} OR
+              p.reference ILIKE ${search ?? ''})
+      `;
+  
+      // Summary for the page header strip.
+      const [summary] = await pgClient`
+        SELECT
+          COALESCE(SUM(p.amount), 0)::numeric AS total_received,
+          COUNT(*)::int                        AS total_count,
+          COALESCE(SUM(CASE WHEN p.received_date = CURRENT_DATE
+                            THEN p.amount ELSE 0 END), 0)::numeric AS received_today
+        FROM payments p
+        WHERE (${dateFrom}::date IS NULL OR p.received_date >= ${dateFrom ?? '1970-01-01'}::date)
+          AND (${dateTo}::date   IS NULL OR p.received_date <= ${dateTo   ?? '9999-12-31'}::date)
+          AND (${mode}::text     IS NULL OR p.mode = ${mode ?? 'cash'})
+          AND (${dealerId}::uuid IS NULL OR p.dealer_id = ${dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+      `;
+  
+      return reply.send({
+        data: rows,
+        summary: {
+          totalReceived:  parseFloat(summary?.total_received  ?? '0'),
+          totalCount:     summary?.total_count ?? 0,
+          receivedToday:  parseFloat(summary?.received_today  ?? '0'),
+        },
+        ...paginationMeta(countRow?.count ?? 0, q.page, q.limit),
+      });
+    }
+  );
+  
+  
+  // ┌─────────────────────────────────────────────────┐
+  // │   POST /api/v1/payments                           │
+  // │   Record a payment receipt                        │
+  // └─────────────────────────────────────────────────┘
+  app.post(
+    "/api/v1/payments",
+    { preHandler: [adminAuth, requireRole("finance.manage")] },
+    async (request, reply) => {
+      const schema = z.object({
+        dealerId:     z.string().uuid(),
+        amount:       z.number().positive(),
+        mode:         z.enum(["cash","upi","cheque","neft","rtgs","credit","wallet"]),
+        receivedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        invoiceId:    z.string().uuid().optional().nullable(),
+        reference:    z.string().optional(),
+        notes:        z.string().optional(),
+      });
+      const body = schema.parse(request.body);
+      const receivedDate = body.receivedDate ?? new Date().toISOString().slice(0, 10);
+  
+      // Validate dealer + fetch wallet balance (for ledger balance_after).
+      const [dealer] = await pgClient`
+        SELECT d.id, d.name, COALESCE(w.balance, 0)::numeric AS wallet_balance
+        FROM dealers d
+        LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
+        WHERE d.id = ${body.dealerId} AND d.deleted_at IS NULL
+        LIMIT 1
+      `;
+      if (!dealer) return reply.status(404).send({ error: "Dealer not found" });
+  
+      // If invoice_id was given, validate it belongs to this dealer.
+      let invoice: any = null;
+      if (body.invoiceId) {
+        const [row] = await pgClient`
+          SELECT id, dealer_id, total_amount, paid_amount, payment_status, invoice_number
+          FROM invoices WHERE id = ${body.invoiceId} LIMIT 1
+        `;
+        if (!row) return reply.status(404).send({ error: "Invoice not found" });
+        if (row.dealer_id !== body.dealerId) {
+          return reply.status(400).send({ error: "Invoice does not belong to this dealer" });
+        }
+        invoice = row;
+      }
+  
+      try {
+        const result = await pgClient.begin(async (tx) => {
+          // (a) Insert payment row.
+          const [payment] = await tx`
+            INSERT INTO payments (
+              dealer_id, received_date, amount, mode, reference,
+              invoice_id, received_by, notes
+            ) VALUES (
+              ${body.dealerId},
+              ${receivedDate}::date,
+              ${body.amount.toFixed(2)}::numeric,
+              ${body.mode},
+              ${body.reference ?? null},
+              ${body.invoiceId ?? null}::uuid,
+              ${request.admin!.userId}::uuid,
+              ${body.notes ?? null}
+            )
+            RETURNING id, received_date, amount, mode
+          `;
+  
+          // (b) Append to dealer_ledger. voucher_type='Receipt'.
+          // reference_type must be a ledger_ref_type enum value —
+          // 'wallet_topup' for wallet-mode receipts (updates wallet),
+          // 'adjustment' for everything else (on-account credits that
+          // don't touch the wallet but do move dealer balance).
+          const ledgerRefType =
+            body.mode === "wallet" ? "wallet_topup" : "adjustment";
+  
+          // For wallet-mode receipts, also credit the wallet (keeps
+          // parity with existing wallet top-up flow).
+          let balanceAfter = parseFloat(dealer.wallet_balance);
+          if (body.mode === "wallet") {
+            const [w] = await tx`
+              UPDATE dealer_wallets SET
+                balance = balance + ${body.amount.toFixed(2)}::numeric,
+                last_topup_at = now(),
+                last_topup_amount = ${body.amount.toFixed(2)}::numeric,
+                updated_at = now()
+              WHERE dealer_id = ${body.dealerId}
+              RETURNING balance
+            `;
+            if (w) balanceAfter = parseFloat(w.balance);
+          } else {
+            // For non-wallet receipts, the balance_after tracks the
+            // dealer's running outstanding-vs-credit balance, not the
+            // wallet. We store it as the wallet balance unchanged, and
+            // the ledger reader uses the voucher-based running total
+            // separately (see /ledger endpoint, which derives running
+            // balance from ordered credits/debits — not from this
+            // field — once voucher_type is present).
+          }
+  
+          const voucherNo = invoice?.invoice_number
+            ? `RC-${invoice.invoice_number}-${new Date(receivedDate).getTime().toString().slice(-6)}`
+            : `RC-${payment.id.slice(0, 8).toUpperCase()}`;
+  
+          const particulars = invoice
+            ? `Payment against ${invoice.invoice_number} (${body.mode.toUpperCase()})`
+            : `On-account receipt (${body.mode.toUpperCase()})`;
+  
+          await tx`
+            INSERT INTO dealer_ledger (
+              dealer_id, type, amount,
+              reference_id, reference_type,
+              description, balance_after,
+              performed_by,
+              voucher_no, voucher_type, particulars, voucher_date
+            ) VALUES (
+              ${body.dealerId},
+              'credit',
+              ${body.amount.toFixed(2)}::numeric,
+              ${payment.id}::uuid,
+              ${ledgerRefType}::ledger_ref_type,
+              ${particulars},
+              ${balanceAfter.toFixed(2)}::numeric,
+              ${request.admin!.userId}::uuid,
+              ${voucherNo},
+              'Receipt',
+              ${particulars},
+              ${receivedDate}::date
+            )
+          `;
+  
+          // (c) Update invoice payment_status if linked.
+          if (invoice) {
+            const newPaid = parseFloat(invoice.paid_amount) + body.amount;
+            const newStatus =
+              newPaid >= parseFloat(invoice.total_amount) ? 'paid'
+            : newPaid > 0                                 ? 'partial'
+            :                                               'unpaid';
+
+            await tx`
+              UPDATE invoices SET
+                paid_amount    = ${newPaid.toFixed(2)}::numeric,
+                payment_status = ${newStatus}
+              WHERE id = ${body.invoiceId!}::uuid          -- ← Fixed here
+            `;
+          }
+  
+          return { payment, voucherNo };
+        });
+  
+        return reply.status(201).send({
+          message: "Payment recorded",
+          ...result,
+        });
+      } catch (err) {
+        request.log.error(err, "Record payment failed");
+        throw err;
+      }
+    }
+  );
 
   // GET /api/v1/payments/overview
   app.get(

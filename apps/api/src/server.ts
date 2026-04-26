@@ -17,6 +17,7 @@ import { financeRoutes } from "./routes/finance.js";
 import { crudRoutes } from "./routes/crud.js";
 import { systemRoutes } from "./routes/system.js";
 import { dealerAppRoutes } from "./routes/dealer-app.js";
+import { dealerNotificationsRoutes } from "./routes/dealer-notifications.js";
 
 // Route modules — Phase 2
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -117,6 +118,9 @@ await app.register(routeSheetRoutes);      // route sheet generation + managemen
 await app.register(reportsRoutes);           // Route Sheet + Gate Pass Report
 await app.register(salesReportRoutes);     // 9 sales report endpoints
 await app.register(dispatchSheetRoutes);
+
+// dealer notification
+await app.register(dealerNotificationsRoutes);
 
 await app.register(zoneRoutes);           // zones CRUD
 

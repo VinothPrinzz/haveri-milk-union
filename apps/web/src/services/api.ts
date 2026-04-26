@@ -1253,6 +1253,440 @@ export const fetchMarketingSettings = async (): Promise<MarketingSettings> => {
 };
 
 // ══════════════════════════════════════
+// DISPATCH SHEET (revamp)
+// ══════════════════════════════════════
+ 
+export interface DispatchSheetItem {
+  productId:       string;
+  productName:     string;
+  category:        string;
+  unit:            string;
+  packSize:        number | null;
+  totalPackets:    number;
+  packetsPerCrate: number;
+  crates:          number;
+  loosePackets:    number;
+}
+ 
+export interface DispatchSheetRoute {
+  routeId:        string;
+  routeCode:      string;
+  routeName:      string;
+  contractorName: string | null;
+  vehicleNumber:  string | null;
+  driverName:     string | null;
+  dispatchTime:   string | null;   // "HH:MM:SS"
+  status:         "pending" | "loading" | "dispatched" | "delivered";
+  assignmentId:   string | null;
+  dealerCount:    number;
+  lineCount:      number;
+  totalAmount:    number;
+  items:          DispatchSheetItem[];
+  totals:         { packets: number; crates: number };
+}
+ 
+export interface DispatchSheetResponse {
+  date: string;                   // "YYYY-MM-DD"
+  summary: {
+    totalItems:   number;
+    totalPackets: number;
+    totalCrates:  number;
+    totalRoutes:  number;
+  };
+  routes: DispatchSheetRoute[];
+}
+ 
+export const fetchDispatchSheet = async (filters?: {
+  date?: string;
+  routeId?: string;
+  batchId?: string;
+}): Promise<DispatchSheetResponse> => {
+  const params: Record<string, string | undefined> = {};
+  if (filters?.date)    params.date    = filters.date;
+  if (filters?.routeId) params.routeId = filters.routeId;
+  if (filters?.batchId) params.batchId = filters.batchId;
+  return await get<DispatchSheetResponse>("/dispatch-sheet", params);
+};
+ 
+export const createDispatch = async (body: {
+  date: string;                   // "YYYY-MM-DD"
+  routeId: string;
+  batchId?: string | null;
+  dispatchTime?: string | null;   // "HH:MM"
+  vehicleNumber?: string | null;
+  driverName?: string | null;
+  driverPhone?: string | null;
+  notes?: string | null;
+  indentIds: string[];
+}) => {
+  return await post<{
+    message: string;
+    assignment: Record<string, unknown>;
+    confirmedCount: number;
+    totals: { dealerCount: number; itemCount: number; totalAmount: number };
+  }>("/dispatch/create", body);
+};
+ 
+export const markRouteDispatched = async (body: {
+  routeId: string;
+  date: string;
+}) => {
+  return await post<{
+    message: string;
+    assignment: Record<string, unknown>;
+    dispatchedOrderCount: number;
+  }>("/dispatch-sheet/mark-dispatched", body);
+};
+ 
+ 
+// ══════════════════════════════════════
+// PRICE REVISIONS
+// ══════════════════════════════════════
+ 
+export interface PriceRevisionRow {
+  id:             string;
+  productId:      string;
+  productCode:    string;
+  productName:    string;
+  unit:           string;
+  oldPrice:       string;       // keep as string — numeric(10,2)
+  newPrice:       string;
+  oldGst:         string;
+  newGst:         string;
+  effectiveFrom:  string;       // "YYYY-MM-DD"
+  reason:         string | null;
+  changedBy:      string | null;
+  changedByName:  string | null;
+  createdAt:      string;
+}
+ 
+export interface ProductWithPricing {
+  id:                     string;
+  code:                   string | null;
+  name:                   string;
+  unit:                   string;
+  packSize:               string | null;
+  hsnNo:                  string | null;
+  basePrice:              string;
+  gstPercent:             string;
+  categoryId:             string;
+  categoryName:           string;
+  retailDealerPrice:      string;
+  creditInstMrpPrice:     string;
+  creditInstDealerPrice:  string;
+  parlourDealerPrice:     string;
+  sortOrder:              number;
+  lastRevisedAt:          string | null;
+}
+ 
+export const fetchPriceRevisions = async (filters?: {
+  productId?: string;
+  dateFrom?:  string;
+  dateTo?:    string;
+  page?:      number;
+  limit?:     number;
+}) => {
+  const params: Record<string, string | number | undefined> = {
+    page:  filters?.page  ?? 1,
+    limit: filters?.limit ?? 50,
+  };
+  if (filters?.productId) params.productId = filters.productId;
+  if (filters?.dateFrom)  params.dateFrom  = filters.dateFrom;
+  if (filters?.dateTo)    params.dateTo    = filters.dateTo;
+  return await get<{
+    data: PriceRevisionRow[];
+    total: number; page: number; limit: number; totalPages: number;
+  }>("/price-revisions", params);
+};
+ 
+export const fetchProductsWithPricing = async () => {
+  const data = await get<{ data: ProductWithPricing[] }>("/products/with-pricing");
+  return data.data ?? [];
+};
+ 
+export const createPriceRevisions = async (body: {
+  revisions: Array<{
+    productId:     string;
+    newPrice:      number | string;
+    newGstPercent?: number | string;
+    effectiveFrom?: string;       // "YYYY-MM-DD"
+  }>;
+  reason?: string;
+}) => {
+  return await post<{
+    message: string;
+    results: Array<{ productId: string; oldPrice: string; newPrice: string }>;
+  }>("/price-revisions", body);
+};
+ 
+ 
+// ══════════════════════════════════════
+// INVOICES v2
+// ══════════════════════════════════════
+ 
+export interface InvoiceListRow {
+  id:               string;
+  invoiceNumber:    string;
+  orderId:          string;
+  invoiceDate:      string;
+  dueDate:          string | null;
+  taxableAmount:    string;
+  cgst:             string;
+  sgst:             string;
+  totalTax:         string;
+  totalAmount:      string;
+  paidAmount:       string;
+  paymentStatus:    "paid" | "unpaid" | "partial";
+  pdfUrl:           string | null;
+  dealerId:         string;
+  dealerName:       string;
+  dealerCode:       string | null;
+  dealerGstNumber:  string | null;
+  routeId:          string | null;
+  routeCode:        string | null;
+  routeName:        string | null;
+  paymentMode:      string | null;
+  itemCount:        number;
+  overdueDays:      number;
+}
+ 
+export interface InvoiceDetailItem {
+  productId:    string;
+  productName:  string;
+  hsnNo:        string;
+  packSize:     string;
+  quantity:     number;
+  unitPrice:    string;
+  gstPercent:   string;
+  cgstAmount:   string;
+  sgstAmount:   string;
+  cgstPercent:  string;
+  sgstPercent:  string;
+  gstAmount:    string;
+  lineTotal:    string;
+  basic:        string;
+}
+ 
+export interface InvoiceDetail {
+  invoice: {
+    id:                    string;
+    invoiceNumber:         string;
+    orderId:               string;
+    invoiceDate:           string;
+    dueDate:               string | null;
+    taxableAmount:         string;
+    cgst:                  string;
+    sgst:                  string;
+    totalTax:              string;
+    totalAmount:           string;
+    paidAmount:            string;
+    paymentStatus:         "paid" | "unpaid" | "partial";
+    pdfUrl:                string | null;
+    dealerName:            string;
+    dealerGstNumber:       string | null;
+    dealerAddressSnapshot: string | null;
+    routeId:               string | null;
+    orderStatus:           string | null;
+    paymentMode:           string | null;
+    itemCount:             number | null;
+    orderSubtotal:         string | null;
+    orderTotalGst:         string | null;
+    orderGrandTotal:       string | null;
+    dealerId:              string;
+    dealerCode:            string | null;
+    currentDealerName:     string;
+    dealerPhone:           string | null;
+    dealerCurrentGst:      string | null;
+    dealerAddress:         string | null;
+    dealerCity:            string | null;
+    dealerState:           string | null;
+    dealerPincode:         string | null;
+    routeCode:             string | null;
+    routeName:             string | null;
+  };
+  items: InvoiceDetailItem[];
+  payments: Array<{
+    id:           string;
+    receivedDate: string;
+    amount:       string;
+    mode:         string;
+    reference:    string | null;
+    notes:        string | null;
+    createdAt:    string;
+  }>;
+}
+ 
+export const fetchInvoicesList = async (filters?: {
+  dealer?:        string;
+  dateFrom?:      string;
+  dateTo?:        string;
+  routeId?:       string;
+  paymentStatus?: "paid" | "unpaid" | "partial";
+  search?:        string;
+  page?:          number;
+  limit?:         number;
+}) => {
+  const params: Record<string, string | number | undefined> = {
+    page:  filters?.page  ?? 1,
+    limit: filters?.limit ?? 50,
+  };
+  if (filters?.dealer)        params.dealer        = filters.dealer;
+  if (filters?.dateFrom)      params.dateFrom      = filters.dateFrom;
+  if (filters?.dateTo)        params.dateTo        = filters.dateTo;
+  if (filters?.routeId)       params.routeId       = filters.routeId;
+  if (filters?.paymentStatus) params.paymentStatus = filters.paymentStatus;
+  if (filters?.search)        params.search        = filters.search;
+  return await get<{
+    data: InvoiceListRow[];
+    total: number; page: number; limit: number; totalPages: number;
+  }>("/invoices", params);
+};
+ 
+export const fetchInvoiceById = async (id: string) => {
+  return await get<InvoiceDetail>(`/invoices/${id}`);
+};
+ 
+ 
+// ══════════════════════════════════════
+// PAYMENTS
+// ══════════════════════════════════════
+ 
+export type PaymentMode =
+  | "cash" | "upi" | "cheque" | "neft" | "rtgs" | "credit" | "wallet";
+ 
+export interface PaymentRow {
+  id:              string;
+  receivedDate:    string;
+  overdueDays:     number;
+  dealerId:        string;
+  dealerName:      string;
+  dealerCode:      string | null;
+  mode:            PaymentMode;
+  reference:       string | null;
+  amount:          string;
+  invoiceId:       string | null;
+  invoiceNumber:   string | null;
+  notes:           string | null;
+  receivedByName:  string | null;
+  createdAt:       string;
+}
+ 
+export interface PaymentsResponse {
+  data: PaymentRow[];
+  summary: {
+    totalReceived: number;
+    totalCount:    number;
+    receivedToday: number;
+  };
+  total: number; page: number; limit: number; totalPages: number;
+}
+ 
+export const fetchPayments = async (filters?: {
+  dateFrom?: string;
+  dateTo?:   string;
+  mode?:     PaymentMode;
+  dealerId?: string;
+  search?:   string;
+  page?:     number;
+  limit?:    number;
+}) => {
+  const params: Record<string, string | number | undefined> = {
+    page:  filters?.page  ?? 1,
+    limit: filters?.limit ?? 50,
+  };
+  if (filters?.dateFrom) params.dateFrom = filters.dateFrom;
+  if (filters?.dateTo)   params.dateTo   = filters.dateTo;
+  if (filters?.mode)     params.mode     = filters.mode;
+  if (filters?.dealerId) params.dealerId = filters.dealerId;
+  if (filters?.search)   params.search   = filters.search;
+  return await get<PaymentsResponse>("/payments", params);
+};
+ 
+export const recordPayment = async (body: {
+  dealerId:      string;
+  amount:        number;
+  mode:          PaymentMode;
+  receivedDate?: string;
+  invoiceId?:    string | null;
+  reference?:    string;
+  notes?:        string;
+}) => {
+  return await post<{
+    message: string;
+    payment: Record<string, unknown>;
+    voucherNo: string;
+  }>("/payments", body);
+};
+ 
+ 
+// ══════════════════════════════════════
+// DEALER LEDGER v2
+// ══════════════════════════════════════
+ 
+export interface LedgerRow {
+  id:             string;
+  type:           "credit" | "debit";
+  amount:         string;
+  referenceId:    string | null;
+  referenceType:  string | null;
+  description:    string | null;
+  voucherNo:      string | null;
+  voucherType:    "Invoice" | "Receipt" | "Adjustment" | "Opening" | "Refund" | null;
+  particulars:    string | null;
+  voucherDate:    string | null;
+  createdAt:      string;
+  storedBalance:  string;        // balance_after snapshot at insert time
+  running_delta:  string;        // computed cumulative (window fn, filtered range)
+}
+ 
+export interface LedgerSummary {
+  dealer: { id: string; name: string; code: string | null };
+  period: { from: string | null; to: string | null };
+  summary: {
+    openingBalance:  number;
+    totalDebits:     number;
+    totalCredits:    number;
+    closingBalance:  number;
+    creditLimit:     number;
+    availableCredit: number;
+  };
+}
+ 
+export const fetchDealerLedger = async (
+  dealerId: string,
+  filters?: {
+    from?:  string;
+    to?:    string;
+    page?:  number;
+    limit?: number;
+  }
+) => {
+  const params: Record<string, string | number | undefined> = {
+    page:  filters?.page  ?? 1,
+    limit: filters?.limit ?? 100,
+  };
+  if (filters?.from) params.from = filters.from;
+  if (filters?.to)   params.to   = filters.to;
+  return await get<{
+    data: LedgerRow[];
+    total: number; page: number; limit: number; totalPages: number;
+  }>(`/dealers/${dealerId}/ledger`, params);
+};
+ 
+export const fetchDealerLedgerSummary = async (
+  dealerId: string,
+  filters?: { from?: string; to?: string }
+) => {
+  const params: Record<string, string | undefined> = {};
+  if (filters?.from) params.from = filters.from;
+  if (filters?.to)   params.to   = filters.to;
+  return await get<LedgerSummary>(
+    `/dealers/${dealerId}/ledger/summary`,
+    params
+  );
+};
+
+// ══════════════════════════════════════
 // STATIC HELPERS
 // ══════════════════════════════════════
 export const getOfficers = () => [

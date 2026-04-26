@@ -25,8 +25,14 @@ import StockEntryPage from "@/pages/fgs/StockEntryPage";
 import StockReportsPage from "@/pages/fgs/StockReportsPage";
 import DispatchPage from "@/pages/fgs/DispatchPage";
 import DispatchSheetPage from "@/pages/fgs/DispatchSheetPage";
+import CreateDispatchPage from "@/pages/fgs/CreateDispatchPage";
 import RouteSheetPage from "@/pages/reports/RouteSheetPage";
 import GatePassReportPage from "@/pages/reports/GatePassReportPage";
+import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
+import InvoicesListPage from "@/pages/sales/InvoicesListPage";
+import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
+import PaymentsOverviewPage from "@/pages/finance/PaymentsOverviewPage";
+import DealerLedgerPage     from "@/pages/finance/DealerLedgerPage"; 
 import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
@@ -91,6 +97,7 @@ function AppInner() {
           <Route path="/masters/products/add" element={<ProductsPage tab="add" />} />
           <Route path="/masters/products/rates" element={<ProductsPage tab="rates" />} />
           <Route path="/masters/price-chart" element={<PriceChartPage />} />
+          <Route path="/masters/price-revisions"  element={<PriceRevisionsPage />} />
           {/* Sales */}
           <Route path="/sales/record-indents" element={<RecordIndentsPage />} />
           <Route path="/sales/post-indent" element={<PostIndentPage />} />
@@ -100,12 +107,18 @@ function AppInner() {
           <Route path="/sales/direct-sales/modify" element={<DirectSalesPage tab="modify" />} />
           <Route path="/sales/direct-sales/recent" element={<RecentSalesPage />} />
           <Route path="/sales/cancellations" element={<CancellationRequestsPage />} />
+          <Route path="/sales/invoices"      element={<InvoicesListPage />} />
+          <Route path="/sales/invoices/:id"  element={<InvoiceDetailPage />} />
           {/* FGS */}
           <Route path="/fgs/dashboard" element={<StockDashboard />} />
           <Route path="/fgs/stock-entry" element={<StockEntryPage />} />
           <Route path="/fgs/reports" element={<StockReportsPage />} />
           <Route path="/fgs/dispatch" element={<DispatchPage />} />
           <Route path="/fgs/dispatch-sheet" element={<DispatchSheetPage />} />
+          <Route path="/fgs/dispatch/create" element={<CreateDispatchPage />} /> 
+          {/* Finance */}
+          <Route path="/finance/payments" element={<PaymentsOverviewPage />} />
+          <Route path="/finance/ledger"   element={<DealerLedgerPage />} />
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />

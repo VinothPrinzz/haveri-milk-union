@@ -454,25 +454,191 @@ export async function dealerRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("dealers.view")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const query = paginationSchema.parse(request.query);
-      const offset = offsetFromPage(query.page, query.limit);
-
+      const querySchema = paginationSchema.extend({
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      });
+      const q = querySchema.parse(request.query);
+      const offset = offsetFromPage(q.page, q.limit);
+   
+      const from = q.from ?? null;
+      const to   = q.to   ?? null;
+   
+      // Running balance computed via window function over the full
+      // filtered set, ordered ASC (chronological). The list is then
+      // reversed to DESC for display. This keeps the running balance
+      // correct for the filtered date range (it starts from the
+      // opening balance of that range).
+      //
+      // For the page-level opening balance we use the /summary
+      // endpoint — this one just returns the rows.
       const rows = await pgClient`
-        SELECT id, type, amount, reference_type, balance_after, notes, created_at
-        FROM dealer_ledger
-        WHERE dealer_id = ${id}
-        ORDER BY created_at DESC
-        LIMIT ${query.limit} OFFSET ${offset}
+        WITH filtered AS (
+          SELECT
+            dl.id,
+            dl.type,
+            dl.amount,
+            dl.reference_id      AS "referenceId",
+            dl.reference_type    AS "referenceType",
+            dl.description,
+            dl.voucher_no        AS "voucherNo",
+            dl.voucher_type      AS "voucherType",
+            dl.particulars,
+            COALESCE(dl.voucher_date, dl.created_at::date) AS "voucherDate",
+            dl.created_at        AS "createdAt",
+            dl.balance_after     AS "storedBalance",
+            -- Running balance: cumulative credit - debit within the
+            -- filtered set. Uses numeric to avoid float drift.
+            SUM(CASE WHEN dl.type = 'credit' THEN dl.amount ELSE -dl.amount END)
+              OVER (ORDER BY dl.created_at, dl.id
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+              AS running_delta
+          FROM dealer_ledger dl
+          WHERE dl.dealer_id = ${id}
+            AND (${from}::date IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) >= ${from ?? '1970-01-01'}::date)
+            AND (${to}::date   IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) <= ${to   ?? '9999-12-31'}::date)
+        )
+        SELECT * FROM filtered
+        ORDER BY "createdAt" DESC, id DESC
+        LIMIT ${q.limit} OFFSET ${offset}
       `;
+   
       const [countRow] = await pgClient`
-        SELECT count(*)::int AS count FROM dealer_ledger WHERE dealer_id = ${id}
+        SELECT count(*)::int AS count
+        FROM dealer_ledger dl
+        WHERE dl.dealer_id = ${id}
+          AND (${from}::date IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) >= ${from ?? '1970-01-01'}::date)
+          AND (${to}::date   IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) <= ${to   ?? '9999-12-31'}::date)
       `;
-
+   
       return reply.send({
         data: rows,
-        ...paginationMeta(countRow?.count ?? 0, query.page, query.limit),
+        ...paginationMeta(countRow?.count ?? 0, q.page, q.limit),
       });
-    },
+    }
+  );
+   
+   
+  // ════════════════════════════════════════════════════════════════════
+  // PART 4 — Add to apps/api/src/routes/dealers.ts (NEW)
+  // ════════════════════════════════════════════════════════════════════
+   
+  // ┌─────────────────────────────────────────────────┐
+  // │   GET /api/v1/dealers/:id/ledger/summary          │
+  // │   6 summary tiles                                 │
+  // └─────────────────────────────────────────────────┘
+  app.get(
+    "/api/v1/dealers/:id/ledger/summary",
+    { preHandler: [adminAuth, requireRole("dealers.view")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const querySchema = z.object({
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      });
+      const q = querySchema.parse(request.query);
+      const from = q.from ?? null;
+      const to   = q.to   ?? null;
+   
+      // Dealer's credit limit + opening_balance setup.
+      const [dealer] = await pgClient`
+        SELECT
+          d.id, d.name, d.code,
+          COALESCE(d.credit_limit, 0)::numeric    AS credit_limit,
+          COALESCE(d.opening_balance, 0)::numeric AS static_opening_balance,
+          d.opening_balance_date                  AS opening_balance_date
+        FROM dealers d
+        WHERE d.id = ${id} AND d.deleted_at IS NULL
+        LIMIT 1
+      `;
+      if (!dealer) return reply.status(404).send({ error: "Dealer not found" });
+   
+      // Single query with 3 aggregations:
+      //   • opening_before: net ledger delta for rows BEFORE `from` (or
+      //     everything if no `from`) — this is the carried-forward
+      //     balance as of the start of the filtered period
+      //   • debits/credits in the filtered range
+      //   • closing computed as opening + credits - debits (in Node)
+      //
+      // The "opening_balance" tile = dealer.opening_balance + opening_before
+      // (if `from` is set) OR just dealer.opening_balance (if not).
+      const [agg] = await pgClient`
+        SELECT
+          -- Before-range net (credit - debit) for rows strictly before "from"
+          COALESCE(SUM(
+            CASE
+              WHEN ${from}::date IS NOT NULL
+               AND COALESCE(dl.voucher_date, dl.created_at::date) < ${from ?? '1970-01-01'}::date
+              THEN (CASE WHEN dl.type = 'credit' THEN dl.amount ELSE -dl.amount END)
+              ELSE 0
+            END
+          ), 0)::numeric AS opening_before,
+          -- Range debits
+          COALESCE(SUM(
+            CASE
+              WHEN (${from}::date IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) >= ${from ?? '1970-01-01'}::date)
+               AND (${to}::date   IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) <= ${to   ?? '9999-12-31'}::date)
+               AND dl.type = 'debit'
+               AND COALESCE(dl.voucher_type, '') <> 'Opening'
+              THEN dl.amount ELSE 0
+            END
+          ), 0)::numeric AS range_debits,
+          -- Range credits
+          COALESCE(SUM(
+            CASE
+              WHEN (${from}::date IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) >= ${from ?? '1970-01-01'}::date)
+               AND (${to}::date   IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) <= ${to   ?? '9999-12-31'}::date)
+               AND dl.type = 'credit'
+               AND COALESCE(dl.voucher_type, '') <> 'Opening'
+              THEN dl.amount ELSE 0
+            END
+          ), 0)::numeric AS range_credits
+        FROM dealer_ledger dl
+        WHERE dl.dealer_id = ${id}
+      `;
+   
+      const staticOpening = parseFloat(dealer.static_opening_balance);
+      const openingBefore = parseFloat(agg.opening_before);
+      const rangeDebits   = parseFloat(agg.range_debits);
+      const rangeCredits  = parseFloat(agg.range_credits);
+      const creditLimit   = parseFloat(dealer.credit_limit);
+   
+      // Opening balance shown at the top of the range:
+      //   = static opening (set by accountant) + net of all ledger
+      //     rows before the range
+      // If no `from` is set, opening_before = 0 so this reduces to just
+      // the static opening.
+      const openingBalance = staticOpening + openingBefore;
+   
+      // Closing = opening + (credits - debits) within the range.
+      const closingBalance = openingBalance + rangeCredits - rangeDebits;
+   
+      // Available credit = credit limit - current outstanding.
+      // Outstanding = negative closing balance (if closing < 0 the dealer
+      // owes us; if closing > 0 we hold a credit for them).
+      const outstanding    = closingBalance < 0 ? Math.abs(closingBalance) : 0;
+      const availableCredit = Math.max(0, creditLimit - outstanding);
+   
+      return reply.send({
+        dealer: {
+          id: dealer.id,
+          name: dealer.name,
+          code: dealer.code,
+        },
+        period: {
+          from: from,
+          to:   to,
+        },
+        summary: {
+          openingBalance:  Number(openingBalance.toFixed(2)),
+          totalDebits:     Number(rangeDebits.toFixed(2)),
+          totalCredits:    Number(rangeCredits.toFixed(2)),
+          closingBalance:  Number(closingBalance.toFixed(2)),
+          creditLimit:     Number(creditLimit.toFixed(2)),
+          availableCredit: Number(availableCredit.toFixed(2)),
+        },
+      });
+    }
   );
 
   // ═══════════════════════════════════════════════════════════════
@@ -484,8 +650,16 @@ export async function dealerRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const dealerId = (request as unknown as { dealer: { dealerId: string } })
         .dealer.dealerId;
-      const [dealer] = await pgClient`
-        SELECT d.*, z.name AS zone_name, COALESCE(w.balance, 0) AS wallet_balance
+        const [dealer] = await pgClient`
+        SELECT d.*,
+               z.name AS zone_name,
+               COALESCE(w.balance, 0) AS wallet_balance,
+               COALESCE((
+                 SELECT SUM(o.grand_total) FROM orders o
+                  WHERE o.dealer_id = d.id
+                    AND o.payment_mode = 'credit'
+                    AND o.status NOT IN ('cancelled','delivered')
+               ), 0) AS credit_outstanding
         FROM dealers d
         JOIN zones z ON z.id = d.zone_id
         LEFT JOIN dealer_wallets w ON w.dealer_id = d.id

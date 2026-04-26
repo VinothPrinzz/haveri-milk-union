@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import cookie from "@fastify/cookie";
 import { z } from "zod";
 import { eq, and, gt, desc, isNull } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";

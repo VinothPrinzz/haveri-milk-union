@@ -1,4 +1,5 @@
 {
+  "main": "index.js",
   "expo": {
     "name": "Haveri Milk Union",
     "slug": "haveri-milk-union",
@@ -10,7 +11,9 @@
       "backgroundColor": "#1448CC",
       "resizeMode": "contain"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "coop.haverimunion.dealer"
@@ -23,6 +26,11 @@
     },
     "web": {
       "bundler": "metro"
-    }
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-font",
+      "@react-native-community/datetimepicker"
+    ]
   }
 }
