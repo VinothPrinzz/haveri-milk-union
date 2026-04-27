@@ -159,6 +159,7 @@ export async function systemRoutes(app: FastifyInstance) {
                 ${body.title}, ${body.message}, 'queued', now())
         RETURNING id, created_at
       `;
+      if (!logged) return reply.status(500).send({ error: "Failed to queue notification" });
       return reply.status(200).send({
         message: "Notification queued for sending",
         id: logged.id,

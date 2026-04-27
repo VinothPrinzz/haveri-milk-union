@@ -598,9 +598,9 @@ export async function dealerRoutes(app: FastifyInstance) {
       `;
    
       const staticOpening = parseFloat(dealer.static_opening_balance);
-      const openingBefore = parseFloat(agg.opening_before);
-      const rangeDebits   = parseFloat(agg.range_debits);
-      const rangeCredits  = parseFloat(agg.range_credits);
+      const openingBefore = parseFloat(agg?.opening_before ?? "0");
+      const rangeDebits   = parseFloat(agg?.range_debits ?? "0");
+      const rangeCredits  = parseFloat(agg?.range_credits ?? "0");
       const creditLimit   = parseFloat(dealer.credit_limit);
    
       // Opening balance shown at the top of the range:

@@ -334,6 +334,8 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
               AND o.status IN ('confirmed','dispatched','delivered')
           `;
 
+          if (!totals || !assignment) throw new Error("Failed to build dispatch sheet");
+
           await tx`
             UPDATE route_assignments SET
               dealer_count = ${totals.dealer_count}::int,

@@ -81,6 +81,8 @@ export async function batchRoutes(app: FastifyInstance) {
         RETURNING *
       `;
 
+      if (!batch) return reply.status(500).send({ error: "Failed to create batch" });
+
       // Link routes
       if (body.routeIds && body.routeIds.length > 0) {
         for (const routeId of body.routeIds) {

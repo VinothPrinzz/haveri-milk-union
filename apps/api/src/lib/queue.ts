@@ -1,14 +1,14 @@
 import { Queue } from "bullmq";
-import IORedis from "ioredis";
+import { Redis } from "ioredis";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
-let redis: IORedis | null = null;
+let redis: Redis | null = null;
 const queues: Record<string, Queue> = {};
 
-function getRedis(): IORedis {
+function getRedis(): Redis {
   if (!redis) {
-    redis = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
+    redis = new Redis(REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
   }
   return redis;
 }

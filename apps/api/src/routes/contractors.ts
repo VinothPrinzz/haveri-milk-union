@@ -181,6 +181,8 @@ export async function contractorRoutes(app: FastifyInstance) {
           RETURNING *
         `;
 
+        if (!contractor) throw new Error("Failed to create contractor");
+
         if (body.routeIds && body.routeIds.length > 0) {
           await tx`
             UPDATE routes

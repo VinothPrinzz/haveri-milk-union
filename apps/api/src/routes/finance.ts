@@ -410,7 +410,7 @@ export async function financeRoutes(app: FastifyInstance) {
 
         // ── Auto-generate GST Invoice + Push Notification ──
         try {
-          await enqueuePDFInvoice(result.id);
+          await enqueuePDFInvoice(result!.id);
         } catch (err) {
           console.warn("[orders] PDF enqueue failed:", err);
         }
@@ -419,7 +419,7 @@ export async function financeRoutes(app: FastifyInstance) {
           await enqueuePushNotification({
             event: "order.confirmed",
             dealerId: body.dealerId,
-            orderId: result.id,
+            orderId: result!.id,
           });
         } catch (err) {
           console.warn("[orders] Push enqueue failed:", err);
@@ -433,7 +433,7 @@ export async function financeRoutes(app: FastifyInstance) {
           const pdfResult = await generateInvoicePdfSync(result!.id);
 
           // Extract the URL from the returned object
-          invoicePdfUrl = pdfResult?.pdfUrl ?? pdfResult?.url ?? null;
+          invoicePdfUrl = pdfResult?.pdfUrl ?? null;
 
           const [inv] = await pgClient`
             SELECT invoice_number FROM invoices WHERE order_id = ${result!.id} LIMIT 1
@@ -682,7 +682,9 @@ export async function financeRoutes(app: FastifyInstance) {
             )
             RETURNING id, received_date, amount, mode
           `;
-  
+
+          if (!payment) throw new Error("Failed to record payment");
+
           // (b) Append to dealer_ledger. voucher_type='Receipt'.
           // reference_type must be a ledger_ref_type enum value —
           // 'wallet_topup' for wallet-mode receipts (updates wallet),

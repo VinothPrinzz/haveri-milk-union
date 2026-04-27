@@ -88,6 +88,8 @@ export async function distributionRoutes(app: FastifyInstance) {
           RETURNING id, code, name, stops, distance_km, stop_details, contractor_id, dispatch_time
         `;
 
+        if (!route) throw new Error("Failed to create route");
+
         // Ensure batch_routes junction exists if primaryBatchId is provided
         if (body.primaryBatchId) {
           await tx`

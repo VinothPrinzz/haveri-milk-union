@@ -394,7 +394,9 @@ export async function salesReportRoutes(app: FastifyInstance) {
         return `${d}-${m}-${y}`;
       };
       const buildBillNo = (code: string, fromDate: string) => {
-        const [y, m] = fromDate.split("-");
+        const parts = fromDate.split("-");
+        const y = parts[0] ?? "";
+        const m = parts[1] ?? "";
         return `${code ?? ""}\\${Number(m)}\\${y.slice(2)}`;
       };
 
@@ -478,7 +480,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           // Per-day rows
           const dailyRows = dateList.map(iso => {
             const qty = products.map(p => p.dailyQty.get(iso) ?? 0);
-            const dayTotal = qty.reduce((s, q, i) => s + q * products[i].rate, 0);
+            const dayTotal = qty.reduce((s, q, i) => s + q * (products[i]?.rate ?? 0), 0);
             const [_, __, day] = iso.split("-");
             return {
               day,           // "01" .. "31"
@@ -489,14 +491,14 @@ export async function salesReportRoutes(app: FastifyInstance) {
           });
 
           // Footer totals — all arrays aligned with products[]
-          const pkts = products.map((_, i) => dailyRows.reduce((s, r) => s + r.qty[i], 0));
-          const kgLtr = products.map((p, i) => round3((pkts[i] * p.packSize) / 1000));
-          const basic = products.map((p, i) => round2(pkts[i] * p.rate));
+          const pkts = products.map((_, i) => dailyRows.reduce((s, r) => s + (r.qty[i] ?? 0), 0));
+          const kgLtr = products.map((p, i) => round3(((pkts[i] ?? 0) * p.packSize) / 1000));
+          const basic = products.map((p, i) => round2((pkts[i] ?? 0) * p.rate));
           const cgstPctArr = products.map(p => round2(p.gstPct / 2));
           const sgstPctArr = products.map(p => round2(p.gstPct / 2));
-          const cgst = products.map((p, i) => round3(basic[i] * (p.gstPct / 2) / 100));
-          const sgst = products.map((p, i) => round3(basic[i] * (p.gstPct / 2) / 100));
-          const amount = products.map((_, i) => round2(basic[i] + cgst[i] + sgst[i]));
+          const cgst = products.map((p, i) => round3((basic[i] ?? 0) * (p.gstPct / 2) / 100));
+          const sgst = products.map((p, i) => round3((basic[i] ?? 0) * (p.gstPct / 2) / 100));
+          const amount = products.map((_, i) => round2((basic[i] ?? 0) + (cgst[i] ?? 0) + (sgst[i] ?? 0)));
 
           const basicGrand = round2(basic.reduce((s, v) => s + v, 0));
           const cgstGrand = round3(cgst.reduce((s, v) => s + v, 0));

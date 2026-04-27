@@ -255,6 +255,8 @@ export async function directSalesRoutes(app: FastifyInstance) {
         RETURNING *
       `;
 
+      if (!sale) return reply.status(500).send({ error: "Failed to create sale" });
+
       // Insert line items and gate pass items
       for (const item of lineItems) {
         await pgClient`
@@ -337,6 +339,8 @@ export async function directSalesRoutes(app: FastifyInstance) {
                 ${body.paymentRef ?? null}, ${subtotal}, ${totalGst}, ${grandTotal}, ${body.notes ?? null})
         RETURNING *
       `;
+
+      if (!sale) return reply.status(500).send({ error: "Failed to create sale" });
 
       for (const item of lineItems) {
         await pgClient`

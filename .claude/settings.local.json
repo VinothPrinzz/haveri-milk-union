@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash([ -f \"/c/App development/haveri-milk-union/packages/db/$f\" ])",
+      "Bash(pnpm run *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(netstat -ano)",
+      "Bash(awk '{print $5}')",
+      "Bash(xargs -I{} taskkill //PID {} //F)"
+    ]
+  }
+}
