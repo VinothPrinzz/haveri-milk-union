@@ -39,8 +39,8 @@ export function SidebarGroupLabel({ className, children }: { className?: string;
 export function SidebarGroupContent({ children }: { children: React.ReactNode }) {
   return <div>{children}</div>;
 }
-export function SidebarMenu({ children }: { children: React.ReactNode }) {
-  return <ul className="space-y-0.5">{children}</ul>;
+export function SidebarMenu({ className, children }: { className?: string; children: React.ReactNode }) {
+  return <ul className={cn("space-y-0.5", className)}>{children}</ul>;
 }
 export function SidebarMenuItem({ children }: { children: React.ReactNode }) {
   return <li>{children}</li>;

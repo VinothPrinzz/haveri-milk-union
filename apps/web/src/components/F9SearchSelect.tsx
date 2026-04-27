@@ -56,6 +56,7 @@ export interface F9SearchSelectProps {
   label?: string;
   placeholder?: string;
   allowAll?: boolean;
+  allowClear?: boolean;
   allLabel?: string;
   disabled?: boolean;
   className?: string;
