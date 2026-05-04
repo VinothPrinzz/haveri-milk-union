@@ -6,23 +6,17 @@ const monorepoRoot = path.resolve(projectRoot, "../..");
 
 const config = getDefaultConfig(projectRoot);
 
-// ── Fix 1: Watch the monorepo root so Metro can find hoisted deps ──
-config.watchFolders = [monorepoRoot];
+// Watch the monorepo root so Metro can find hoisted deps
+config.watchFolders = [...(config.watchFolders ?? []), monorepoRoot];
 
-// ── Fix 2: Tell Metro where to find node_modules ──
+// Tell Metro where to find node_modules (pnpm hoists to monorepo root)
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, "node_modules"),
   path.resolve(monorepoRoot, "node_modules"),
 ];
 
-// ── Fix 3: Block .pnpm store — this is the OOM fix ──
-// Metro tries to crawl into .pnpm's deeply nested symlinks and runs out of memory
-config.resolver.blockList = [
-  /.*\.pnpm\/.*/,
-  /.*node_modules\/\.cache\/.*/,
-];
-
-// ── Fix 4: Ensure proper resolution for monorepo packages ──
-config.resolver.disableHierarchicalLookup = false;
+// Required for pnpm: all packages in node_modules are symlinks pointing into
+// .pnpm/; without this Metro refuses to resolve them (EISDIR / not-found).
+config.resolver.unstable_enableSymlinks = true;
 
 module.exports = config;
