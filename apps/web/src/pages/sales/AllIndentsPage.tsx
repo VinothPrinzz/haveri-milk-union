@@ -1,233 +1,167 @@
-// apps/web/src/pages/sales/AllIndentsPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// All Indents — Marketing v1.4
-//
-// Filter-first UX with 4 F9 pickers (Route, Status, Customer, Date)
-// plus a Generate button. Table renders only after Generate is clicked.
+// All Indents — list with status / route / date filters
+// Route preserved: /sales/all-indents
 // ════════════════════════════════════════════════════════════════════
-
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import PageHeader from "@/components/PageHeader";
-import { PageShell, FilterBar, ScrollableTableBody } from "@/components/PageShell";
-import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import { useNavigate } from "react-router-dom";
+import PageHeader, {
+  FilterBar, Field, EmptyState, StatusPill, fmtINR, fmtDate,
+} from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { X } from "lucide-react";
-import {
-  fetchIndents,
-  fetchRoutes,
-  fetchCustomers,
-} from "@/services/api";
+import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import { Printer, X } from "lucide-react";
+import { fetchIndents, fetchRoutes } from "@/services/api";
 
-const STATUS_OPTIONS: F9Option[] = [
-  { value: "Pending", label: "Pending" },
-  { value: "Posted", label: "Posted" },
-  { value: "Dispatched", label: "Dispatched" },
-  { value: "Cancelled", label: "Cancelled" },
+const STATUS_OPTS: F9Option[] = [
+  { value: "pending",    label: "Pending" },
+  { value: "confirmed",  label: "Confirmed" },
+  { value: "dispatched", label: "Dispatched" },
+  { value: "delivered",  label: "Delivered" },
+  { value: "cancelled",  label: "Cancelled" },
 ];
 
-// Last 30 days of date options for the Date F9 (spec says Date is F9)
-function buildDateOptions(): F9Option[] {
-  const out: F9Option[] = [];
-  const today = new Date();
-  for (let i = 0; i < 30; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const iso = d.toISOString().split("T")[0];
-    out.push({
-      value: iso,
-      label: iso,
-      sublabel:
-        i === 0 ? "Today" :
-        i === 1 ? "Yesterday" :
-        d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }),
-    });
-  }
-  return out;
-}
-
-const STATUS_COLOR: Record<string, string> = {
-  Pending: "bg-warning/10 text-warning",
-  Posted: "bg-primary/10 text-primary",
-  Dispatched: "bg-success/10 text-success",
-  Cancelled: "bg-destructive/10 text-destructive",
-};
+const formatIndentId = (id: string) => id ? `#HMU-${String(id).slice(-4).toUpperCase()}` : "—";
 
 export default function AllIndentsPage() {
+  const navigate = useNavigate();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [from, setFrom] = useState(today);
+  const [to, setTo] = useState(today);
+  const [status, setStatus] = useState<string | null>(null);
+  const [routeId, setRouteId] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
-  const { data: customers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
 
-  const [routeFilter, setRouteFilter] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
-  const [customerFilter, setCustomerFilter] = useState<string | null>(null);
-  const [dateFilter, setDateFilter] = useState<string | null>(null);
-  const [generated, setGenerated] = useState(false);
-
-  // Fetch gated behind Generate
-  const { data: indents = [], isLoading, refetch } = useQuery({
-    queryKey: ["indents", "filtered", routeFilter, statusFilter, customerFilter, dateFilter],
-    queryFn: () =>
-      fetchIndents({
-        routeId: routeFilter ?? undefined,
-        status: statusFilter ?? undefined,
-        dealerId: customerFilter ?? undefined,
-        date: dateFilter ?? undefined,
-      }),
-    enabled: false,
+  const { data: indents = [], isLoading } = useQuery({
+    queryKey: ["indents", { from, to, status, routeId }],
+    queryFn: () => fetchIndents({
+      from, to,
+      status: (status ?? undefined) as any,
+      routeId: routeId ?? undefined,
+    }),
   });
 
-  const routeOptions: F9Option[] = useMemo(
+  const routeOpts: F9Option[] = useMemo(
     () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
     [routes]
   );
-  const customerOptions: F9Option[] = useMemo(
-    () =>
-      customers.map((c: any) => ({
-        value: c.id,
-        label: c.name,
-        sublabel: c.code,
-        searchText: `${c.code} ${c.name} ${c.phone ?? ""}`,
-      })),
-    [customers]
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return indents;
+    return indents.filter((i: any) =>
+      (i.code ?? "").toLowerCase().includes(s) ||
+      (i.customerName ?? "").toLowerCase().includes(s)
+    );
+  }, [indents, q]);
+
+  const grand = filtered.reduce(
+    (s: number, i: any) => s + (parseFloat(String(i.grand_total ?? i.total ?? 0)) || 0),
+    0
   );
-  const dateOptions = useMemo(buildDateOptions, []);
-
-  const handleGenerate = async () => {
-    await refetch();
-    setGenerated(true);
-  };
-
-  const clearFilters = () => {
-    setRouteFilter(null);
-    setStatusFilter(null);
-    setCustomerFilter(null);
-    setDateFilter(null);
-    setGenerated(false);
-  };
 
   return (
-    <PageShell
-      header={
-        <>
-          <PageHeader title="All Indents" description="View all recorded indents" />
-          <FilterBar>
-            <F9SearchSelect
-              label="Route"
-              value={routeFilter}
-              onChange={setRouteFilter}
-              options={routeOptions}
-              allowAll
-              className="w-56"
-            />
-            <F9SearchSelect
-              label="Status"
-              value={statusFilter}
-              onChange={setStatusFilter}
-              options={STATUS_OPTIONS}
-              allowAll
-              className="w-44"
-            />
-            <F9SearchSelect
-              label="Customer"
-              value={customerFilter}
-              onChange={setCustomerFilter}
-              options={customerOptions}
-              allowAll
-              className="w-64"
-            />
-            <F9SearchSelect
-              label="Date"
-              value={dateFilter}
-              onChange={setDateFilter}
-              options={dateOptions}
-              allowAll
-              className="w-56"
-            />
-            <Button onClick={handleGenerate} disabled={isLoading}>
-              {isLoading ? "Loading..." : "Generate"}
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title="All Indents"
+        subtitle="Search and review every indent across statuses"
+        actions={
+          <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
+            <Printer className="h-3.5 w-3.5 mr-1" /> Print
+          </Button>
+        }
+      />
+
+      <FilterBar>
+        <Field label="From"><Input type="date" className="erp-input w-36" value={from} onChange={e => setFrom(e.target.value)} /></Field>
+        <Field label="To"><Input type="date" className="erp-input w-36" value={to} onChange={e => setTo(e.target.value)} /></Field>
+        <Field label="Status"><F9SearchSelect value={status} onChange={setStatus} options={STATUS_OPTS} allowAll className="w-44" /></Field>
+        <Field label="Route"><F9SearchSelect value={routeId} onChange={setRouteId} options={routeOpts} allowAll className="w-56" /></Field>
+        <Field label="Search"><Input className="erp-input w-56" placeholder="indent # / customer" value={q} onChange={e => setQ(e.target.value)} /></Field>
+        {(status || routeId || q) && (
+          <div className="flex items-end">
+            <Button size="sm" variant="outline" className="h-8" onClick={() => { setStatus(null); setRouteId(null); setQ(""); }}>
+              <X className="h-3.5 w-3.5 mr-1" /> Clear
             </Button>
-            {generated && (
-              <Button variant="outline" onClick={clearFilters}>
-                <X className="h-4 w-4 mr-1" /> Clear
-              </Button>
-            )}
-          </FilterBar>
-        </>
-      }
-    >
-      {!generated ? (
-        <EmptyHint message="Set filters above (or leave as All) and click Generate." />
-      ) : isLoading ? (
-        <ScrollableTableBody>
-          <div className="p-6 space-y-2">
-            {Array.from({ length: 10 }).map((_, i) => (
-              <Skeleton key={i} className="h-8 w-full" />
-            ))}
           </div>
-        </ScrollableTableBody>
-      ) : (
-        <ScrollableTableBody>
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/50 backdrop-blur border-b">
-              <tr className="text-xs text-muted-foreground">
-                <th className="text-left py-2.5 px-3 font-medium">Indent No.</th>
-                <th className="text-left py-2.5 px-3 font-medium">Date</th>
-                <th className="text-left py-2.5 px-3 font-medium">Customer</th>
-                <th className="text-left py-2.5 px-3 font-medium">Route</th>
-                <th className="text-left py-2.5 px-3 font-medium">Items</th>
-                <th className="text-right py-2.5 px-3 font-medium">Total</th>
-                <th className="text-left py-2.5 px-3 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(indents as any[]).map(i => (
-                <tr key={i.id} className="border-b hover:bg-muted/30">
-                  <td className="py-2 px-3 font-mono text-xs">{i.indentNo || i.id.slice(0, 8)}</td>
-                  <td className="py-2 px-3 text-xs">{i.date || "—"}</td>
-                  <td className="py-2 px-3 font-medium">{i.customerName}</td>
-                  <td className="py-2 px-3 text-xs">{i.routeName || i.routeId || "—"}</td>
-                  <td className="py-2 px-3 text-xs text-muted-foreground max-w-md truncate">
-                    {(i.items ?? []).map((x: any) => `${x.productName}×${x.qty}`).join(", ")}
-                  </td>
-                  <td className="py-2 px-3 text-right font-mono">
-                    ₹{(i.total ?? 0).toLocaleString()}
-                  </td>
-                  <td className="py-2 px-3">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded ${
-                        STATUS_COLOR[i.status] ?? "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {i.status}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-              {indents.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="py-10 text-center text-muted-foreground text-sm">
-                    No indents match the selected filters.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </ScrollableTableBody>
-      )}
-    </PageShell>
-  );
-}
+        )}
+      </FilterBar>
 
-function EmptyHint({ message }: { message: string }) {
-  return (
-    <div className="h-full flex items-center justify-center">
-      <Card className="max-w-md">
-        <CardContent className="p-8 text-center">
-          <p className="text-sm text-muted-foreground">{message}</p>
-        </CardContent>
-      </Card>
+      <div className="flex-1 overflow-auto p-3">
+        <div className="erp-panel overflow-hidden">
+          <div className="print-document">
+            {isLoading ? (
+              <div className="p-3 space-y-2">
+                {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
+              </div>
+            ) : filtered.length === 0 ? (
+              <EmptyState title="No indents match this filter." />
+            ) : (
+              <table className="erp-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 130 }}>Indent #</th>
+                    <th style={{ width: 110 }}>Date</th>
+                    <th>Customer</th>
+                    <th>Route</th>
+                    <th style={{ width: "30%" }}>Items</th>
+                    <th className="num" style={{ width: 130, textAlign: "right" }}>Total ₹</th>
+                    <th style={{ width: 110 }}>Status</th>
+                    <th style={{ width: 90, textAlign: "center" }}>Update</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((i: any) => (
+                    <tr key={i.id}>
+                      <td className="font-mono text-[12px]">{formatIndentId(i.id)}</td>
+                      <td className="text-[12.5px]">{fmtDate(i.created_at ?? i.date)}</td>
+                      <td className="font-medium">{i.dealer_name ?? i.customerName ?? i.customerId}</td>
+                      <td>{i.route_code ?? i.route_name ?? i.routeName ?? i.routeId ?? "—"}</td>
+                      <td>
+                        {(i.items ?? i.lines ?? []).length === 0 ? (
+                          <span className="text-muted-foreground">—</span>
+                        ) : (
+                          <div className="flex flex-col gap-0.5">
+                            {(i.items ?? i.lines ?? []).map((it: any, k: number) => (
+                              <span key={k} className="text-[12px]">
+                                <span className="num font-medium">{it.quantity ?? it.qty}×</span>{" "}
+                                {it.product_name ?? it.productName ?? it.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(parseFloat(String(i.grand_total ?? i.total ?? 0)) || 0)}</td>
+                      <td><StatusPill status={i.status} /></td>
+                      <td style={{ textAlign: "center" }}>
+                        <Button
+                          size="sm" 
+                          className="h-7 px-2.5 text-[12px]"
+                          onClick={() => navigate(`/sales/direct-sales/modify?indentId=${i.id}`)}
+                        >
+                          Update
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-muted/40">
+                    <td colSpan={5} className="text-right uppercase text-[12.5px] font-semibold tracking-wide">Grand Total</td>
+                    <td className="num font-bold text-[14px]" style={{ textAlign: "right" }}>{fmtINR(grand)}</td>
+                    <td colSpan={2}></td>
+                  </tr>
+                </tfoot>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

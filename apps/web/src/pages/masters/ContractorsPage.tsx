@@ -1,19 +1,24 @@
-// apps/web/src/pages/masters/ContractorsPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// All Contractors / New Contractor — Marketing v1.4
+// All Contractors / New Contractor — ERP refactor
+// Routes preserved: /masters/contractors  +  /masters/contractors/new
+// All mutations and ContractorForm wiring identical to v1.4 source.
 // ════════════════════════════════════════════════════════════════════
-
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import PageHeader from "@/components/PageHeader";
-import { PageShell, FilterBar, ScrollableTableBody } from "@/components/PageShell";
+import PageHeader, {
+  FilterBar,
+  Field,
+  StatusPill,
+  EmptyState,
+  fmtDate,
+} from "@/components/PageHeader";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import type { Column } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Edit, X } from "lucide-react";
+import { Edit, X, Plus } from "lucide-react";
 import {
   fetchContractors,
   fetchRoutes,
@@ -33,32 +38,89 @@ const STATUS_OPTIONS: F9Option[] = [
   { value: "Inactive", label: "Inactive" },
 ];
 
-const fmtDate = (iso: string | null | undefined): string => {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-};
-
 export default function ContractorsPage({ tab = "list" }: Props) {
   const qc = useQueryClient();
   const { data: contractors = [], isLoading } = useQuery({
     queryKey: ["contractors"],
     queryFn: fetchContractors,
   });
+
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
+  const routeMap = useMemo(() => {
+    const m = new Map<string, { code: string; name: string }>();
+    routes.forEach((r: any) => m.set(r.id, { code: r.code, name: r.name }));
+    return m;
+  }, [routes]);
+
+  const [viewing, setViewing] = useState<Contractor | null>(null);
+  const [editing, setEditing] = useState<Contractor | null>(null);
+
+  const cols: Column<Contractor>[] = [
+    { key: "code", header: "Code", cell: c => <span className="font-mono text-[12px]">{c.code}</span>, width: "90px" },
+    { key: "name", header: "Name", cell: c => <span className="font-medium">{c.name}</span> },
+    { key: "phone", header: "Phone", cell: c => c.phone, width: "120px" },
+    { key: "vehicle", header: "Vehicle", cell: c => c.vehicleNumber ?? "—", width: "110px" },
+    {
+      key: "routes",
+      header: "Routes",
+      cell: c => {
+        const ids: string[] = (c as any).routeIds ?? [];
+        if (ids.length === 0) return <span className="text-muted-foreground">—</span>;
+        return (
+          <div className="flex flex-col gap-0.5">
+            {ids.map(id => {
+              const r = routeMap.get(id);
+              return (
+                <span key={id} className="text-[12px]">
+                  <span className="font-mono">{r?.code ?? id.slice(0, 6)}</span>
+                  {r?.name && <> — {r.name}</>}
+                </span>
+              );
+            })}
+          </div>
+        );
+      },
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      align: "right",
+      width: "180px",
+      cell: c => (
+        <div className="flex items-center justify-end gap-1.5">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            className="h-7 px-2.5 text-[12px]" 
+            onClick={() => setViewing(c)}
+          >
+            View
+          </Button>
+          <Button 
+            size="sm" 
+            className="h-7 px-2.5 text-[12px]" 
+            onClick={() => setEditing(c)}
+          >
+            Update
+          </Button>
+        </div>
+      ),
+    },
+  ];
 
   const createMutation = useMutation({
     mutationFn: createContractor,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["contractors"] });
-      qc.invalidateQueries({ queryKey: ["routes"] }); // routes.contractor_id may change
+      qc.invalidateQueries({ queryKey: ["routes"] });
       toast.success("Contractor created");
     },
     onError: (e: any) => toast.error(e?.message || "Failed to create contractor"),
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: ContractorFormData }) => updateContractor(id, data),
+    mutationFn: ({ id, data }: { id: string; data: ContractorFormData }) =>
+      updateContractor(id, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["contractors"] });
       qc.invalidateQueries({ queryKey: ["routes"] });
@@ -70,13 +132,17 @@ export default function ContractorsPage({ tab = "list" }: Props) {
   if (tab === "new") {
     return (
       <div>
-        <PageHeader title="New Contractor" description="Add a new contractor" />
-        <ContractorForm
-          onSubmit={async data => {
-            await createMutation.mutateAsync(data as any);
-          }}
-          isSubmitting={createMutation.isPending}
-        />
+        <PageHeader title="New Contractor" subtitle="Add a new contractor" />
+        <div className="p-4">
+          <div className="erp-panel p-4">
+            <ContractorForm
+              onSubmit={async data => {
+                await createMutation.mutateAsync(data as any);
+              }}
+              isSubmitting={createMutation.isPending}
+            />
+          </div>
+        </div>
       </div>
     );
   }
@@ -91,9 +157,6 @@ export default function ContractorsPage({ tab = "list" }: Props) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════════
-// List tab
-// ══════════════════════════════════════════════════════════════════
 function ContractorListTab({
   contractors,
   routes,
@@ -109,19 +172,19 @@ function ContractorListTab({
   const [routeFilter, setRouteFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [generated, setGenerated] = useState(false);
-
   const [editing, setEditing] = useState<Contractor | null>(null);
+  const [viewing, setViewing] = useState<Contractor | null>(null);
+
+  const routeMap = useMemo(() => {
+    const m = new Map<string, { code: string; name: string }>();
+    routes.forEach((r: any) => m.set(r.id, { code: r.code, name: r.name }));
+    return m;
+  }, [routes]);
 
   const nameOptions: F9Option[] = useMemo(
-    () =>
-      contractors.map(c => ({
-        value: c.id,
-        label: c.name,
-        sublabel: c.code,
-      })),
+    () => contractors.map(c => ({ value: c.id, label: c.name, sublabel: c.code })),
     [contractors]
   );
-
   const routeOptions: F9Option[] = useMemo(
     () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
     [routes]
@@ -144,7 +207,6 @@ function ContractorListTab({
     setGenerated(false);
   };
 
-  // Lookup helper for displaying assigned route codes in the table cell
   const routeCodeById = useMemo(() => {
     const m = new Map<string, string>();
     routes.forEach((r: any) => m.set(r.id, r.code));
@@ -152,168 +214,141 @@ function ContractorListTab({
   }, [routes]);
 
   return (
-    <PageShell
-      header={
-        <>
-          <PageHeader title="All Contractors" description="View and manage contractors" />
-          <FilterBar>
-            <F9SearchSelect
-              label="Name"
-              value={nameFilter}
-              onChange={setNameFilter}
-              options={nameOptions}
-              allowAll
-              className="w-64"
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title="All Contractors"
+        subtitle="View and manage contractors"
+        actions={
+          <Button asChild size="sm" className="h-8">
+            <a href="/masters/contractors/new"><Plus className="h-3.5 w-3.5 mr-1" /> New</a>
+          </Button>
+        }
+      />
+
+      <FilterBar>
+        <Field label="Name">
+          <F9SearchSelect value={nameFilter} onChange={setNameFilter} options={nameOptions} allowAll className="w-64" />
+        </Field>
+        <Field label="Assigned Route">
+          <F9SearchSelect value={routeFilter} onChange={setRouteFilter} options={routeOptions} allowAll className="w-56" />
+        </Field>
+        <Field label="Status">
+          <F9SearchSelect value={statusFilter} onChange={setStatusFilter} options={STATUS_OPTIONS} allowAll className="w-40" />
+        </Field>
+        <div className="flex items-end gap-2">
+          <Button size="sm" className="h-8" onClick={() => setGenerated(true)}>Generate</Button>
+          {generated && (
+            <Button size="sm" variant="outline" className="h-8" onClick={clearFilters}>
+              <X className="h-3.5 w-3.5 mr-1" /> Clear
+            </Button>
+          )}
+        </div>
+      </FilterBar>
+
+      <div className="flex-1 overflow-auto p-3">
+        <div className="erp-panel overflow-hidden">
+          {!generated ? (
+            <EmptyState
+              title="Set filters and click Generate"
+              hint="Or leave all filters as ‘All’ to list every contractor."
             />
-            <F9SearchSelect
-              label="Assigned Routes"
-              value={routeFilter}
-              onChange={setRouteFilter}
-              options={routeOptions}
-              allowAll
-              className="w-56"
-            />
-            <F9SearchSelect
-              label="Status"
-              value={statusFilter}
-              onChange={setStatusFilter}
-              options={STATUS_OPTIONS}
-              allowAll
-              className="w-44"
-            />
-            <Button onClick={() => setGenerated(true)}>Generate Table</Button>
-            {generated && (
-              <Button variant="outline" onClick={clearFilters}>
-                <X className="h-4 w-4 mr-1" /> Clear
-              </Button>
-            )}
-          </FilterBar>
-        </>
-      }
-    >
-      {!generated ? (
-        <EmptyHint message="Set filters above (or leave as All) and click Generate Table." />
-      ) : isLoading ? (
-        <ScrollableTableBody>
-          <div className="p-6 space-y-2">
-            {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
-          </div>
-        </ScrollableTableBody>
-      ) : (
-        <ScrollableTableBody>
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/50 backdrop-blur border-b">
-              <tr className="text-xs text-muted-foreground">
-                <th className="text-left py-2.5 px-3 font-medium">Code</th>
-                <th className="text-left py-2.5 px-3 font-medium">Name</th>
-                <th className="text-left py-2.5 px-3 font-medium">Phone</th>
-                <th className="text-left py-2.5 px-3 font-medium">Vehicle</th>
-                <th className="text-left py-2.5 px-3 font-medium">Routes</th>
-                <th className="text-left py-2.5 px-3 font-medium">Period From</th>
-                <th className="text-left py-2.5 px-3 font-medium">Period To</th>
-                <th className="text-left py-2.5 px-3 font-medium">Status</th>
-                <th className="text-center py-2.5 px-3 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(c => (
-                <tr key={c.id} className="border-b hover:bg-muted/30">
-                  <td className="py-2 px-3 font-mono font-medium">{c.code}</td>
-                  <td className="py-2 px-3 font-medium">{c.name}</td>
-                  <td className="py-2 px-3 font-mono text-xs">{c.phone}</td>
-                  <td className="py-2 px-3 font-mono text-xs">{c.vehicleNumber || "—"}</td>
-                  <td className="py-2 px-3 text-xs">
-                    {(c.routeIds ?? []).length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {(c.routeIds ?? []).slice(0, 3).map(rid => (
-                          <span
-                            key={rid}
-                            className="font-mono px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground"
-                          >
-                            {routeCodeById.get(rid) ?? "?"}
-                          </span>
-                        ))}
-                        {(c.routeIds ?? []).length > 3 && (
-                          <span className="text-muted-foreground">
-                            +{(c.routeIds ?? []).length - 3}
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td className="py-2 px-3 text-xs">{fmtDate(c.periodFrom)}</td>
-                  <td className="py-2 px-3 text-xs">{fmtDate(c.periodTo)}</td>
-                  <td className="py-2 px-3">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded ${
-                        c.status === "Active"
-                          ? "bg-success/10 text-success"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {c.status}
-                    </span>
-                  </td>
-                  <td className="py-2 px-3">
-                    <div className="flex items-center justify-center">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title="Edit"
-                        onClick={() => setEditing(c)}
-                      >
+          ) : isLoading ? (
+            <div className="p-4 space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
+            </div>
+          ) : (
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 90 }}>Code</th>
+                  <th>Name</th>
+                  <th style={{ width: 120 }}>Phone</th>
+                  <th style={{ width: 110 }}>Vehicle</th>
+                  <th>Routes</th>
+                  <th style={{ width: 110 }}>Period From</th>
+                  <th style={{ width: 110 }}>Period To</th>
+                  <th style={{ width: 90 }}>Status</th>
+                  <th style={{ width: 70, textAlign: "center" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(c => (
+                  <tr key={c.id}>
+                    <td className="font-mono">{c.code}</td>
+                    <td className="font-medium">{c.name}</td>
+                    <td className="font-mono text-[12.5px]">{c.phone}</td>
+                    <td className="font-mono text-[12.5px]">{c.vehicleNumber || "—"}</td>
+                    <td>
+                      {(c.routeIds ?? []).length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {(c.routeIds ?? []).slice(0, 3).map(rid => (
+                            <span key={rid} className="font-mono text-[11.5px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">
+                              {routeCodeById.get(rid) ?? "?"}
+                            </span>
+                          ))}
+                          {(c.routeIds ?? []).length > 3 && (
+                            <span className="text-muted-foreground text-[11.5px]">
+                              +{(c.routeIds ?? []).length - 3}
+                            </span>
+                          )}
+                        </div>
+                      ) : <span className="text-muted-foreground">—</span>}
+                    </td>
+                    <td className="text-[12.5px]">{fmtDate(c.periodFrom)}</td>
+                    <td className="text-[12.5px]">{fmtDate(c.periodTo)}</td>
+                    <td><StatusPill status={c.status === "Active" ? "active" : "draft"} /></td>
+                    <td style={{ textAlign: "center" }}>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit (F4)" onClick={() => setEditing(c)}>
                         <Edit className="h-3.5 w-3.5" />
                       </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="py-10 text-center text-muted-foreground text-sm">
-                    No contractors match the selected filters.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </ScrollableTableBody>
-      )}
-
-      {/* Edit dialog */}
-      <Dialog open={!!editing} onOpenChange={open => !open && setEditing(null)}>
-        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Edit Contractor — {editing?.code}</DialogTitle>
-          </DialogHeader>
-          {editing && (
-            <ContractorForm
-              initialData={editing}
-              onCancel={() => setEditing(null)}
-              onSubmit={async data => {
-                await updateMutation.mutateAsync({ id: editing.id, data });
-                setEditing(null);
-              }}
-              isSubmitting={updateMutation.isPending}
-            />
+                    </td>
+                  </tr>
+                ))}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={9} className="py-8 text-center text-muted-foreground">No contractors match the selected filters.</td></tr>
+                )}
+              </tbody>
+            </table>
           )}
+        </div>
+      </div>
+
+      <Dialog open={!!viewing} onOpenChange={o => !o && setViewing(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>{viewing?.code} — {viewing?.name}</DialogTitle></DialogHeader>
+          {viewing && (() => {
+            const Row = ({ label, value }: { label: string; value: any }) => (
+              <div className="flex items-baseline gap-2 py-1 border-b border-border/60 last:border-0">
+                <span className="text-[11px] uppercase tracking-wide text-muted-foreground w-32 shrink-0">{label}</span>
+                <span className="text-[13px] font-medium">{value || <span className="text-muted-foreground">—</span>}</span>
+              </div>
+            );
+            return (
+              <div className="grid grid-cols-2 gap-x-6">
+                <Row label="Code"      value={<span className="font-mono">{viewing.code}</span>} />
+                <Row label="Status"    value={<StatusPill status={(viewing as any).active ? "active" : "draft"} />} />
+                <Row label="Name"      value={viewing.name} />
+                <Row label="Phone"     value={viewing.phone} />
+                <Row label="Email"     value={(viewing as any).email} />
+                <Row label="Vehicle"   value={viewing.vehicleNumber} />
+                <Row label="License"   value={(viewing as any).licenseNo} />
+                <Row label="Period"    value={`${(viewing as any).periodFrom ?? "—"} → ${(viewing as any).periodTo ?? "—"}`} />
+                <Row label="Bank"      value={(viewing as any).bank?.name ?? (viewing as any).bankName} />
+                <Row label="Account"   value={(viewing as any).bank?.account ?? (viewing as any).accountNo} />
+                <Row label="Address"   value={(viewing as any).address} />
+                <Row label="Routes"    value={
+                  ((viewing as any).routeIds ?? []).length
+                    ? ((viewing as any).routeIds as string[]).map(id => routeMap.get(id)?.code ?? id.slice(0, 6)).join(", ")
+                    : "—"
+                } />
+              </div>
+            );
+          })()}
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setViewing(null)}>Close</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
-    </PageShell>
-  );
-}
-
-function EmptyHint({ message }: { message: string }) {
-  return (
-    <div className="h-full flex items-center justify-center">
-      <Card className="max-w-md">
-        <CardContent className="p-8 text-center">
-          <p className="text-sm text-muted-foreground">{message}</p>
-        </CardContent>
-      </Card>
     </div>
   );
 }

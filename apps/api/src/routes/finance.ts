@@ -347,7 +347,8 @@ export async function financeRoutes(app: FastifyInstance) {
       const schema = z.object({
         dealerId: z.string().uuid(),
         items: z.array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1) })).min(1),
-        paymentMode: z.enum(["wallet", "upi", "credit"]).default("wallet"),
+        paymentMode: z.enum(["wallet", "upi", "credit"]).default("upi"), // ← CHANGED from "wallet"
+        notes: z.string().optional(),                                   // ← NEW
       });
       const body = schema.parse(request.body);
 
@@ -391,8 +392,17 @@ export async function financeRoutes(app: FastifyInstance) {
       try {
         const result = await pgClient.begin(async (tx) => {
           const [order] = await tx`
-            INSERT INTO orders (dealer_id, zone_id, status, payment_mode, subtotal, total_gst, grand_total, item_count, placed_by, created_at, updated_at)
-            VALUES (${body.dealerId}, ${dealer.zone_id}, 'pending', ${body.paymentMode}, ${subtotal.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric, ${grandTotal.toFixed(2)}::numeric, ${orderItemsData.length}, ${request.admin!.userId}, now(), now())
+            INSERT INTO orders (
+              dealer_id, zone_id, status, payment_mode, subtotal, 
+              total_gst, grand_total, item_count, notes, placed_by, 
+              created_at, updated_at
+            )
+            VALUES (
+              ${body.dealerId}, ${dealer.zone_id}, 'pending', ${body.paymentMode}, 
+              ${subtotal.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric, 
+              ${grandTotal.toFixed(2)}::numeric, ${orderItemsData.length}, 
+              ${body.notes ?? null}, ${request.admin!.userId}, now(), now()
+            )
             RETURNING id, created_at
           `;
           for (const item of orderItemsData) {

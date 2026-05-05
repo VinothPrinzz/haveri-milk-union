@@ -32,7 +32,6 @@ import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
 import InvoicesListPage from "@/pages/sales/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
 import PaymentsOverviewPage from "@/pages/finance/PaymentsOverviewPage";
-import DealerLedgerPage     from "@/pages/finance/DealerLedgerPage"; 
 import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
@@ -50,7 +49,6 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 1000 * 60 * 2,
       retry: (failureCount, error) => {
-        // Don't retry 401 — user needs to re-login
         if ((error as { status?: number })?.status === 401) return false;
         return failureCount < 1;
       },
@@ -58,15 +56,14 @@ const queryClient = new QueryClient({
   },
 });
 
-// Inner component — has access to AuthContext
 function AppInner() {
   const { user, loading, login } = useAuth();
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="space-y-3 w-64">
-          <Skeleton className="h-8 w-full" />
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="space-y-2 w-64">
+          <Skeleton className="h-9 w-full" />
           <Skeleton className="h-4 w-3/4" />
           <Skeleton className="h-4 w-1/2" />
         </div>
@@ -74,9 +71,7 @@ function AppInner() {
     );
   }
 
-  if (!user) {
-    return <LoginPage onLogin={login} />;
-  }
+  if (!user) return <LoginPage onLogin={login} />;
 
   return (
     <BrowserRouter>
@@ -95,7 +90,6 @@ function AppInner() {
           <Route path="/masters/batches/new" element={<BatchesPage tab="new" />} />
           <Route path="/masters/products" element={<ProductsPage tab="list" />} />
           <Route path="/masters/products/add" element={<ProductsPage tab="add" />} />
-          <Route path="/masters/products/rates" element={<ProductsPage tab="rates" />} />
           <Route path="/masters/price-chart" element={<PriceChartPage />} />
           <Route path="/masters/price-revisions"  element={<PriceRevisionsPage />} />
           {/* Sales */}
@@ -115,10 +109,9 @@ function AppInner() {
           <Route path="/fgs/reports" element={<StockReportsPage />} />
           <Route path="/fgs/dispatch" element={<DispatchPage />} />
           <Route path="/fgs/dispatch-sheet" element={<DispatchSheetPage />} />
-          <Route path="/fgs/dispatch/create" element={<CreateDispatchPage />} /> 
+          <Route path="/fgs/dispatch/create" element={<CreateDispatchPage />} />
           {/* Finance */}
           <Route path="/finance/payments" element={<PaymentsOverviewPage />} />
-          <Route path="/finance/ledger"   element={<DealerLedgerPage />} />
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />

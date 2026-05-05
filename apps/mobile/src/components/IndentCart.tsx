@@ -50,7 +50,6 @@ interface IndentCartProps {
   savingsLabel?: string;
   creditLimit?: number;       
   creditAvailable?: number;    // (limit - outstanding)
-  walletBalance?: number;
   onBack: () => void;
   onChangeLocation: () => void;
   onOrderPlaced: (orderId: string) => void;
@@ -61,7 +60,6 @@ const PAYMENT_OPTIONS: ReadonlyArray<{
   icon: string;
   label: string;
 }> = [
-    { id: "wallet",  icon: "💼", label: "Wallet" },
     { id: "credit",  icon: "💳", label: "Credit" },   // <- ADD
     { id: "upi",     icon: "📱", label: "UPI" },
     { id: "card",    icon: "💳", label: "Card" },
@@ -74,8 +72,7 @@ export default function IndentCart({
   savingsAmount = 0,
   savingsLabel = "Bulk offer applied",
   creditLimit,       
-  creditAvailable,    
-  walletBalance,      
+  creditAvailable,     
   onBack,
   onChangeLocation,
   onOrderPlaced,
@@ -195,13 +192,14 @@ export default function IndentCart({
           </View>
         )}
 
-        {/* Item rows */}
-        {items.map((item) => (
+      {/* Item rows */}
+      {items.map((item) => {
+        const displayedUnitPrice = Math.round(item.mrp ?? item.basePrice ?? 0); // ← C.3: Show MRP
+        return (
           <View key={item.id} style={styles.cartItem}>
             <View style={styles.ciEmo}>
               <Text style={styles.ciEmoText}>{item.icon ?? "📦"}</Text>
             </View>
-
             <View style={styles.ciInfo}>
               <Text style={styles.ciName} numberOfLines={1}>
                 {item.name}
@@ -210,7 +208,7 @@ export default function IndentCart({
                 {item.unit}
               </Text>
               <Text style={styles.ciPrice}>
-                ₹{Math.round(item.basePrice)} × {item.quantity} ={" "}
+                ₹{displayedUnitPrice} × {item.quantity} ={" "}
                 <Text style={styles.ciPriceStrong}>
                   ₹{item.lineSubtotal.toFixed(2)}
                 </Text>
@@ -237,7 +235,8 @@ export default function IndentCart({
               </TouchableOpacity>
             </View>
           </View>
-        ))}
+        );
+      })}
 
         {/* Bill summary */}
         {!isEmpty && (
@@ -301,15 +300,13 @@ export default function IndentCart({
           {PAYMENT_OPTIONS.map((opt) => {
             const isSelected = selectedPay === opt.id;
             const sub =
-                opt.id === "wallet" ? `₹${walletBalance?.toFixed(0) ?? "0"}` :
                 opt.id === "credit" && creditAvailable !== undefined
                 ? `₹${creditAvailable.toFixed(0)} avail`
                 : undefined;
 
             // Disable credit if no headroom
             const disabled =
-                (opt.id === "credit" && (creditAvailable ?? 0) < grandTotal) ||
-                (opt.id === "wallet" && (walletBalance ?? 0) < grandTotal);
+                (opt.id === "credit" && (creditAvailable ?? 0) < grandTotal);
 
             return (
                 <TouchableOpacity

@@ -6,6 +6,7 @@ interface CartProduct {
   icon: string;
   unit: string;
   basePrice: number;
+  mrp: number;
   gstPercent: number;
 }
 
@@ -18,12 +19,12 @@ interface CartItem extends CartProduct {
 
 interface CartState {
   items: Record<string, CartItem>;
-  paymentMode: "wallet" | "upi" | "credit";
+  paymentMode: "upi" | "credit";
 
   addItem: (product: CartProduct) => void;
   removeItem: (productId: string) => void;
   setQuantity: (productId: string, qty: number) => void;
-  setPaymentMode: (mode: "wallet" | "upi" | "credit") => void;
+  setPaymentMode: (mode: "upi" | "credit") => void;
   clearCart: () => void;
 
   // Computed
@@ -42,7 +43,7 @@ function calcLine(price: number, gst: number, qty: number) {
 
 export const useCartStore = create<CartState>((set, get) => ({
   items: {},
-  paymentMode: "wallet",
+  paymentMode: "upi",
 
   addItem: (product) => {
     set((state) => {
@@ -86,7 +87,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   setPaymentMode: (mode) => set({ paymentMode: mode }),
-  clearCart: () => set({ items: {}, paymentMode: "wallet" }),
+  clearCart: () => set({ items: {}, paymentMode: "upi" }),
 
   getItems: () => Object.values(get().items).filter((i) => i.quantity > 0),
   getItemCount: () => Object.values(get().items).reduce((a, i) => a + i.quantity, 0),

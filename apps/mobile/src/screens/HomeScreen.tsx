@@ -222,6 +222,7 @@ export default function HomeScreen({ onOpenCart, onOpenNotifications }: HomeScre
           icon: product.icon ?? "📦",
           unit: product.unit,
           basePrice: product.basePrice,
+          mrp: product.mrp ?? product.basePrice,
           gstPercent: product.gstPercent,
         });
       }
@@ -238,6 +239,7 @@ export default function HomeScreen({ onOpenCart, onOpenNotifications }: HomeScre
       icon: product.icon ?? "📦",
       unit: product.unit,
       basePrice: product.basePrice,
+      mrp: product.mrp ?? product.basePrice,
       gstPercent: product.gstPercent,
     });
   };
@@ -637,6 +639,7 @@ function toCartProduct(p: Product) {
     icon: p.icon ?? "📦",
     unit: p.unit,
     basePrice: p.basePrice,
+    mrp: p.mrp ?? p.basePrice,
     gstPercent: p.gstPercent,
   };
 }

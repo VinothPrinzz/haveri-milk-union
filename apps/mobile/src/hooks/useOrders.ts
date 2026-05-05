@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import type {
@@ -42,7 +42,7 @@ interface PaginatedRawOrders {
 
 // Context type for optimistic update
 interface CancelOrderContext {
-  prev: [unknown, { data: Order[] } | undefined][];
+  prev: [QueryKey, { data: Order[] } | undefined][];
 }
 
 function toIsoString(v: unknown): string {

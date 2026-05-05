@@ -189,6 +189,7 @@ export default function OrdersScreen() {
             icon: product.icon ?? "📦",
             unit: product.unit,
             basePrice: product.basePrice,
+            mrp: product.mrp ?? product.basePrice,
             gstPercent: product.gstPercent,
           });
         }

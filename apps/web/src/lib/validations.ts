@@ -129,5 +129,6 @@ export const productSchema = z.object({
   packetsCrate: z.coerce.number().int().min(0).default(0),
   printDirection: z.enum(["Across", "Down"]).default("Across"),
   makeZeroInIndents: z.boolean().default(false),
+  terminated: z.boolean().default(false),
 });
 export type ProductFormData = z.infer<typeof productSchema>;

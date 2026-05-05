@@ -1,504 +1,557 @@
-// apps/web/src/pages/masters/ProductsPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// All Products / Add Packet / Rate Categories — Marketing v1.4
-//
-// tab=list   → PageShell + Category filter above table
-// tab=add    → Add-packet form with Category F9
-// tab=rates  → Price chart with Category filter (replaces pagination)
+// Products: All Products / Add Product / Product Rates — ERP refactor
+// Routes preserved: /masters/products /add /rates
 // ════════════════════════════════════════════════════════════════════
-
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import PageHeader from "@/components/PageHeader";
-import { PageShell, FilterBar, ScrollableTableBody } from "@/components/PageShell";
-import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import PageHeader, {
+  FilterBar,
+  FormSection,
+  FormFooter,
+  Field,
+  EmptyState,
+  fmtINR,
+} from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import {
-  Form,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormControl,
-  FormMessage,
-} from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus } from "lucide-react";
-import { fetchProducts, createProduct, getRateCategories } from "@/services/api";
-import { get } from "@/lib/apiClient";
+import {
+  Form, FormField, FormItem, FormLabel, FormControl, FormMessage,
+} from "@/components/ui/form";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Plus, Search } from "lucide-react";
+import {
+  fetchProducts, 
+  getRateCategories, 
+  createProduct, 
+  updateProduct, 
+  deleteProduct,
+  upsertProductRate, 
+  type Product,
+} from "@/services/api";
+
+const fetchRateCategories = () => getRateCategories().map((name, i) => ({ id: String(i), name }));
+
 import { productSchema, type ProductFormData } from "@/lib/validations";
 
-interface Props {
-  tab?: "list" | "add" | "rates";
-}
+interface Props { tab?: "list" | "add" | "rates"; }
 
 export default function ProductsPage({ tab = "list" }: Props) {
-  const qc = useQueryClient();
-  const { data: products = [], isLoading } = useQuery({
-    queryKey: ["products"],
-    queryFn: fetchProducts,
-  });
-  const { data: categories = [] } = useQuery({
-    queryKey: ["categories"],
-    queryFn: async () => {
-      const data = await get<{ categories: { id: string; name: string }[] }>("/categories");
-      return data.categories ?? [];
-    },
-  });
-
-  const categoryOptions: F9Option[] = useMemo(
-    () => categories.map(c => ({ value: c.id, label: c.name })),
-    [categories]
-  );
-
-  // ── Add Packet tab ────────────────────────────────────────────
-  const createMutation = useMutation({
-    mutationFn: createProduct,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["products"] });
-      toast.success("Product created");
-    },
-    onError: (e: any) => toast.error(e?.message || "Failed to create product"),
-  });
-
-  if (tab === "add") {
-    return <AddPacketTab categoryOptions={categoryOptions} createMutation={createMutation} />;
-  }
-
-  if (tab === "rates") {
-    return <RateCategoriesTab products={products} categories={categories} />;
-  }
-
-  // Default: list
-  return <ProductListTab products={products} categories={categories} isLoading={isLoading} />;
+  if (tab === "add") return <ProductAddTab />;
+  return <ProductListTab />;
 }
 
-// ══════════════════════════════════════════════════════════════════
-// List tab — Category filter above table
-// ══════════════════════════════════════════════════════════════════
-function ProductListTab({
-  products,
-  categories,
-  isLoading,
-}: {
-  products: any[];
-  categories: { id: string; name: string }[];
-  isLoading: boolean;
-}) {
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+// ── List tab ─────────────────────────────────────────────────────
+function ProductListTab() {
+  const qc = useQueryClient();
+  const { data: products = [], isLoading } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
+  
   const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState<Product | null>(null);
+  const [deleting, setDeleting] = useState<Product | null>(null);
 
-  const categoryNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    categories.forEach(c => m.set(c.id, c.name));
-    return m;
-  }, [categories]);
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: ProductFormData }) => updateProduct(id, data),
+    onSuccess: () => { 
+      qc.invalidateQueries({ queryKey: ["products"] }); 
+      toast.success("Product updated"); 
+      setEditing(null); 
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteProduct(id),
+    onSuccess: () => { 
+      qc.invalidateQueries({ queryKey: ["products"] }); 
+      toast.success("Product deleted"); 
+      setDeleting(null); 
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return products.filter(p => {
-      if (categoryFilter !== "all") {
-        // p.category is the category name (resolved by backend), also check id
-        const catName = categoryNameById.get(categoryFilter);
-        if (p.category !== catName && p.categoryId !== categoryFilter) return false;
-      }
-      if (q && !`${p.code} ${p.name} ${p.reportAlias}`.toLowerCase().includes(q)) {
-        return false;
-      }
-      return true;
-    });
-  }, [products, categoryFilter, categoryNameById, search]);
+    if (!q) return products;
+    return products.filter((p: Product) =>
+      p.name?.toLowerCase().includes(q) || p.code?.toLowerCase().includes(q)
+    );
+  }, [products, search]);
 
   return (
-    <PageShell
-      header={
-        <>
-          <PageHeader title="All Products" description="View all products and packets" />
-          <FilterBar>
-            <div className="w-60">
-              <label className="text-sm font-medium mb-1.5 block">Category</label>
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  {categories.map(c => (
-                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex-1 min-w-60">
-              <label className="text-sm font-medium mb-1.5 block">Search</label>
-              <Input
-                placeholder="Search by name, code, or alias"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-              />
-            </div>
-          </FilterBar>
-        </>
-      }
-    >
-      {isLoading ? (
-        <ScrollableTableBody>
-          <div className="p-6 space-y-2">
-            {Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title="All Products"
+        subtitle="Catalogue of finished goods"
+        actions={
+          <>
+            <Button asChild size="sm" variant="outline" className="h-8">
+              <a href="/masters/products/rates">Manage Rates</a>
+            </Button>
+            <Button asChild size="sm" className="h-8">
+              <a href="/masters/products/add"><Plus className="h-3.5 w-3.5 mr-1" /> Add Product</a>
+            </Button>
+          </>
+        }
+      />
+
+      <FilterBar>
+        <Field label="Search">
+          <div className="relative">
+            <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search by name / SKU / code"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="erp-input pl-7 w-72"
+            />
           </div>
-        </ScrollableTableBody>
-      ) : (
-        <ScrollableTableBody>
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/50 backdrop-blur border-b">
-              <tr className="text-xs text-muted-foreground">
-                <th className="text-left py-2.5 px-3 font-medium">Code</th>
-                <th className="text-left py-2.5 px-3 font-medium">Product</th>
-                <th className="text-left py-2.5 px-3 font-medium">Alias</th>
-                <th className="text-left py-2.5 px-3 font-medium">Category</th>
-                <th className="text-left py-2.5 px-3 font-medium">Pack</th>
-                <th className="text-right py-2.5 px-3 font-medium">MRP</th>
-                <th className="text-right py-2.5 px-3 font-medium">GST%</th>
-                <th className="text-left py-2.5 px-3 font-medium">HSN</th>
-                <th className="text-right py-2.5 px-3 font-medium">Stock</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(p => (
-                <tr key={p.id} className="border-b hover:bg-muted/30">
-                  <td className="py-2 px-3 font-mono text-xs">{p.code}</td>
-                  <td className="py-2 px-3 font-medium">{p.name}</td>
-                  <td className="py-2 px-3 text-xs text-muted-foreground">{p.reportAlias || "—"}</td>
-                  <td className="py-2 px-3 text-xs">{p.category}</td>
-                  <td className="py-2 px-3 text-xs">{p.packSize} {p.unit}</td>
-                  <td className="py-2 px-3 text-right font-mono">₹{p.mrp}</td>
-                  <td className="py-2 px-3 text-right">{p.gstPercent}%</td>
-                  <td className="py-2 px-3 font-mono text-xs">{p.hsnNo || "—"}</td>
-                  <td className="py-2 px-3 text-right font-mono">{p.stock}</td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
+        </Field>
+      </FilterBar>
+
+      <div className="flex-1 overflow-auto p-3">
+        <div className="erp-panel overflow-hidden">
+          {isLoading ? (
+            <div className="p-4 space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
+            </div>
+          ) : (
+            <table className="erp-table">
+              <thead>
                 <tr>
-                  <td colSpan={9} className="py-10 text-center text-muted-foreground text-sm">
-                    No products match the filter.
-                  </td>
+                  <th style={{ width: 80 }}>Code</th>
+                  <th>Name</th>
+                  <th style={{ width: 140 }}>Category</th>
+                  <th style={{ width: 90 }}>Unit</th>
+                  <th className="num" style={{ width: 120, textAlign: "right" }}>Base Price</th>
+                  <th className="num" style={{ width: 80, textAlign: "right" }}>GST %</th>
+                  <th className="num" style={{ width: 90, textAlign: "right" }}>Stock</th>
+                  <th style={{ width: 100, textAlign: "right" }}>Actions</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </ScrollableTableBody>
-      )}
-    </PageShell>
-  );
-}
+              </thead>
+              <tbody>
+                {filtered.map((p: Product) => (
+                  <tr key={p.id}>
+                    <td className="font-mono text-[12px]">{p.code}</td>
+                    <td className="font-medium">{p.name}</td>
+                    <td>{p.category ?? "—"}</td>
+                    <td>{p.unit ?? "—"}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{Number(p.gstPercent ?? 0).toFixed(2)}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{p.stock ?? 0}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <Button 
+                        size="sm" 
+                        className="h-7 px-2.5 text-[12px]" 
+                        onClick={() => setEditing(p)}
+                      >
+                        Update
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={8} className="py-8 text-center text-muted-foreground">No products found.</td></tr>
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
 
-// ══════════════════════════════════════════════════════════════════
-// Add Packet tab — Category as F9
-// ══════════════════════════════════════════════════════════════════
-function AddPacketTab({
-  categoryOptions,
-  createMutation,
-}: {
-  categoryOptions: F9Option[];
-  createMutation: any;
-}) {
-  const form = useForm<ProductFormData>({
-    resolver: zodResolver(productSchema),
-    defaultValues: {
-      name: "",
-      reportAlias: "",
-      category: "",
-      packSize: 1,
-      unit: "",
-      mrp: 0,
-      gstPercent: 0,
-      hsnNo: "",
-      subsidy: false,
-      subRate: 0,
-      indentInBox: false,
-      boxQty: 0,
-      sortPosition: 0,
-      packetsCrate: 0,
-      printDirection: "Across",
-      makeZeroInIndents: false,
-    },
-  });
+      {/* Edit dialog */}
+      <Dialog open={!!editing} onOpenChange={open => !open && setEditing(null)}>
+        <DialogContent className="max-w-3xl rounded-sm">
+          <DialogHeader>
+            <DialogTitle className="text-[15px] font-semibold">
+              Edit Product — <span className="font-mono">{editing?.code}</span>
+            </DialogTitle>
+          </DialogHeader>
+          {editing && (
+            <ProductFormBody
+              embedded
+              initialData={editing}
+              onCancel={() => setEditing(null)}
+              isSubmitting={updateMutation.isPending}
+              onSubmit={async data => updateMutation.mutateAsync({ id: editing.id, data })}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
 
-  return (
-    <div>
-      <PageHeader title="Add Packet" description="Add a new product / packet" />
-      <Card>
-        <CardContent className="pt-6">
-          <Form {...form}>
-            <form
-              onSubmit={form.handleSubmit(data => {
-                createMutation.mutate(data, { onSuccess: () => form.reset() });
-              })}
-              className="space-y-4"
+      {/* Delete confirm */}
+      <Dialog open={!!deleting} onOpenChange={open => !open && setDeleting(null)}>
+        <DialogContent className="max-w-md rounded-sm">
+          <DialogHeader>
+            <DialogTitle className="text-[15px] font-semibold">
+              Delete <span className="font-mono">{deleting?.code}</span>?
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-[13px] text-muted-foreground">
+            This will soft-delete <span className="font-medium text-foreground">{deleting?.name}</span>.
+            Existing indents and invoices retain the historical product reference.
+          </p>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setDeleting(null)}>Cancel</Button>
+            <Button 
+              variant="destructive" 
+              size="sm" 
+              className="h-8"
+              onClick={() => deleting && deleteMutation.mutate(deleting.id)}
+              disabled={deleteMutation.isPending}
             >
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <FormField control={form.control} name="name" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Product Name</FormLabel>
-                    <FormControl><Input placeholder="Nandini Toned Milk 500ml" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="reportAlias" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Report Alias</FormLabel>
-                    <FormControl><Input placeholder="TM 500" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="category" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Category</FormLabel>
-                    <FormControl>
-                      <F9SearchSelect
-                        value={field.value || null}
-                        onChange={v => field.onChange(v ?? "")}
-                        options={categoryOptions}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="packSize" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Pack Size</FormLabel>
-                    <FormControl>
-                      <Input type="number" step="0.01" {...field}
-                        onChange={e => field.onChange(parseFloat(e.target.value) || 0)} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="unit" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Unit</FormLabel>
-                    <FormControl><Input placeholder="ltr / kg / pcs" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="mrp" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>MRP (₹)</FormLabel>
-                    <FormControl>
-                      <Input type="number" step="0.01" {...field}
-                        onChange={e => field.onChange(parseFloat(e.target.value) || 0)} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="gstPercent" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>GST %</FormLabel>
-                    <FormControl>
-                      <Input type="number" step="0.01" {...field}
-                        onChange={e => field.onChange(parseFloat(e.target.value) || 0)} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="hsnNo" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>HSN Code</FormLabel>
-                    <FormControl><Input placeholder="0401" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="packetsCrate" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Packets per Crate</FormLabel>
-                    <FormControl>
-                      <Input type="number" {...field}
-                        onChange={e => field.onChange(parseInt(e.target.value) || 0)} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="printDirection" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Print Direction</FormLabel>
-                    <FormControl>
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="Across">Across</SelectItem>
-                          <SelectItem value="Down">Down</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-
-                <FormField control={form.control} name="sortPosition" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Sort Position</FormLabel>
-                    <FormControl>
-                      <Input type="number" {...field}
-                        onChange={e => field.onChange(parseInt(e.target.value) || 0)} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-
-              <div className="flex gap-6 pt-2">
-                <FormField control={form.control} name="subsidy" render={({ field }) => (
-                  <FormItem className="flex items-center gap-2">
-                    <FormControl><Switch checked={field.value} onCheckedChange={field.onChange} /></FormControl>
-                    <FormLabel className="!mt-0">Subsidy</FormLabel>
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="indentInBox" render={({ field }) => (
-                  <FormItem className="flex items-center gap-2">
-                    <FormControl><Switch checked={field.value} onCheckedChange={field.onChange} /></FormControl>
-                    <FormLabel className="!mt-0">Indent in Box</FormLabel>
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="makeZeroInIndents" render={({ field }) => (
-                  <FormItem className="flex items-center gap-2">
-                    <FormControl><Switch checked={field.value} onCheckedChange={field.onChange} /></FormControl>
-                    <FormLabel className="!mt-0">Make Zero in Indents</FormLabel>
-                  </FormItem>
-                )} />
-              </div>
-
-              <Button type="submit" disabled={createMutation.isPending}>
-                <Plus className="h-4 w-4 mr-1" />
-                {createMutation.isPending ? "Saving..." : "Save Product"}
-              </Button>
-            </form>
-          </Form>
-        </CardContent>
-      </Card>
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Rate Categories tab — price chart with Category filter
-// ══════════════════════════════════════════════════════════════════
-function RateCategoriesTab({
-  products,
-  categories,
-}: {
-  products: any[];
-  categories: { id: string; name: string }[];
-}) {
-  const rateCategories = getRateCategories(); // ["Retail-Dealer","Credit Inst-MRP",...]
-  const [rateCat, setRateCat] = useState<string>(rateCategories[0]);
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+// ── Add tab ──────────────────────────────────────────────────────
+function ProductAddTab() {
+  const qc = useQueryClient();
 
-  const categoryNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    categories.forEach(c => m.set(c.id, c.name));
-    return m;
-  }, [categories]);
-
-  const filtered = useMemo(() => {
-    return products.filter((p: any) => {
-      if (p.terminated) return false;
-      if (categoryFilter !== "all") {
-        const catName = categoryNameById.get(categoryFilter);
-        if (p.category !== catName && p.categoryId !== categoryFilter) return false;
-      }
-      return true;
-    });
-  }, [products, categoryFilter, categoryNameById]);
+  const createMutation = useMutation({
+    mutationFn: (d: ProductFormData) => createProduct({
+      name: d.name,
+      reportAlias: d.reportAlias,
+      category: d.category,
+      packSize: d.packSize,
+      unit: d.unit,
+      mrp: d.mrp,
+      gstPercent: d.gstPercent,
+      hsnNo: d.hsnNo,
+      packetsCrate: d.packetsCrate,
+      printDirection: d.printDirection,
+      sortOrder: d.sortPosition,
+      subsidy: d.subsidy,
+      makeZeroInIndents: d.makeZeroInIndents,
+      terminated: d.terminated,
+    }),
+    onSuccess: () => { 
+      qc.invalidateQueries({ queryKey: ["products"] }); 
+      toast.success("Product created"); 
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
 
   return (
-    <PageShell
-      header={
-        <>
-          <PageHeader title="Rate Categories" description="Per-rate-category pricing" />
-          <FilterBar>
-            <div className="w-64">
-              <label className="text-sm font-medium mb-1.5 block">Rate Category</label>
-              <Select value={rateCat} onValueChange={setRateCat}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {rateCategories.map((r: string) => (
-                    <SelectItem key={r} value={r}>{r}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+    <div>
+      <PageHeader title="Add Product" subtitle="Create a new product master entry" />
+      <div className="p-4">
+        <ProductFormBody
+          isSubmitting={createMutation.isPending}
+          onSubmit={async (data) => { await createMutation.mutateAsync(data); }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── Shared Product Form Body ─────────────────────────────────────
+function ProductFormBody({
+  initialData, 
+  onSubmit, 
+  onCancel, 
+  isSubmitting, 
+  embedded,
+}: {
+  initialData?: Product;
+  onSubmit: (data: ProductFormData) => Promise<any> | void;
+  onCancel?: () => void;
+  isSubmitting?: boolean;
+  embedded?: boolean;
+}) {
+  const form = useForm<ProductFormData>({
+    resolver: zodResolver(productSchema),
+    defaultValues: {
+      name: initialData?.name ?? "",
+      reportAlias: initialData?.reportAlias ?? "",
+      category: initialData?.category ?? "Milk",
+      packSize: initialData?.packSize ?? 1,
+      unit: initialData?.unit ?? "L",
+      mrp: initialData?.mrp ?? 0,
+      gstPercent: initialData?.gstPercent ?? 0,
+      hsnNo: initialData?.hsnNo ?? "",
+      packetsCrate: initialData?.packetsCrate ?? 0,
+      printDirection: (initialData?.printDirection as "Across" | "Down") ?? "Across",
+      sortPosition: (initialData as any)?.sortPosition ?? initialData?.sortOrder ?? 0,
+      subsidy: (initialData as any)?.subsidy ?? false,
+      makeZeroInIndents: (initialData as any)?.makeZeroInIndents ?? false,
+      terminated: initialData?.terminated ?? false,
+    },
+  });
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(async d => { await onSubmit(d); if (!embedded) form.reset(); })}>
+        <FormSection title="Identification" cols={3}>
+          <FormField control={form.control} name="name" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Name</FormLabel>
+              <FormControl><Input placeholder="Toned Milk 500 ml" {...field} /></FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+          <FormField control={form.control} name="reportAlias" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Report Alias</FormLabel>
+              <FormControl><Input placeholder="Milk 500ml" {...field} /></FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+          <FormField control={form.control} name="category" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Category</FormLabel>
+              <FormControl>
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Milk">Milk</SelectItem>
+                    <SelectItem value="Curd">Curd</SelectItem>
+                    <SelectItem value="Ghee">Ghee</SelectItem>
+                    <SelectItem value="Butter">Butter</SelectItem>
+                    <SelectItem value="Sweets">Sweets</SelectItem>
+                    <SelectItem value="Other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+        </FormSection>
+
+        <FormSection title="Pack & Unit" cols={3}>
+          {/* Existing fields - unchanged */}
+          <FormField control={form.control} name="packSize" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Pack Size</FormLabel>
+              <FormControl><Input type="number" step="0.01" {...field} onChange={e => field.onChange(parseFloat(e.target.value))} /></FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+          <FormField control={form.control} name="unit" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Unit</FormLabel>
+              <FormControl>
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="L">L (litre)</SelectItem>
+                    <SelectItem value="ml">ml</SelectItem>
+                    <SelectItem value="kg">kg</SelectItem>
+                    <SelectItem value="g">g</SelectItem>
+                    <SelectItem value="pc">pc</SelectItem>
+                  </SelectContent>
+                </Select>
+              </FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+          <FormField control={form.control} name="packetsCrate" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Packets/Crate</FormLabel>
+              <FormControl><Input type="number" step="1" {...field} onChange={e => field.onChange(parseInt(e.target.value))} /></FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+        </FormSection>
+
+        <FormSection title="Tax & Rate" cols={3}>
+          {/* Existing fields - unchanged */}
+          <FormField control={form.control} name="hsnNo" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">HSN</FormLabel>
+              <FormControl><Input placeholder="0401" {...field} /></FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+          <FormField control={form.control} name="gstPercent" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">GST %</FormLabel>
+              <FormControl>
+                <Input type="number" step="0.01" {...field} onChange={e => field.onChange(parseFloat(e.target.value))} />
+              </FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+          <FormField control={form.control} name="mrp" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">MRP ₹</FormLabel>
+              <FormControl>
+                <Input type="number" step="0.01" {...field} onChange={e => field.onChange(parseFloat(e.target.value))} />
+              </FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+        </FormSection>
+
+        {/* New Behaviour Section */}
+        <FormSection title="Behaviour" cols={3}>
+          <Field label="Sort Position">
+            <Input 
+              className="erp-input num" 
+              type="number" 
+              min="0" 
+              {...form.register("sortPosition", { valueAsNumber: true })} 
+            />
+          </Field>
+          <Field label="Print Direction">
+            <Select 
+              value={form.watch("printDirection") || "Across"} 
+              onValueChange={v => form.setValue("printDirection", v as any)}
+            >
+              <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Across">Across</SelectItem>
+                <SelectItem value="Down">Down</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <div /> {/* spacer */}
+
+          <Field label="Subsidy">
+            <div className="flex items-center gap-2 h-10">
+              <Switch 
+                checked={!!form.watch("subsidy")} 
+                onCheckedChange={v => form.setValue("subsidy", v)} 
+              />
+              <span className="text-[13px]">{form.watch("subsidy") ? "On" : "Off"}</span>
             </div>
-            <div className="w-60">
-              <label className="text-sm font-medium mb-1.5 block">Product Category</label>
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  {categories.map(c => (
-                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          </Field>
+          <Field label="Make Zero in Indents">
+            <div className="flex items-center gap-2 h-10">
+              <Switch 
+                checked={!!form.watch("makeZeroInIndents")} 
+                onCheckedChange={v => form.setValue("makeZeroInIndents", v)} 
+              />
+              <span className="text-[13px]">{form.watch("makeZeroInIndents") ? "On" : "Off"}</span>
             </div>
-          </FilterBar>
-        </>
-      }
-    >
-      <ScrollableTableBody>
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 z-10 bg-muted/50 backdrop-blur border-b">
-            <tr className="text-xs text-muted-foreground">
-              <th className="text-left py-2.5 px-3 font-medium">Code</th>
-              <th className="text-left py-2.5 px-3 font-medium">Product</th>
-              <th className="text-left py-2.5 px-3 font-medium">Category</th>
-              <th className="text-left py-2.5 px-3 font-medium">Pack</th>
-              <th className="text-right py-2.5 px-3 font-medium">MRP</th>
-              <th className="text-right py-2.5 px-3 font-medium">Rate ({rateCat})</th>
-              <th className="text-right py-2.5 px-3 font-medium">GST%</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((p: any) => (
-              <tr key={p.id} className="border-b hover:bg-muted/30">
-                <td className="py-2 px-3 font-mono text-xs">{p.code}</td>
-                <td className="py-2 px-3 font-medium">{p.name}</td>
-                <td className="py-2 px-3 text-xs">{p.category}</td>
-                <td className="py-2 px-3 text-xs">{p.packSize} {p.unit}</td>
-                <td className="py-2 px-3 text-right font-mono">₹{p.mrp}</td>
-                <td className="py-2 px-3 text-right font-mono font-semibold">
-                  ₹{p.rateCategories?.[rateCat] ?? p.mrp}
-                </td>
-                <td className="py-2 px-3 text-right">{p.gstPercent}%</td>
-              </tr>
-            ))}
-            {filtered.length === 0 && (
-              <tr>
-                <td colSpan={7} className="py-10 text-center text-muted-foreground text-sm">
-                  No products match the filter.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </ScrollableTableBody>
-    </PageShell>
+          </Field>
+          <Field label="Terminated">
+            <div className="flex items-center gap-2 h-10">
+              <Switch
+                checked={!!form.watch("terminated")}
+                onCheckedChange={v => form.setValue("terminated", v)}
+                className="data-[state=checked]:bg-destructive"
+              />
+              <span className={`text-[13px] ${form.watch("terminated") ? "text-destructive font-semibold" : ""}`}>
+                {form.watch("terminated") ? "Terminated" : "Active"}
+              </span>
+            </div>
+          </Field>
+        </FormSection>
+
+        <FormFooter>
+          {onCancel && <Button type="button" variant="outline" size="sm" className="h-8" onClick={onCancel}>Cancel</Button>}
+          <Button type="submit" size="sm" className="h-8" disabled={isSubmitting}>
+            {isSubmitting ? "Saving…" : (initialData ? "Save Changes" : "Save Product")}
+          </Button>
+        </FormFooter>
+      </form>
+    </Form>
+  );
+}
+
+// ── Rates tab ───────────────────────────────────────────────────
+function ProductRatesTab() {
+  const qc = useQueryClient();
+  const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
+  const { data: categories = [] } = useQuery({ queryKey: ["rate-categories"], queryFn: fetchRateCategories });
+  
+  const [productId, setProductId] = useState<string>("");
+  const [draft, setDraft] = useState<Record<string, number>>({});
+
+  const product = products.find((p: Product) => p.id === productId);
+
+  const upsert = useMutation({
+    mutationFn: (args: { productId: string; categoryId: string; rate: number }) =>
+      upsertProductRate(args.productId, args.categoryId, args.rate),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["products"] }); toast.success("Rate saved"); },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
+
+  return (
+    <div className="flex flex-col h-full">
+      <PageHeader title="Product Rates" subtitle="Per rate-category prices for each product" />
+      <FilterBar>
+        <Field label="Product">
+          <Select value={productId} onValueChange={setProductId}>
+            <SelectTrigger className="erp-input w-72"><SelectValue placeholder="Pick a product…" /></SelectTrigger>
+            <SelectContent>
+              {products.map((p: Product) => (
+                <SelectItem key={p.id} value={p.id}>{p.code} — {p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      </FilterBar>
+
+      <div className="flex-1 overflow-auto p-3">
+        <div className="erp-panel overflow-hidden">
+          {!product ? (
+            <EmptyState title="Select a product to manage rate-category prices." />
+          ) : (
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th>Rate Category</th>
+                  <th className="num" style={{ width: 160, textAlign: "right" }}>Base Rate</th>
+                  <th className="num" style={{ width: 200, textAlign: "right" }}>Effective Rate ₹</th>
+                  <th style={{ width: 130, textAlign: "right" }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {categories.map((c: any) => {
+                  const existing = (product.rateCategories ?? {})[c.name] ?? product.mrp ?? 0;
+                  const value = draft[c.id] ?? existing;
+                  return (
+                    <tr key={c.id}>
+                      <td className="font-medium">{c.name}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(product.mrp ?? 0)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <Input
+                          type="number" 
+                          step="0.01"
+                          className="erp-input ml-auto w-32 text-right tabular-nums"
+                          value={value}
+                          onChange={e => setDraft(d => ({ ...d, [c.id]: parseFloat(e.target.value) }))}
+                        />
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <Button 
+                          size="sm" 
+                          className="h-7"
+                          disabled={upsert.isPending || draft[c.id] === undefined || draft[c.id] === existing}
+                          onClick={() => upsert.mutate({ 
+                            productId: product.id, 
+                            categoryId: c.id, 
+                            rate: draft[c.id] 
+                          })}
+                        >
+                          Save
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {categories.length === 0 && (
+                  <tr><td colSpan={4} className="py-8 text-center text-muted-foreground">No rate categories defined yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

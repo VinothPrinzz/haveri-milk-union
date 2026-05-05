@@ -1,67 +1,70 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import PageHeader from "@/components/PageHeader";
-import { Card, CardContent } from "@/components/ui/card";
+import PageHeader, {
+  FilterBar,
+  EmptyState,
+  fmtNum,
+  fmtDate,
+} from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ChevronLeft, ChevronRight, Printer, FileBarChart2 } from "lucide-react";
 import { fetchStockEntries } from "@/services/api";
-import { ChevronLeft, ChevronRight, Printer } from "lucide-react";
 
-// Shared report header
 function ReportHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <div className="text-center mb-4">
-      <p className="font-bold text-sm uppercase tracking-wide">HAVERI MILK UNION</p>
-      <p className="font-bold text-base mt-0.5">{title}</p>
-      {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
+      <p className="text-[12px] font-bold uppercase tracking-wide">HAVERI MILK UNION</p>
+      <p className="text-[14px] font-bold mt-0.5">{title}</p>
+      {subtitle && <p className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</p>}
     </div>
   );
 }
 
 export default function StockReportsPage() {
   const today = new Date().toISOString().split("T")[0];
-
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
   const [generated, setGenerated] = useState(false);
   const [currentPage, setCurrentPage] = useState(0);
 
-  // API accepts a single snapshot date; use report end-date.
-  const { data: stockEntries = [] } = useQuery({
-    queryKey: ["stock-report", from, to],           // Important: dates in queryKey
-    queryFn: () => fetchStockEntries(to),
-    enabled: generated,                             // Only fetch after Generate is clicked
+  const { data: stockEntries = [], isLoading } = useQuery({
+    queryKey: ["stock-report", from, to],
+    queryFn: () => fetchStockEntries(from),
+    enabled: generated,
   });
 
+  const handleGenerate = () => {
+    setGenerated(true);
+    setCurrentPage(0);
+  };
+
   const pages = generated ? [
-    <div key="p1">
-      <ReportHeader 
-        title="STOCK POSITION REPORT" 
-        subtitle={`${from} to ${to}`} 
-      />
+    <div key="p1" className="text-foreground">
+      <ReportHeader title="STOCK POSITION REPORT" subtitle={`${fmtDate(from)} to ${fmtDate(to)}`} />
       <table className="w-full text-[11px] border-collapse">
         <thead>
-          <tr className="border bg-muted/30">
-            <th className="border py-1.5 px-2 text-left font-bold">Product</th>
-            <th className="border py-1.5 px-2 text-left font-bold">Category</th>
-            <th className="border py-1.5 px-2 text-right font-bold">Opening</th>
-            <th className="border py-1.5 px-2 text-right font-bold">Received</th>
-            <th className="border py-1.5 px-2 text-right font-bold">Dispatched</th>
-            <th className="border py-1.5 px-2 text-right font-bold">Wastage</th>
-            <th className="border py-1.5 px-2 text-right font-bold">Closing</th>
+          <tr className="bg-muted/50">
+            <th className="border border-border py-1.5 px-2 text-left font-bold">Product</th>
+            <th className="border border-border py-1.5 px-2 text-left font-bold">Category</th>
+            <th className="border border-border py-1.5 px-2 text-right font-bold num">Opening</th>
+            <th className="border border-border py-1.5 px-2 text-right font-bold num">Received</th>
+            <th className="border border-border py-1.5 px-2 text-right font-bold num">Dispatched</th>
+            <th className="border border-border py-1.5 px-2 text-right font-bold num">Wastage</th>
+            <th className="border border-border py-1.5 px-2 text-right font-bold num">Closing</th>
           </tr>
         </thead>
         <tbody>
-          {stockEntries.map(s => (
-            <tr key={s.id} className="border">
-              <td className="border py-1 px-2">{s.productName.replace("Nandini ", "")}</td>
-              <td className="border py-1 px-2">{s.category}</td>
-              <td className="border py-1 px-2 text-right">{s.opening}</td>
-              <td className="border py-1 px-2 text-right">{s.received}</td>
-              <td className="border py-1 px-2 text-right">{s.dispatched}</td>
-              <td className="border py-1 px-2 text-right">{s.wastage}</td>
-              <td className="border py-1 px-2 text-right font-semibold">
-                {s.closing ?? (s.opening + s.received - s.dispatched - s.wastage)}
+          {(stockEntries as any[]).map((s: any) => (
+            <tr key={s.id}>
+              <td className="border border-border py-1 px-2">{(s.productName || "").replace("Nandini ", "")}</td>
+              <td className="border border-border py-1 px-2">{s.category}</td>
+              <td className="border border-border py-1 px-2 text-right num">{fmtNum(s.opening)}</td>
+              <td className="border border-border py-1 px-2 text-right num">{fmtNum(s.received)}</td>
+              <td className="border border-border py-1 px-2 text-right num">{fmtNum(s.dispatched)}</td>
+              <td className="border border-border py-1 px-2 text-right num">{fmtNum(s.wastage)}</td>
+              <td className="border border-border py-1 px-2 text-right font-semibold num">
+                {fmtNum(s.closing ?? (s.opening + s.received - s.dispatched - s.wastage))}
               </td>
             </tr>
           ))}
@@ -70,77 +73,75 @@ export default function StockReportsPage() {
     </div>
   ] : [];
 
-  const handleGenerate = () => {
-    setGenerated(true);
-    setCurrentPage(0);
-  };
-
   return (
-    <div>
-      <PageHeader title="Stock Reports" description="Generate FGS stock position reports" />
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title="Stock Reports"
+        subtitle="Generate FGS stock position reports"
+        actions={
+          generated && (
+            <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
+              <Printer className="h-3.5 w-3.5 mr-1.5" /> Print
+            </Button>
+          )
+        }
+      />
 
-      {/* Date pickers + Generate button */}
-      <div className="border rounded-lg p-4 mb-4 bg-card flex items-end gap-4">
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-medium text-muted-foreground">From</label>
-          <input 
-            type="date" 
-            value={from} 
-            onChange={e => setFrom(e.target.value)}
-            className="h-9 w-40 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" 
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-medium text-muted-foreground">To</label>
-          <input 
-            type="date" 
-            value={to} 
-            onChange={e => setTo(e.target.value)}
-            className="h-9 w-40 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" 
-          />
-        </div>
-        <Button onClick={handleGenerate}>Generate Report</Button>
-      </div>
-
-      {generated && pages.length > 0 && (
+      <FilterBar>
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-medium">Stock Position Report</span>
-            <div className="flex items-center gap-2">
-              <Button 
-                variant="outline" 
-                size="icon" 
-                className="h-8 w-8" 
-                onClick={() => setCurrentPage(p => Math.max(0, p - 1))} 
+          <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">From</label>
+          <Input type="date" value={from} onChange={e => setFrom(e.target.value)} className="erp-input w-40" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">To</label>
+          <Input type="date" value={to} onChange={e => setTo(e.target.value)} className="erp-input w-40" />
+        </div>
+        <Button size="sm" className="h-8 self-end" onClick={handleGenerate}>
+          <FileBarChart2 className="h-3.5 w-3.5 mr-1.5" />
+          Generate Report
+        </Button>
+      </FilterBar>
+
+      <div className="flex-1 overflow-auto p-4">
+        {!generated ? (
+          <EmptyState title="Choose a date range and click Generate" hint="Stock movements within the range will appear here" />
+        ) : isLoading ? (
+          <div className="erp-panel p-8 text-center text-muted-foreground">Loading report…</div>
+        ) : pages.length === 0 ? (
+          <EmptyState title="No stock movements in this range" />
+        ) : (
+          <div>
+            <div className="flex items-center justify-between mb-3 erp-page-actions">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
                 disabled={currentPage === 0}
+                onClick={() => setCurrentPage(p => p - 1)}
               >
-                <ChevronLeft className="h-4 w-4" />
+                <ChevronLeft className="h-3.5 w-3.5" /> Previous
               </Button>
-              <span className="text-sm text-muted-foreground">
+              <span className="text-[12px] text-muted-foreground">
                 Page {currentPage + 1} of {pages.length}
               </span>
-              <Button 
-                variant="outline" 
-                size="icon" 
-                className="h-8 w-8" 
-                onClick={() => setCurrentPage(p => Math.min(pages.length - 1, p + 1))} 
-                disabled={currentPage === pages.length - 1}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                disabled={currentPage >= pages.length - 1}
+                onClick={() => setCurrentPage(p => p + 1)}
               >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => window.print()}>
-                <Printer className="h-4 w-4" />
+                Next <ChevronRight className="h-3.5 w-3.5" />
               </Button>
             </div>
-          </div>
-
-          <div className="border rounded-lg p-6 bg-card min-h-[500px]">
-            <div className="max-w-[794px] mx-auto bg-white p-8 shadow-sm print:shadow-none print:p-0">
-              {pages[currentPage]}
+            <div className="erp-panel p-6 max-w-[840px] mx-auto print:max-w-full print:p-0 print:border-0 print:shadow-none">
+              <div className="print-document">
+               {pages[currentPage]}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

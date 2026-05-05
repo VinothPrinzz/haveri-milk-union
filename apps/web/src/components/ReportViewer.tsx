@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Maximize2, Printer } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
+import { ChevronLeft, ChevronRight, Printer } from "lucide-react";
+import { EmptyState } from "@/components/PageHeader";
 
 interface ReportViewerProps {
   title: string;
@@ -11,38 +11,46 @@ interface ReportViewerProps {
 export function ReportViewer({ title, pages }: ReportViewerProps) {
   const [currentPage, setCurrentPage] = useState(0);
 
-  if (!pages.length) return (
-    <Card><CardContent className="py-12 text-center text-muted-foreground">No data for selected range.</CardContent></Card>
-  );
+  if (!pages.length) {
+    return (
+      <div className="erp-panel">
+        <EmptyState title="No data for selected range." hint="Adjust your filters and try again." />
+      </div>
+    );
+  }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm font-medium text-muted-foreground">{title}</span>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => setCurrentPage(Math.max(0, currentPage - 1))} disabled={currentPage === 0}>
-            <ChevronLeft className="h-4 w-4" />
+    <div className="erp-panel">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border no-print">
+        <span className="text-[12px] uppercase tracking-wide font-semibold text-muted-foreground">{title}</span>
+        <div className="flex items-center gap-1">
+          <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => setCurrentPage(Math.max(0, currentPage - 1))} disabled={currentPage === 0}>
+            <ChevronLeft className="h-3.5 w-3.5" />
           </Button>
-          <span className="text-sm text-muted-foreground">Page {currentPage + 1} of {pages.length}</span>
-          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => setCurrentPage(Math.min(pages.length - 1, currentPage + 1))} disabled={currentPage === pages.length - 1}>
-            <ChevronRight className="h-4 w-4" />
+          <span className="text-[12px] text-muted-foreground px-2 num">Page {currentPage + 1} of {pages.length}</span>
+          <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => setCurrentPage(Math.min(pages.length - 1, currentPage + 1))} disabled={currentPage === pages.length - 1}>
+            <ChevronRight className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => window.print()}><Printer className="h-4 w-4" /></Button>
+          <Button variant="outline" size="sm" className="h-7 px-2 ml-1" onClick={() => window.print()}>
+            <Printer className="h-3.5 w-3.5 mr-1.5" /> Print
+          </Button>
         </div>
       </div>
-      <div className="rounded-lg border bg-white p-8 shadow-sm min-h-[600px]">
+      <div className="bg-white p-6 min-h-[600px]">
         {pages[currentPage]}
       </div>
     </div>
   );
 }
 
+/** Used inside a single report page when an in-page letterhead is desired
+    in addition to the global ErpShell letterhead. */
 export function ReportHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
-    <div className="text-center mb-4 pb-3 border-b">
-      <h2 className="text-sm font-bold uppercase tracking-wide">HAVERI MILK UNION</h2>
-      <h3 className="text-sm font-bold mt-0.5">{title}</h3>
-      {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
+    <div className="text-center mb-4 pb-3 border-b border-foreground/30">
+      <h2 className="text-[13px] font-bold uppercase tracking-wide">HAVERI MILK UNION</h2>
+      <h3 className="text-[13px] font-bold mt-0.5">{title}</h3>
+      {subtitle && <p className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</p>}
     </div>
   );
 }
