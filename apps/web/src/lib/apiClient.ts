@@ -4,7 +4,7 @@
 // Base URL: /api/v1 (proxied by Vite in dev, served directly in prod)
 // ══════════════════════════════════════════════════════════════════
 
-const BASE = "/api/v1";
+const BASE = (import.meta.env.VITE_API_URL ?? "") + "/api/v1";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {

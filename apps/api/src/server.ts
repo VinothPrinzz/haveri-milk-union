@@ -42,10 +42,12 @@ const app = Fastify({
 });
 
 // ── Plugins ──
+const allowedOrigins = env.CORS_ORIGIN
+  ? env.CORS_ORIGIN.split(",").map((o) => o.trim())
+  : ["https://erp.haverimunion.coop"];
+
 await app.register(cors, {
-  origin: env.NODE_ENV === "production"
-    ? ["https://erp.haverimunion.coop"]
-    : true,
+  origin: env.NODE_ENV === "production" ? allowedOrigins : true,
   credentials: true,
 });
 
