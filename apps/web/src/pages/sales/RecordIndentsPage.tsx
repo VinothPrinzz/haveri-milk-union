@@ -1,282 +1,320 @@
-// apps/web/src/pages/sales/RecordIndentsPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// Record Indents — Marketing v1.4
-//
-// Changes vs v1.3:
-//   • Batch selector → F9SearchSelect
-//   • Agent Code selector → F9SearchSelect (code + name sublabel)
-//   • Product table wrapped in LiveSearchTable
+// Record Indent — /sales/record-indents
+// Backend: POST /api/v1/orders { items, paymentMode, ... }
+// status defaults to 'pending' on the server (do not send 'submitted')
 // ════════════════════════════════════════════════════════════════════
-
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import PageHeader from "@/components/PageHeader";
-import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
-import { LiveSearchTable } from "@/components/LiveSearchTable";
+import PageHeader, {
+  FilterBar, FormSection, Field, FormFooter, Kbd, fmtINR,
+} from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Trash2, Plus, Send } from "lucide-react";
 import {
-  fetchProducts,
-  fetchCustomers,
-  fetchBatches,
-  createIndent,
+  fetchCustomers, fetchProducts, fetchRoutes, createIndent,
 } from "@/services/api";
+
+interface Line {
+  id: string;
+  productId: string;
+  qty: number;
+}
+
+const rid = () => Math.random().toString(36).slice(2, 9);
 
 export default function RecordIndentsPage() {
   const qc = useQueryClient();
-  const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
+  const navigate = useNavigate();
+
   const { data: customers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
-  const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
+  const { data: products = [] }  = useQuery({ queryKey: ["products"],  queryFn: fetchProducts });
+  const { data: routes = [] }    = useQuery({ queryKey: ["routes"],    queryFn: fetchRoutes });
 
-  // ── Selections ──
-  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
-  const [indentDate, setIndentDate] = useState(new Date().toISOString().split("T")[0]);
-  const [agentId, setAgentId] = useState<string | null>(null);
-  const [showIndent, setShowIndent] = useState(false);
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [customerId, setCustomerId] = useState<string | null>(null);
+  const [routeId, setRouteId] = useState<string | null>(null);
+  const [paymentMode, setPaymentMode] = useState<"upi" | "credit">("credit");   // ← Updated
+  const [notes, setNotes] = useState("");
+  const [lines, setLines] = useState<Line[]>([{ id: rid(), productId: "", qty: 1 }]);
 
-  const agent = customers.find((c: any) => c.id === agentId);
-  const activeProducts = products.filter((p: any) => !p.terminated);
-
-  const batchOptions: F9Option[] = useMemo(
-    () =>
-      batches.map((b: any) => ({
-        value: b.id,
-        label: b.whichBatch || b.batchCode,
-        sublabel: b.timing,
-      })),
-    [batches]
-  );
-
-  const agentOptions: F9Option[] = useMemo(
-    () =>
-      customers.map((c: any) => ({
-        value: c.id,
-        label: c.code,
-        sublabel: c.name,
-        searchText: `${c.code} ${c.name} ${c.phone ?? ""}`,
-      })),
+  const customer = customers.find((c: any) => c.id === customerId);
+  const customerOpts: F9Option[] = useMemo(
+    () => customers.map((c: any) => ({ value: c.id, label: c.name, sublabel: c.code })),
     [customers]
   );
-
-  const updateQty = (pid: string, qty: number) =>
-    setQuantities(prev => ({ ...prev, [pid]: qty }));
-
-  const orderItems = useMemo(
-    () =>
-      activeProducts
-        .filter((p: any) => (quantities[p.id] || 0) > 0)
-        .map((p: any) => {
-          const qty = quantities[p.id] || 0;
-          const rateCategory = agent?.rateCategory ?? "Retail-Dealer";
-          const rate = p.rateCategories?.[rateCategory] ?? p.rateCategories?.["Retail-Dealer"] ?? p.mrp;
-          const gst = qty * rate * ((p.gstPercent ?? 0) / 100);
-          return { product: p, qty, rate, amount: qty * rate, gst };
-        }),
-    [activeProducts, quantities, agent]
+  const routeOpts: F9Option[] = useMemo(
+    () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
+    [routes]
+  );
+  const productOpts: F9Option[] = useMemo(
+    () => products.map((p: any) => ({ value: p.id, label: p.name, sublabel: p.code })),
+    [products]
   );
 
-  const totalAmount = orderItems.reduce((s, i) => s + i.amount, 0);
-  const totalGst = orderItems.reduce((s, i) => s + i.gst, 0);
-  const grandTotal = totalAmount + totalGst;
+  // When a customer is chosen, default the route to their primary
+  useEffect(() => {
+    if (!customer) return;
+    const primary = customer.routes?.find((r: any) => r.isPrimary)?.routeId
+                   ?? customer.routeId
+                   ?? null;
+    setRouteId(prev => prev ?? primary);
+  }, [customer]);
 
-  const handleGo = () => {
-    if (!selectedBatchId || !agentId) {
-      toast.error("Please select both batch and agent");
-      return;
-    }
-    setShowIndent(true);
-    setQuantities({});
+  // Default payment mode by customer.payMode
+  useEffect(() => {
+    if (!customer) return;
+    setPaymentMode(customer.payMode === "Credit" ? "credit" : "upi");
+  }, [customer]);
+
+  // Per-line price = product.basePrice (server uses base_price; rate-category-aware
+  // pricing is server-side. Price shown here is indicative only.)
+  const lineCalc = (line: Line) => {
+    const p = products.find((x: any) => x.id === line.productId);
+    if (!p) return { unit: 0, gstPct: 0, sub: 0, gst: 0, total: 0 };
+    // Prefer the rate matching the customer's rateCategory if surfaced.
+    const rcKey = customer?.rateCategory as string | undefined;
+    const rcPriceMap: Record<string, string> = {
+      "Retail-Dealer":      "retailDealerPrice",
+      "Credit Inst-MRP":    "creditInstMrpPrice",
+      "Credit Inst-Dealer": "creditInstDealerPrice",
+      "Parlour-Dealer":     "parlourDealerPrice",
+    };
+    const rcKeyApi = rcKey && rcPriceMap[rcKey];
+    const unitRaw  = (rcKeyApi && (p as any)[rcKeyApi]) ?? p.mrp;
+    const unit     = parseFloat(String(unitRaw)) || 0;
+    const gstPct   = parseFloat(String(p.gstPercent ?? 0)) || 0;
+    const sub      = unit * (line.qty || 0);
+    const gst      = sub * (gstPct / 100);
+    return { unit, gstPct, sub, gst, total: sub + gst };
   };
 
-  const createMutation = useMutation({
-    mutationFn: () => {
-      if (!agent) throw new Error("Agent not loaded");
-      if (agent.creditLimit && grandTotal > (agent.creditLimit ?? 0) + (agent.creditBalance ?? 0)) {
-        throw new Error(
-          `Order total ₹${grandTotal.toFixed(2)} exceeds available credit ₹${(
-            (agent.creditLimit ?? 0) + (agent.creditBalance ?? 0)
-          ).toLocaleString()}`
-        );
+  const totals = useMemo(() => {
+    let sub = 0, gst = 0;
+    for (const l of lines) {
+      const c = lineCalc(l);
+      sub += c.sub; gst += c.gst;
+    }
+    return { sub, gst, total: sub + gst, count: lines.filter(l => l.productId && l.qty > 0).length };
+  }, [lines, products, customer]);
+
+  const addLine = () => setLines(ls => [...ls, { id: rid(), productId: "", qty: 1 }]);
+  const removeLine = (id: string) => setLines(ls => ls.length === 1 ? ls : ls.filter(l => l.id !== id));
+  const setLineProduct = (id: string, productId: string | null) =>
+    setLines(ls => ls.map(l => l.id === id ? { ...l, productId: productId ?? "" } : l));
+  const setLineQty = (id: string, qty: number) =>
+    setLines(ls => ls.map(l => l.id === id ? { ...l, qty: Math.max(0, qty || 0) } : l));
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      if (!customer) throw new Error("Pick a customer");
+      const items = lines
+        .filter(l => l.productId && l.qty > 0)
+        .map(l => ({ productId: l.productId, quantity: l.qty }));
+      if (items.length === 0) throw new Error("Add at least one line");
+
+      // Credit-limit guard — only for credit mode
+      if (paymentMode === "credit" && customer.creditLimit != null) {
+        const outstanding = Number((customer as any).outstanding ?? 0);
+        const available = Number(customer.creditLimit) - outstanding;
+        if (totals.total > available) {
+          throw new Error(`Credit available ₹${available.toFixed(2)}, indent ₹${totals.total.toFixed(2)}`);
+        }
       }
-      const items = orderItems.map(i => ({
-        productId: i.product.id,
-        productName: i.product.reportAlias,
-        qty: i.qty,
-        rate: i.rate,
-        quantity: i.qty,
-      }));
-      return createIndent({
-        customerId: agent.id,
-        customerName: agent.name,
-        routeId: agent.routeId || "",
-        batchId: selectedBatchId,
-        date: indentDate,
-        agentCode: agent.code,
-        payMode: agent.payMode ?? "Credit",
-        items,
-        total: grandTotal,
+
+      return createIndent({ 
+        customerId: customer.id, 
+        routeId, 
+        paymentMode,     // now only "upi" | "credit"
+        notes, 
+        items 
       });
     },
     onSuccess: () => {
+      toast.success("Indent submitted");
       qc.invalidateQueries({ queryKey: ["indents"] });
-      toast.success(`Indent recorded — ₹${grandTotal.toFixed(2)}`);
-      setQuantities({});
-      setShowIndent(false);
-      setAgentId(null);
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      navigate("/sales/all-indents");
     },
-    onError: (err: Error) => toast.error(err.message || "Failed to record indent"),
+    onError: (e: any) => toast.error(e?.message || "Submit failed"),
   });
 
+  // ── Keyboard: F2 add line, Ctrl+S submit ──
+  const formRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "F2") {
+        e.preventDefault();
+        addLine();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        if (!submit.isPending) submit.mutate();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [submit]);
+
+  const creditAvailable = customer && paymentMode === "credit" && customer.creditLimit != null
+    ? Number(customer.creditLimit) - Number((customer as any).outstanding ?? 0)
+    : null;
+
   return (
-    <div>
-      <PageHeader title="Record Indents" description="Record daily indents from agents">
-        <Button variant="destructive" size="sm" onClick={() => toast.info("Indents reset")}>
-          Reset Indents
-        </Button>
-      </PageHeader>
+    <div className="flex flex-col h-full" ref={formRef}>
+      <PageHeader
+        title="Record Indent"
+        subtitle={`Press ${(<Kbd>F2</Kbd> as any).type ? "F2" : "F2"} to add a line, Ctrl+S to submit.`}
+      />
 
-      <Card className="mb-4">
-        <CardHeader>
-          <CardTitle className="text-base">Select Batch & Agent</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-4 items-end">
+      <div className="flex-1 overflow-auto p-3 space-y-3 pb-24">
+        <FormSection title="Customer" cols={4}>
+          <Field label="Customer" hint="F9" required>
             <F9SearchSelect
-              label="Batch"
-              value={selectedBatchId}
-              onChange={setSelectedBatchId}
-              options={batchOptions}
-              className="w-56"
+              value={customerId} onChange={setCustomerId} options={customerOpts} className="w-full"
             />
-            <div>
-              <label className="text-sm font-medium mb-1.5 block">Indent Date</label>
-              <Input
-                type="date"
-                value={indentDate}
-                onChange={e => setIndentDate(e.target.value)}
-                className="w-44"
-              />
-            </div>
-            <F9SearchSelect
-              label="Agent Code"
-              value={agentId}
-              onChange={setAgentId}
-              options={agentOptions}
-              className="w-72"
+          </Field>
+          <Field label="Type">
+            <Input className="erp-input bg-muted" value={customer?.type ?? ""} readOnly />
+          </Field>
+          <Field label="Rate Category">
+            <Input className="erp-input bg-muted" value={customer?.rateCategory ?? ""} readOnly />
+          </Field>
+          <Field label="Pay Mode">
+            <Select value={paymentMode} onValueChange={v => setPaymentMode(v as "upi" | "credit")}>
+              <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="upi">UPI</SelectItem>
+                <SelectItem value="credit">Credit</SelectItem>
+                {/* Wallet removed */}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Route" hint="F9">
+            <F9SearchSelect value={routeId} onChange={setRouteId} options={routeOpts} className="w-full" />
+          </Field>
+          <Field label="Phone">
+            <Input className="erp-input bg-muted" value={customer?.phone ?? ""} readOnly />
+          </Field>
+          <Field label="Credit Limit">
+            <Input
+              className="erp-input bg-muted num"
+              value={customer?.creditLimit != null ? `₹ ${Number(customer.creditLimit).toLocaleString("en-IN")}` : ""}
+              readOnly
             />
-            <Button onClick={handleGo}>GO</Button>
-          </div>
-        </CardContent>
-      </Card>
+          </Field>
+          <Field label="Available Credit">
+            <Input
+              className={`erp-input bg-muted num ${creditAvailable != null && creditAvailable < totals.total ? "border-destructive text-destructive" : ""}`}
+              value={creditAvailable != null ? `₹ ${creditAvailable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "—"}
+              readOnly
+            />
+          </Field>
+        </FormSection>
 
-      {showIndent && agent && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2">
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Indent Entry — {agent.name}</CardTitle>
-                  <span className="text-xs text-muted-foreground">
-                    {agent.code} · Rate: {agent.rateCategory} · {agent.payMode}
-                  </span>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <LiveSearchTable
-                  items={activeProducts}
-                  getSearchableText={p => `${p.code} ${p.name} ${p.reportAlias}`}
-                  placeholder="Search by name, code, or alias..."
-                >
-                  {filtered => (
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b bg-muted/30 text-xs text-muted-foreground">
-                          <th className="text-left py-2 px-2 font-medium">Code</th>
-                          <th className="text-left py-2 px-2 font-medium">Product</th>
-                          <th className="text-right py-2 px-2 font-medium">Rate</th>
-                          <th className="text-right py-2 px-2 font-medium">Qty</th>
-                          <th className="text-right py-2 px-2 font-medium">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filtered.map((p: any) => {
-                          const rate = p.rateCategories?.[agent.rateCategory] ?? p.rateCategories?.["Retail-Dealer"] ?? p.mrp;
-                          const qty = quantities[p.id] || 0;
-                          return (
-                            <tr key={p.id} className="border-b hover:bg-muted/20">
-                              <td className="py-1.5 px-2 font-mono text-xs">{p.code}</td>
-                              <td className="py-1.5 px-2 font-medium">{p.reportAlias || p.name}</td>
-                              <td className="py-1.5 px-2 text-right font-mono">₹{rate}</td>
-                              <td className="py-1.5 px-2 text-right">
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  value={qty || ""}
-                                  onChange={e => updateQty(p.id, parseInt(e.target.value) || 0)}
-                                  className="h-8 w-20 text-right inline-block"
-                                />
-                              </td>
-                              <td className="py-1.5 px-2 text-right font-mono">
-                                {qty > 0 ? `₹${(qty * rate).toFixed(2)}` : "—"}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  )}
-                </LiveSearchTable>
-              </CardContent>
-            </Card>
+        <div className="erp-panel">
+          <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2 flex items-center justify-between">
+            <span>Items</span>
+            <span className="text-[11px] normal-case font-normal text-muted-foreground">
+              <Kbd>F2</Kbd> add line · <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd> submit
+            </span>
           </div>
-
-          <Card className="sticky top-4 h-fit">
-            <CardHeader>
-              <CardTitle className="text-base">Order Summary</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {orderItems.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No items added yet.</p>
-              ) : (
-                <div className="space-y-2">
-                  {orderItems.map(i => (
-                    <div key={i.product.id} className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">
-                        {i.product.reportAlias} × {i.qty}
-                      </span>
-                      <span className="font-mono">₹{i.amount.toFixed(2)}</span>
-                    </div>
-                  ))}
-                  <div className="border-t pt-2 space-y-1 text-sm">
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>Subtotal</span>
-                      <span className="font-mono">₹{totalAmount.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>GST</span>
-                      <span className="font-mono">₹{totalGst.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between font-semibold">
-                      <span>Grand Total</span>
-                      <span className="font-mono">₹{grandTotal.toFixed(2)}</span>
-                    </div>
-                  </div>
-                  <Button
-                    className="w-full mt-3"
-                    onClick={() => createMutation.mutate()}
-                    disabled={createMutation.isPending}
-                  >
-                    {createMutation.isPending ? "Saving..." : "Save Indent"}
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <div className="overflow-auto">
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 40 }}>#</th>
+                  <th style={{ width: "32%" }}>Product</th>
+                  <th style={{ width: 90 }} className="num">Qty</th>
+                  <th style={{ width: 100 }} className="num">Rate</th>
+                  <th style={{ width: 110 }} className="num">Subtotal</th>
+                  <th style={{ width: 70  }} className="num">GST %</th>
+                  <th style={{ width: 110 }} className="num">GST ₹</th>
+                  <th style={{ width: 130 }} className="num">Line Total</th>
+                  <th style={{ width: 40 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l, i) => {
+                  const c = lineCalc(l);
+                  return (
+                    <tr key={l.id}>
+                      <td className="num">{i + 1}</td>
+                      <td>
+                        <F9SearchSelect
+                          value={l.productId || null}
+                          onChange={v => setLineProduct(l.id, v)}
+                          options={productOpts}
+                          className="w-full"
+                        />
+                      </td>
+                      <td>
+                        <Input
+                          className="erp-input num text-right"
+                          type="number" min="0" step="1"
+                          value={l.qty}
+                          onChange={e => setLineQty(l.id, parseFloat(e.target.value))}
+                        />
+                      </td>
+                      <td className="num">{c.unit ? c.unit.toFixed(2) : "—"}</td>
+                      <td className="num">{c.sub ? fmtINR(c.sub) : "—"}</td>
+                      <td className="num">{c.gstPct ? c.gstPct.toFixed(2) : "—"}</td>
+                      <td className="num">{c.gst ? fmtINR(c.gst) : "—"}</td>
+                      <td className="num font-semibold">{c.total ? fmtINR(c.total) : "—"}</td>
+                      <td>
+                        <Button
+                          variant="ghost" size="icon" className="h-7 w-7 text-destructive"
+                          onClick={() => removeLine(l.id)}
+                          disabled={lines.length === 1}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={9} className="!border-t-2">
+                    <Button variant="outline" size="sm" className="h-7" onClick={addLine}>
+                      <Plus className="h-3.5 w-3.5 mr-1" /> Add Line  <Kbd className="ml-2">F2</Kbd>
+                    </Button>
+                  </td>
+                </tr>
+                <tr className="bg-muted/40">
+                  <td colSpan={4} className="text-right uppercase text-[12px] font-semibold tracking-wide">Subtotal</td>
+                  <td className="num">{fmtINR(totals.sub)}</td>
+                  <td className="text-right uppercase text-[12px] font-semibold tracking-wide" colSpan={1}>GST</td>
+                  <td className="num">{fmtINR(totals.gst)}</td>
+                  <td className="num font-bold text-[14px]">{fmtINR(totals.total)}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
-      )}
+
+        <FormSection title="Notes" cols={1}>
+          <Field label="Remarks">
+            <Input className="erp-input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" />
+          </Field>
+        </FormSection>
+      </div>
+
+      <FormFooter>
+        <Button variant="outline" size="sm" className="h-8" onClick={() => navigate(-1)}>Cancel</Button>
+        <Button size="sm" className="h-8" disabled={submit.isPending} onClick={() => submit.mutate()}>
+          {submit.isPending ? "Saving…" : (
+            <span className="inline-flex items-center gap-1.5">
+              <Send className="h-3.5 w-3.5" />
+              Submit Indent <Kbd className="ml-1">Ctrl</Kbd>+<Kbd>S</Kbd>
+            </span>
+          )}
+        </Button>
+      </FormFooter>
     </div>
   );
 }

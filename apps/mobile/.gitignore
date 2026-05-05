@@ -1,0 +1,12 @@
+# Generated native projects — rebuilt by `expo prebuild` on every EAS build
+android/
+ios/
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# Local env
+.env.local
+.env.*.local

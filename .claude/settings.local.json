@@ -6,7 +6,12 @@
       "Bash(echo \"EXIT:$?\")",
       "Bash(netstat -ano)",
       "Bash(awk '{print $5}')",
-      "Bash(xargs -I{} taskkill //PID {} //F)"
+      "Bash(xargs -I{} taskkill //PID {} //F)",
+      "Bash(echo \"DB_EXIT:$?\")",
+      "Bash(echo \"API_EXIT:$?\")",
+      "Bash(node_modules/.bin/tsc --version)",
+      "Bash(node_modules/.bin/tsc --traceResolution)",
+      "Bash(node -e ' *)"
     ]
   }
 }

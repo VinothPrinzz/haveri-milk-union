@@ -70,6 +70,7 @@ export interface Product {
   imageUrl?: string | null;     // real CDN image (backend doesn't serve this yet; ProductCard handles absence)
   unit: string;                 // "1 L", "500 ml", "200 g", etc.
   basePrice: number;
+  mrp: number;
   gstPercent: number;
   stock: number;
   available: boolean;

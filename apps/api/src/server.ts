@@ -127,7 +127,7 @@ await app.register(zoneRoutes);           // zones CRUD
 // ── Start Server ──
 try {
   const address = await app.listen({
-    port: env.API_PORT,
+    port: env.PORT ?? env.API_PORT,
     host: env.API_HOST,
   });
   app.log.info(`🚀 API server running at ${address}`);

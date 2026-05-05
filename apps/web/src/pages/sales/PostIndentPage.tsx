@@ -1,211 +1,152 @@
-// apps/web/src/pages/sales/PostIndentPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// Post Indent — Marketing v1.4
-//
-// Changes vs v1.3:
-//   • Route selector → F9SearchSelect (required)
-//   • Batch selector → F9SearchSelect with "All" option (default = All)
-//   • Table is now gated behind explicit "Load Pending Indents" button
-//     (not on first route+batch selection — staff often adjust filters
-//     before committing to the query)
+// Post Indents — bulk select pending indents and post (confirm) them
+// Route preserved: /sales/post-indent
 // ════════════════════════════════════════════════════════════════════
-
 import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import PageHeader from "@/components/PageHeader";
-import { PageShell, FilterBar, ScrollableTableBody } from "@/components/PageShell";
-import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import PageHeader, {
+  FilterBar, Field, EmptyState, StatusPill, fmtINR, fmtDate,
+} from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { CheckCircle, Download } from "lucide-react";
-import { fetchIndents, fetchRoutes, fetchBatches } from "@/services/api";
-import { post } from "@/lib/apiClient";
+import { Skeleton } from "@/components/ui/skeleton";
+import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Send, X } from "lucide-react";
+import { fetchIndents, postIndents, fetchRoutes } from "@/services/api";
 
 export default function PostIndentPage() {
   const qc = useQueryClient();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [date, setDate] = useState(today);
+  const [routeId, setRouteId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
-  const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
 
-  const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
-  const [selectedBatch, setSelectedBatch] = useState<string | null>(null); // null = All
-  const [selectedDate, setSelectedDate] = useState(
-    new Date().toISOString().split("T")[0]
-  );
-  const [loaded, setLoaded] = useState(false);
+  const { data: indents = [], isLoading } = useQuery({
+    queryKey: ["indents", { status: "pending", date, routeId }],
+    queryFn: () => fetchIndents({ status: "pending", date, routeId: routeId ?? undefined }),
+  });
 
-  const routeOptions: F9Option[] = useMemo(
+  const routeOpts: F9Option[] = useMemo(
     () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
     [routes]
   );
-  const batchOptions: F9Option[] = useMemo(
-    () =>
-      batches.map((b: any) => ({
-        value: b.id,
-        label: b.whichBatch || b.batchCode,
-        sublabel: b.timing,
-      })),
-    [batches]
-  );
 
-  // Fetch is gated by `loaded` flag — user must click the button
-  const { data: pending = [], isLoading, refetch } = useQuery({
-    queryKey: ["indents", "pending", selectedDate, selectedRoute, selectedBatch],
-    queryFn: () =>
-      fetchIndents({
-        status: "pending",
-        date: selectedDate,
-        routeId: selectedRoute ?? undefined,
-        batchId: selectedBatch ?? undefined,
-      }),
-    enabled: false,
+  const totalSelected = useMemo(() => {
+    return indents
+      .filter((i: any) => selected.has(i.id))
+      .reduce((s: number, i: any) => s + (i.total ?? 0), 0);
+  }, [indents, selected]);
+
+  const toggleAll = () => {
+    setSelected(prev => prev.size === indents.length
+      ? new Set()
+      : new Set(indents.map((i: any) => i.id))
+    );
+  };
+
+  const toggleOne = (id: string) => {
+    setSelected(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  };
+
+  const post = useMutation({
+    mutationFn: (ids: string[]) => postIndents(ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["indents"] });
+      qc.invalidateQueries({ queryKey: ["dashboard-summary"] });
+      toast.success(`${selected.size} indent(s) posted`);
+      setSelected(new Set());
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
   });
 
-  const handleLoad = async () => {
-    if (!selectedRoute) {
-      toast.error("Please select a route");
-      return;
-    }
-    await refetch();
-    setLoaded(true);
-  };
-
-  const handlePost = async () => {
-    try {
-      await post("/route-sheets/generate", {
-        routeId: selectedRoute,
-        batchId: selectedBatch,
-        date: selectedDate,
-      });
-      toast.success(`${pending.length} indent(s) posted successfully`);
-      qc.invalidateQueries({ queryKey: ["indents"] });
-      setLoaded(false);
-    } catch (err: any) {
-      toast.error(err?.message || "Failed to post indents");
-    }
-  };
-
-  const routeName = routes.find((r: any) => r.id === selectedRoute)?.name;
-  const batchName = selectedBatch
-    ? batches.find((b: any) => b.id === selectedBatch)?.whichBatch
-    : "All batches";
-
   return (
-    <PageShell
-      header={
-        <>
-          <PageHeader
-            title="Post Indent"
-            description="Review and post pending indents for dispatch"
-          />
-          <FilterBar>
-            <div>
-              <label className="text-sm font-medium mb-1.5 block">Date</label>
-              <input
-                type="date"
-                value={selectedDate}
-                onChange={e => {
-                  setSelectedDate(e.target.value);
-                  setLoaded(false);
-                }}
-                className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
-              />
-            </div>
+    <div className="flex flex-col h-full">
+      <PageHeader 
+        title="Post Indents" 
+        subtitle="Confirm pending indents to dispatch them" 
+      />
 
-            <F9SearchSelect
-              label="Route"
-              value={selectedRoute}
-              onChange={v => {
-                setSelectedRoute(v);
-                setLoaded(false);
-              }}
-              options={routeOptions}
-              className="w-60"
-            />
-
-            <F9SearchSelect
-              label="Batch"
-              value={selectedBatch}
-              onChange={v => {
-                setSelectedBatch(v);
-                setLoaded(false);
-              }}
-              options={batchOptions}
-              allowAll
-              className="w-48"
-            />
-
-            <Button onClick={handleLoad} disabled={isLoading}>
-              <Download className="h-4 w-4 mr-2" />
-              {isLoading ? "Loading..." : "Load Pending Indents"}
+      <FilterBar>
+        <Field label="Date">
+          <input type="date" className="erp-input w-40" value={date} onChange={e => setDate(e.target.value)} />
+        </Field>
+        <Field label="Route">
+          <F9SearchSelect value={routeId} onChange={setRouteId} options={routeOpts} allowAll className="w-64" />
+        </Field>
+        {(routeId || date !== today) && (
+          <div className="flex items-end">
+            <Button size="sm" variant="outline" className="h-8" onClick={() => { setDate(today); setRouteId(null); }}>
+              <X className="h-3.5 w-3.5 mr-1" /> Clear
             </Button>
-
-            {loaded && pending.length > 0 && (
-              <Button variant="default" onClick={handlePost} className="ml-auto">
-                <CheckCircle className="h-4 w-4 mr-2" />
-                Post {pending.length} Indent(s)
-              </Button>
-            )}
-          </FilterBar>
-        </>
-      }
-    >
-      {!loaded ? (
-        <EmptyHint message="Select date + route (+ optional batch), then click Load Pending Indents." />
-      ) : (
-        <ScrollableTableBody>
-          <div className="p-4 border-b">
-            <h3 className="font-medium text-sm">
-              Pending Indents — {routeName} / {batchName}
-              <span className="text-muted-foreground ml-2">({pending.length})</span>
-            </h3>
           </div>
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/50 backdrop-blur border-b">
-              <tr className="text-xs text-muted-foreground">
-                <th className="text-left py-2.5 px-3 font-medium">Indent No.</th>
-                <th className="text-left py-2.5 px-3 font-medium">Customer</th>
-                <th className="text-left py-2.5 px-3 font-medium">Items</th>
-                <th className="text-right py-2.5 px-3 font-medium">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pending.map((i: any) => (
-                <tr key={i.id} className="border-b hover:bg-muted/30">
-                  <td className="py-2 px-3 font-mono text-xs">{i.indentNo}</td>
-                  <td className="py-2 px-3 font-medium">{i.customerName}</td>
-                  <td className="py-2 px-3 text-muted-foreground text-xs">
-                    {i.items.map((x: any) => `${x.productName}×${x.qty}`).join(", ")}
-                  </td>
-                  <td className="py-2 px-3 text-right font-mono">
-                    ₹{(i.total ?? 0).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-              {pending.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="py-10 text-center text-muted-foreground text-sm">
-                    No pending indents for this filter combination.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </ScrollableTableBody>
-      )}
-    </PageShell>
-  );
-}
+        )}
+      </FilterBar>
 
-function EmptyHint({ message }: { message: string }) {
-  return (
-    <div className="h-full flex items-center justify-center">
-      <Card className="max-w-md">
-        <CardContent className="p-8 text-center">
-          <p className="text-sm text-muted-foreground">{message}</p>
-        </CardContent>
-      </Card>
+      <div className="flex-1 overflow-auto p-3">
+        <div className="erp-panel overflow-hidden">
+          {isLoading ? (
+            <div className="p-3 space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
+            </div>
+          ) : indents.length === 0 ? (
+            <EmptyState title="No pending indents for this filter." hint="Try a different date or route." />
+          ) : (
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 36 }}>
+                    <Checkbox checked={selected.size === indents.length && indents.length > 0} onCheckedChange={toggleAll} />
+                  </th>
+                  <th style={{ width: 110 }}>Indent #</th>
+                  <th style={{ width: 110 }}>Date</th>
+                  <th>Customer</th>
+                  <th>Route</th>
+                  <th className="num" style={{ width: 90, textAlign: "right" }}>Lines</th>
+                  <th className="num" style={{ width: 130, textAlign: "right" }}>Total ₹</th>
+                  <th style={{ width: 100 }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {indents.map((i: any) => (
+                  <tr key={i.id} className={selected.has(i.id) ? "bg-accent/50" : ""}>
+                    <td><Checkbox checked={selected.has(i.id)} onCheckedChange={() => toggleOne(i.id)} /></td>
+                    <td className="font-mono">{i.code ?? i.id.slice(0, 8)}</td>
+                    <td className="text-[12.5px]">{fmtDate(i.date)}</td>
+                    <td className="font-medium">{i.customerName ?? i.customerId}</td>
+                    <td>{i.routeName ?? i.routeId}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{i.lines?.length ?? i.lineCount ?? 0}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(i.total ?? 0)}</td>
+                    <td><StatusPill status={i.status} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {selected.size > 0 && (
+        <div className="border-t border-border bg-panel px-4 py-2 flex items-center gap-3">
+          <span className="text-[13px] text-muted-foreground">
+            {selected.size} selected · Total <span className="font-semibold tabular-nums text-foreground">{fmtINR(totalSelected)}</span>
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setSelected(new Set())}>Clear</Button>
+            <Button size="sm" className="h-8" onClick={() => post.mutate([...selected])} disabled={post.isPending}>
+              <Send className="h-3.5 w-3.5 mr-1" />
+              {post.isPending ? "Posting…" : `Post ${selected.size} Indent(s)`}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

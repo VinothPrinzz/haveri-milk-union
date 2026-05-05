@@ -54,7 +54,6 @@ export default function CartScreen({ onBack, onOrderPlaced }: CartScreenProps) {
     <IndentCart
     windowSubtitle={windowSubtitle}
     locationLabel={locationLabel}
-    walletBalance={dealer?.walletBalance ?? 0}
     creditLimit={dealer?.creditLimit ?? 0}
     creditAvailable={Math.max(0, (dealer?.creditLimit ?? 0) - (dealer?.creditOutstanding ?? 0))}
     onBack={onBack}

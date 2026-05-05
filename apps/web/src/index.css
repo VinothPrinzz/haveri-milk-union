@@ -2,106 +2,624 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ══════════════════════════════════════════════════════════════════
+   Haveri Milk Union — ERP design tokens (HSL only)
+   Hybrid enterprise (Tally / SAP / Marg lineage)
+   ══════════════════════════════════════════════════════════════════ */
 @layer base {
   :root {
-    --background: 0 0% 98%;
-    --foreground: 220 20% 10%;
-
+    /* Surfaces */
+    --background: 215 20% 97%; /* #F4F6F9 — page bg */
+    --foreground: 215 25% 15%;
+    --panel: 0 0% 100%; /* white panels */
+    --panel-foreground: 215 25% 15%;
     --card: 0 0% 100%;
-    --card-foreground: 220 20% 10%;
-
+    --card-foreground: 215 25% 15%;
     --popover: 0 0% 100%;
-    --popover-foreground: 220 20% 10%;
-
-    --primary: 215 70% 45%;
+    --popover-foreground: 215 25% 15%;
+    /* Brand: deep cooperative blue */
+    --primary: 211 86% 30%; /* #0B4A8F */
     --primary-foreground: 0 0% 100%;
-
-    --secondary: 210 20% 94%;
-    --secondary-foreground: 220 20% 20%;
-
-    --muted: 210 15% 93%;
-    --muted-foreground: 215 10% 45%;
-
-    --accent: 210 20% 90%;
-    --accent-foreground: 220 20% 15%;
-
-    --destructive: 0 72% 50%;
+    --primary-hover: 211 86% 25%;
+    --primary-soft: 211 70% 92%;
+    /* Cream secondary (highlight rows / banners) */
+    --secondary: 42 50% 94%; /* #F8F4E8 */
+    --secondary-foreground: 215 25% 15%;
+    --muted: 215 15% 94%;
+    --muted-foreground: 215 12% 42%;
+    --accent: 211 70% 92%;
+    --accent-foreground: 211 86% 25%;
+    --destructive: 0 72% 45%;
     --destructive-foreground: 0 0% 100%;
-
-    --border: 214 20% 88%;
-    --input: 214 20% 88%;
-    --ring: 215 70% 45%;
-
-    --radius: 0.375rem;
-
-    --sidebar-background: 220 20% 14%;
-    --sidebar-foreground: 210 15% 85%;
-    --sidebar-primary: 215 70% 55%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 220 18% 20%;
-    --sidebar-accent-foreground: 210 15% 90%;
-    --sidebar-border: 220 15% 22%;
-    --sidebar-ring: 215 70% 55%;
-
-    --success: 142 60% 40%;
+    --success: 142 65% 32%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
+    --warning: 38 92% 45%;
     --warning-foreground: 0 0% 100%;
-  }
-
-  .dark {
-    --background: 220 20% 10%;
-    --foreground: 210 15% 90%;
-    --card: 220 18% 14%;
-    --card-foreground: 210 15% 90%;
-    --popover: 220 18% 14%;
-    --popover-foreground: 210 15% 90%;
-    --primary: 215 70% 55%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 220 15% 20%;
-    --secondary-foreground: 210 15% 90%;
-    --muted: 220 15% 18%;
-    --muted-foreground: 215 10% 55%;
-    --accent: 220 15% 22%;
-    --accent-foreground: 210 15% 90%;
-    --destructive: 0 62% 30%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 220 15% 22%;
-    --input: 220 15% 22%;
-    --ring: 215 70% 55%;
-    --sidebar-background: 220 22% 10%;
-    --sidebar-foreground: 210 15% 85%;
-    --sidebar-primary: 215 70% 55%;
+    --info: 211 86% 40%;
+    --info-foreground: 0 0% 100%;
+    --border: 214 18% 86%; /* hairline #D9DEE5 */
+    --border-strong: 214 18% 75%;
+    --input: 214 18% 86%;
+    --ring: 211 86% 40%;
+    --radius: 0.25rem; /* tight, functional — never 1rem+ */
+    /* Topbar / Sidebar */
+    --topbar: 211 86% 22%;
+    --topbar-foreground: 0 0% 100%;
+    --topbar-accent: 211 86% 32%;
+    --sidebar-background: 215 22% 97%;
+    --sidebar-foreground: 215 25% 22%;
+    --sidebar-primary: 211 86% 30%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 220 18% 16%;
-    --sidebar-accent-foreground: 210 15% 90%;
-    --sidebar-border: 220 15% 16%;
-    --sidebar-ring: 215 70% 55%;
+    --sidebar-accent: 211 70% 92%;
+    --sidebar-accent-foreground: 211 86% 22%;
+    --sidebar-border: 214 18% 86%;
+    --sidebar-ring: 211 86% 40%;
+    /* Status row tints (subtle full-row backgrounds) */
+    --row-pending: 38 92% 96%;
+    --row-confirmed: 142 50% 96%;
+    --row-cancelled: 0 70% 97%;
+  }
+  .dark {
+    --background: 215 28% 10%;
+    --foreground: 210 20% 95%;
+    --panel: 215 28% 13%;
+    --panel-foreground: 210 20% 95%;
+    --card: 215 28% 13%;
+    --card-foreground: 210 20% 95%;
+    --popover: 215 28% 13%;
+    --popover-foreground: 210 20% 95%;
+    --primary: 211 80% 55%;
+    --primary-foreground: 215 28% 10%;
+    --primary-hover: 211 80% 50%;
+    --primary-soft: 211 50% 22%;
+    --secondary: 215 20% 18%;
+    --secondary-foreground: 210 20% 95%;
+    --muted: 215 20% 18%;
+    --muted-foreground: 215 15% 65%;
+    --accent: 215 20% 22%;
+    --accent-foreground: 210 20% 95%;
+    --destructive: 0 60% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 55% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 80% 55%;
+    --warning-foreground: 215 28% 10%;
+    --info: 211 80% 55%;
+    --info-foreground: 0 0% 100%;
+    --border: 215 20% 22%;
+    --border-strong: 215 20% 30%;
+    --input: 215 20% 22%;
+    --ring: 211 80% 55%;
+    --topbar: 215 30% 8%;
+    --topbar-foreground: 210 20% 95%;
+    --topbar-accent: 211 80% 40%;
+    --sidebar-background: 215 28% 11%;
+    --sidebar-foreground: 210 20% 90%;
+    --sidebar-primary: 211 80% 55%;
+    --sidebar-primary-foreground: 215 28% 10%;
+    --sidebar-accent: 215 20% 18%;
+    --sidebar-accent-foreground: 210 20% 95%;
+    --sidebar-border: 215 20% 22%;
+    --sidebar-ring: 211 80% 55%;
+    --row-pending: 38 60% 18%;
+    --row-confirmed: 142 35% 16%;
+    --row-cancelled: 0 50% 18%;
   }
 }
 
 @layer base {
-  * {
-    @apply border-border;
-  }
+  * { @apply border-border; }
+  html, body, #root { height: 100%; }
   body {
     @apply bg-background text-foreground;
-    font-family: "Plus Jakarta Sans", sans-serif;
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    font-feature-settings: 'cv02','cv03','cv04','cv11';
   }
-  h1, h2, h3 {
-    font-family: "Unbounded", sans-serif;
+  /* Tabular numbers — required for every numeric td/th */
+  .num, td.num, th.num { font-variant-numeric: tabular-nums; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ERP component primitives (used throughout the app)
+   ══════════════════════════════════════════════════════════════════ */
+@layer components {
+  /* Dense ERP table */
+  .erp-table {
+    @apply w-full text-[13.5px] border-collapse;
+  }
+  .erp-table thead th {
+    @apply bg-muted text-muted-foreground font-semibold text-left px-2.5 py-2
+           border-b border-border sticky top-0 z-10 uppercase tracking-wide text-[12px];
+  }
+  .erp-table tbody td {
+    @apply px-2.5 py-1.5 border-b border-border/70 align-middle;
+  }
+  .erp-table tbody tr:hover { @apply bg-accent/40; }
+  .erp-table tbody tr.zebra { @apply bg-muted/30; }
+  .erp-table tbody tr.row-pending { background: hsl(var(--row-pending)); }
+  .erp-table tbody tr.row-confirmed { background: hsl(var(--row-confirmed)); }
+  .erp-table tbody tr.row-cancelled { background: hsl(var(--row-cancelled)); }
+  .erp-panel {
+    @apply bg-panel border border-border rounded-sm shadow-sm;
+  }
+  .erp-input {
+    @apply h-9 text-[13.5px];
+  }
+  .erp-section-title {
+    @apply text-[12px] font-semibold uppercase tracking-wider text-muted-foreground
+           border-b border-border pb-1 mb-2;
+  }
+  .kbd {
+    @apply inline-flex items-center px-1.5 py-0.5 text-[10.5px] font-mono
+           border border-border-strong rounded bg-muted text-muted-foreground;
+  }
+  .status-pill {
+    @apply inline-flex items-center px-1.5 py-0.5 text-[11px] font-medium rounded uppercase tracking-wide;
+  }
+  .status-pending { @apply bg-warning/15 text-warning; }
+  .status-confirmed { @apply bg-success/15 text-success; }
+  .status-dispatched{ @apply bg-info/15 text-info; }
+  .status-delivered { @apply bg-success/20 text-success; }
+  .status-cancelled,
+  .status-rejected,
+  .status-fail,
+  .status-unpaid { @apply bg-destructive/15 text-destructive; }
+  .status-paid,
+  .status-approved,
+  .status-pass { @apply bg-success/15 text-success; }
+  .status-draft,
+  .status-active { @apply bg-muted text-muted-foreground; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   PRINT — bulletproof document isolation
+   Strategy: hide everything by default, only show .print-document
+   (the page's report body), .print-only (injected letterhead/footer),
+   and their descendants. This works whether or not pages carry the
+   .erp-* class names, because we don't depend on those classes.
+   ══════════════════════════════════════════════════════════════════ */
+
+.print-only { display: none !important; }
+
+@media print {
+  /* Default page setup. The orientation is overridden at runtime
+     via a <style id="erp-print-orient"> tag — see Fix #22.3. */
+  @page { size: A4 portrait; margin: 14mm 12mm 16mm 12mm; }
+
+  /* Reset the canvas */
+  html, body {
+    background: #fff !important;
+    color: #000 !important;
+    font-size: 11pt;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* ─── Allow-list: hide everything in the body ─── */
+  body * {
+    visibility: hidden !important;
+  }
+
+  /* ─── Then explicitly show the document and letterhead ─── */
+  .print-document, .print-document *,
+  .print-only,    .print-only *,
+  .print-letterhead, .print-letterhead *,
+  .print-footer,     .print-footer * {
+    visibility: visible !important;
+  }
+
+  /* ─── Reposition the document so it owns the page ─── */
+  .print-document {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: #fff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
+  /* Reveal injected letterhead/footer (they're absolutely positioned
+     siblings of the document). The exact placement is up to the
+     letterhead block itself. */
+  .print-only,
+  .print-letterhead,
+  .print-footer {
+    display: block !important;
+  }
+
+  /* ─── Belt-and-braces: nuke the chrome so it can't claim page space
+     even if a future redesign moves things around. ─── */
+  .erp-topbar,
+  .erp-sidebar,
+  .erp-statusbar,
+  .erp-breadcrumb,
+  .erp-filterbar,
+  .erp-page-header,
+  .erp-page-actions,
+  .erp-form-footer,
+  .no-print,
+  [data-no-print],
+  [role="dialog"],
+  [role="tooltip"],
+  .sonner-toast,
+  header.bg-topbar,
+  aside,
+  nav {
+    display: none !important;
+  }
+
+  /* Keep tables clean on paper */
+  .print-document .erp-panel {
+    border: none !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .print-document table { width: 100% !important; border-collapse: collapse !important; }
+  .print-document table thead { display: table-header-group; }   /* repeat headers per printed page */
+  .print-document table tfoot { display: table-footer-group; }
+  .print-document table tr    { page-break-inside: avoid; }
+  .print-document table th,
+  .print-document table td {
+    border: 1px solid #000 !important;
+    padding: 4px 6px !important;
+    color: #000 !important;
+    background: transparent !important;
+    font-size: 10pt !important;
+  }
+  .print-document table thead th {
+    background: #f3f3f3 !important;
+    font-weight: 700 !important;
   }
 }
 
-@media print {
-  .no-print {
+/* ──────────────────────────────────────────────────────────────────
+   1. ADAPTIVE REPORT CANVAS
+   The white "page" sizes to its content. If wider than the body
+   area, the body scrolls horizontally — nothing gets clipped.
+   ────────────────────────────────────────────────────────────────── */
+   .report-canvas-wrap {
+    /* parent of the canvas; allows the canvas to be wider than itself
+       without causing layout shift on the rest of the column          */
+    display: block;
+    min-width: 100%;
+  }
+  
+  .report-canvas {
+    /* sizes to its widest child (the table) */
+    display: table;
+    margin: 0 auto;
+    background: #ffffff;
+    color: #000;
+    padding: 24px 28px;
+    border: 1px solid hsl(var(--border));
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    /* default min: roughly A4 portrait usable width at 96dpi */
+    min-width: 760px;
+  }
+  
+  /* Wider min-width when caller hints landscape (Route Sheet). */
+  .report-canvas[data-orient="landscape"] {
+    min-width: 1080px;
+  }
+  
+  /* In fullscreen mode the canvas should fill, not just sit centered. */
+  body.report-fullscreen .report-canvas {
+    margin: 0;
+    min-width: 100%;
+    width: 100%;
+  }
+  
+  
+  /* ──────────────────────────────────────────────────────────────────
+     2. LEDGER-STYLE TABLE
+     Inspired by the dot-matrix mockup:
+     • No vertical borders — columns separated by whitespace.
+     • Single horizontal rule above + below the column header.
+     • Single rule below the body. Dashed rule above the total row.
+     • Tighter row spacing for column density.
+     • Numbers right-aligned, tabular-nums, monospace-friendly.
+     Apply with:  <table class="report-ledger"> ... </table>
+     ────────────────────────────────────────────────────────────────── */
+  .report-ledger {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+    color: #000;
+  }
+  
+  .report-ledger,
+  .report-ledger thead, .report-ledger tbody, .report-ledger tfoot,
+  .report-ledger tr,
+  .report-ledger th, .report-ledger td {
+    border: 0 !important;
+    background: transparent !important;
+  }
+  
+  .report-ledger thead tr {
+    border-top: 1px solid #000 !important;
+    border-bottom: 1px solid #000 !important;
+  }
+  
+  .report-ledger tbody {
+    border-bottom: 1px solid #000 !important;
+  }
+  
+  .report-ledger th {
+    font-weight: 700;
+    text-align: left;
+    padding: 5px 10px;
+    white-space: nowrap;
+    vertical-align: bottom;
+    letter-spacing: 0.01em;
+  }
+  
+  .report-ledger td {
+    padding: 2.5px 10px;
+    vertical-align: top;
+  }
+  
+  /* Tighter padding for very dense reports — opt-in via .compact */
+  .report-ledger.compact th { padding: 4px 8px; }
+  .report-ledger.compact td { padding: 1.5px 8px; font-size: 11px; }
+  
+  /* Numeric alignment helpers */
+  .report-ledger .num,
+  .report-ledger th.num,
+  .report-ledger td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  
+  .report-ledger .center,
+  .report-ledger th.center,
+  .report-ledger td.center {
+    text-align: center;
+  }
+  
+  /* Totals / subtotal rows */
+  .report-ledger tr.total-row {
+    border-top: 1px dashed #000 !important;
+    font-weight: 700;
+  }
+  .report-ledger tr.total-row td {
+    padding-top: 4px;
+  }
+  
+  /* Subtle group separator (e.g. between routes when stacked) */
+  .report-ledger tr.group-sep td {
+    border-top: 1px dashed #777 !important;
+    padding-top: 6px;
+  }
+  
+  /* When the user has a dark theme on, force the canvas to look
+     like a real page (black on white). */
+  .dark .report-canvas { background: #fff; color: #000; }
+  .dark .report-ledger { color: #000; }
+  
+  
+  /* ──────────────────────────────────────────────────────────────────
+     2b. AUTO-LEDGER FALLBACK
+     Any <table> inside .report-canvas that isn't explicitly opting out
+     gets the ledger look automatically. This means the 9 sales-report
+     pages (Daily Statement, Cash Sales, Sales Register, etc.) inherit
+     the redesign without any per-page JSX changes. The existing
+     "border border-border", "bg-muted/50", "bg-muted/40" Tailwind
+     classes on those pages get neutralized below.
+     ────────────────────────────────────────────────────────────────── */
+  .report-canvas table:not(.no-ledger):not(.report-ledger) {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+    color: #000;
+  }
+  
+  .report-canvas table:not(.no-ledger):not(.report-ledger),
+  .report-canvas table:not(.no-ledger):not(.report-ledger) tr,
+  .report-canvas table:not(.no-ledger):not(.report-ledger) th,
+  .report-canvas table:not(.no-ledger):not(.report-ledger) td {
+    border: 0 !important;
+    background: transparent !important;
+  }
+  
+  .report-canvas table:not(.no-ledger):not(.report-ledger) thead tr {
+    border-top: 1px solid #000 !important;
+    border-bottom: 1px solid #000 !important;
+  }
+  
+  .report-canvas table:not(.no-ledger):not(.report-ledger) tbody {
+    border-bottom: 1px solid #000 !important;
+  }
+  
+  .report-canvas table:not(.no-ledger):not(.report-ledger) th {
+    font-weight: 700 !important;
+    text-align: left !important;
+    padding: 5px 10px !important;
+    white-space: nowrap !important;
+    vertical-align: bottom !important;
+    letter-spacing: 0.01em !important;
+  }
+  
+  .report-canvas table:not(.no-ledger):not(.report-ledger) td {
+    padding: 2.5px 10px !important;
+    vertical-align: top !important;
+  }
+  
+  /* Right-aligned numeric cells (existing pages use .num and .text-right). */
+  .report-canvas table:not(.no-ledger):not(.report-ledger) th.num,
+  .report-canvas table:not(.no-ledger):not(.report-ledger) td.num,
+  .report-canvas table:not(.no-ledger):not(.report-ledger) th.text-right,
+  .report-canvas table:not(.no-ledger):not(.report-ledger) td.text-right {
+    text-align: right !important;
+    white-space: nowrap !important;
+  }
+  
+  /* Center alignment helpers from existing pages. */
+  .report-canvas table:not(.no-ledger):not(.report-ledger) th.text-center,
+  .report-canvas table:not(.no-ledger):not(.report-ledger) td.text-center {
+    text-align: center !important;
+  }
+  
+  /* Total/footer rows — existing pages use `font-bold bg-muted/40`. */
+  .report-canvas table:not(.no-ledger):not(.report-ledger) tr.font-bold,
+  .report-canvas table:not(.no-ledger):not(.report-ledger) tfoot tr {
+    border-top: 1px dashed #000 !important;
+    font-weight: 700 !important;
+  }
+  .report-canvas table:not(.no-ledger):not(.report-ledger) tr.font-bold td,
+  .report-canvas table:not(.no-ledger):not(.report-ledger) tfoot td {
+    padding-top: 4px !important;
+  }
+  
+  
+  /* ──────────────────────────────────────────────────────────────────
+     3. LETTERHEAD STYLES (for ReportPrintMeta)
+     Mirror the print mockup spacing.
+     ────────────────────────────────────────────────────────────────── */
+  .report-letterhead {
+    text-align: center;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    position: relative;
+  }
+  .report-letterhead-co {
+    font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
+    text-transform: none;
+    margin: 0; padding: 0; line-height: 1.2;
+  }
+  .report-letterhead-addr {
+    font-size: 11px; margin: 1px 0 0; padding: 0;
+  }
+  .report-letterhead-title {
+    font-size: 12px; font-weight: 700; margin: 6px 0 0; letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .report-letterhead-sub {
+    font-size: 11px; margin: 1px 0 0; padding: 0;
+  }
+  .report-letterhead-meta {
+    font-size: 10.5px;
+    margin-top: 4px;
+    display: flex; flex-wrap: wrap; justify-content: center;
+    gap: 2px 16px;
+  }
+  .report-letterhead-printdate {
+    font-size: 10px;
+    margin-top: 4px;
+    text-align: left;
+  }
+  
+  
+  /* ──────────────────────────────────────────────────────────────────
+     4. ROUTE SHEET — vertical product header + Others column wrap.
+     ────────────────────────────────────────────────────────────────── */
+  .vert-text {
+    writing-mode: horizontal-tb;
+    word-break: break-all;
+    text-align: center;
+    line-height: 1.05;
+    white-space: normal;
+    padding: 2px 1px !important;
+    width: 22px; min-width: 22px; max-width: 26px;
+    font-size: 10.5px !important;
+    letter-spacing: 0;
+    vertical-align: bottom;
+  }
+  .vert-text > .vert-letter { display: block; }
+  
+  @media print {
+    .vert-text {
+      width: 16px; min-width: 16px; max-width: 20px;
+      font-size: 9px !important;
+    }
+  }
+  
+  .others-cell {
+    white-space: pre-line;
+    font-size: 10.5px;
+    line-height: 1.25;
+  }
+  @media print { .others-cell { font-size: 9px; } }
+  
+  
+  /* ──────────────────────────────────────────────────────────────────
+     5. FULLSCREEN MODE
+     Triggered by ReportShell adding `report-fullscreen` to <body>.
+     ────────────────────────────────────────────────────────────────── */
+  body.report-fullscreen { overflow: hidden; }
+  
+  body.report-fullscreen aside,
+  body.report-fullscreen header.bg-topbar,
+  body.report-fullscreen .erp-topbar,
+  body.report-fullscreen .erp-sidebar,
+  body.report-fullscreen .erp-statusbar,
+  body.report-fullscreen .erp-breadcrumb {
     display: none !important;
   }
-  body {
-    background: white !important;
+  
+  body.report-fullscreen .report-shell {
+    position: fixed !important;
+    inset: 0 !important;
+    z-index: 9999 !important;
+    background: hsl(var(--background)) !important;
+    display: flex; flex-direction: column;
+    height: 100vh !important; width: 100vw !important;
   }
-  @page {
-    size: A4;
-    margin: 10mm;
+  
+  body.report-fullscreen .report-shell .report-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
   }
-}
+  
+  
+  /* ──────────────────────────────────────────────────────────────────
+     6. PRINT TIGHTENING for letterhead / footer
+     ────────────────────────────────────────────────────────────────── */
+  @media print {
+    .print-letterhead { margin-bottom: 5mm !important; }
+    .print-letterhead .report-letterhead-co { font-size: 13pt !important; }
+    .print-letterhead .report-letterhead-title { font-size: 11pt !important; }
+    .print-footer {
+      margin-top: 6mm !important;
+      font-size: 8pt !important;
+      color: #555 !important;
+      border-top: 1px solid #999 !important;
+      padding-top: 2mm !important;
+    }
+  
+    /* Override the existing global `print-document table` border rules
+       specifically for the new ledger style, since we want NO borders. */
+    .print-document .report-ledger,
+    .print-document .report-ledger th,
+    .print-document .report-ledger td {
+      border: 0 !important;
+    }
+    .print-document .report-ledger thead tr {
+      border-top: 1px solid #000 !important;
+      border-bottom: 1px solid #000 !important;
+    }
+    .print-document .report-ledger tbody {
+      border-bottom: 1px solid #000 !important;
+    }
+    .print-document .report-ledger tr.total-row {
+      border-top: 1px dashed #000 !important;
+    }
+    .print-document .report-ledger th { font-size: 9.5pt !important; padding: 2.5pt 6pt !important; }
+    .print-document .report-ledger td { font-size: 9pt !important; padding: 1pt 6pt !important; }
+  }
+  

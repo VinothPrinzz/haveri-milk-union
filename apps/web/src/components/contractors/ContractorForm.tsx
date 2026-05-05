@@ -1,15 +1,4 @@
 // apps/web/src/components/contractors/ContractorForm.tsx
-// ════════════════════════════════════════════════════════════════════
-// Contractor Form (Marketing v1.4) — shared between New + Edit flows.
-//
-// Sections:
-//   1. Identity       — name, phone, email, license number
-//   2. Business       — bank, account no, rate/km, vehicle number
-//   3. Period         — period from, period to
-//   4. Address        — address type (F9), state (F9), city (F9),
-//                       area, house no, street, full address
-//   + Assignment      — Assigned Routes (multi-F9), Active toggle
-// ════════════════════════════════════════════════════════════════════
 
 import { useMemo } from "react";
 import { useForm } from "react-hook-form";
@@ -17,7 +6,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -35,6 +23,7 @@ import {
   type Contractor,
 } from "@/services/api";
 import { contractorSchema, type ContractorFormData } from "@/lib/validations";
+import PageHeader, { FormSection, Field, FormFooter } from "@/components/PageHeader";
 
 interface Props {
   initialData?: Contractor;
@@ -116,237 +105,345 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
   );
 
   return (
-    <Form {...form}>
-      <form onSubmit={submit} className="space-y-4">
-        {/* ═══════ 1. Identity ═══════ */}
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-sm">Identity</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title={isEdit ? "Edit Contractor" : "New Contractor"}
+        subtitle="Enter contractor details"
+      />
+
+      <Form {...form}>
+        <form 
+          onSubmit={submit} 
+          className="flex-1 overflow-auto p-4 space-y-3 pb-20"
+        >
+          {/* Identity */}
+          <FormSection title="Identity" cols={3}>
             {isEdit && (
-              <div>
-                <label className="text-sm font-medium mb-1.5 block">Code</label>
-                <Input value={initialData?.code ?? ""} disabled className="bg-muted" />
-              </div>
+              <Field label="Code">
+                <Input value={initialData?.code ?? ""} disabled className="erp-input bg-muted" />
+              </Field>
             )}
 
-            <FormField control={form.control} name="name" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Name</FormLabel>
-                <FormControl><Input placeholder="Contractor name" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="Name" required error={form.formState.errors.name?.message}>
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="Contractor name" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="phone" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Phone</FormLabel>
-                <FormControl><Input placeholder="10-digit phone" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="Phone" required error={form.formState.errors.phone?.message}>
+              <FormField
+                control={form.control}
+                name="phone"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="10-digit phone" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="email" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Email ID</FormLabel>
-                <FormControl><Input type="email" placeholder="name@example.com" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="Email ID" error={form.formState.errors.email?.message}>
+              <FormField
+                control={form.control}
+                name="email"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" type="email" placeholder="name@example.com" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="licenseNumber" render={({ field }) => (
-              <FormItem>
-                <FormLabel>License Number</FormLabel>
-                <FormControl><Input placeholder="KA-TRP-2026-001" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
-          </CardContent>
-        </Card>
+            <Field label="License Number" error={form.formState.errors.licenseNumber?.message}>
+              <FormField
+                control={form.control}
+                name="licenseNumber"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="KA-TRP-2026-001" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
+          </FormSection>
 
-        {/* ═══════ 2. Business ═══════ */}
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-sm">Business</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <FormField control={form.control} name="bankName" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Bank Name</FormLabel>
-                <FormControl><Input placeholder="State Bank of India" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+          {/* Business */}
+          <FormSection title="Business" cols={3}>
+            <Field label="Bank Name" error={form.formState.errors.bankName?.message}>
+              <FormField
+                control={form.control}
+                name="bankName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="State Bank of India" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="accountNo" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Account No.</FormLabel>
-                <FormControl><Input placeholder="Bank account number" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="Account No." error={form.formState.errors.accountNo?.message}>
+              <FormField
+                control={form.control}
+                name="accountNo"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="Bank account number" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="ratePerKm" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Rate per Km (₹)</FormLabel>
-                <FormControl>
-                  <Input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    {...field}
-                    onChange={e => field.onChange(parseFloat(e.target.value) || 0)}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="Rate per Km (₹)" error={form.formState.errors.ratePerKm?.message}>
+              <FormField
+                control={form.control}
+                name="ratePerKm"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input
+                        className="erp-input"
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        {...field}
+                        onChange={e => field.onChange(parseFloat(e.target.value) || 0)}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="vehicleNumber" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Vehicle Number</FormLabel>
-                <FormControl><Input placeholder="KA-25-AB-1234" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
-          </CardContent>
-        </Card>
+            <Field label="Vehicle Number" error={form.formState.errors.vehicleNumber?.message}>
+              <FormField
+                control={form.control}
+                name="vehicleNumber"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="KA-25-AB-1234" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
+          </FormSection>
 
-        {/* ═══════ 3. Period ═══════ */}
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-sm">Contract Period</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField control={form.control} name="periodFrom" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Period From</FormLabel>
-                <FormControl><Input type="date" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+          {/* Contract Period */}
+          <FormSection title="Contract Period" cols={2}>
+            <Field label="Period From" error={form.formState.errors.periodFrom?.message}>
+              <FormField
+                control={form.control}
+                name="periodFrom"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" type="date" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="periodTo" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Period To</FormLabel>
-                <FormControl><Input type="date" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
-          </CardContent>
-        </Card>
+            <Field label="Period To" error={form.formState.errors.periodTo?.message}>
+              <FormField
+                control={form.control}
+                name="periodTo"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" type="date" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
+          </FormSection>
 
-        {/* ═══════ 4. Address ═══════ */}
-        <Card>
-          <CardHeader className="pb-3"><CardTitle className="text-sm">Address</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <FormField control={form.control} name="addressType" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Address Type</FormLabel>
-                <FormControl>
-                  <F9SearchSelect
-                    value={field.value || null}
-                    onChange={v => field.onChange(v ?? "")}
-                    options={addressTypeOptions}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+          {/* Address */}
+          <FormSection title="Address" cols={3}>
+            <Field label="Address Type" error={form.formState.errors.addressType?.message}>
+              <FormField
+                control={form.control}
+                name="addressType"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <F9SearchSelect
+                        value={field.value || null}
+                        onChange={v => field.onChange(v ?? "")}
+                        options={addressTypeOptions}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="state" render={({ field }) => (
-              <FormItem>
-                <FormLabel>State</FormLabel>
-                <FormControl>
-                  <F9SearchSelect
-                    value={field.value || null}
-                    onChange={v => field.onChange(v ?? "Karnataka")}
-                    options={stateOptions}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="State" required error={form.formState.errors.state?.message}>
+              <FormField
+                control={form.control}
+                name="state"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <F9SearchSelect
+                        value={field.value || null}
+                        onChange={v => field.onChange(v ?? "Karnataka")}
+                        options={stateOptions}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="city" render={({ field }) => (
-              <FormItem>
-                <FormLabel>City</FormLabel>
-                <FormControl>
-                  <F9SearchSelect
-                    value={field.value || null}
-                    onChange={v => field.onChange(v ?? "")}
-                    options={cityOptions}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="City" error={form.formState.errors.city?.message}>
+              <FormField
+                control={form.control}
+                name="city"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <F9SearchSelect
+                        value={field.value || null}
+                        onChange={v => field.onChange(v ?? "")}
+                        options={cityOptions}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="area" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Area</FormLabel>
-                <FormControl><Input placeholder="Area / locality" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="Area" error={form.formState.errors.area?.message}>
+              <FormField
+                control={form.control}
+                name="area"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="Area / locality" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="houseNo" render={({ field }) => (
-              <FormItem>
-                <FormLabel>House No.</FormLabel>
-                <FormControl><Input placeholder="12/A" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="House No." error={form.formState.errors.houseNo?.message}>
+              <FormField
+                control={form.control}
+                name="houseNo"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="12/A" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="street" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Street</FormLabel>
-                <FormControl><Input placeholder="Street name" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+            <Field label="Street" error={form.formState.errors.street?.message}>
+              <FormField
+                control={form.control}
+                name="street"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="Street name" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="address" render={({ field }) => (
-              <FormItem className="md:col-span-3">
-                <FormLabel>Full Address (optional, free-form)</FormLabel>
-                <FormControl><Input placeholder="e.g. Haveri Bus Stand, Haveri" {...field} /></FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
-          </CardContent>
-        </Card>
+            <Field 
+              label="Full Address (optional)" 
+              error={form.formState.errors.address?.message}
+              className="md:col-span-3"
+            >
+              <FormField
+                control={form.control}
+                name="address"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="e.g. Haveri Bus Stand, Haveri" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
+          </FormSection>
 
-        {/* ═══════ Assign Routes + Active ═══════ */}
-        <Card>
-          <CardContent className="pt-6 space-y-4">
-            <FormField control={form.control} name="routeIds" render={({ field }) => (
-              <FormItem>
-                <FormLabel>Assign Routes</FormLabel>
-                <FormControl>
-                  <F9SearchMultiSelect
-                    values={field.value ?? []}
-                    onChange={field.onChange}
-                    options={routeOptions}
-                    placeholder={isEdit ? "Click to manage routes" : "Press F9 to select routes"}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )} />
+          {/* Assign Routes + Active */}
+          <FormSection title="Assignment" cols={1}>
+            <Field label="Assign Routes" error={form.formState.errors.routeIds?.message}>
+              <FormField
+                control={form.control}
+                name="routeIds"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <F9SearchMultiSelect
+                        values={field.value ?? []}
+                        onChange={field.onChange}
+                        options={routeOptions}
+                        placeholder={isEdit ? "Click to manage routes" : "Press F9 to select routes"}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
 
-            <FormField control={form.control} name="active" render={({ field }) => (
-              <FormItem className="flex items-center gap-3">
-                <FormControl>
-                  <Switch checked={field.value} onCheckedChange={field.onChange} />
-                </FormControl>
-                <FormLabel className="!mt-0">Active</FormLabel>
-              </FormItem>
-            )} />
-          </CardContent>
-        </Card>
+            <Field label="Active">
+              <FormField
+                control={form.control}
+                name="active"
+                render={({ field }) => (
+                  <FormItem className="flex items-center gap-3">
+                    <FormControl>
+                      <Switch checked={field.value} onCheckedChange={field.onChange} />
+                    </FormControl>
+                    <FormLabel className="!mt-0">Active</FormLabel>
+                  </FormItem>
+                )}
+              />
+            </Field>
+          </FormSection>
+        </form>
+      </Form>
 
-        <div className="flex gap-2 justify-end">
-          {onCancel && <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>}
-          <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Saving..." : isEdit ? "Save Changes" : "+ Save Contractor"}
+      <FormFooter>
+        {onCancel && (
+          <Button type="button" variant="outline" size="sm" className="h-8" onClick={onCancel}>
+            Cancel
           </Button>
-        </div>
-      </form>
-    </Form>
+        )}
+        <Button type="button" size="sm" className="h-8" disabled={isSubmitting} onClick={() => submit()}>
+          {isSubmitting ? "Saving…" : (isEdit ? "Save Changes" : "Save Contractor")}
+        </Button>
+      </FormFooter>
+    </div>
   );
 }

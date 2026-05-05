@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { config } from "dotenv";
 config();
 
@@ -16,6 +17,7 @@ const envSchema = z.object({
   SESSION_SECRET: z.string().min(32),
 
   // API
+  PORT: z.coerce.number().optional(),       // Railway injects this
   API_PORT: z.coerce.number().default(3001),
   API_HOST: z.string().default("0.0.0.0"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),

@@ -1,58 +1,14 @@
-// apps/web/src/pages/finance/DealerLedgerPage.tsx
-// ════════════════════════════════════════════════════════════════════
-// Dealer Ledger / Wallet — /finance/ledger
-//
-// Layout (follows the ERP's standard PageShell pattern):
-//   ├─ PageHeader: title + "Print Statement" CTA
-//   └─ PageShell
-//        ├─ FilterBar: Customer (F9, required) · From · To
-//        ├─ Summary strip — 6 stat tiles:
-//        │    Opening Balance · Total Debits · Total Credits ·
-//        │    Closing Balance · Credit Limit · Available Credit
-//        └─ ScrollableTableBody
-//             Date | Voucher Type | Voucher No. | Particulars |
-//             Debit | Credit | Running Balance
-//
-// Backend:
-//   GET /api/v1/dealers/:id/ledger/summary?from=&to=
-//     → { dealer, period, summary: { openingBalance, totalDebits,
-//                                    totalCredits, closingBalance,
-//                                    creditLimit, availableCredit } }
-//   GET /api/v1/dealers/:id/ledger?from=&to=&page=&limit=
-//     → { data: LedgerRow[], total, page, limit, totalPages }
-//
-//   Each LedgerRow carries a `running_delta` — the cumulative
-//   credit − debit for the filtered range in chronological order.
-//   Rows arrive in DESC order for display, so the running balance
-//   shown against each row is:
-//
-//        runningBalance = openingBalance + Number(row.running_delta)
-//
-//   This matches the API's contract: openingBalance is
-//   dealers.opening_balance + net of every ledger entry strictly
-//   before `from`, and the window function in the API computes
-//   running_delta so that the last (most recent) row lands on the
-//   closing balance exactly.
-//
-// Print view:
-//   Button in PageHeader → Dialog → <ReportViewer /> with A4 pages.
-//   A separate unpaginated fetch (limit 1000) populates the print
-//   pages, so the printed statement contains every row in the range
-//   regardless of how the on-screen table is paged.
-//
-// Empty states:
-//   • No customer selected → prompt tile.
-//   • Customer selected, no rows → "No ledger activity in this range."
-// ════════════════════════════════════════════════════════════════════
+
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import PageHeader from "@/components/PageHeader";
-import { PageShell, FilterBar, ScrollableTableBody } from "@/components/PageShell";
+import { FilterBar, fmtINR, EmptyState, StatCard } from "@/components/PageHeader";
+import { Card, CardContent } from "@/components/ui/card";
+import { PageShell, ScrollableTableBody } from "@/components/PageShell";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { ReportViewer } from "@/components/ReportViewer";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -116,12 +72,12 @@ const COMPANY = {
 // ── Voucher type styling ──────────────────────────────────────
 type VoucherType = NonNullable<LedgerRow["voucherType"]>;
 
-const VOUCHER_LABELS: Record<VoucherType, string> = {
-  Invoice:    "Invoice",
-  Receipt:    "Receipt",
+const VOUCHER_LABELS: Record<string, string> = {
+  Invoice: "Invoice",
+  Receipt: "Receipt",
   Adjustment: "Adjustment",
-  Opening:    "Opening",
-  Refund:     "Refund",
+  Opening: "Opening",
+  Refund: "Refund",
 };
 
 const VOUCHER_STYLES: Record<VoucherType, string> = {
@@ -138,16 +94,14 @@ const VOUCHER_STYLES: Record<VoucherType, string> = {
 export default function DealerLedgerPage() {
   const [dealerId, setDealerId] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState("");
-  const [dateTo,   setDateTo]   = useState("");
-  const [page,     setPage]     = useState(1);
+  const [dateTo, setDateTo] = useState("");
+  const [page, setPage] = useState(1);
   const [printOpen, setPrintOpen] = useState(false);
 
-  // Reset pagination whenever filters change.
   useEffect(() => {
     setPage(1);
   }, [dealerId, dateFrom, dateTo]);
 
-  // ── Customers for F9 ─────────────────────────────────────────
   const { data: customers = [] } = useQuery({
     queryKey: ["customers"],
     queryFn: fetchCustomers,
@@ -161,33 +115,31 @@ export default function DealerLedgerPage() {
         sublabel: c.code,
         searchText: `${c.code ?? ""} ${c.name} ${c.phone ?? ""}`,
       })),
-    [customers],
+    [customers]
   );
 
   const selectedCustomer = useMemo(
     () => (dealerId ? (customers as any[]).find(c => c.id === dealerId) : null),
-    [customers, dealerId],
+    [customers, dealerId]
   );
 
-  // ── Summary (6 tiles) ────────────────────────────────────────
   const { data: summary, isLoading: summaryLoading, isFetching: summaryFetching } =
     useQuery({
       queryKey: ["dealer-ledger-summary", dealerId, dateFrom, dateTo],
       queryFn: () =>
         fetchDealerLedgerSummary(dealerId!, {
           from: dateFrom || undefined,
-          to:   dateTo   || undefined,
+          to: dateTo || undefined,
         }),
       enabled: Boolean(dealerId),
     });
 
-  // ── Paginated ledger rows for the on-screen table ────────────
   const { data: ledgerData, isLoading: rowsLoading } = useQuery({
     queryKey: ["dealer-ledger", dealerId, dateFrom, dateTo, page],
     queryFn: () =>
       fetchDealerLedger(dealerId!, {
-        from:  dateFrom || undefined,
-        to:    dateTo   || undefined,
+        from: dateFrom || undefined,
+        to: dateTo || undefined,
         page,
         limit: 100,
       }),
@@ -196,22 +148,20 @@ export default function DealerLedgerPage() {
 
   const rows: LedgerRow[] = ledgerData?.data ?? [];
   const totalPages = ledgerData?.totalPages ?? 1;
-  const totalRows  = ledgerData?.total ?? 0;
+  const totalRows = ledgerData?.total ?? 0;
 
   const openingBalance = summary?.summary.openingBalance ?? 0;
 
-  // Running balance = opening + cumulative delta from API window fn.
   const runningBalanceOf = (row: LedgerRow) =>
     openingBalance + Number(row.running_delta ?? 0);
 
-  // ── Print fetch (unpaginated, lazy) ──────────────────────────
   const { data: printData, isLoading: printLoading } = useQuery({
     queryKey: ["dealer-ledger-print", dealerId, dateFrom, dateTo],
     queryFn: () =>
       fetchDealerLedger(dealerId!, {
-        from:  dateFrom || undefined,
-        to:    dateTo   || undefined,
-        page:  1,
+        from: dateFrom || undefined,
+        to: dateTo || undefined,
+        page: 1,
         limit: 1000,
       }),
     enabled: Boolean(dealerId && printOpen),
@@ -225,20 +175,20 @@ export default function DealerLedgerPage() {
         <>
           <PageHeader
             title="Dealer Ledger"
-            description="Customer wallet, running balance, and statement view"
-          >
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!canPrint}
-              onClick={() => setPrintOpen(true)}
-            >
-              <Printer className="h-4 w-4 mr-1.5" />
-              Print Statement
-            </Button>
-          </PageHeader>
+            subtitle="Customer wallet, running balance, and statement view"
+            actions={
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canPrint}
+                onClick={() => setPrintOpen(true)}
+              >
+                <Printer className="h-4 w-4 mr-1.5" />
+                Print Statement
+              </Button>
+            }
+          />
 
-          {/* ─ Filter bar ─ */}
           <FilterBar>
             <div className="min-w-[260px]">
               <label className="text-sm font-medium mb-1.5 block">
@@ -259,7 +209,7 @@ export default function DealerLedgerPage() {
                 type="date"
                 value={dateFrom}
                 onChange={e => setDateFrom(e.target.value)}
-                className="h-9 w-44 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                className="erp-input h-10 w-44"
               />
             </div>
 
@@ -269,23 +219,20 @@ export default function DealerLedgerPage() {
                 type="date"
                 value={dateTo}
                 onChange={e => setDateTo(e.target.value)}
-                className="h-9 w-44 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                className="erp-input h-10 w-44"
               />
             </div>
 
-            {/* Opening balance display — lives inside the filter bar
-                per spec so staff can sanity-check the range opening
-                before scanning the table. */}
             <div className="ml-auto border-l pl-4">
               <label className="text-[11px] uppercase tracking-wide text-muted-foreground block">
                 Opening Balance
               </label>
-              <div className="text-base font-semibold font-mono">
+              <div className="text-base font-semibold font-mono num">
                 {dealerId
                   ? summaryLoading
                     ? <Skeleton className="h-6 w-28" />
-                    : fmtMoney(openingBalance)
-                  : <span className="text-muted-foreground">—</span>}
+                    : fmtINR(openingBalance)
+                  : "—"}
               </div>
             </div>
 
@@ -296,66 +243,53 @@ export default function DealerLedgerPage() {
             )}
           </FilterBar>
 
-          {/* ─ Summary tiles ─ */}
           {dealerId && (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-              <SummaryTile
-                icon={<BookOpen className="h-4 w-4 text-slate-600" />}
+              <StatCard
+                icon={<BookOpen className="h-4 w-4" />}
                 label="Opening Balance"
-                value={summary}
-                loading={summaryLoading}
-                pick={s => s.summary.openingBalance}
+                value={fmtINR(summary?.summary.openingBalance ?? 0)}
+                tone="info"
               />
-              <SummaryTile
-                icon={<TrendingDown className="h-4 w-4 text-blue-600" />}
+              <StatCard
+                icon={<TrendingDown className="h-4 w-4" />}
                 label="Total Debits"
-                value={summary}
-                loading={summaryLoading}
-                pick={s => s.summary.totalDebits}
+                value={fmtINR(summary?.summary.totalDebits ?? 0)}
+                tone="danger"
                 hint="Invoices in range"
               />
-              <SummaryTile
-                icon={<TrendingUp className="h-4 w-4 text-emerald-600" />}
+              <StatCard
+                icon={<TrendingUp className="h-4 w-4" />}
                 label="Total Credits"
-                value={summary}
-                loading={summaryLoading}
-                pick={s => s.summary.totalCredits}
+                value={fmtINR(summary?.summary.totalCredits ?? 0)}
+                tone="success"
                 hint="Payments in range"
               />
-              <SummaryTile
-                icon={<Wallet className="h-4 w-4 text-violet-600" />}
+              <StatCard
+                icon={<Wallet className="h-4 w-4" />}
                 label="Closing Balance"
-                value={summary}
-                loading={summaryLoading}
-                pick={s => s.summary.closingBalance}
-                emphasize
+                value={fmtINR(summary?.summary.closingBalance ?? 0)}
+                tone="default"
               />
-              <SummaryTile
-                icon={<ShieldCheck className="h-4 w-4 text-amber-600" />}
+              <StatCard
+                icon={<ShieldCheck className="h-4 w-4" />}
                 label="Credit Limit"
-                value={summary}
-                loading={summaryLoading}
-                pick={s => s.summary.creditLimit}
+                value={fmtINR(summary?.summary.creditLimit ?? 0)}
+                tone="warning"
               />
-              <SummaryTile
-                icon={<CircleDollarSign className="h-4 w-4 text-indigo-600" />}
+              <StatCard
+                icon={<CircleDollarSign className="h-4 w-4" />}
                 label="Available Credit"
-                value={summary}
-                loading={summaryLoading}
-                pick={s => s.summary.availableCredit}
+                value={fmtINR(summary?.summary.availableCredit ?? 0)}
+                tone="info"
               />
             </div>
           )}
         </>
       }
     >
-      {/* ── Body ─────────────────────────────────────────────── */}
       {!dealerId ? (
-        <EmptyHint
-          icon={<Users className="h-10 w-10 mx-auto text-muted-foreground/50" />}
-          title="Pick a customer"
-          message="Choose a customer above to view their ledger, running balance, and statement."
-        />
+        <EmptyState title="Pick a customer" />
       ) : rowsLoading ? (
         <ScrollableTableBody className="p-4">
           <div className="space-y-2">
@@ -365,86 +299,60 @@ export default function DealerLedgerPage() {
           </div>
         </ScrollableTableBody>
       ) : rows.length === 0 ? (
-        <EmptyHint
-          icon={<FileText className="h-10 w-10 mx-auto text-muted-foreground/50" />}
-          title="No ledger activity"
-          message={
-            dateFrom || dateTo
-              ? "No entries in the selected date range. Try widening the range."
-              : "This customer has no ledger entries yet."
-          }
+        <EmptyState 
+          title="No ledger activity in this range." 
         />
       ) : (
-        <div className="h-full flex flex-col">
-          <ScrollableTableBody>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/30 sticky top-0 z-10">
-                <tr className="text-left">
-                  <Th>Date</Th>
-                  <Th>Voucher Type</Th>
-                  <Th>Voucher No.</Th>
-                  <Th>Particulars</Th>
-                  <Th className="text-right">Debit</Th>
-                  <Th className="text-right">Credit</Th>
-                  <Th className="text-right">Running Balance</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(row => {
-                  const rb = runningBalanceOf(row);
-                  return (
-                    <tr
-                      key={row.id}
-                      className="border-t hover:bg-muted/20 transition-colors"
-                    >
-                      <Td className="whitespace-nowrap">
-                        {fmtDate(row.voucherDate ?? row.createdAt)}
-                      </Td>
-                      <Td>
-                        {row.voucherType ? (
-                          <span
-                            className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-medium ${VOUCHER_STYLES[row.voucherType]}`}
-                          >
-                            {VOUCHER_LABELS[row.voucherType]}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </Td>
-                      <Td className="font-mono text-xs">
-                        {row.voucherNo ?? "—"}
-                      </Td>
-                      <Td className="max-w-[320px] truncate">
-                        {row.particulars ?? row.description ?? "—"}
-                      </Td>
-                      <Td className="text-right font-mono">
-                        {row.type === "debit" ? fmtMoneyPlain(row.amount) : ""}
-                      </Td>
-                      <Td className="text-right font-mono">
-                        {row.type === "credit" ? fmtMoneyPlain(row.amount) : ""}
-                      </Td>
-                      <Td
-                        className={`text-right font-mono font-medium ${
-                          rb < 0 ? "text-rose-700" : "text-foreground"
-                        }`}
-                      >
-                        {fmtMoneyPlain(rb)}
-                        {rb < 0 && (
-                          <span className="text-[10px] ml-1 text-rose-700/80">
-                            Dr
-                          </span>
-                        )}
-                      </Td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </ScrollableTableBody>
+        <div className="h-full flex flex-col p-3">
+          <div className="erp-panel overflow-hidden flex-1 flex flex-col">
+            <div className="overflow-auto flex-1">
+              <table className="erp-table w-full">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Voucher Type</th>
+                    <th>Voucher No.</th>
+                    <th>Particulars</th>
+                    <th className="num">Debit</th>
+                    <th className="num">Credit</th>
+                    <th className="num">Running Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(row => {
+                    const rb = runningBalanceOf(row);
+                    return (
+                      <tr key={row.id}>
+                        <td>{fmtDate(row.voucherDate ?? row.createdAt)}</td>
+                        <td>
+                          {row.voucherType ? VOUCHER_LABELS[row.voucherType] : "—"}
+                        </td>
+                        <td className="font-mono text-xs">
+                          {row.voucherNo ?? "—"}
+                        </td>
+                        <td className="max-w-[320px] truncate">
+                          {row.particulars ?? row.description ?? "—"}
+                        </td>
+                        <td className="num">
+                          {row.type === "debit" ? fmtINR(row.amount) : ""}
+                        </td>
+                        <td className="num">
+                          {row.type === "credit" ? fmtINR(row.amount) : ""}
+                        </td>
+                        <td className={`num ${rb < 0 ? "text-rose-700" : ""}`}>
+                          {fmtINR(rb)}
+                          {rb < 0 && <span className="text-[10px] ml-1">Dr</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-          {/* Pagination */}
           {totalPages > 1 && (
-            <div className="flex-shrink-0 border-t bg-card rounded-b-lg px-4 py-2 flex items-center justify-between text-sm">
+            <div className="flex-shrink-0 border-t bg-card px-4 py-2 flex items-center justify-between text-sm mt-2">
               <span className="text-xs text-muted-foreground">
                 Page {page} of {totalPages} · {totalRows} entries
               </span>
@@ -471,7 +379,7 @@ export default function DealerLedgerPage() {
         </div>
       )}
 
-      {/* ── Print dialog ─────────────────────────────────────── */}
+      {/* Print dialog remains unchanged as per PART 3 scope */}
       <PrintStatementDialog
         open={printOpen}
         onClose={() => setPrintOpen(false)}

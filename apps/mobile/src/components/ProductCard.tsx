@@ -66,27 +66,23 @@ export default function ProductCard({
   const outOfStock = !product.available || product.stock === 0;
   const lowStock   = !outOfStock && product.stock <= lowStockThreshold;
 
-  // Derive stock dot color
   const stockColor =
     outOfStock ? colors.destructive :
     lowStock   ? colors.warning :
                  colors.success;
 
-  // Derive badge if not explicitly set
   const resolvedBadge =
     badge ??
     (lowStock ? { kind: "low" as const, label: "Low Stock" } : undefined);
 
-  // ── Image / emoji resolution ────────────────────────────────────────
   const hasImage = !!product.imageUrl && !imageError;
   const fallbackEmoji = product.icon ?? "📦";
 
-  // ── Price formatting ────────────────────────────────────────────────
-  const priceStr = Number.isInteger(product.basePrice)
-    ? String(product.basePrice)
-    : product.basePrice.toFixed(2);
+  // ── C.3: Show MRP instead of basePrice ─────────────────────────────
+  const displayedPrice = Number.isInteger(product.mrp ?? product.basePrice)
+    ? String(product.mrp ?? product.basePrice)
+    : (product.mrp ?? product.basePrice).toFixed(2);
 
-  // ── GST label ───────────────────────────────────────────────────────
   const gstStr = Number.isInteger(product.gstPercent)
     ? String(product.gstPercent)
     : product.gstPercent.toFixed(1);
@@ -124,14 +120,14 @@ export default function ProductCard({
       <Text style={styles.name} numberOfLines={2}>{product.name}</Text>
       <Text style={styles.unit}>{product.unit}</Text>
 
-      {/* Price row */}
+      {/* Price row — now shows MRP */}
       <View style={styles.priceRow}>
-        <Text style={styles.price}>₹{priceStr}</Text>
+        <Text style={styles.price}>₹{displayedPrice}</Text>
         <Text style={styles.priceUnit}>/pc</Text>
       </View>
       <Text style={styles.gst}>Incl. GST {gstStr}%</Text>
 
-      {/* Add button OR quantity stepper */}
+      {/* Add button OR quantity stepper — unchanged */}
       {quantity === 0 ? (
         <TouchableOpacity
           onPress={onAdd}

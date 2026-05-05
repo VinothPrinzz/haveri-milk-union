@@ -39,7 +39,7 @@ export async function processPushNotification(job: Job<PushNotificationJobData>)
 
     case "payment.reminder":
       pushTitle = "Payment Reminder 💰";
-      pushBody = "You have an outstanding balance. Please top up your wallet to continue ordering.";
+      pushBody = "You have an outstanding balance. Please clear it to continue ordering.";
       break;
 
     case "custom":

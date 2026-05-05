@@ -68,50 +68,52 @@ export async function directSalesRoutes(app: FastifyInstance) {
       });
       const query = querySchema.parse(request.query);
 
-      // ←←← ONLY THIS CHANGE AS PER STEP 5
       const customerType = query.customerType
         ? query.customerType.toLowerCase() as 'agent' | 'cash'
         : null;
 
       const offset = offsetFromPage(query.page, query.limit);
-     
+      
       const routeId = query.routeId ?? null;
       const dateFrom = query.dateFrom ?? null;
       const dateTo = query.dateTo ?? null;
       const officerId = query.officerId ?? null;
 
       const rows = await pgClient`
-        SELECT ds.id, ds.gp_no, ds.customer_type, ds.customer_id,
-              ds.route_id, ds.sale_date, ds.payment_mode,
-              ds.subtotal, ds.total_gst, ds.grand_total, ds.notes, ds.created_at,
-              r.code AS route_code, r.name AS route_name,
-              u.name AS officer_name,
-              b.name AS batch_name,
-              CASE
-                WHEN ds.customer_type = 'agent' THEN d.name
-                WHEN ds.customer_type = 'cash'  THEN cc.name
-              END AS customer_name,
-              CASE
-                WHEN ds.customer_type = 'agent' THEN d.phone
-                WHEN ds.customer_type = 'cash'  THEN cc.phone
-              END AS customer_phone,
-              COALESCE(
-                (SELECT json_agg(json_build_object(
-                    'product_name', dsi.product_name,
-                    'quantity',     dsi.quantity,
-                    'unit_price',   dsi.unit_price,
-                    'line_total',   dsi.line_total
-                  ) ORDER BY dsi.product_name)
-                  FROM direct_sale_items dsi WHERE dsi.direct_sale_id = ds.id),
-                '[]'::json
-              ) AS items,
-              (SELECT count(*)::int FROM direct_sale_items dsi WHERE dsi.direct_sale_id = ds.id) AS item_count
+        SELECT 
+          ds.id, ds.gp_no, ds.customer_type, ds.customer_id,
+          ds.route_id, ds.sale_date, ds.payment_mode,
+          ds.subtotal, ds.total_gst, ds.grand_total, ds.notes, ds.created_at,
+          r.code AS route_code, r.name AS route_name,
+          u.name AS officer_name,
+          b.name AS batch_name,
+          i.id AS invoice_id,                    -- ← ADDED for B.7
+          CASE
+            WHEN ds.customer_type = 'agent' THEN d.name
+            WHEN ds.customer_type = 'cash'  THEN cc.name
+          END AS customer_name,
+          CASE
+            WHEN ds.customer_type = 'agent' THEN d.phone
+            WHEN ds.customer_type = 'cash'  THEN cc.phone
+          END AS customer_phone,
+          COALESCE(
+            (SELECT json_agg(json_build_object(
+                'product_name', dsi.product_name,
+                'quantity',     dsi.quantity,
+                'unit_price',   dsi.unit_price,
+                'line_total',   dsi.line_total
+              ) ORDER BY dsi.product_name)
+              FROM direct_sale_items dsi WHERE dsi.direct_sale_id = ds.id),
+            '[]'::json
+          ) AS items,
+          (SELECT count(*)::int FROM direct_sale_items dsi WHERE dsi.direct_sale_id = ds.id) AS item_count
         FROM direct_sales ds
         LEFT JOIN routes r ON r.id = ds.route_id
         LEFT JOIN users u  ON u.id = ds.officer_id
         LEFT JOIN batches b ON b.id = ds.batch_id
         LEFT JOIN dealers d ON ds.customer_type = 'agent' AND d.id = ds.customer_id
         LEFT JOIN cash_customers cc ON ds.customer_type = 'cash' AND cc.id = ds.customer_id
+        LEFT JOIN invoices i ON i.order_id = ds.id          -- ← ADDED for B.7
         WHERE (${customerType}::text IS NULL OR ds.customer_type = ${customerType ?? 'agent'}::direct_sale_customer_type)
           AND (${routeId}::uuid IS NULL OR ds.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${dateFrom}::date IS NULL OR ds.sale_date >= ${dateFrom ?? '1970-01-01'}::date)
@@ -121,6 +123,7 @@ export async function directSalesRoutes(app: FastifyInstance) {
         LIMIT ${query.limit} OFFSET ${offset}
       `;
 
+      // Count query also updated for consistency (though not strictly required)
       const [countRow] = await pgClient`
         SELECT count(*)::int AS count FROM direct_sales ds
         WHERE (${customerType}::text IS NULL OR ds.customer_type = ${customerType ?? 'agent'}::direct_sale_customer_type)

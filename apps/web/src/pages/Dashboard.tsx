@@ -1,170 +1,199 @@
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { get } from "@/lib/apiClient";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Package, ShoppingCart, Users, TrendingUp, AlertTriangle, Warehouse } from "lucide-react";
+import {
+  Package, ShoppingCart, Users, TrendingUp, AlertTriangle, Truck,
+  ClipboardCheck, Boxes, Wallet, Plus,
+} from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import PageHeader from "@/components/PageHeader";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from "recharts";
+import PageHeader, {
+  StatCard, StatusPill, fmtINR, fmtDate, EmptyState,
+} from "@/components/PageHeader";
+import { DataTable, Column } from "@/components/DataTable";
 
 interface DashboardSummary {
   today: { orderCount: number; revenue: number; itemsSold: number; directSalesCount: number; directSalesRevenue: number };
   pendingIndents: number;
   activeCustomers: number;
-  totalWalletBalance: number;
   stockAlerts: { outOfStock: number; critical: number; low: number };
   recentOrders: { id: string; status: string; grand_total: number; item_count: number; created_at: string; dealer_name: string; zone_name: string }[];
-  stockOverview: { id: string; name: string; stock: number; stock_status: string; category_name: string }[];
-  zoneBreakdown: { zone_name: string; orders: number; revenue: number }[];
+  stockOverview: { id: string; name: string; stock: number; stock_status: string; category_name: string; unit?: string }[];
+  // API actually returns: { name, slug, color, order_count, revenue }
+  zoneBreakdown: { name?: string; zone_name?: string; order_count?: number; orders?: number; revenue: number | string }[];
 }
-
-function StatCard({ title, value, icon: Icon, color }: { title: string; value: string | number; icon: React.ComponentType<{ className?: string }>; color: string }) {
-  return (
-    <Card>
-      <CardContent className="pt-6">
-        <div className="flex justify-between items-center">
-          <div>
-            <p className="text-xs text-muted-foreground">{title}</p>
-            <p className="text-2xl font-bold mt-1">{value}</p>
-          </div>
-          <Icon className={`h-8 w-8 ${color} opacity-70`} />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-const statusColors: Record<string, string> = {
-  pending: "bg-warning/10 text-warning", confirmed: "bg-primary/10 text-primary",
-  dispatched: "bg-purple-100 text-purple-700", delivered: "bg-success/10 text-success",
-  cancelled: "bg-destructive/10 text-destructive",
-};
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const { data, isLoading, error } = useQuery<DashboardSummary>({
     queryKey: ["dashboard-summary"],
     queryFn: () => get<DashboardSummary>("/dashboard/summary"),
     refetchInterval: 60_000,
   });
 
-  const stats = data ? [
-    { label: "Today's Orders", value: data.today.orderCount, icon: ShoppingCart, color: "text-primary" },
-    { label: "Today's Revenue", value: `₹${Math.round(data.today.revenue).toLocaleString()}`, icon: TrendingUp, color: "text-success" },
-    { label: "Active Customers", value: data.activeCustomers, icon: Users, color: "text-primary" },
-    { label: "Pending Indents", value: data.pendingIndents, icon: Package, color: "text-warning" },
-    { label: "Low / Out of Stock", value: data.stockAlerts.low + data.stockAlerts.critical + data.stockAlerts.outOfStock, icon: AlertTriangle, color: "text-destructive" },
-  ] : [];
+  const today = new Date().toLocaleDateString("en-IN", {
+    weekday: "long", day: "2-digit", month: "short", year: "numeric",
+  });
 
-  const chartData = (data?.zoneBreakdown ?? []).map(z => ({
-    zone: (z.zone_name ?? "").replace(/ ?Zone$/i, ""),
-    revenue: Math.round(z.revenue ?? 0),
-  }));
+  const stockAlertCount =
+  (data?.stockAlerts?.low ?? 0) +
+  (data?.stockAlerts?.critical ?? 0) +
+  (data?.stockAlerts?.outOfStock ?? 0);
+
+  const chartData = (data?.zoneBreakdown ?? []).map(z => {
+    const label = (z.name ?? z.zone_name ?? "—").toString();
+    const rev = typeof z.revenue === "number" ? z.revenue : parseFloat(String(z.revenue ?? 0)) || 0;
+    return {
+      zone: label.replace(/ ?Zone$/i, ""),
+      revenue: Math.round(rev),
+    };
+  });
+
+  const recentCols: Column<DashboardSummary["recentOrders"][number]>[] = [
+    { key: "dealer", header: "Dealer", cell: r => <span className="font-medium">{r.dealer_name}</span> },
+    { key: "zone", header: "Zone", cell: r => <span className="text-muted-foreground">{r.zone_name}</span> },
+    { key: "items", header: "Items", cell: r => r.item_count, align: "right" },
+    { key: "amount", header: "Amount ₹", cell: r => fmtINR(r.grand_total), align: "right" },
+    { key: "status", header: "Status", cell: r => <StatusPill status={r.status} /> },
+    {
+      key: "time", header: "Time",
+      cell: r => (
+        <span className="text-muted-foreground text-[12px]">
+          {new Date(r.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+        </span>
+      ),
+    },
+  ];
 
   return (
     <div>
-      <PageHeader title="Dashboard" description="Overview of marketing operations" />
+      <PageHeader
+        title="Dashboard"
+        subtitle={`Welcome back. Here's your union snapshot for ${today}.`}
+      />
 
-      {isLoading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-          {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-28" />)}
-        </div>
-      ) : error ? (
-        <div className="mb-6 p-4 rounded-lg bg-destructive/10 text-destructive text-sm">
-          Could not load dashboard data. Please check API connection and authentication.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
-          {stats.map(s => <StatCard key={s.label} title={s.label} value={s.value} icon={s.icon} color={s.color} />)}
-        </div>
-      )}
+      <div className="p-4 space-y-3">
+        {/* Row 1 — KPI strip */}
+        {isLoading ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-sm" />)}
+          </div>
+        ) : error ? (
+          <div className="erp-panel p-3 border-l-4 border-l-destructive bg-destructive/5">
+            <div className="text-[13px] text-destructive font-medium">
+              Could not load dashboard data. Please check API connection and authentication.
+            </div>
+          </div>
+        ) : data && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <StatCard label="Today's Orders"     value={data.today.orderCount}            icon={<ShoppingCart className="w-5 h-5" />} tone="info" />
+            <StatCard label="Today's Revenue"    value={fmtINR(data.today.revenue, false)} icon={<TrendingUp className="w-5 h-5" />}   tone="success" />
+            <StatCard label="Active Customers"   value={data.activeCustomers}             icon={<Users className="w-5 h-5" />}        tone="default" />
+            <StatCard label="Pending Indents"    value={data.pendingIndents}              icon={<ClipboardCheck className="w-5 h-5" />} tone="warning" />
+            <StatCard label="Stock Alerts"       value={stockAlertCount}                  icon={<AlertTriangle className="w-5 h-5" />} tone="danger" hint={`${data.stockAlerts.outOfStock} OOS · ${data.stockAlerts.critical} crit · ${data.stockAlerts.low} low`} />
+          </div>
+        )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="col-span-2">
-          <CardHeader className="pb-2"><CardTitle className="text-base">Revenue by Zone</CardTitle></CardHeader>
-          <CardContent>
+        {/* Row 2 — Revenue by Zone + Stock Overview */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <div className="erp-panel p-3 lg:col-span-2">
+            <div className="erp-section-title flex items-center justify-between">
+              <span>Revenue by Zone</span>
+              <span className="text-[11px] normal-case font-normal text-muted-foreground">in ₹</span>
+            </div>
             {isLoading ? <Skeleton className="h-52" /> : (
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={chartData.length ? chartData : [{ zone: "Loading", revenue: 0 }]}>
+                <BarChart data={chartData.length ? chartData : [{ zone: "—", revenue: 0 }]}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="zone" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip formatter={(v: number) => [`₹${v.toLocaleString()}`, "Revenue"]} />
-                  <Bar dataKey="revenue" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                  <Tooltip formatter={(v: number) => [fmtINR(v), "Revenue"]} contentStyle={{ borderRadius: 4, fontSize: 12 }} />
+                  <Bar dataKey="revenue" fill="hsl(var(--info))" radius={[2, 2, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
-          </CardContent>
-        </Card>
+          </div>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Warehouse className="h-4 w-4" /> Current Stock Levels
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {isLoading ? <div className="p-5"><Skeleton className="h-40" /></div> : (
-              <div className="overflow-auto rounded-b-lg border-t">
-                <table className="w-full text-sm">
+          <div className="erp-panel">
+            <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2 flex items-center gap-2">
+              <Boxes className="w-3.5 h-3.5" /> Current Stock Levels
+            </div>
+            <div className="overflow-auto max-h-[220px]">
+              {isLoading ? <div className="p-3"><Skeleton className="h-40" /></div> : (
+                <table className="erp-table">
                   <thead>
-                    <tr className="border-b bg-muted/30">
-                      <th className="text-left py-2.5 px-3 font-medium text-muted-foreground">Product</th>
-                      <th className="text-right py-2.5 px-3 font-medium text-muted-foreground">Current Stock</th>
-                      <th className="text-left py-2.5 px-3 font-medium text-muted-foreground">Status</th>
+                    <tr>
+                      <th>Product</th>
+                      <th className="num" style={{ textAlign: "right" }}>Stock</th>
+                      <th>Status</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(data?.stockOverview ?? []).map(s => (
-                      <tr key={s.id} className="border-b last:border-0 hover:bg-muted/30">
-                        <td className="py-2 px-3">{s.name.replace("Nandini ", "")}</td>
-                        <td className="py-2 px-3 text-right font-mono">{s.stock}</td>
-                        <td className="py-2 px-3">
-                          {s.stock_status === "out_of_stock"
-                            ? <span className="text-xs px-2 py-0.5 rounded bg-destructive/10 text-destructive">Out of Stock</span>
-                            : (s.stock_status === "critical" || s.stock_status === "low")
-                            ? <span className="text-xs px-2 py-0.5 rounded bg-warning/10 text-warning">Low</span>
-                            : <span className="text-xs px-2 py-0.5 rounded bg-success/10 text-success">OK</span>}
+                    {(data?.stockOverview ?? []).map((s, i) => (
+                      <tr key={s.id} className={i % 2 === 1 ? "zebra" : ""}>
+                        <td className="truncate max-w-[160px]">{s.name.replace("Nandini ", "")}</td>
+                        <td className="num" style={{ textAlign: "right" }}>{s.stock}</td>
+                        <td>
+                          {s.stock_status === "out_of_stock" ? <StatusPill status="cancelled" /> :
+                           (s.stock_status === "critical" || s.stock_status === "low") ? <StatusPill status="pending" /> :
+                           <StatusPill status="confirmed" />}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+              )}
+            </div>
+          </div>
+        </div>
 
-      {(data?.recentOrders?.length ?? 0) > 0 && (
-        <Card className="mt-4">
-          <CardHeader className="pb-2"><CardTitle className="text-base">Recent Orders</CardTitle></CardHeader>
-          <CardContent className="p-0">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-muted/30 text-xs text-muted-foreground">
-                  <th className="text-left py-2.5 px-3 font-medium">Dealer</th>
-                  <th className="text-left py-2.5 px-3 font-medium">Zone</th>
-                  <th className="text-right py-2.5 px-3 font-medium">Items</th>
-                  <th className="text-right py-2.5 px-3 font-medium">Amount</th>
-                  <th className="text-left py-2.5 px-3 font-medium">Status</th>
-                  <th className="text-left py-2.5 px-3 font-medium">Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data!.recentOrders.map(o => (
-                  <tr key={o.id} className="border-b last:border-0 hover:bg-muted/30">
-                    <td className="py-2 px-3 font-medium">{o.dealer_name}</td>
-                    <td className="py-2 px-3 text-muted-foreground">{o.zone_name}</td>
-                    <td className="py-2 px-3 text-right font-mono">{o.item_count}</td>
-                    <td className="py-2 px-3 text-right font-mono">₹{Math.round(o.grand_total).toLocaleString()}</td>
-                    <td className="py-2 px-3"><span className={`text-xs px-2 py-0.5 rounded font-medium ${statusColors[o.status] ?? "bg-secondary"}`}>{o.status}</span></td>
-                    <td className="py-2 px-3 text-muted-foreground text-xs">{new Date(o.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-      )}
+        {/* Row 3 — Quick actions */}
+        <div className="erp-panel p-3">
+          <div className="erp-section-title">Quick Actions</div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+            {[
+              { l: "Record Indent",   p: "/sales/record-indents",     i: ShoppingCart },
+              { l: "Post Indent",     p: "/sales/post-indent",        i: ClipboardCheck },
+              { l: "Create Dispatch", p: "/fgs/dispatch/create",      i: Truck },
+              { l: "Stock Entry",     p: "/fgs/stock-entry",          i: Boxes },
+              { l: "New Customer",    p: "/masters/customers/new",    i: Users },
+              { l: "Receive Payment", p: "/finance/payments",         i: Wallet },
+            ].map(q => {
+              const I = q.i;
+              return (
+                <button
+                  key={q.p}
+                  onClick={() => navigate(q.p)}
+                  className="flex items-center gap-2 px-2.5 py-2 border border-border rounded-sm hover:bg-accent text-[12.5px] text-left bg-panel"
+                >
+                  <I className="w-3.5 h-3.5 text-primary shrink-0" />
+                  <span className="truncate">{q.l}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Row 4 — Recent Indents */}
+        <div className="erp-panel">
+          <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2">Recent Indents</div>
+          <div className="overflow-auto max-h-[320px]">
+            {isLoading ? (
+              <div className="p-3"><Skeleton className="h-40" /></div>
+            ) : (data?.recentOrders?.length ?? 0) === 0 ? (
+              <EmptyState title="No recent indents." />
+            ) : (
+              <DataTable
+                columns={recentCols}
+                rows={(data?.recentOrders ?? []).map(o => ({ ...o }))}
+                maxHeight="280px"
+              />
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -434,30 +434,23 @@ export const createCustomer = async (body: Record<string, unknown>) => {
 };
 
 // ── NEW ──
+// services/api.ts — add this export
 export const updateCustomer = async (id: string, body: Record<string, unknown>) => {
   const data = await patch<{ dealer: Record<string, unknown> }>(`/dealers/${id}`, {
-    name: body.name,
-    phone: body.phone,
-    email: body.email || null,
-    customerType: body.type,
-    rateCategory: body.rateCategory,
-    payMode: body.payMode,
-    officerName: body.officerName || null,
-    bank: body.bank || null,
-    accountNo: body.accountNo || null,
-    creditLimit: body.creditLimit,
-    addressType: body.addressType || null,
-    state: body.state || null,
-    city: body.city || null,
-    area: body.area || null,
-    houseNo: body.houseNo || null,
-    street: body.street || null,
-    address: body.address || null,
+    name: body.name, phone: body.phone, email: body.email || undefined,
+    customerType: body.type, rateCategory: body.rateCategory, payMode: body.payMode,
+    officerName: body.officerName || undefined, bank: body.bank || undefined,
+    accountNo: body.accountNo || undefined, creditLimit: body.creditLimit,
+    addressType: body.addressType || undefined, state: body.state || undefined,
+    city: body.city || undefined, area: body.area || undefined,
+    houseNo: body.houseNo || undefined, street: body.street || undefined,
+    address: body.address || undefined,
+    gstNumber: body.gstNumber || undefined,
     active: body.active !== false,
     ...(body.zoneId ? { zoneId: body.zoneId } : {}),
     ...(body.routeId ? { routeId: body.routeId } : {}),
   });
-  return normalizeCustomer(data.dealer);
+  return data.dealer;
 };
 
 // Issue #2 — ADD a route (keeps existing routes intact).
@@ -650,7 +643,7 @@ export const removeRouteFromBatch = async (batchId: string, routeId: string) => 
 // ══════════════════════════════════════
 export const fetchProducts = async () => {
   const data = await get<{ products: Record<string, unknown>[] }>("/products");
-  return (data.products ?? []).map(normalizeProduct);
+  return (data.products ?? []).map(normalizeProduct);   // ← Uses updated normalizer
 };
 
 export const createProduct = async (body: Record<string, unknown>) => {
@@ -717,6 +710,8 @@ export const fetchIndents = async (filters?: {
   batchId?: string;
   date?: string;
   dealerId?: string;
+  from?: string;
+  to?: string;
 }) => {
   const params: Record<string, string | number | boolean | undefined> = { limit: 100, page: 1 };
   if (filters?.status) params.status = filters.status.toLowerCase();
@@ -743,19 +738,19 @@ export const modifyIndent = async (
   return data.order;
 };
 
-export const createIndent = async (body: Record<string, unknown>) => {
-  const items =
-    (body.items as { productId: string; qty: number; rate: number }[]) ?? [];
-  const data = await post<{ order: Record<string, unknown> }>(
-    "/orders/admin-place",
-    {
-      dealerId: body.customerId,
-      paymentMode: body.payMode === "Cash" ? "wallet" : "credit",
-      notes: body.agentCode ? `Agent: ${body.agentCode}` : undefined,
-      items: items.map((i) => ({ productId: i.productId, quantity: i.qty })),
-    },
-  );
-  return normalizeIndent(data.order); // backend now returns the full order shape
+export const createIndent = async (b: {
+  customerId: string;
+  routeId?: string | null;
+  paymentMode: "upi" | "credit";       // dropped "wallet" from the union
+  notes?: string;
+  items: Array<{ productId: string; quantity: number }>;
+}) => {
+  return post("/orders/admin-place", {
+    dealerId: b.customerId,
+    items: b.items,
+    paymentMode: b.paymentMode,
+    notes: b.notes,
+  });
 };
 
 export const cancelIndent = async (id: string, reason: string) => {
@@ -985,16 +980,14 @@ export const fetchDispatchAssignments = async (date?: string) => {
 // TIME WINDOWS
 // ══════════════════════════════════════
 export const fetchTimeWindows = async () => {
-  const data = await get<{ windows: Record<string, unknown>[] }>(
-    "/time-windows",
-  );
+  const data = await get<{ windows: Record<string, unknown>[] }>("/time-windows");
   return (data.windows ?? []).map((w) => ({
-    id: w.id as string,
-    zoneName: (w.zone_name ?? w.zoneName ?? "") as string,
-    openTime: (w.open_time ?? w.openTime ?? "06:00") as string,
-    warningTime: (w.warning_time ?? w.warningTime ?? "07:45") as string,
-    closeTime: (w.close_time ?? w.closeTime ?? "08:00") as string,
-    active: w.active !== false,
+    id:              w.id as string,
+    zoneName:        (w.zone_name ?? w.zoneName ?? "") as string,
+    openTime:        (w.open_time ?? w.openTime ?? "06:00") as string,
+    warningMinutes:  Number(w.warning_minutes ?? w.warningMinutes ?? 20),
+    closeTime:       (w.close_time ?? w.closeTime ?? "08:00") as string,
+    active:          w.active !== false,
   }));
 };
 
@@ -1046,6 +1039,24 @@ export const sendNotification = async (body: {
     targetType: string;
     targetId: string | null;
   }>("/notifications/send", payload);
+};
+
+export const sendDealerNotification = async (b: {
+  title: string;
+  message: string;
+  target?: { type: "all" | "dealer" | "zone"; id?: string };
+  channel?: "push" | "sms" | "email";
+}) => post("/notifications/send", b);
+
+export const fetchDealersLite = async () => {
+  const data = await get<{ data: any[] }>("/dealers", { limit: 1000, page: 1 });
+  return (data.data ?? []).map((d: any) => ({
+    id: d.id,
+    name: d.name,
+    code: d.code,
+    zoneId: d.zone_id,
+    zoneName: d.zone_name,
+  }));
 };
 
 // ══════════════════════════════════════
@@ -1694,3 +1705,99 @@ export const getOfficers = () => [
   { id: "o2", name: "Suresh Patil" },
   { id: "o3", name: "Mohan Reddy" },
 ];
+
+// ══════════════════════════════════════
+// STUB EXPORTS (used by pages, not yet implemented on backend)
+// ══════════════════════════════════════
+export const updateProduct = async (id: string, body: Record<string, unknown>) => {
+  const data = await patch<{ product: Record<string, unknown> }>(`/products/${id}`, body);
+  return normalizeProduct(data.product);
+};
+
+export const deleteProduct = async (id: string) => {
+  await del(`/products/${id}`);
+};
+
+export const upsertProductRate = async (productId: string, categoryId: string, rate: number) => {
+  return await post<{ message: string }>(`/products/${productId}/rates`, { categoryId, rate });
+};
+
+export const fetchPendingIndents = async (filters?: { date?: string; routeId?: string; batchId?: string }) => {
+  const params: Record<string, string | number | undefined> = { status: "pending", limit: 100 };
+  if (filters?.date) params.date = filters.date;
+  if (filters?.routeId) params.routeId = filters.routeId;
+  if (filters?.batchId) params.batchId = filters.batchId;
+  const data = await get<{ data: Record<string, unknown>[] }>("/orders", params);
+  return (data.data ?? []).map(normalizeIndent);
+};
+
+export const postIndents = async (ids: string[]) => {
+  return await post<{ message: string; count: number }>("/orders/bulk-confirm", { ids });
+};
+
+export const sendInvoice = async (id: string) => {
+  return await post<{ message: string }>(`/invoices/${id}/send`, {});
+};
+
+export const cancelInvoice = async (id: string) => {
+  return await post<{ message: string }>(`/invoices/${id}/cancel`, {});
+};
+
+export const fetchInvoice = async (id: string) => {
+  return await get<Record<string, unknown>>(`/invoices/${id}`);
+};
+
+export const fetchInvoicesForCustomer = async (customerId: string) => {
+  const data = await get<{ data: Record<string, unknown>[] }>("/invoices", { dealer: customerId, limit: 100 });
+  return data.data ?? [];
+};
+
+export const sendBroadcast = async (body: {
+  title: string;
+  message: string;
+  audience?: string;
+  channel?: string;
+}) => {
+  return await post<{ message: string; id: string }>("/notifications/send", {
+    title: body.title,
+    message: body.message,
+    channel: body.channel ?? "push",
+    target: { type: "all" },
+  });
+};
+
+export const fetchNotifications = async () => {
+  const data = await get<{ data: Record<string, unknown>[] }>("/notifications", { limit: 100 });
+  return (data.data ?? []).map((n) => ({
+    id: n.id as string,
+    title: (n.title ?? "") as string,
+    audience: (n.target_type ?? n.audience ?? "all") as string,
+    channel: (n.channel ?? "push") as string,
+    sent: Number(n.sent ?? 0),
+    delivered: Number(n.delivered ?? 0),
+    failed: Number(n.failed ?? 0),
+    createdAt: (n.created_at ?? n.createdAt ?? "") as string,
+  }));
+};
+
+export const fetchDealerNotifications = async () => {
+  const data = await get<{ data: Record<string, unknown>[] }>("/notifications/dealer-log", { limit: 100 });
+  return (data.data ?? []).map((n) => ({
+    id: n.id as string,
+    dealerName: (n.dealer_name ?? n.dealerName ?? "") as string,
+    title: (n.title ?? "") as string,
+    channel: (n.channel ?? "push") as string,
+    status: (n.status ?? "pending") as string,
+    sentAt: (n.sent_at ?? n.sentAt ?? n.created_at ?? "") as string,
+  }));
+};
+
+export const fetchUsers = fetchSystemUsers;
+
+export const deleteUser = async (id: string) => {
+  await del(`/users/${id}`);
+};
+
+export const createRole = async (body: { name: string; permissions: string[] }) => {
+  return await post<{ role: Record<string, unknown> }>("/roles", body);
+};

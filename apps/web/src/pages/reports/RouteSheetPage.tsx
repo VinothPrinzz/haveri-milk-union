@@ -1,21 +1,24 @@
+// apps/web/src/pages/reports/RouteSheetPage.tsx
+// ════════════════════════════════════════════════════════════════════
+// Route Sheet — ledger-style layout, adaptive canvas, CSV export.
+// (No Tally export — this is operational, not accounting.)
+// ════════════════════════════════════════════════════════════════════
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import PageHeader from "@/components/PageHeader";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, Printer } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { fmtNum, fmtINR, fmtDate } from "@/components/PageHeader";
+import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import { fetchBatches } from "@/services/api";
 import { fetchRouteSheet, type RouteSheetResponse } from "@/services/report";
-
-const fmtINR = (n: number | string) => `₹${Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
-const fmtQty = (n: number | string) => String(Number(n || 0));
+import { toCsv } from "@/lib/exporters";
 
 export default function RouteSheetPage() {
   const today = new Date().toISOString().split("T")[0];
   const [batch, setBatch] = useState<string>("");
   const [date, setDate] = useState<string>(today);
-  const [currentPage, setCurrentPage] = useState(0);
   const [generated, setGenerated] = useState(false);
 
   const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
@@ -28,136 +31,185 @@ export default function RouteSheetPage() {
 
   const handleGenerate = async () => {
     await refetch();
-    setCurrentPage(0);
     setGenerated(true);
   };
 
-  const pages = generated && data ? data.routes.map(route => (
-    <div key={route.id}>
-      {/* Header */}
-      <div className="text-center mb-3">
-        <h2 className="text-sm font-bold uppercase tracking-wide">HAVERI MILK UNION LTD — HAVERI</h2>
-        <p className="text-xs font-bold mt-1">Route Sheet</p>
-        <div className="text-[10px] text-muted-foreground mt-1 grid grid-cols-2 gap-1 text-left max-w-md mx-auto">
-          <div><strong>Route:</strong> {route.name} ({route.code})</div>
-          <div><strong>Date:</strong> {data.date}</div>
-          <div><strong>Contractor:</strong> {route.contractor.name ?? "—"}</div>
-          <div><strong>Vehicle:</strong> {route.contractor.vehicleNumber ?? "—"}</div>
-          <div><strong>Dispatch:</strong> {route.dispatchTime ?? "—"}</div>
-          <div><strong>Batch:</strong> {data.batch?.name ?? "All"}</div>
-        </div>
-      </div>
+  // Filter to customers with at least one item; renumber.
+  const routesWithData = (data?.routes ?? [])
+    .map(r => {
+      const active = r.customers.filter(c =>
+        Object.values(c.acrossQty).some(q => q > 0) || c.othersQty > 0
+      );
+      return { ...r, customers: active.map((c, i) => ({ ...c, sl: i + 1 })) };
+    })
+    .filter(r => r.customers.length > 0);
 
-      {/* Table */}
-      <table className="w-full text-[10px] border-collapse">
-        <thead>
-          <tr className="border bg-muted/30">
-            <th className="border py-1.5 px-1 text-left font-bold">Sl</th>
-            <th className="border py-1.5 px-1 text-left font-bold">Customer</th>
-            {data.acrossProducts.map(p => (
-              <th key={p.id} className="border py-1.5 px-1 text-center font-bold whitespace-nowrap">{p.reportAlias}</th>
-            ))}
-            <th className="border py-1.5 px-1 text-center font-bold">Other Products</th>
-            <th className="border py-1.5 px-1 text-right font-bold">Net Amount</th>
-            <th className="border py-1.5 px-1 text-right font-bold">Crates</th>
-          </tr>
-        </thead>
-        <tbody>
-          {route.customers.map(cust => (
-            <tr key={cust.id} className="border">
-              <td className="border py-1 px-1">{cust.sl}</td>
-              <td className="border py-1 px-1 font-medium">
-                <span className="font-mono text-[9px] text-muted-foreground">{cust.code}</span> {cust.name}
-              </td>
-              {data.acrossProducts.map(p => (
-                <td key={p.id} className="border py-1 px-1 text-center">{cust.acrossQty[p.id] ? fmtQty(cust.acrossQty[p.id]) : "—"}</td>
-              ))}
-              <td className="border py-1 px-1 text-[9px] text-muted-foreground">{cust.othersText || "—"}</td>
-              <td className="border py-1 px-1 text-right font-mono">{cust.netAmount ? fmtINR(cust.netAmount) : "—"}</td>
-              <td className="border py-1 px-1 text-right">{cust.crates || "—"}</td>
-            </tr>
-          ))}
-          <tr className="border font-bold bg-muted/30">
-            <td className="border py-1 px-1" colSpan={2}>TOTAL</td>
-            {data.acrossProducts.map(p => (
-              <td key={p.id} className="border py-1 px-1 text-center">{fmtQty(route.totals.acrossQty[p.id] ?? 0) || "—"}</td>
-            ))}
-            <td className="border py-1 px-1 text-center">{fmtQty(route.totals.othersQty) || "—"}</td>
-            <td className="border py-1 px-1 text-right font-mono">{fmtINR(route.totals.netAmount)}</td>
-            <td className="border py-1 px-1 text-right">{route.totals.crates}</td>
-          </tr>
-          {route.customers.length === 0 && (
-            <tr>
-              <td colSpan={data.acrossProducts.length + 5} className="py-3 text-center text-muted-foreground">
-                No customers on this route
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  )) : [];
+  // Only product columns actually used.
+  const usedIds = new Set<string>();
+  routesWithData.forEach(r => r.customers.forEach(c => {
+    Object.entries(c.acrossQty).forEach(([pid, q]) => { if (q > 0) usedIds.add(pid); });
+  }));
+  const acrossProducts = (data?.acrossProducts ?? []).filter(p => usedIds.has(p.id));
+
+  const pages = routesWithData.map(route => (
+    <RoutePage key={route.id} data={data!} acrossProducts={acrossProducts} route={route} />
+  ));
+
+  // ── CSV export (one combined file, one row per customer + Route col)
+  const exporters: Exporter[] = data ? [{
+    label: "CSV",
+    filename: `route-sheet_${data.date}.csv`,
+    mimeType: "text/csv",
+    build: () => {
+      const header = [
+        "Route Code", "Route", "Sl", "Customer Code", "Customer",
+        ...acrossProducts.map(p => p.reportAlias),
+        "Others", "Net Amount", "Crates",
+      ];
+      const rows: (string | number)[][] = [header];
+      for (const r of routesWithData) {
+        for (const c of r.customers) {
+          rows.push([
+            r.code, r.name, c.sl, c.code, c.name,
+            ...acrossProducts.map(p => c.acrossQty[p.id] ?? 0),
+            c.othersText, c.netAmount, c.crates,
+          ]);
+        }
+        // Route total row
+        rows.push([
+          r.code, `${r.name} TOTAL`, "", "", "",
+          ...acrossProducts.map(p => r.totals.acrossQty[p.id] ?? 0),
+          r.totals.othersQty, r.totals.netAmount, r.totals.crates,
+        ]);
+      }
+      return toCsv(rows);
+    },
+  }] : [];
 
   return (
-    <div>
-      <PageHeader title="Route Sheet" description="Daily route-wise customer indent sheet" />
-
-      <Card className="mb-4">
-        <CardContent className="p-5 flex flex-wrap items-end gap-4">
+    <ReportShell
+      title="Route Sheet"
+      subtitle="Per-route loading sheets — one page per active route"
+      printOrientation="landscape"
+      filters={
+        <>
           <div>
-            <label className="text-sm font-medium mb-1.5 block">Batch</label>
-            <Select value={batch || "all"} onValueChange={(value) => setBatch(value === "all" ? "" : value)}>
-              <SelectTrigger className="w-44"><SelectValue placeholder="All Batches" /></SelectTrigger>
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Date</label>
+            <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="erp-input w-40" />
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Batch</label>
+            <Select value={batch || "all"} onValueChange={v => setBatch(v === "all" ? "" : v)}>
+              <SelectTrigger className="erp-input w-44"><SelectValue placeholder="All batches" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Batches</SelectItem>
-                {batches.map((b: any) => (
-                  <SelectItem key={b.id} value={b.id}>{b.whichBatch || b.batchCode || b.name}</SelectItem>
+                <SelectItem value="all">All batches</SelectItem>
+                {(batches as any[]).map((b: any) => (
+                  <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
-          <div>
-            <label className="text-sm font-medium mb-1.5 block">Date</label>
-            <input type="date" value={date} onChange={e => setDate(e.target.value)}
-              className="h-9 w-44 rounded-md border border-input bg-background px-3 py-1 text-sm" />
-          </div>
-          <Button onClick={handleGenerate} disabled={isLoading}>
-            {isLoading ? "Generating..." : "Generate Report"}
-          </Button>
-        </CardContent>
-      </Card>
+        </>
+      }
+      onGenerate={handleGenerate}
+      exporters={exporters}
+      printMeta={
+        <ReportPrintMeta
+          title="Route Sheet"
+          rows={[
+            { label: "Date", value: data ? fmtDate(data.date) : "—" },
+            { label: "Batch", value: data?.batch?.name ?? "All" },
+          ]}
+        />
+      }
+      state={{
+        generated,
+        loading: isLoading,
+        pages,
+        pageLabel: idx => routesWithData[idx]?.name ?? "",
+        emptyMessage: "No customer indents for any route on this date",
+      }}
+    />
+  );
+}
 
-      {generated && pages.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-medium">Route Sheet — {data?.routes[currentPage]?.name}</span>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="icon" className="h-8 w-8"
-                onClick={() => setCurrentPage(p => Math.max(0, p - 1))} disabled={currentPage === 0}>
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <span className="text-sm text-muted-foreground">Page {currentPage + 1} of {pages.length}</span>
-              <Button variant="outline" size="icon" className="h-8 w-8"
-                onClick={() => setCurrentPage(p => Math.min(pages.length - 1, p + 1))}
-                disabled={currentPage === pages.length - 1}>
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => window.print()}>
-                <Printer className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <div className="border rounded-lg p-6 bg-card min-h-[500px]">
-            <div className="max-w-[794px] mx-auto bg-white p-8 shadow-sm print:shadow-none print:p-0">
-              {pages[currentPage]}
-            </div>
-          </div>
-        </div>
-      )}
+function RoutePage({
+  data, acrossProducts, route,
+}: {
+  data: RouteSheetResponse;
+  acrossProducts: RouteSheetResponse["acrossProducts"];
+  route: RouteSheetResponse["routes"][number];
+}) {
+  return (
+    <div>
+      {/* Per-route header strip — visible on screen and print */}
+      <div className="text-[11px] mb-2 flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+        <span><strong>Route:</strong> {route.name} ({route.code})</span>
+        <span><strong>Date:</strong> {fmtDate(data.date)}</span>
+        <span><strong>Contractor:</strong> {route.contractor.name ?? "—"}</span>
+        <span><strong>Vehicle:</strong> {route.contractor.vehicleNumber ?? "—"}</span>
+        <span><strong>Dispatch:</strong> {route.dispatchTime ?? "—"}</span>
+        <span><strong>Batch:</strong> {data.batch?.name ?? "—"}</span>
+      </div>
 
-      {generated && pages.length === 0 && !isLoading && (
-        <Card><CardContent className="p-10 text-center text-muted-foreground">No active routes to display.</CardContent></Card>
-      )}
+      <table className="report-ledger compact">
+        <thead>
+          <tr>
+            <th style={{ width: 28 }}>Sl</th>
+            <th style={{ width: 56 }}>Code</th>
+            <th>Customer</th>
+            {acrossProducts.map(p => (
+              <th key={p.id} className="vert-text" title={p.reportAlias}>
+                <VerticalText text={p.reportAlias} />
+              </th>
+            ))}
+            <th>Others</th>
+            <th className="num">Net ₹</th>
+            <th className="num">Crates</th>
+          </tr>
+        </thead>
+        <tbody>
+          {route.customers.map(c => (
+            <tr key={c.id}>
+              <td className="num">{c.sl}</td>
+              <td className="font-mono">{c.code}</td>
+              <td>{c.name}</td>
+              {acrossProducts.map(p => (
+                <td key={p.id} className="center num">
+                  {c.acrossQty[p.id] ? c.acrossQty[p.id] : ""}
+                </td>
+              ))}
+              <td className="others-cell">
+                {(c.othersText ?? "").split(",").map(s => s.trim()).filter(Boolean).join("\n")}
+              </td>
+              <td className="num">{fmtINR(c.netAmount)}</td>
+              <td className="num">{fmtNum(c.crates)}</td>
+            </tr>
+          ))}
+
+          <tr className="total-row">
+            <td colSpan={3} className="num">TOTAL</td>
+            {acrossProducts.map(p => (
+              <td key={p.id} className="center num">
+                {fmtNum(route.totals.acrossQty[p.id] ?? 0)}
+              </td>
+            ))}
+            <td className="num">{fmtNum(route.totals.othersQty)}</td>
+            <td className="num">{fmtINR(route.totals.netAmount)}</td>
+            <td className="num">{fmtNum(route.totals.crates)}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
+  );
+}
+
+function VerticalText({ text }: { text: string }) {
+  return (
+    <span aria-label={text}>
+      {Array.from(text).map((ch, i) => (
+        <span key={i} className="vert-letter">{ch}</span>
+      ))}
+    </span>
   );
 }
