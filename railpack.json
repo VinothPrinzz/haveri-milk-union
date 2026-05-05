@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "steps": {
+    "install": {
+      "variables": {
+        "PNPM_HOME": "/root/.local/share/pnpm",
+        "PATH": "/root/.local/share/pnpm:$PATH"
+      }
+    }
+  }
+}
