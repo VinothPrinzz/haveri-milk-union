@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
-// API server URL — override with VITE_API_URL env var in production
+// Proxy target for local dev (when VITE_API_URL is not set, apiClient uses relative paths)
 const API_URL = process.env.VITE_API_URL || "http://localhost:3001";
 
 export default defineConfig({
