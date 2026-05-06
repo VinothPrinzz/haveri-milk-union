@@ -32,12 +32,16 @@ export function useAuth() {
 }
 
 export async function loginAdmin(email: string, password: string): Promise<AdminUser> {
-  const data = await post<{ user: AdminUser }>("/auth/admin/login", { email, password });
+  const data = await post<{ user: AdminUser; sessionToken: string }>("/auth/admin/login", { email, password });
+  if (data.sessionToken) {
+    localStorage.setItem("hmu_session", data.sessionToken);
+  }
   return data.user;
 }
 
 export async function logoutAdmin(): Promise<void> {
   await post("/auth/admin/logout");
+  localStorage.removeItem("hmu_session");
 }
 
 export async function getMe(): Promise<AdminUser | null> {

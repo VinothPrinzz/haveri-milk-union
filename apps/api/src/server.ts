@@ -42,13 +42,12 @@ const app = Fastify({
 });
 
 // ── Plugins ──
-const allowedOrigins = env.CORS_ORIGIN
-  ? env.CORS_ORIGIN.split(",").map((o) => o.trim())
-  : ["https://erp.haverimunion.coop"];
-
 await app.register(cors, {
-  origin: env.NODE_ENV === "production" ? allowedOrigins : true,
+  origin: env.NODE_ENV === "production"
+    ? ["https://erp.haverimunion.coop"]
+    : true,
   credentials: true,
+  allowedHeaders: ["Content-Type", "x-session-token"],
 });
 
 await app.register(cookie, {
@@ -129,7 +128,7 @@ await app.register(zoneRoutes);           // zones CRUD
 // ── Start Server ──
 try {
   const address = await app.listen({
-    port: env.PORT ?? env.API_PORT,
+    port: env.API_PORT,
     host: env.API_HOST,
   });
   app.log.info(`🚀 API server running at ${address}`);

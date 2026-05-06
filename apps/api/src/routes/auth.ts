@@ -297,10 +297,10 @@ export async function authRoutes(app: FastifyInstance) {
     // Set httpOnly cookie
     reply.setCookie("hmu_session", token, {
       httpOnly: true,
-      secure: env.NODE_ENV === "production",
-      sameSite: "lax",
+      secure: true,       // SameSite=None requires Secure
+      sameSite: "none",   // cross-origin cookie (frontend on different domain)
       path: "/",
-      maxAge: 24 * 60 * 60, // 24 hours in seconds
+      maxAge: 24 * 60 * 60,
     });
 
     return reply.status(200).send({
