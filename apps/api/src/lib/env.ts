@@ -21,7 +21,6 @@ const envSchema = z.object({
   API_PORT: z.coerce.number().default(3001),
   API_HOST: z.string().default("0.0.0.0"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  CORS_ORIGIN: z.string().optional(),       // comma-separated list of allowed origins
 
   // Cloudflare R2 (optional in dev)
   R2_ACCOUNT_ID: z.string().optional(),

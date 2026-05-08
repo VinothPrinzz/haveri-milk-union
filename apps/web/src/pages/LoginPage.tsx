@@ -37,10 +37,10 @@ export default function LoginPage({ onLogin }: Props) {
         </div>
         <div>
           <h2 className="text-2xl font-semibold leading-tight">
-            A complete enterprise<br />system for your union.
+            Marketing Software Modules<br /> for Milk Unions.
           </h2>
           <p className="text-white/70 mt-3 text-[13px] max-w-md">
-            Customers, routes, indents, dispatch, stock and accounts — managed in
+            Customers, routes, indents, dispatch, stock and accounts managed in
             one place. Built for the daily rhythm of a co-operative milk union.
           </p>
           <div className="grid grid-cols-3 gap-2 mt-8 max-w-md">
@@ -59,10 +59,7 @@ export default function LoginPage({ onLogin }: Props) {
             <div className="w-8 h-8 rounded-sm bg-topbar text-topbar-foreground grid place-items-center font-bold">H</div>
             <span className="font-semibold">Haveri Milk Union</span>
           </div>
-          <h1 className="text-[18px] font-semibold">Sign in to continue</h1>
-          <p className="text-[12.5px] text-muted-foreground mt-1">
-            Use your ERP credentials issued by the administrator.
-          </p>
+          <h1 className="text-[18px] font-semibold">Login</h1>
 
           <form onSubmit={handleSubmit} className="mt-6 space-y-3">
             <div>
