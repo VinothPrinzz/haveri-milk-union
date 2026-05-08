@@ -72,7 +72,8 @@ export async function distributionRoutes(app: FastifyInstance) {
       const totalDistance = stopDetails.reduce((sum, s) => sum + s.distanceFromPrev, 0);
       const code = routeCode || `R${Date.now().toString().slice(-4)}`;
 
-      const result = await pgClient.begin(async (tx) => {
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         const [route] = await tx`
           INSERT INTO routes (
             code, name, zone_id, contractor_id, primary_batch_id,
@@ -121,7 +122,8 @@ export async function distributionRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      const result = await pgClient.begin(async (tx) => {
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         const [updated] = await tx`
           UPDATE routes SET
             name = COALESCE(${body.name ?? null}, name),
@@ -313,7 +315,8 @@ export async function distributionRoutes(app: FastifyInstance) {
         WHERE ra.id = ${id}
       `;
       if (!existing) return reply.status(404).send({ error: "Assignment not found" });
-      await pgClient.begin(async (tx) => {
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         // Update the assignment. If transitioning to dispatched without an explicit time,
         // stamp BOTH departure_time (time-of-day) and actual_departure_time (full timestamp).
         await tx`

@@ -1,16 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, desc, and, sql, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
 import {
-  orders,
   orderItems,
   products,
-  dealers,
   dealerWallets,
-  dealerLedger,
   timeWindows,
-  invoices,
   cancellationRequests,
 } from "@hmu/db/schema";
 import { dealerAuth } from "../middleware/dealer-auth.js";
@@ -18,7 +14,7 @@ import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { signInvoicePdfToken, verifyInvoicePdfToken } from "../lib/auth.js";
-import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";   // ← Added
+import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
 
@@ -175,33 +171,14 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      if (body.paymentMode === "wallet") {
-        const result = await pgClient`
-          UPDATE dealer_wallets
-          SET balance = balance - ${grandTotal.toFixed(2)}::numeric,
-              updated_at = now()
-          WHERE dealer_id = ${dealer.dealerId}
-            AND balance >= ${grandTotal.toFixed(2)}::numeric
-          RETURNING balance
-        `;
-        if (result.length === 0) {
-          const [wallet] = await db
-            .select({ balance: dealerWallets.balance })
-            .from(dealerWallets)
-            .where(eq(dealerWallets.dealerId, dealer.dealerId))
-            .limit(1);
-          return reply.status(402).send({
-            error: "Insufficient Balance",
-            message: `Wallet balance ₹${wallet?.balance ?? "0"} is less than order total ₹${grandTotal.toFixed(2)}`,
-            currentBalance: wallet?.balance ?? "0",
-            orderTotal: grandTotal.toFixed(2),
-          });
-        }
-      }
+      // ── 4. Create order + items + ledger entry in a single transaction ──                                                                    
+      // Wallet deduction is inside so it rolls back atomically if any step fails.                                                               
+      // TransactionSql<{}> extends Omit<Sql<{}>, ...> which drops call signatures;                                                              
+      // cast to typeof pgClient to restore them.
 
-      // ── 5. Create order + items + ledger entry in a transaction ──
       try {
-        const result = await pgClient.begin(async (tx) => {
+        const result = await pgClient.begin(async (_tx) => {                
+          const tx = _tx as unknown as typeof pgClient; 
           // Insert order
           const [order] = await tx`
             INSERT INTO orders (dealer_id, zone_id, status, payment_mode, payment_reference, subtotal, total_gst, grand_total, item_count, notes, created_at, updated_at)
@@ -223,29 +200,45 @@ export async function orderRoutes(app: FastifyInstance) {
             `;
           }
 
-          // Deduct stock
+          // Deduct stock — guard against concurrent orders driving stock negative
           for (const item of body.items) {
-            await tx`
+            const updated = await tx`
               UPDATE products SET stock = stock - ${item.quantity}, updated_at = now()
-              WHERE id = ${item.productId}
+              WHERE id = ${item.productId} AND stock >= ${item.quantity}                                                                         
+              RETURNING id
             `;
+            if (updated.length === 0) {                                     
+              throw Object.assign(new Error("Stock depleted"), { statusCode: 409, productId: item.productId });                                  
+            }
           }
 
-          // Insert ledger entry (append-only) if wallet payment
+          // Deduct wallet atomically — balance check is inside the same transaction 
           if (body.paymentMode === "wallet") {
-            const [wallet] = await tx`
-              SELECT balance FROM dealer_wallets WHERE dealer_id = ${dealer.dealerId}
+            const deducted = await tx`                                      
+              UPDATE dealer_wallets                                         
+              SET balance = balance - ${grandTotal.toFixed(2)}::numeric, updated_at = now()                                                      
+              WHERE dealer_id = ${dealer.dealerId}                          
+                AND balance >= ${grandTotal.toFixed(2)}::numeric            
+              RETURNING balance
             `;
+            if (deducted.length === 0) {                                    
+              const [wallet] = await tx`SELECT balance FROM dealer_wallets WHERE dealer_id = ${dealer.dealerId}`;                                
+              throw Object.assign(new Error("Insufficient Balance"),        {                                                                           
+                statusCode: 402,                                            
+                currentBalance: wallet?.balance ?? "0",                     
+                orderTotal: grandTotal.toFixed(2),                          
+              });                                                           
+            }                                                               
+            const walletBalance = (deducted[0] as any).balance;
             await tx`
               INSERT INTO dealer_ledger (dealer_id, type, amount, reference_id, reference_type, description, balance_after)
               VALUES (${dealer.dealerId}, 'debit', ${grandTotal.toFixed(2)}::numeric,
-                      ${order!.id}, 'order', ${"Order " + order!.id}, ${wallet!.balance}::numeric)
+                      ${order!.id}, 'order', ${"Order " + order!.id}, ${walletBalance}::numeric)
             `;
           }
           return order;
         });
 
-        // ── Auto-generate GST Invoice + Push Notification ──
         // ── Auto-generate GST Invoice + Push Notification ──
         if (result?.id) {
           try {
@@ -265,7 +258,6 @@ export async function orderRoutes(app: FastifyInstance) {
           }
         }
 
-        // === SYNCHRONOUS INVOICE GENERATION (as requested) ===
         const fullOrder = await pgClient`
           SELECT * FROM orders WHERE id = ${result!.id} LIMIT 1
         `;
@@ -280,8 +272,8 @@ export async function orderRoutes(app: FastifyInstance) {
         let invoicePdfUrl: string | null = null;
 
         try {
-          const pdfResult = await generateInvoicePdfSync(result!.id);   // ← Fixed
-          invoicePdfUrl = pdfResult.pdfUrl ?? null;                    // adjust field name if your function returns differently
+          const pdfResult = await generateInvoicePdfSync(result!.id);       
+          invoicePdfUrl = pdfResult.pdfUrl ?? null;
 
           const [inv] = await pgClient`
             SELECT invoice_number FROM invoices WHERE order_id = ${result!.id} LIMIT 1
@@ -298,27 +290,31 @@ export async function orderRoutes(app: FastifyInstance) {
           invoiceNumber,
           invoicePdfUrl,
         });
-      } catch (err) {
-        // If transaction fails and we already deducted wallet, we need to refund
-        if (body.paymentMode === "wallet") {
-          await pgClient`
-            UPDATE dealer_wallets
-            SET balance = balance + ${grandTotal.toFixed(2)}::numeric, updated_at = now()
-            WHERE dealer_id = ${dealer.dealerId}
-          `;
-          request.log.error(err, "Order transaction failed — wallet refunded");
+      } catch (err: any) {                                                  
+        if (err.statusCode === 402) {                                       
+          return reply.status(402).send({                                   
+            error: "Insufficient Balance",                                  
+            message: `Wallet balance ₹${err.currentBalance} is less than order total ₹${err.orderTotal}`,                                        
+            currentBalance: err.currentBalance,                             
+            orderTotal: err.orderTotal,                                     
+          });                                                               
+        }
+        if (err.statusCode === 409) {                                       
+          return reply.status(409).send({                                   
+            error: "Insufficient Stock",                                    
+            message: `Stock depleted for product ${err.productId} — please refresh and retry`,                                                   
+          });                                                               
         }
         throw err;
       }
     }
   );
 
-  // GET /api/v1/orders — list orders (admin, paginated)  [unchanged]
+  // GET /api/v1/orders — list orders (admin, paginated)
   app.get(
     "/api/v1/orders",
     { preHandler: [adminAuth, requireRole("orders.view")] },
     async (request, reply) => {
-      // ... (original implementation unchanged)
       const querySchema = paginationSchema.extend({
         status:   z.enum(["pending","confirmed","dispatched","delivered","cancelled"]).optional(),
         dealerId: z.string().uuid().optional(),
@@ -392,12 +388,11 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /api/v1/orders/my — dealer's own orders (unchanged)
+  // GET /api/v1/orders/my — dealer's own orders
   app.get(
     "/api/v1/orders/my",
     { preHandler: [dealerAuth] },
     async (request, reply) => {
-      // ... (original unchanged)
       const query = paginationSchema.parse(request.query);
       const offset = offsetFromPage(query.page, query.limit);
       const dealerId = request.dealer!.dealerId;
@@ -450,37 +445,40 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /api/v1/orders/:id — order detail (unchanged)
-  app.get("/api/v1/orders/:id", async (request, reply) => {
-    const { id } = request.params as { id: string };
+  // GET /api/v1/orders/:id — order detail                                  
+  app.get(                                                                  
+    "/api/v1/orders/:id",                                                   
+    { preHandler: [adminAuth, requireRole("orders.view")] },                
+    async (request, reply) => {                                             
+      const { id } = request.params as { id: string };
 
-    const [order] = await pgClient`
-      SELECT o.*, d.name AS dealer_name, d.phone AS dealer_phone, z.name AS zone_name
-      FROM orders o
-      JOIN dealers d ON d.id = o.dealer_id
-      JOIN zones z ON z.id = o.zone_id
-      WHERE o.id = ${id}
-      LIMIT 1
-    `;
+      const [order] = await pgClient`                                       
+        SELECT o.*, d.name AS dealer_name, d.phone AS dealer_phone, z.name AS zone_name                                                          
+        FROM orders o                                                       
+        JOIN dealers d ON d.id = o.dealer_id                                
+        JOIN zones z ON z.id = o.zone_id                                    
+        WHERE o.id = ${id}                                                  
+        LIMIT 1                                                             
+      `;
 
-    if (!order) {
-      return reply.status(404).send({ error: "Order not found" });
-    }
+      if (!order) {                                                         
+        return reply.status(404).send({ error: "Order not found" });        
+      }
 
-    const items = await db
-      .select()
-      .from(orderItems)
-      .where(eq(orderItems.orderId, id));
+      const items = await db                                                
+        .select()                                                           
+        .from(orderItems)                                                   
+        .where(eq(orderItems.orderId, id));  
 
-    return reply.status(200).send({ order, items });
-  });
+        return reply.status(200).send({ order, items });                      
+    }                                                                       
+  ); 
 
-  // PATCH /api/v1/orders/:id/status (unchanged)
+  // PATCH /api/v1/orders/:id/status
   app.patch(
     "/api/v1/orders/:id/status",
     { preHandler: [adminAuth, requireRole("orders.update")] },
     async (request, reply) => {
-      // ... original unchanged
       const { id } = request.params as { id: string };
       const schema = z.object({
         status: z.enum(["confirmed", "dispatched", "delivered", "cancelled"]),
@@ -513,12 +511,11 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  // POST /api/v1/orders/:id/cancel (unchanged)
+  // POST /api/v1/orders/:id/cancel
   app.post(
     "/api/v1/orders/:id/cancel",
     { preHandler: [dealerAuth] },
     async (request, reply) => {
-      // ... original unchanged
       const { id } = request.params as { id: string };
       const schema = z.object({ reason: z.string().min(1) });
       const body = schema.parse(request.body);
@@ -556,12 +553,11 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  // PATCH /api/v1/orders/:id/items (unchanged)
+  // PATCH /api/v1/orders/:id/items
   app.patch(
     "/api/v1/orders/:id/items",
     { preHandler: [adminAuth, requireRole("orders.create")] },
     async (request, reply) => {
-      // ... original unchanged (kept as-is)
       const { id } = request.params as { id: string };
       const schema = z.object({
         items: z.array(z.object({
@@ -613,7 +609,10 @@ export async function orderRoutes(app: FastifyInstance) {
 
       const oldItems = await pgClient`SELECT product_id, quantity FROM order_items WHERE order_id = ${id}`;
 
-      await pgClient.begin(async (tx) => {
+      // Same TransactionSql cast as in the POST handler — Omit<Sql,...> drops call signatures.                                                 
+      await pgClient.begin(async (_tx) => {                                 
+        const tx = _tx as unknown as typeof pgClient; 
+        
         for (const oi of oldItems) {
           await tx`UPDATE products SET stock = stock + ${oi.quantity}, updated_at = now() WHERE id = ${oi.product_id}`;
         }

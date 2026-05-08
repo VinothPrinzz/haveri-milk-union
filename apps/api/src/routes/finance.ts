@@ -390,7 +390,8 @@ export async function financeRoutes(app: FastifyInstance) {
       }
 
       try {
-        const result = await pgClient.begin(async (tx) => {
+        const result = await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
           const [order] = await tx`
             INSERT INTO orders (
               dealer_id, zone_id, status, payment_mode, subtotal, 
@@ -674,7 +675,8 @@ export async function financeRoutes(app: FastifyInstance) {
       }
   
       try {
-        const result = await pgClient.begin(async (tx) => {
+        const result = await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
           // (a) Insert payment row.
           const [payment] = await tx`
             INSERT INTO payments (

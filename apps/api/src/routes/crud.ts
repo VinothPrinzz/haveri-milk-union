@@ -152,7 +152,8 @@ export async function crudRoutes(app: FastifyInstance) {
       // Whole batch in one transaction — either all revisions commit or
       // none do. If the audit-log insert fails mid-loop, the products
       // update is rolled back.
-      const results = await pgClient.begin(async (tx) => {
+      const results = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         const applied: Array<{ productId: string; oldPrice: string; newPrice: string }> = [];
         for (const rev of body.revisions) {
           // Fetch current values for the audit log + change detection.

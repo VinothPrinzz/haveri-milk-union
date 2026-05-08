@@ -60,7 +60,8 @@ export async function cancellationRoutes(app: FastifyInstance) {
       if (!cr) return reply.status(404).send({ error: "Cancellation request not found" });
       if (cr.status !== "pending") return reply.status(400).send({ error: "Already processed" });
 
-      await pgClient.begin(async (tx) => {
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         // 1. Update cancellation request
         await tx`
           UPDATE cancellation_requests SET status = 'approved', reviewed_by = ${request.admin!.userId},

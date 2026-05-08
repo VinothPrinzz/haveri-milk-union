@@ -257,7 +257,8 @@ export async function dealerRoutes(app: FastifyInstance) {
 
       const body = schema.parse(request.body);
 
-      const result = await pgClient.begin(async (tx) => {
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         const [updated] = await tx`
           UPDATE dealers SET
             name = COALESCE(${body.name ?? null}, name),
@@ -329,7 +330,8 @@ export async function dealerRoutes(app: FastifyInstance) {
         await pgClient`SELECT id FROM routes WHERE id = ${body.routeId} AND deleted_at IS NULL`;
       if (!r) return reply.status(404).send({ error: "Route not found" });
 
-      await pgClient.begin(async (tx) => {
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         if (body.isPrimary) {
           // Demote any existing primary first
           await tx`UPDATE dealer_routes SET is_primary = false WHERE dealer_id = ${id}`;
@@ -372,7 +374,8 @@ export async function dealerRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id, routeId } = request.params as { id: string; routeId: string };
 
-      await pgClient.begin(async (tx) => {
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         const [removed] = await tx`
           DELETE FROM dealer_routes
           WHERE dealer_id = ${id} AND route_id = ${routeId}
