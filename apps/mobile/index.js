@@ -1,5 +1,7 @@
 import { AppRegistry, View, Text, StyleSheet, ScrollView } from "react-native";
 import React from "react";
+import 'react-native-url-polyfill/auto'
+
 
 let RootApp;
 

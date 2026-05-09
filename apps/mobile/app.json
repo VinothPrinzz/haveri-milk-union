@@ -6,23 +6,38 @@
     "orientation": "portrait",
     "scheme": "hmu",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
     "splash": {
+      "image": "./assets/splash.png",
       "backgroundColor": "#1448CC",
       "resizeMode": "contain"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "coop.haverimunion.dealer"
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#1448CC"
       },
       "package": "coop.haverimunion.dealer"
     },
     "web": {
       "bundler": "metro"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-font",
+      "@react-native-community/datetimepicker"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "0d42213c-00f6-46a9-9289-ede67e88a176"
+      }
     }
   }
 }

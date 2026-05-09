@@ -35,7 +35,7 @@ export async function priceChartRoutes(app: FastifyInstance) {
       const [maxOrder] = await pgClient`SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM rate_categories`;
       const [category] = await pgClient`
         INSERT INTO rate_categories (name, description, sort_order)
-        VALUES (${body.name}, ${body.description ?? null}, ${body.sortOrder ?? maxOrder.next})
+        VALUES (${body.name}, ${body.description ?? null}, ${body.sortOrder ?? maxOrder?.next ?? 1})
         RETURNING *
       `;
       return reply.status(201).send({ category });

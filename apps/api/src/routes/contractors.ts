@@ -149,7 +149,8 @@ export async function contractorRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      const result = await pgClient.begin(async (tx) => {
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         let code = body.code;
         if (!code) {
           const [last] = await tx`
@@ -180,6 +181,8 @@ export async function contractorRoutes(app: FastifyInstance) {
           )
           RETURNING *
         `;
+
+        if (!contractor) throw new Error("Failed to create contractor");
 
         if (body.routeIds && body.routeIds.length > 0) {
           await tx`
@@ -226,7 +229,8 @@ export async function contractorRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      const result = await pgClient.begin(async (tx) => {
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         const [updated] = await tx`
           UPDATE contractors SET
             name = COALESCE(${body.name ?? null}, name),

@@ -1,184 +1,183 @@
-import { useState } from "react";
+// ════════════════════════════════════════════════════════════════════
+// Cancellation Requests — approve / reject pending cancellations
+// Route preserved: /sales/cancellations
+// ════════════════════════════════════════════════════════════════════
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import PageHeader from "@/components/PageHeader";
+import { toast } from "sonner";
+import PageHeader, {
+  FilterBar, Field, EmptyState, StatusPill, fmtINR, fmtDate,
+} from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { fetchCancellationRequests, fetchCustomers, fetchRoutes, fetchProducts, approveCancellation, rejectCancellation, getAgents, modifyIndent } from "@/services/api";
-import { CheckCircle, XCircle } from "lucide-react";
-import { toast } from "sonner";
+import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import { Check, X } from "lucide-react";
+import { fetchCancellationRequests, approveCancellation, rejectCancellation } from "@/services/api";
+
+const STATUS_OPTS: F9Option[] = [
+  { value: "pending", label: "Pending" },
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+];
 
 export default function CancellationRequestsPage() {
   const qc = useQueryClient();
+  const [status, setStatus] = useState<string | null>("pending");
+  const [rejectFor, setRejectFor] = useState<string | null>(null);
+  const [rejectNote, setRejectNote] = useState("");
 
-  const { data: requests = [] } = useQuery({ queryKey: ["cancellations"], queryFn: fetchCancellationRequests });
-  const { data: customers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
-  const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
-  const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
-
-  const agents = getAgents();
-
-  const [filter, setFilter] = useState<"all" | "Pending" | "Approved" | "Rejected">("all");
-  const [rejectDialog, setRejectDialog] = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
-
-  // ==================== F5: Modify Indent Mutation ====================
-  const modifyMutation = useMutation({
-    mutationFn: ({ orderId, items }: {
-      orderId: string;
-      items: Array<{ productId: string; quantity: number }>;
-    }) => modifyIndent(orderId, items),
-    onSuccess: () => {
-      toast.success("Indent modified successfully");
-      qc.invalidateQueries({ queryKey: ["indents"] });
-      qc.invalidateQueries({ queryKey: ["cancellations"] });
-      // setModifyOpen(false);   // Uncomment when you add the modify modal
-    },
-    onError: (err: any) => toast.error(err.message || "Failed to modify indent"),
+  const { data: requests = [], isLoading } = useQuery({
+    queryKey: ["cancellation-requests", { status }],
+    queryFn: () => fetchCancellationRequests(),
   });
-  // ===================================================================
-
-  const filtered = requests.filter(r => filter === "all" || r.status === filter);
 
   const approveMut = useMutation({
     mutationFn: (id: string) => approveCancellation(id),
-    onSuccess: () => { 
-      toast.success("Request approved"); 
-      qc.invalidateQueries({ queryKey: ["cancellations"] }); 
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cancellation-requests"] });
+      qc.invalidateQueries({ queryKey: ["indents"] });
+      toast.success("Cancellation approved");
     },
+    onError: (e: any) => toast.error(e?.message || "Approve failed"),
   });
 
   const rejectMut = useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason: string }) => rejectCancellation(id, reason),
-    onSuccess: () => { 
-      toast.success("Request rejected"); 
-      qc.invalidateQueries({ queryKey: ["cancellations"] }); 
-      setRejectDialog(null); 
+    mutationFn: ({ id, note }: { id: string; note: string }) =>
+      rejectCancellation(id, note),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cancellation-requests"] });
+      toast.success("Cancellation rejected");
+      setRejectFor(null);
+      setRejectNote("");
     },
+    onError: (e: any) => toast.error(e?.message || "Reject failed"),
   });
 
+  const filtered = useMemo(() => requests, [requests]);
+
   return (
-    <div>
-      <PageHeader title="Cancellation Requests" description="Review dealer cancellation and modification requests" />
+    <div className="flex flex-col h-full">
+      <PageHeader title="Cancellation Requests" subtitle="Review dealer-submitted cancellation requests" />
+      <FilterBar>
+        <Field label="Status">
+          <F9SearchSelect value={status} onChange={setStatus} options={STATUS_OPTS} allowAll className="w-44" />
+        </Field>
+      </FilterBar>
 
-      {/* Filter tabs */}
-      <div className="flex gap-2 mb-4">
-        {(["all", "Pending", "Approved", "Rejected"] as const).map(f => (
-          <Button 
-            key={f} 
-            variant={filter === f ? "default" : "outline"} 
-            size="sm" 
-            onClick={() => setFilter(f)}
-          >
-            {f === "all" ? "All" : f} 
-            {f !== "all" && `(${requests.filter(r => r.status === f).length})`}
-          </Button>
-        ))}
+      <div className="flex-1 overflow-auto p-3">
+        <div className="erp-panel overflow-hidden">
+          {isLoading ? (
+            <div className="p-3 space-y-2">
+              {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
+            </div>
+          ) : filtered.length === 0 ? (
+            <EmptyState title="No cancellation requests." />
+          ) : (
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 130 }}>Date</th>
+                  <th style={{ width: 130 }}>Indent #</th>
+                  <th>Dealer</th>
+                  <th>Route</th>
+                  <th>Items</th>
+                  <th className="num" style={{ width: 130, textAlign: "right" }}>Total ₹</th>
+                  <th>Reason</th>
+                  <th style={{ width: 100 }}>Status</th>
+                  <th style={{ width: 200, textAlign: "center" }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r: any) => (
+                  <tr key={r.id}>
+                    <td className="text-[12.5px]">{fmtDate(r.created_at ?? r.requestTime ?? r.date)}</td>
+                    <td className="font-mono text-[12px]">
+                      #HMU-{String(r.order_id ?? r.orderId ?? "").slice(-4).toUpperCase() || "—"}
+                    </td>
+                    <td className="font-medium">{r.dealer_name ?? r.customerName ?? "—"}</td>
+                    <td>{r.route_code ?? r.route_name ?? "—"}</td>
+                    <td>
+                      {(r.items ?? []).length === 0 ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-0.5">
+                          {(r.items ?? []).map((it: any, k: number) => (
+                            <span key={k} className="text-[12px]">
+                              <span className="num font-medium">{it.quantity ?? it.qty}×</span>{" "}
+                              {it.product_name ?? it.productName}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="num" style={{ textAlign: "right" }}>
+                      {fmtINR(parseFloat(String(r.grand_total ?? r.totalAmount ?? 0)) || 0)}
+                    </td>
+                    <td className="text-[12.5px] text-muted-foreground">{r.reason ?? "—"}</td>
+                    <td><StatusPill status={r.status} /></td>
+                    <td style={{ textAlign: "center" }}>
+                      {(r.status === "pending" || r.status === "Pending") ? (
+                        <div className="flex items-center justify-center gap-1.5">
+                          <Button
+                            size="sm"
+                            className="h-7 px-2.5 bg-success hover:bg-success/90 text-white"
+                            onClick={() => approveMut.mutate(r.id)}
+                            disabled={approveMut.isPending}
+                          >
+                            <Check className="h-3.5 w-3.5 mr-1" /> Approve
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 text-destructive"
+                            onClick={() => { setRejectFor(r.id); setRejectNote(""); }}
+                          >
+                            <X className="h-3.5 w-3.5 mr-1" /> Reject
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground text-[12.5px]">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
 
-      {/* Cancellation Cards */}
-      <div className="space-y-4">
-        {filtered.map(req => {
-          const cust = customers.find(c => c.id === req.customerId);
-          const agent = agents.find(a => a.code === req.agentCode);
-
-          return (
-            <Card key={req.id}>
-              <CardContent className="pt-5 pb-4">
-                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="font-mono text-sm font-semibold">{req.indentId}</span>
-                      <span className={`text-xs px-2 py-0.5 rounded font-medium ${req.type === "Cancel" ? "bg-destructive/10 text-destructive" : "bg-warning/10 text-warning"}`}>
-                        {req.type}
-                      </span>
-                      <span className={`text-xs px-2 py-0.5 rounded font-medium 
-                        ${req.status === "Pending" ? "bg-warning/10 text-warning" : 
-                          req.status === "Approved" ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}>
-                        {req.status}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm mb-3">
-                      <div><span className="text-muted-foreground">Agent: </span>{agent?.name || req.agentCode}</div>
-                      <div><span className="text-muted-foreground">Customer: </span>{cust?.name || "—"}</div>
-                      {/* F4: Use req.routeName directly instead of route lookup */}
-                      <div><span className="text-muted-foreground">Route: </span>{req.routeName || "—"}</div>
-                      <div><span className="text-muted-foreground">Time: </span>{req.requestTime}</div>
-                    </div>
-
-                    <div className="text-sm mb-2">
-                      <span className="text-muted-foreground">Items: </span>
-                      {req.items.map(item => {
-                        const p = products.find(pr => pr.id === item.productId);
-                        return `${p?.reportAlias || item.productId} × ${item.quantity}`;
-                      }).join(", ")}
-                    </div>
-
-                    <div className="text-sm mb-1">
-                      <span className="text-muted-foreground">Total: </span>
-                      <span className="font-mono font-semibold">₹{req.totalAmount.toLocaleString()}</span>
-                    </div>
-
-                    <div className="text-sm">
-                      <span className="text-muted-foreground">Reason: </span>{req.reason}
-                    </div>
-
-                    {req.status === "Rejected" && req.rejectionReason && (
-                      <div className="text-sm mt-1 text-destructive">
-                        <span className="text-muted-foreground">Rejection Note: </span>{req.rejectionReason}
-                      </div>
-                    )}
-                  </div>
-
-                  {req.status === "Pending" && (
-                    <div className="flex gap-2 shrink-0">
-                      <Button 
-                        size="sm" 
-                        onClick={() => approveMut.mutate(req.id)} 
-                        disabled={approveMut.isPending}
-                      >
-                        <CheckCircle className="h-4 w-4 mr-1" /> Approve
-                      </Button>
-                      <Button 
-                        size="sm" 
-                        variant="destructive" 
-                        onClick={() => { setRejectDialog(req.id); setRejectReason(""); }}
-                      >
-                        <XCircle className="h-4 w-4 mr-1" /> Reject
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-
-        {filtered.length === 0 && <p className="text-center text-muted-foreground py-8">No requests found</p>}
-      </div>
-
-      {/* Reject Dialog */}
-      <Dialog open={!!rejectDialog} onOpenChange={() => setRejectDialog(null)}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Reject Request</DialogTitle></DialogHeader>
-          <div>
-            <label className="text-sm font-medium mb-1.5 block">Reason for Rejection</label>
-            <Input 
-              value={rejectReason} 
-              onChange={e => setRejectReason(e.target.value)} 
-              placeholder="Enter reason" 
+      {/* Reject Reason Dialog */}
+      <Dialog open={!!rejectFor} onOpenChange={o => !o && setRejectFor(null)}>
+        <DialogContent className="max-w-md rounded-sm">
+          <DialogHeader>
+            <DialogTitle className="text-[15px] font-semibold">Reject Cancellation</DialogTitle>
+          </DialogHeader>
+          <div className="py-2">
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
+              Reason for rejection <span className="text-destructive">*</span>
+            </label>
+            <Input
+              className="erp-input"
+              value={rejectNote}
+              onChange={e => setRejectNote(e.target.value)}
+              placeholder="Required"
             />
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRejectDialog(null)}>Cancel</Button>
-            <Button 
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setRejectFor(null)}>
+              Cancel
+            </Button>
+            <Button
               variant="destructive"
-              onClick={() => rejectDialog && rejectMut.mutate({ id: rejectDialog, reason: rejectReason })}
-              disabled={!rejectReason || rejectMut.isPending}
+              size="sm"
+              className="h-8"
+              disabled={!rejectNote.trim() || rejectMut.isPending}
+              onClick={() => rejectFor && rejectMut.mutate({ id: rejectFor, note: rejectNote.trim() })}
             >
-              {rejectMut.isPending ? "Rejecting..." : "Reject"}
+              {rejectMut.isPending ? "Rejecting…" : "Reject"}
             </Button>
           </DialogFooter>
         </DialogContent>

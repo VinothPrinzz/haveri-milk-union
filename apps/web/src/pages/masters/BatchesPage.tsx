@@ -1,61 +1,38 @@
-// apps/web/src/pages/masters/BatchesPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// All Batches / New Batch — Marketing v1.4
-//
-// Changes:
-//   • Edit button on each batch card is functional (opens edit dialog)
-//   • Delete button deletes the batch (with confirm)
-//   • Each route row in a batch has a Remove button (detaches from batch)
-//   • Edit form includes new `dispatchTime` field (HH:MM, optional)
+// All Batches / New Batch — ERP refactor
+// Routes preserved: /masters/batches  +  /masters/batches/new
+// All mutations (create/update/delete/removeRouteFromBatch) preserved.
 // ════════════════════════════════════════════════════════════════════
-
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import PageHeader from "@/components/PageHeader";
+import PageHeader, {
+  FormSection,
+  FormFooter,
+  StatusPill,
+  EmptyState,
+} from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import {
-  Form,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormControl,
-  FormMessage,
+  Form, FormField, FormItem, FormLabel, FormControl, FormMessage,
 } from "@/components/ui/form";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Edit, Plus, Trash2, X } from "lucide-react";
 import {
-  fetchBatches,
-  fetchRoutes,
-  createBatch,
-  updateBatch,
-  deleteBatch,
-  removeRouteFromBatch,
-  type Batch,
+  fetchBatches, fetchRoutes, createBatch, updateBatch, deleteBatch,
+  removeRouteFromBatch, type Batch,
 } from "@/services/api";
 import { batchSchema, type BatchFormData } from "@/lib/validations";
 
-interface Props {
-  tab?: "list" | "new";
-}
-
+interface Props { tab?: "list" | "new"; }
 const BATCH_WHICH_OPTIONS = ["Morning", "Afternoon", "Evening", "Night"] as const;
 
 export default function BatchesPage({ tab = "list" }: Props) {
@@ -68,22 +45,14 @@ export default function BatchesPage({ tab = "list" }: Props) {
 
   const createMutation = useMutation({
     mutationFn: createBatch,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["batches"] });
-      toast.success("Batch saved");
-    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["batches"] }); toast.success("Batch saved"); },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
-
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: BatchFormData }) => updateBatch(id, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["batches"] });
-      toast.success("Batch updated");
-    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["batches"] }); toast.success("Batch updated"); },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
-
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteBatch(id),
     onSuccess: () => {
@@ -94,7 +63,6 @@ export default function BatchesPage({ tab = "list" }: Props) {
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
-
   const removeRouteMutation = useMutation({
     mutationFn: ({ batchId, routeId }: { batchId: string; routeId: string }) =>
       removeRouteFromBatch(batchId, routeId),
@@ -106,177 +74,135 @@ export default function BatchesPage({ tab = "list" }: Props) {
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
 
-  // ── New Batch tab ─────────────────────────────────────────────
   const createForm = useForm<BatchFormData>({
     resolver: zodResolver(batchSchema),
-    defaultValues: {
-      batchCode: "",
-      whichBatch: "Morning",
-      timing: "",
-      dispatchTime: "",
-    },
+    defaultValues: { batchCode: "", whichBatch: "Morning", timing: "", dispatchTime: "" },
   });
 
   if (tab === "new") {
     return (
       <div>
-        <PageHeader title="New Batch" description="Add a new distribution batch" />
-        <Card>
-          <CardContent className="pt-6">
-            <Form {...createForm}>
-              <form
-                onSubmit={createForm.handleSubmit(data => {
-                  createMutation.mutate(data, {
-                    onSuccess: () => createForm.reset(),
-                  });
-                })}
-                className="space-y-4"
-              >
+        <PageHeader title="New Batch" subtitle="Add a new distribution batch" />
+        <div className="p-4">
+          <Form {...createForm}>
+            <form onSubmit={createForm.handleSubmit(data => {
+              createMutation.mutate(data, { onSuccess: () => createForm.reset() });
+            })}>
+              <FormSection title="Batch Details" cols={2}>
                 <BatchFormFields control={createForm.control} />
-                <Button type="submit" disabled={createMutation.isPending}>
-                  <Plus className="h-4 w-4 mr-1" />
-                  {createMutation.isPending ? "Saving..." : "Save Batch"}
+              </FormSection>
+              <FormFooter>
+                <Button type="submit" size="sm" className="h-8" disabled={createMutation.isPending}>
+                  <Plus className="h-3.5 w-3.5 mr-1" />
+                  {createMutation.isPending ? "Saving…" : "Save Batch"}
                 </Button>
-              </form>
-            </Form>
-          </CardContent>
-        </Card>
+              </FormFooter>
+            </form>
+          </Form>
+        </div>
       </div>
     );
   }
 
-  // ── List tab ──────────────────────────────────────────────────
   return (
     <div>
-      <PageHeader title="All Batches" description="Distribution batch timings and assigned routes" />
-      <div className="space-y-4">
+      <PageHeader
+        title="All Batches"
+        subtitle="Distribution batch timings and assigned routes"
+        actions={
+          <Button asChild size="sm" className="h-8">
+            <a href="/masters/batches/new"><Plus className="h-3.5 w-3.5 mr-1" /> New Batch</a>
+          </Button>
+        }
+      />
+      <div className="p-3 space-y-3">
         {batches.length === 0 && (
-          <Card>
-            <CardContent className="p-8 text-center text-muted-foreground text-sm">
-              No batches configured yet.
-            </CardContent>
-          </Card>
+          <div className="erp-panel">
+            <EmptyState title="No batches configured yet." hint="Create your first batch with the New button above." />
+          </div>
         )}
         {batches.map(batch => (
-          <Card key={batch.id}>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold">{batch.whichBatch} Batch</h3>
-                    <span className="text-xs font-mono bg-muted px-2 py-0.5 rounded">
-                      {batch.batchCode}
-                    </span>
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded ${
-                        batch.status === "Active"
-                          ? "bg-success/10 text-success"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {batch.status}
-                    </span>
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-0.5">
-                    {batch.whichBatch} — {batch.timing}
-                    {batch.dispatchTime && (
-                      <>
-                        {" · "}
-                        <span className="text-xs">
-                          Dispatch at <span className="font-mono">{batch.dispatchTime}</span>
-                        </span>
-                      </>
-                    )}
-                  </p>
+          <div key={batch.id} className="erp-panel p-3">
+            <div className="flex items-center justify-between mb-3 pb-2 border-b border-border">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-[14.5px] font-semibold">{batch.whichBatch} Batch</h3>
+                  <span className="text-[11.5px] font-mono bg-muted text-muted-foreground px-1.5 py-0.5 rounded">
+                    {batch.batchCode}
+                  </span>
+                  <StatusPill status={batch.status === "Active" ? "active" : "draft"} />
                 </div>
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    title="Edit"
-                    onClick={() => setEditing(batch)}
-                  >
-                    <Edit className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-destructive hover:text-destructive"
-                    title="Delete"
-                    onClick={() => setDeleting(batch)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+                <p className="text-[12.5px] text-muted-foreground mt-0.5">
+                  {batch.whichBatch} — {batch.timing}
+                  {batch.dispatchTime && (
+                    <> · Dispatch at <span className="font-mono">{batch.dispatchTime}</span></>
+                  )}
+                </p>
               </div>
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit" onClick={() => setEditing(batch)}>
+                  <Edit className="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" title="Delete" onClick={() => setDeleting(batch)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
 
-              <p className="text-xs text-muted-foreground font-medium mb-2">
-                Routes in this batch ({batch.routeIds.length}):
-              </p>
-              {batch.routeIds.length === 0 ? (
-                <p className="text-xs text-muted-foreground italic pl-3">No routes assigned.</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-muted-foreground text-xs">
-                      <th className="text-left py-1 px-3 font-medium">Code</th>
-                      <th className="text-left py-1 px-3 font-medium">Route Name</th>
-                      <th className="text-left py-1 px-3 font-medium">Dispatch Time</th>
-                      <th className="text-left py-1 px-3 font-medium">Status</th>
-                      <th className="text-right py-1 px-3 font-medium">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {batch.routeIds.map(rid => {
-                      const r = routes.find((rt: any) => rt.id === rid);
-                      if (!r) return null;
-                      return (
-                        <tr key={rid} className="border-t hover:bg-muted/20">
-                          <td className="py-1.5 px-3 font-mono text-xs">{r.code}</td>
-                          <td className="py-1.5 px-3 font-medium">{r.name}</td>
-                          <td className="py-1.5 px-3 text-xs">{r.dispatchTime || "—"}</td>
-                          <td className="py-1.5 px-3">
-                            <span
-                              className={`text-xs px-1.5 py-0.5 rounded ${
-                                r.status === "Active"
-                                  ? "bg-success/10 text-success"
-                                  : "bg-muted text-muted-foreground"
-                              }`}
-                            >
-                              {r.status}
-                            </span>
-                          </td>
-                          <td className="py-1.5 px-3 text-right">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 text-destructive hover:text-destructive"
-                              onClick={() =>
-                                removeRouteMutation.mutate({ batchId: batch.id, routeId: rid })
-                              }
-                              disabled={removeRouteMutation.isPending}
-                              title="Remove route from this batch"
-                            >
-                              <X className="h-3.5 w-3.5 mr-1" /> Remove
-                            </Button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </CardContent>
-          </Card>
+            <p className="text-[11.5px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+              Routes in this batch ({batch.routeIds.length})
+            </p>
+            {batch.routeIds.length === 0 ? (
+              <p className="text-[12.5px] text-muted-foreground italic pl-3">No routes assigned.</p>
+            ) : (
+              <table className="erp-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 90 }}>Code</th>
+                    <th>Route Name</th>
+                    <th style={{ width: 110 }}>Dispatch</th>
+                    <th style={{ width: 90 }}>Status</th>
+                    <th style={{ width: 110, textAlign: "right" }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {batch.routeIds.map(rid => {
+                    const r = routes.find((rt: any) => rt.id === rid);
+                    if (!r) return null;
+                    return (
+                      <tr key={rid}>
+                        <td className="font-mono">{r.code}</td>
+                        <td className="font-medium">{r.name}</td>
+                        <td className="text-[12.5px]">{r.dispatchTime || "—"}</td>
+                        <td><StatusPill status={r.status === "Active" ? "active" : "draft"} /></td>
+                        <td style={{ textAlign: "right" }}>
+                          <Button
+                            variant="ghost" size="sm"
+                            className="h-7 text-destructive hover:text-destructive"
+                            onClick={() => removeRouteMutation.mutate({ batchId: batch.id, routeId: rid })}
+                            disabled={removeRouteMutation.isPending}
+                            title="Remove route from this batch"
+                          >
+                            <X className="h-3.5 w-3.5 mr-1" /> Remove
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
         ))}
       </div>
 
       {/* Edit dialog */}
       <Dialog open={!!editing} onOpenChange={open => !open && setEditing(null)}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl rounded-sm">
           <DialogHeader>
-            <DialogTitle>Edit Batch — {editing?.batchCode}</DialogTitle>
+            <DialogTitle className="text-[15px] font-semibold">
+              Edit Batch — <span className="font-mono">{editing?.batchCode}</span>
+            </DialogTitle>
           </DialogHeader>
           {editing && (
             <BatchEditForm
@@ -292,24 +218,25 @@ export default function BatchesPage({ tab = "list" }: Props) {
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirm dialog */}
+      {/* Delete confirm */}
       <Dialog open={!!deleting} onOpenChange={open => !open && setDeleting(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md rounded-sm">
           <DialogHeader>
-            <DialogTitle>Delete batch {deleting?.batchCode}?</DialogTitle>
+            <DialogTitle className="text-[15px] font-semibold">
+              Delete batch <span className="font-mono">{deleting?.batchCode}</span>?
+            </DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This will soft-delete the <span className="font-medium">{deleting?.whichBatch}</span>{" "}
-            batch. Routes currently in this batch will be detached but not deleted.
+          <p className="text-[13px] text-muted-foreground">
+            This will soft-delete the <span className="font-medium text-foreground">{deleting?.whichBatch}</span> batch.
+            Routes currently in this batch will be detached but not deleted.
           </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleting(null)}>Cancel</Button>
-            <Button
-              variant="destructive"
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setDeleting(null)}>Cancel</Button>
+            <Button variant="destructive" size="sm" className="h-8"
               onClick={() => deleting && deleteMutation.mutate(deleting.id)}
               disabled={deleteMutation.isPending}
             >
-              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -318,91 +245,52 @@ export default function BatchesPage({ tab = "list" }: Props) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Shared form fields (create + edit)
-// ══════════════════════════════════════════════════════════════════
 function BatchFormFields({ control, isEdit = false }: { control: any; isEdit?: boolean }) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <FormField
-        control={control}
-        name="batchCode"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>Batch Code</FormLabel>
-            <FormControl>
-              <Input
-                placeholder="e.g. BT04"
-                disabled={isEdit}
-                className={isEdit ? "bg-muted" : ""}
-                {...field}
-              />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-
-      <FormField
-        control={control}
-        name="whichBatch"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>Which Batch</FormLabel>
-            <FormControl>
-              <Select onValueChange={field.onChange} value={field.value ?? "Morning"}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {BATCH_WHICH_OPTIONS.map(w => (
-                    <SelectItem key={w} value={w}>{w}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-
-      <FormField
-        control={control}
-        name="timing"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>Timing (display text)</FormLabel>
-            <FormControl>
-              <Input placeholder="e.g. 5:00 AM - 8:00 AM" {...field} />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-
-      <FormField
-        control={control}
-        name="dispatchTime"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>Dispatch Time</FormLabel>
-            <FormControl>
-              <Input type="time" {...field} />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-    </div>
+    <>
+      <FormField control={control} name="batchCode" render={({ field }) => (
+        <FormItem>
+          <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Batch Code</FormLabel>
+          <FormControl>
+            <Input placeholder="e.g. BT04" disabled={isEdit} className={isEdit ? "bg-muted" : ""} {...field} />
+          </FormControl>
+          <FormMessage className="text-[11.5px]" />
+        </FormItem>
+      )}/>
+      <FormField control={control} name="whichBatch" render={({ field }) => (
+        <FormItem>
+          <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Which Batch</FormLabel>
+          <FormControl>
+            <Select onValueChange={field.onChange} value={field.value ?? "Morning"}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {BATCH_WHICH_OPTIONS.map(w => <SelectItem key={w} value={w}>{w}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </FormControl>
+          <FormMessage className="text-[11.5px]" />
+        </FormItem>
+      )}/>
+      <FormField control={control} name="timing" render={({ field }) => (
+        <FormItem>
+          <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Timing (display)</FormLabel>
+          <FormControl><Input placeholder="e.g. 5:00 AM - 8:00 AM" {...field} /></FormControl>
+          <FormMessage className="text-[11.5px]" />
+        </FormItem>
+      )}/>
+      <FormField control={control} name="dispatchTime" render={({ field }) => (
+        <FormItem>
+          <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Dispatch Time</FormLabel>
+          <FormControl><Input type="time" {...field} /></FormControl>
+          <FormMessage className="text-[11.5px]" />
+        </FormItem>
+      )}/>
+    </>
   );
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Edit form (uses shared fields)
-// ══════════════════════════════════════════════════════════════════
 function BatchEditForm({
-  initialData,
-  onSubmit,
-  isSubmitting,
-  onCancel,
+  initialData, onSubmit, isSubmitting, onCancel,
 }: {
   initialData: Batch;
   onSubmit: (data: BatchFormData) => void | Promise<void>;
@@ -418,15 +306,16 @@ function BatchEditForm({
       dispatchTime: initialData.dispatchTime ?? "",
     },
   });
-
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(data => onSubmit(data))} className="space-y-4">
-        <BatchFormFields control={form.control} isEdit />
-        <div className="flex gap-2 justify-end">
-          {onCancel && <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>}
-          <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Saving..." : "Save Changes"}
+      <form onSubmit={form.handleSubmit(data => onSubmit(data))}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <BatchFormFields control={form.control} isEdit />
+        </div>
+        <div className="mt-4 flex gap-2 justify-end">
+          {onCancel && <Button type="button" variant="outline" size="sm" className="h-8" onClick={onCancel}>Cancel</Button>}
+          <Button type="submit" size="sm" className="h-8" disabled={isSubmitting}>
+            {isSubmitting ? "Saving…" : "Save Changes"}
           </Button>
         </div>
       </form>

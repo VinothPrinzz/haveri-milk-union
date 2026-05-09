@@ -4,7 +4,12 @@
 // Base URL: /api/v1 (proxied by Vite in dev, served directly in prod)
 // ══════════════════════════════════════════════════════════════════
 
-const BASE = "/api/v1";
+const BASE = `${import.meta.env.VITE_API_URL ?? ""}/api/v1`;
+
+function sessionHeaders(): Record<string, string> {
+  const token = localStorage.getItem("hmu_session");
+  return token ? { "x-session-token": token } : {};
+}
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -34,7 +39,7 @@ export async function get<T>(path: string, params?: Record<string, string | numb
       if (v !== undefined) url.searchParams.set(k, String(v));
     });
   }
-  const res = await fetch(url.toString(), { credentials: "include" });
+  const res = await fetch(url.toString(), { credentials: "include", headers: sessionHeaders() });
   return handleResponse<T>(res);
 }
 
@@ -42,8 +47,8 @@ export async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(BASE + path, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {}),   // Always send at least {}
+    headers: { "Content-Type": "application/json", ...sessionHeaders() },
+    body: JSON.stringify(body ?? {}),
   });
   return handleResponse<T>(res);
 }
@@ -52,7 +57,7 @@ export async function patch<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(BASE + path, {
     method: "PATCH",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...sessionHeaders() },
     body: JSON.stringify(body ?? {}),
   });
   return handleResponse<T>(res);
@@ -62,13 +67,13 @@ export async function put<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(BASE + path, {
     method: "PUT",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...sessionHeaders() },
     body: JSON.stringify(body ?? {}),
   });
   return handleResponse<T>(res);
 }
 
 export async function del<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path, { method: "DELETE", credentials: "include" });
+  const res = await fetch(BASE + path, { method: "DELETE", credentials: "include", headers: sessionHeaders() });
   return handleResponse<T>(res);
 }

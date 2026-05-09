@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash([ -f \"/c/App development/haveri-milk-union/packages/db/$f\" ])",
+      "Bash(pnpm run *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(netstat -ano)",
+      "Bash(awk '{print $5}')",
+      "Bash(xargs -I{} taskkill //PID {} //F)",
+      "Bash(echo \"DB_EXIT:$?\")",
+      "Bash(echo \"API_EXIT:$?\")",
+      "Bash(node_modules/.bin/tsc --version)",
+      "Bash(node_modules/.bin/tsc --traceResolution)",
+      "Bash(node -e ' *)"
+    ]
+  }
+}

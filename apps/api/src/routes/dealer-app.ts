@@ -109,25 +109,48 @@ export async function dealerAppRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const dealerId = request.dealer!.dealerId;
 
+      // LEFT JOIN preserves the invoice + adds order_id for the mobile
+      // add an explicit month_id derived in IST so client doesn't guess
       const invoices = await pgClient`
-        SELECT i.id, i.invoice_number, i.invoice_date, i.taxable_amount,
-               i.cgst, i.sgst, i.total_tax, i.total_amount, i.pdf_url,
-               o.item_count, o.status AS order_status
-        FROM invoices i
-        JOIN orders o ON o.id = i.order_id
-        WHERE i.dealer_id = ${dealerId}
-        ORDER BY i.invoice_date DESC
-        LIMIT 50
+      SELECT
+        i.id,
+        i.order_id,
+        i.invoice_number,
+        i.invoice_date,
+        i.taxable_amount,
+        i.cgst,
+        i.sgst,
+        i.total_tax,
+        i.total_amount,
+        i.pdf_url,
+        -- NEW: server-computed month tag in YYYY-MM format, IST timezone.
+        -- The dealer app uses this directly for filtering — no Date math
+        -- on the client, no timezone disagreement.
+        to_char((i.invoice_date AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM') AS month_id,
+        -- NEW: invoice_date as a date-only string for display
+        to_char((i.invoice_date AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD') AS invoice_date_ist,
+        COALESCE(o.item_count, 0)        AS item_count,
+        COALESCE(o.status::text, 'unknown') AS order_status
+      FROM invoices i
+      LEFT JOIN orders o ON o.id = i.order_id
+      WHERE i.dealer_id = ${dealerId}
+      ORDER BY i.invoice_date DESC
+      LIMIT 50
       `;
 
-      // Summary for current month
+      // Summary anchored to the SAME timezone so it always agrees with the list
       const [summary] = await pgClient`
-        SELECT COALESCE(SUM(total_amount), 0)::numeric AS total_orders,
-               COALESCE(SUM(total_tax), 0)::numeric AS total_gst,
-               count(*)::int AS invoice_count
-        FROM invoices
-        WHERE dealer_id = ${dealerId}
-          AND date_trunc('month', invoice_date) = date_trunc('month', CURRENT_DATE)
+      SELECT
+        COALESCE(SUM(total_amount), 0)::numeric AS total_orders,
+        COALESCE(SUM(total_tax), 0)::numeric    AS total_gst,
+        count(*)::int                            AS invoice_count,
+        -- Echo back the month the summary was computed for, so the client
+        -- can label its card correctly even on the first render.
+        to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM') AS current_month_id
+      FROM invoices
+      WHERE dealer_id = ${dealerId}
+        AND date_trunc('month', invoice_date AT TIME ZONE 'Asia/Kolkata') =
+            date_trunc('month', now() AT TIME ZONE 'Asia/Kolkata')
       `;
 
       return reply.send({ invoices, summary });

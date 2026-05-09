@@ -1,151 +1,232 @@
-import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import PageHeader from "@/components/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { fetchDispatchAssignments } from "@/services/api";
-import { Send } from "lucide-react";
+// ════════════════════════════════════════════════════════════════════
+// Dispatch Sheet — loading checklist by route
+// Route preserved: /fgs/dispatch-sheet
+// ════════════════════════════════════════════════════════════════════
+import { useEffect, useState, useMemo } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { patch } from "@/lib/apiClient";
+import PageHeader, {
+  FilterBar, Field, EmptyState, StatusPill, StatCard, fmtINR, fmtDate, fmtNum,
+} from "@/components/PageHeader";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Skeleton } from "@/components/ui/skeleton";
+import { F9SearchSelect } from "@/components/F9SearchSelect";
+import { Printer, Send, Package, Truck, Layers } from "lucide-react";
+import {
+  fetchDispatchSheet,
+  markRouteDispatched,
+  fetchRoutes,
+  fetchBatches,
+  type DispatchSheetRoute,
+} from "@/services/api";
 
 export default function DispatchSheetPage() {
-  const today = new Date().toISOString().split("T")[0];
+  const qc = useQueryClient();
+  const today = new Date().toISOString().slice(0, 10);
 
   const [selectedDate, setSelectedDate] = useState(today);
+  const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
+  const [selectedBatch, setSelectedBatch] = useState<string | null>(null);
+  const [verified, setVerified] = useState<Record<string, boolean>>({});
+  const [adjustments, setAdjustments] = useState<Record<string, { pktPlus: number; pktMinus: number }>>({});
 
-  const { data: assignments = [], isLoading } = useQuery({
-    queryKey: ["dispatch-assignments", selectedDate],
-    queryFn: () => fetchDispatchAssignments(selectedDate),
+  // Reset verification and adjustments when filters change
+  useEffect(() => {
+    setVerified({});
+    setAdjustments({});
+  }, [selectedDate, selectedRoute, selectedBatch]);
+
+  const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
+  const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["dispatch-sheet", selectedDate, selectedRoute, selectedBatch],
+    queryFn: () => fetchDispatchSheet({
+      date: selectedDate,
+      routeId: selectedRoute ?? undefined,
+      batchId: selectedBatch ?? undefined,
+    }),
   });
 
-  const qc = useQueryClient();
+  const routeOptions = (routes as any[]).map((r: any) => ({
+    value: r.id, label: r.name, sublabel: r.code,
+  }));
 
-  const dispatchMutation = useMutation({
-    mutationFn: (assignmentId: string) =>
-      patch(`/dispatch/assignments/${assignmentId}`, { status: "dispatched" }),
-    onSuccess: (_, assignmentId) => {
+  const batchOptions = (batches as any[]).map((b: any) => ({
+    value: b.id, label: b.name,
+  }));
+
+  const markDispatched = useMutation({
+    mutationFn: (routeId: string) => markRouteDispatched({ date: selectedDate, routeId }),
+    onSuccess: () => {
       toast.success("Route marked as dispatched");
-      qc.invalidateQueries({ queryKey: ["dispatch-assignments"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-sheet"] });
     },
-    onError: (err: any) => toast.error(err.message || "Failed to mark as dispatched"),
+    onError: (err: any) => toast.error(err?.message || "Failed to mark dispatched"),
   });
+
+  const summary = data?.summary;
+  const sheetRoutes: DispatchSheetRoute[] = data?.routes ?? [];
+
+  const adj = (routeId: string, productId: string) =>
+    adjustments[`${routeId}::${productId}`] ?? { pktPlus: 0, pktMinus: 0 };
+
+  const setAdj = (routeId: string, productId: string, patch: Partial<{ pktPlus: number; pktMinus: number }>) => {
+    setAdjustments(prev => ({
+      ...prev,
+      [`${routeId}::${productId}`]: { ...adj(routeId, productId), ...patch },
+    }));
+  };
+
+  const eff = (pendingQty: number, a: { pktPlus: number; pktMinus: number }) =>
+    Math.max(0, pendingQty + (a.pktPlus || 0) - (a.pktMinus || 0));
 
   return (
-    <div>
-      <PageHeader 
-        title="Dispatch Sheet" 
-        description={`Daily dispatch overview — ${selectedDate}`} 
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title="Dispatch Sheet"
+        subtitle={data ? `${fmtDate(data.date)} — loading checklist by route` : "Daily loading checklist"}
+        actions={
+          <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
+            <Printer className="h-3.5 w-3.5 mr-1.5" /> Print
+          </Button>
+        }
       />
 
-      <Card className="mb-4">
-        <CardContent className="p-5 flex items-end gap-4">
-          <div>
-            <label className="text-sm font-medium mb-1.5 block">Date</label>
-            <input 
-              type="date" 
-              value={selectedDate} 
-              onChange={e => setSelectedDate(e.target.value)}
-              className="h-9 w-40 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" 
-            />
+      <FilterBar>
+        <div>
+          <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Date</label>
+          <Input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="erp-input w-40" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Route</label>
+          <F9SearchSelect value={selectedRoute} onChange={setSelectedRoute} options={routeOptions} placeholder="All routes" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Batch</label>
+          <F9SearchSelect value={selectedBatch} onChange={setSelectedBatch} options={batchOptions} placeholder="All batches" />
+        </div>
+      </FilterBar>
+
+      <div className="flex-1 overflow-auto p-4 space-y-4">
+        {summary && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard label="Routes" value={fmtNum(summary.totalRoutes)} icon={<Truck className="h-5 w-5" />} tone="default" />
+            <StatCard label="Items" value={fmtNum(summary.totalItems)} icon={<Package className="h-5 w-5" />} />
+            <StatCard label="Packets" value={fmtNum(summary.totalPackets)} icon={<Layers className="h-5 w-5" />} />
+            <StatCard label="Crates" value={fmtNum(summary.totalCrates)} icon={<Package className="h-5 w-5" />} tone="success" />
           </div>
-        </CardContent>
-      </Card>
+        )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Dispatch Overview</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {isLoading ? (
-            <div className="p-8 text-center text-muted-foreground">Loading dispatch data...</div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-muted/30 text-xs text-muted-foreground">
-                  <th className="text-left py-2.5 px-3 font-medium">Route Name</th>
-                  <th className="text-right py-2.5 px-3 font-medium">Indents</th>
-                  <th className="text-right py-2.5 px-3 font-medium">Crates</th>
-                  <th className="text-right py-2.5 px-3 font-medium">Amount</th>
-                  <th className="text-left py-2.5 px-3 font-medium">Timing</th>
-                  <th className="text-left py-2.5 px-3 font-medium">Status</th>
-                  <th className="text-left py-2.5 px-3 font-medium">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {assignments.map((row: any, index: number) => {
-                  // Create a truly unique key: routeId + status + index as fallback
-                  const uniqueKey = `${row.routeId || row.id || 'unknown'}-${row.status || 'unknown'}-${index}`;
-                  
-                  return (
-                    <tr 
-                      key={uniqueKey} 
-                      className="border-b last:border-0 hover:bg-muted/30"
-                    >
-                      <td className="py-2.5 px-3 font-medium">{row.routeName}</td>
-                      <td className="py-2.5 px-3 text-right font-mono">
-                        {row.totalIndents || row.indentCount || 0}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono">
-                        {row.totalCrates || Math.ceil((row.totalQty || 0) / 24)}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono">
-                        ₹{(row.totalAmount || 0).toLocaleString()}
-                      </td>
-                      <td className="py-2.5 px-3">{row.dispatchTime || "—"}</td>
-                      <td className="py-2.5 px-3">
-                        <span className={`text-xs px-2 py-0.5 rounded font-medium 
-                          ${row.status === "Dispatched" || row.status?.toLowerCase() === "delivered" 
-                            ? "bg-success/10 text-success" 
-                            : row.status === "Scheduled" || row.status?.toLowerCase() === "scheduled"
-                            ? "bg-blue-100 text-blue-700" 
-                            : "bg-warning/10 text-warning"}`}>
-                          {row.status || "Pending"}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3">
-                        {(() => {
-                          const s = String(row.status ?? "").toLowerCase();
-                          const hasIndents = (row.totalIndents ?? 0) > 0;
+        {isLoading ? (
+          <div className="erp-panel p-4 space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        ) : sheetRoutes.length === 0 ? (
+          <EmptyState title="No dispatch data for this filter" />
+        ) : (
+          <Accordion type="multiple" className="space-y-3">
+            {sheetRoutes.map(r => (
+              <AccordionItem key={r.routeId} value={r.routeId} className="erp-panel border-0">
+                <div className="print-document">
+                  <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                    <div className="flex items-center justify-between w-full pr-3">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-[12.5px] text-muted-foreground">{r.routeCode}</span>
+                        <span className="font-semibold text-[14px]">{r.routeName}</span>
+                        {r.contractorName && <span className="text-[12px] text-muted-foreground">· {r.contractorName}</span>}
+                      </div>
+                      <div className="flex items-center gap-4 text-[12px]">
+                        <span><span className="text-muted-foreground">Dealers</span> <span className="font-semibold num">{r.dealerCount}</span></span>
+                        <span><span className="text-muted-foreground">Packets</span> <span className="font-semibold num">{fmtNum(r.totals.packets)}</span></span>
+                        <span><span className="text-muted-foreground">Crates</span> <span className="font-semibold num">{fmtNum(r.totals.crates)}</span></span>
+                        <span className="font-medium num">{fmtINR(r.totalAmount)}</span>
+                        <StatusPill status={r.status} />
+                      </div>
+                    </div>
+                  </AccordionTrigger>
 
-                          // dispatched or delivered → nothing more to do
-                          if (s === "dispatched" || s === "delivered") {
-                            return <span className="text-xs text-muted-foreground">Done</span>;
-                          }
-                          // pending / loading / scheduled with indents → show the dispatch button
-                          if (hasIndents) {
-                            return (
-                              <Button
-                                size="sm"
-                                className="h-7"
-                                disabled={dispatchMutation.isPending}
-                                onClick={() => dispatchMutation.mutate(row.id)}
-                              >
-                                <Send className="h-3.5 w-3.5 mr-1" />
-                                {dispatchMutation.isPending ? "…" : "Dispatch"}
-                              </Button>
-                            );
-                          }
-                          // no indents yet
-                          return <span className="text-xs text-muted-foreground">No indents</span>;
-                        })()}
-                      </td>
-                    </tr>
-                  );
-                })}
+                  <AccordionContent className="border-t border-border bg-muted/20">
+                    <table className="erp-table">
+                      <thead>
+                        <tr>
+                          <th>Product</th>
+                          <th>Category</th>
+                          <th>Pack</th>
+                          <th className="num" style={{ textAlign: "right", width: 100 }}>Packets</th>
+                          <th className="num" style={{ textAlign: "right", width: 90 }}>Per Crate</th>
+                          <th className="num" style={{ textAlign: "right", width: 90 }}>Crates</th>
+                          <th className="num" style={{ textAlign: "right", width: 90 }}>Pkt (+)</th>
+                          <th className="num" style={{ textAlign: "right", width: 90 }}>Pkt (−)</th>
+                          <th style={{ width: 80, textAlign: "center" }}>Verify</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {r.items.map(it => {
+                          const k = `${r.routeId}:${it.productId}`;
+                          const a = adj(r.routeId, it.productId);
+                          const effectivePackets = eff(it.totalPackets ?? 0, a);
 
-                {assignments.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="py-12 text-center text-muted-foreground">
-                      No dispatch assignments found for this date
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
-        </CardContent>
-      </Card>
+                          return (
+                            <tr key={it.productId}>
+                              <td className="font-medium">{it.productName}</td>
+                              <td className="text-muted-foreground">{it.category}</td>
+                              <td className="text-muted-foreground">{it.packSize ?? "—"}{it.unit && ` ${it.unit}`}</td>
+                              <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(it.totalPackets)}</td>
+                              <td className="num text-muted-foreground" style={{ textAlign: "right" }}>{fmtNum(it.packetsPerCrate)}</td>
+                              <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(it.crates)}</td>
+                              <td className="num" style={{ textAlign: "right" }}>
+                                <Input
+                                  className="erp-input num text-right h-7 px-1 w-16"
+                                  type="number" min="0"
+                                  value={a.pktPlus || ""}
+                                  onChange={e => setAdj(r.routeId, it.productId, { pktPlus: parseInt(e.target.value) || 0 })}
+                                />
+                              </td>
+                              <td className="num" style={{ textAlign: "right" }}>
+                                <Input
+                                  className="erp-input num text-right h-7 px-1 w-16"
+                                  type="number" min="0"
+                                  value={a.pktMinus || ""}
+                                  onChange={e => setAdj(r.routeId, it.productId, { pktMinus: parseInt(e.target.value) || 0 })}
+                                />
+                              </td>
+                              <td style={{ textAlign: "center" }}>
+                                <Checkbox
+                                  checked={!!verified[k]}
+                                  onCheckedChange={v => setVerified(prev => ({ ...prev, [k]: !!v }))}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+
+                    <div className="flex justify-end gap-2 px-4 py-3 border-t border-border bg-panel">
+                      <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
+                        <Printer className="h-3.5 w-3.5 mr-1.5" /> Print Loading Slip
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-8"
+                        disabled={r.status === "dispatched" || r.status === "delivered" || markDispatched.isPending}
+                        onClick={() => markDispatched.mutate(r.routeId)}
+                      >
+                        <Send className="h-3.5 w-3.5 mr-1.5" />
+                        Mark Dispatched
+                      </Button>
+                    </div>
+                  </AccordionContent>
+                </div>
+              </AccordionItem>
+            ))}
+          </Accordion>
+        )}
+      </div>
     </div>
   );
 }

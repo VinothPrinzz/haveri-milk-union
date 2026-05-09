@@ -27,102 +27,121 @@ export async function reportsRoutes(app: FastifyInstance) {
       });
       const q = qs.parse(request.query);
       const batchId = q.batchId ?? null;
-
-      // Active products split by print_direction
+   
+      // ── 1. Active products with their category name ─────────────────
+      // The category split is now AUTHORITATIVE. We keep print_direction
+      // in the SELECT as a tiebreaker for sort order only.
       const prodRows = await pgClient`
-        SELECT id, code, report_alias, name, print_direction, packets_crate, sort_order
-        FROM products
-        WHERE deleted_at IS NULL AND available = true
-        ORDER BY sort_order, name
+        SELECT p.id, p.code, p.report_alias, p.name,
+               p.print_direction, p.packets_crate, p.sort_order,
+               c.name AS category_name
+          FROM products p
+          JOIN categories c ON c.id = p.category_id
+         WHERE p.deleted_at IS NULL
+           AND p.available  = true
+         ORDER BY p.sort_order, p.name
       `;
+   
+      // ── 2. Bucketing rule ───────────────────────────────────────────
+      // Across = Milk OR Curd (case-insensitive).  Others = everything else.
+      const ACROSS_CATEGORIES = new Set(["milk", "curd"]);
+      const isAcross = (catName: string) =>
+        ACROSS_CATEGORIES.has((catName ?? "").trim().toLowerCase());
+   
       const acrossProducts = (prodRows as any[])
-        .filter(p => (p.print_direction ?? "Across") === "Across")
+        .filter(p => isAcross(p.category_name))
         .map(p => ({
           id: p.id,
           code: p.code ?? "",
           reportAlias: p.report_alias ?? p.name,
+          category: p.category_name,
           packetsCrate: Number(p.packets_crate) || 20,
         }));
+   
       const downProducts = (prodRows as any[])
-        .filter(p => p.print_direction === "Down")
+        .filter(p => !isAcross(p.category_name))
         .map(p => ({
           id: p.id,
           code: p.code ?? "",
           reportAlias: p.report_alias ?? p.name,
+          category: p.category_name,
         }));
+   
       const downProdIds = new Set(downProducts.map(p => p.id));
-
-      // Batch metadata (if any)
+   
+      // ── 3. Batch metadata (if any) ──────────────────────────────────
       let batch: any = null;
       if (batchId) {
         const [b] = await pgClient`
-          SELECT id, name, batch_number FROM batches WHERE id = ${batchId} AND deleted_at IS NULL
+          SELECT id, name, batch_number
+            FROM batches
+           WHERE id = ${batchId} AND deleted_at IS NULL
         `;
         if (b) batch = { id: b.id, name: b.name, batchNumber: b.batch_number };
       }
-
-      // Routes (active) with contractor info — UPDATED with primary_batch_id and COALESCE
+   
+      // ── 4. Active routes ────────────────────────────────────────────
       const routes = await pgClient`
-        SELECT 
+        SELECT
           r.id, r.code, r.name, r.active, r.zone_id,
           r.contractor_id, r.primary_batch_id,
-          -- Resolved dispatch time: prefer batch's, fall back to route's own
           COALESCE(b.dispatch_time::text, r.dispatch_time) AS dispatch_time,
-          b.name  AS batch_name,
+          b.name         AS batch_name,
           b.batch_number AS batch_code,
-          z.name  AS zone_name,
-          ct.name AS contractor_name,
+          z.name         AS zone_name,
+          ct.name        AS contractor_name,
           ct.vehicle_number AS vehicle_number
         FROM routes r
-        LEFT JOIN batches b ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
-        LEFT JOIN zones z ON z.id = r.zone_id
-        LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
+        LEFT JOIN batches     b  ON b.id  = r.primary_batch_id AND b.deleted_at IS NULL
+        LEFT JOIN zones       z  ON z.id  = r.zone_id
+        LEFT JOIN contractors ct ON ct.id = r.contractor_id    AND ct.deleted_at IS NULL
         WHERE r.deleted_at IS NULL AND r.active = true
         ORDER BY r.code
       `;
-
+   
       const routeIds = (routes as any[]).map(r => r.id);
       if (routeIds.length === 0) {
         return reply.send({
           date: q.date, batch, acrossProducts, downProducts, routes: [],
         });
       }
-
-      // Dealers on each route (via dealers.route_id — primary route)
+   
+      // ── 5. Dealers on each route ───────────────────────────────────
       const dealers = await pgClient`
         SELECT d.id, d.code, d.name, d.route_id
-        FROM dealers d
-        WHERE d.deleted_at IS NULL AND d.route_id = ANY(${routeIds}::uuid[])
-        ORDER BY d.code, d.name
+          FROM dealers d
+         WHERE d.deleted_at IS NULL
+           AND d.route_id = ANY(${routeIds}::uuid[])
+         ORDER BY d.code, d.name
       `;
-
-      // Order items for the day, filtered optionally by batch
+   
+      // ── 6. Order items for the day ─────────────────────────────────
       const itemRows = batchId
         ? await pgClient`
             SELECT o.id AS order_id, o.dealer_id, d.route_id,
                    oi.product_id, oi.quantity::int AS qty,
                    oi.line_total::numeric AS amount
-            FROM orders o
-            JOIN dealers d ON d.id = o.dealer_id
-            JOIN order_items oi ON oi.order_id = o.id
-            WHERE o.created_at::date = ${q.date}::date
-              AND o.status != 'cancelled'
-              AND d.route_id = ANY(${routeIds}::uuid[])
-              AND o.batch_id = ${batchId}::uuid
+              FROM orders o
+              JOIN dealers d     ON d.id = o.dealer_id
+              JOIN order_items oi ON oi.order_id = o.id
+             WHERE o.created_at::date = ${q.date}::date
+               AND o.status != 'cancelled'
+               AND d.route_id = ANY(${routeIds}::uuid[])
+               AND o.batch_id = ${batchId}::uuid
           `
         : await pgClient`
             SELECT o.id AS order_id, o.dealer_id, d.route_id,
                    oi.product_id, oi.quantity::int AS qty,
                    oi.line_total::numeric AS amount
-            FROM orders o
-            JOIN dealers d ON d.id = o.dealer_id
-            JOIN order_items oi ON oi.order_id = o.id
-            WHERE o.created_at::date = ${q.date}::date
-              AND o.status != 'cancelled'
-              AND d.route_id = ANY(${routeIds}::uuid[])
+              FROM orders o
+              JOIN dealers d     ON d.id = o.dealer_id
+              JOIN order_items oi ON oi.order_id = o.id
+             WHERE o.created_at::date = ${q.date}::date
+               AND o.status != 'cancelled'
+               AND d.route_id = ANY(${routeIds}::uuid[])
           `;
-
-      // Index: routeId → dealerId → { product_id → qty }, amount
+   
+      // ── 7. Aggregate ───────────────────────────────────────────────
       type DealerAgg = {
         id: string; code: string; name: string;
         acrossQty: Record<string, number>;
@@ -132,28 +151,27 @@ export async function reportsRoutes(app: FastifyInstance) {
       };
       const byRoute = new Map<string, Map<string, DealerAgg>>();
       for (const r of routes as any[]) byRoute.set(r.id, new Map());
-
+   
       const aliasById = new Map(
         (prodRows as any[]).map(p => [p.id, p.report_alias ?? p.name])
       );
-
+   
       for (const d of dealers as any[]) {
-        const dealerAgg: DealerAgg = {
+        byRoute.get(d.route_id)?.set(d.id, {
           id: d.id, code: d.code ?? "", name: d.name,
           acrossQty: Object.fromEntries(acrossProducts.map(p => [p.id, 0])),
           downItems: [],
           othersQty: 0,
           netAmount: 0,
-        };
-        byRoute.get(d.route_id)?.set(d.id, dealerAgg);
+        });
       }
-
+   
       for (const it of itemRows as any[]) {
-        const dealerMap = byRoute.get(it.route_id);
-        const dealer = dealerMap?.get(it.dealer_id);
+        const dealer = byRoute.get(it.route_id)?.get(it.dealer_id);
         if (!dealer) continue;
         const qty = Number(it.qty) || 0;
         const amt = parseFloat(it.amount) || 0;
+   
         if (downProdIds.has(it.product_id)) {
           dealer.downItems.push({
             productId: it.product_id,
@@ -162,19 +180,31 @@ export async function reportsRoutes(app: FastifyInstance) {
           });
           dealer.othersQty += qty;
         } else {
-          dealer.acrossQty[it.product_id] = (dealer.acrossQty[it.product_id] ?? 0) + qty;
+          dealer.acrossQty[it.product_id] =
+            (dealer.acrossQty[it.product_id] ?? 0) + qty;
         }
         dealer.netAmount = round2(dealer.netAmount + amt);
       }
-
-      // Shape each route
-      const routesOut = (routes as any[]).map(r => {
+   
+      // ── 8. Shape per-route output, dropping empty rows + empty routes
+      const routesOut: any[] = [];
+      for (const r of routes as any[]) {
         const map = byRoute.get(r.id)!;
-        const rows = Array.from(map.values());
-        rows.sort((a, b) => (a.code || "").localeCompare(b.code || "") || a.name.localeCompare(b.name));
-
+        const allRows = Array.from(map.values());
+   
+        // Keep only customers with at least one item.
+        const activeRows = allRows.filter(d =>
+          d.othersQty > 0 || Object.values(d.acrossQty).some(q => q > 0)
+        );
+        if (activeRows.length === 0) continue;
+   
+        activeRows.sort((a, b) =>
+          (a.code || "").localeCompare(b.code || "")
+          || a.name.localeCompare(b.name)
+        );
+   
         const pktPerCrate = 20;
-        const customers = rows.map((d, idx) => {
+        const customers = activeRows.map((d, idx) => {
           const totalQty =
             Object.values(d.acrossQty).reduce((s, q) => s + q, 0) + d.othersQty;
           const crates = Math.ceil(totalQty / pktPerCrate);
@@ -186,30 +216,35 @@ export async function reportsRoutes(app: FastifyInstance) {
             acrossQty: d.acrossQty,
             othersText: d.downItems
               .filter(x => x.qty > 0)
-              .map(x => `${x.alias} x ${x.qty}`)
+              // canonical "report_alias × qty" with the math symbol; the
+              // client splits this CSV onto separate lines.
+              .map(x => `${x.alias} × ${x.qty}`)
               .join(", "),
             othersQty: d.othersQty,
             netAmount: round2(d.netAmount),
             crates,
           };
         });
-
+   
         const totals = {
           acrossQty: Object.fromEntries(
-            acrossProducts.map(p => [p.id, customers.reduce((s, c) => s + (c.acrossQty[p.id] ?? 0), 0)])
+            acrossProducts.map(p => [
+              p.id,
+              customers.reduce((s, c) => s + (c.acrossQty[p.id] ?? 0), 0),
+            ])
           ),
           othersQty: customers.reduce((s, c) => s + c.othersQty, 0),
           netAmount: round2(customers.reduce((s, c) => s + c.netAmount, 0)),
-          crates: customers.reduce((s, c) => s + c.crates, 0),
+          crates:    customers.reduce((s, c) => s + c.crates, 0),
         };
-
-        return {
+   
+        routesOut.push({
           id: r.id,
           code: r.code,
           name: r.name,
           contractor: {
-            id: r.contractor_id ?? null,
-            name: r.contractor_name ?? null,
+            id:            r.contractor_id ?? null,
+            name:          r.contractor_name ?? null,
             vehicleNumber: r.vehicle_number ?? null,
           },
           dispatchTime: r.dispatch_time ?? null,
@@ -217,9 +252,9 @@ export async function reportsRoutes(app: FastifyInstance) {
           batchCode: r.batch_code ?? null,
           customers,
           totals,
-        };
-      });
-
+        });
+      }
+   
       return reply.send({
         date: q.date,
         batch,

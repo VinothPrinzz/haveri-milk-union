@@ -80,7 +80,8 @@ async function migrate() {
 
     try {
       // Run the entire migration file as a single transaction
-      await sql.begin(async (tx) => {
+      await sql.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof sql;
         await tx.unsafe(sqlContent);
         await tx`INSERT INTO _migrations (name) VALUES (${file})`;
       });

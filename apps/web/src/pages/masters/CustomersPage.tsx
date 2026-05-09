@@ -1,628 +1,826 @@
-// apps/web/src/pages/masters/CustomersPage.tsx
-// ════════════════════════════════════════════════════════════════════
-// All Customers / New Customer / Assign Route — Marketing v1.4
-//
-// Three tabs routed via the `tab` prop:
-//   list          → /customers          (PageShell + filter-first)
-//   new           → /customers/new      (CustomerForm in create mode)
-//   assign-route  → /customers/assign-route (F9 + LiveSearchTable)
-// ════════════════════════════════════════════════════════════════════
-
-import { useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import PageHeader from "@/components/PageHeader";
-import { PageShell, FilterBar, ScrollableTableBody } from "@/components/PageShell";
-import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
-import { LiveSearchTable } from "@/components/LiveSearchTable";
+import { Plus, Search, Download, ChevronLeft, ChevronRight } from "lucide-react";
+import PageHeader, {
+  FilterBar, FormSection, Field, FormFooter, StatusPill,
+} from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Eye, Edit, UserPlus, X } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
-  fetchCustomers,
-  fetchRoutes,
-  fetchBatches,
-  createCustomer,
-  updateCustomer,
-  removeCustomerFromRoute,
-  assignCustomerToRoute,
-  type Customer,
+  fetchCustomers, fetchCustomersPage, fetchRoutes, fetchZones, createCustomer,
+  removeCustomerFromRoute, assignCustomerToRoute,
+  getRateCategories, getOfficers,
 } from "@/services/api";
-import { CustomerForm } from "@/components/customers/CustomerForm";
-import type { CustomerFormData } from "@/lib/validations";
-
-interface Props {
-  tab?: "list" | "new" | "assign-route";
-}
-
-const TYPE_OPTIONS: F9Option[] = [
-  { value: "Retail-Dealer", label: "Retail-Dealer" },
-  { value: "Credit Inst-MRP", label: "Credit Inst-MRP" },
-  { value: "Credit Inst-Dealer", label: "Credit Inst-Dealer" },
-  { value: "Parlour-Dealer", label: "Parlour-Dealer" },
-];
-
-// ── Last Indent formatter ──────────────────────────────────────────
-function formatLastIndent(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffDays = Math.floor(diffMs / 86400000);
-  if (diffDays < 0) return d.toLocaleDateString("en-IN");
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7) return `${diffDays} days ago`;
-  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-const fmtINR = (n: number | string) =>
-  `₹${Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
-
+import { customerSchema, type CustomerFormData } from "@/lib/validations";
+import type { Customer } from "@/data/mockData";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import { toCsv } from "@/lib/exporters";
+ 
+interface Props { tab?: "list" | "new" | "assign-route"; }
+ 
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const TYPE_OPTIONS = ["All Types", "Retail-Dealer", "Credit Inst-MRP", "Credit Inst-Dealer", "Parlour-Dealer"];
+ 
 export default function CustomersPage({ tab = "list" }: Props) {
   const qc = useQueryClient();
-  const { data: customers = [], isLoading } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
+ 
+  // ── ALL hooks at top — never inside conditionals (fixes React #310) ──
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
-  const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
-
-  // Letter prefix for auto-code
+  const { data: zones  = [] } = useQuery({ queryKey: ["zones"],  queryFn: fetchZones  });
+ 
+  // Full customer list (paginated server-side; populates F9 selects across the page)
+  const { data: allCustomers = [] } = useQuery({
+    queryKey: ["customers"],
+    queryFn: fetchCustomers,
+  });
+ 
+  const rateCategories = getRateCategories();
+  const officers = getOfficers();
+ 
+  // Server-side pagination for /list tab
+  const [page, setPage]               = useState(1);
+  const [pageSize, setPageSize]       = useState(25);
+  const [search, setSearch]           = useState("");
+  const [debouncedSearch, setDebSearch] = useState("");
+  const [typeFilter, setTypeFilter]   = useState("All Types");
+  const [routeFilter, setRouteFilter] = useState<string | null>(null);
+ 
+  useEffect(() => {
+    const t = setTimeout(() => { setDebSearch(search); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+ 
+  useEffect(() => { setPage(1); }, [typeFilter, routeFilter, pageSize]);
+ 
+  const pageQuery = useQuery({
+    queryKey: ["customers-page", { page, pageSize, debouncedSearch, typeFilter, routeFilter }],
+    queryFn: () => fetchCustomersPage({
+      page, limit: pageSize,
+      search: debouncedSearch || undefined,
+      customerType: typeFilter !== "All Types" ? typeFilter : undefined,
+      routeId: routeFilter ?? undefined,
+    }),
+    placeholderData: keepPreviousData,
+  });
+  const pageRows = pageQuery.data?.rows ?? [];
+  const totalPages = pageQuery.data?.totalPages ?? 1;
+  const totalCount = pageQuery.data?.total ?? 0;
+ 
+  // Dialog state
+  const [viewing, setViewing]       = useState<Customer | null>(null);
+  const [editing, setEditing]       = useState<Customer | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+ 
+  // Assign-route state
+  const [selectedRoute, setSelectedRoute] = useState("");
+ 
+  // New-customer alphabet state (used by both /new tab AND fallback form)
   const [selectedLetter, setSelectedLetter] = useState("A");
+ 
+  // F9 options derived ONCE at top level (Hooks rule)
+  const routeOpts: F9Option[] = useMemo(
+    () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
+    [routes],
+  );
+ 
+  // Code auto-generation — based on full dealer dataset (so codes stay unique)
   const nextCode = useMemo(() => {
-    const letterCodes = customers
-      .filter(c => c.code && c.code.startsWith(selectedLetter))
-      .map(c => {
-        const num = parseInt(c.code.slice(selectedLetter.length));
-        return isNaN(num) ? 0 : num;
-      });
-    const maxNum = letterCodes.length > 0 ? Math.max(...letterCodes) : 0;
-    return `${selectedLetter}${maxNum + 1}`;
-  }, [customers, selectedLetter]);
-
+    const nums = allCustomers
+      .filter((c: any) => c.code && c.code.startsWith(selectedLetter))
+      .map((c: any) => parseInt(c.code.slice(selectedLetter.length)) || 0);
+    const max = nums.length > 0 ? Math.max(...nums) : 0;
+    return `${selectedLetter}${max + 1}`;
+  }, [allCustomers, selectedLetter]);
+ 
   // Mutations
   const createMutation = useMutation({
     mutationFn: (data: CustomerFormData) => createCustomer({ ...data, code: nextCode }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["customers-page"] });
       toast.success("Customer created");
     },
-    onError: (e: any) => toast.error(e?.message || "Failed to create customer"),
+    onError: () => toast.error("Failed to create customer"),
   });
-
-  const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: CustomerFormData }) => updateCustomer(id, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["customers"] });
-      toast.success("Customer updated");
-    },
-    onError: (e: any) => toast.error(e?.message || "Failed to update customer"),
-  });
-
-  // ══════════════════════════════════════════════════════════════════
-  // TAB: list
-  // ══════════════════════════════════════════════════════════════════
-  if (tab === "list") {
-    return <CustomerListTab customers={customers} routes={routes} batches={batches} isLoading={isLoading} updateMutation={updateMutation} />;
-  }
-
-  // ══════════════════════════════════════════════════════════════════
-  // TAB: new
-  // ══════════════════════════════════════════════════════════════════
-  if (tab === "new") {
-    return (
-      <div>
-        <PageHeader title="New Customer" description="Add a new customer" />
-        <CustomerForm
-          autoCode={nextCode}
-          selectedLetter={selectedLetter}
-          onLetterChange={setSelectedLetter}
-          onSubmit={async (data) => {
-            await createMutation.mutateAsync(data);
-          }}
-          isSubmitting={createMutation.isPending}
-        />
-      </div>
-    );
-  }
-
-  // ══════════════════════════════════════════════════════════════════
-  // TAB: assign-route
-  // ══════════════════════════════════════════════════════════════════
-  return <AssignRouteTab customers={customers} routes={routes} />;
-}
-
-// ══════════════════════════════════════════════════════════════════
-// List tab — PageShell + filter-first + View/Edit dialogs
-// ══════════════════════════════════════════════════════════════════
-function CustomerListTab({
-  customers,
-  routes,
-  batches,
-  isLoading,
-  updateMutation,
-}: {
-  customers: Customer[];
-  routes: any[];
-  batches: any[];
-  isLoading: boolean;
-  updateMutation: any;
-}) {
-  // Filter state
-  const [nameFilter, setNameFilter] = useState<string | null>(null);
-  const [typeFilter, setTypeFilter] = useState<string | null>(null);
-  const [routeFilter, setRouteFilter] = useState<string | null>(null);
-  const [batchFilter, setBatchFilter] = useState<string | null>(null);
-  const [generated, setGenerated] = useState(false);
-
-  // View/Edit dialog state
-  const [viewing, setViewing] = useState<Customer | null>(null);
-  const [editing, setEditing] = useState<Customer | null>(null);
-
-  // F9 option lists
-  const nameOptions: F9Option[] = useMemo(
-    () => customers.map(c => ({ value: c.id, label: c.name, sublabel: c.code })),
-    [customers]
-  );
-  const routeOptions: F9Option[] = useMemo(
-    () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
-    [routes]
-  );
-  const batchOptions: F9Option[] = useMemo(
-    () => batches.map((b: any) => ({ value: b.id, label: b.whichBatch || b.batchCode, sublabel: b.timing })),
-    [batches]
-  );
-
-  // Client-side filter applied only after user clicks Generate
-  const filtered = useMemo(() => {
-    if (!generated) return [];
-    return customers.filter(c => {
-      if (nameFilter && c.id !== nameFilter) return false;
-      if (typeFilter && c.type !== typeFilter) return false;
-      if (routeFilter) {
-        const hasRoute =
-          c.routeId === routeFilter ||
-          (c.routes ?? []).some((r: any) => r.routeId === routeFilter);
-        if (!hasRoute) return false;
-      }
-      if (batchFilter) {
-        // Customer is on this batch if any of their routes is the batch's primary (or any) route
-        const batch = batches.find((b: any) => b.id === batchFilter);
-        const routeIds = batch?.routeIds ?? [];
-        const hasBatch =
-          routeIds.includes(c.routeId) ||
-          (c.routes ?? []).some((r: any) => routeIds.includes(r.routeId));
-        if (!hasBatch) return false;
-      }
-      return true;
-    });
-  }, [customers, batches, nameFilter, typeFilter, routeFilter, batchFilter, generated]);
-
-  const clearFilters = () => {
-    setNameFilter(null);
-    setTypeFilter(null);
-    setRouteFilter(null);
-    setBatchFilter(null);
-    setGenerated(false);
-  };
-
-  return (
-    <PageShell
-      header={
-        <>
-          <PageHeader title="All Customers" description="View and manage all customers" />
-          <FilterBar>
-            <F9SearchSelect
-              label="Name"
-              value={nameFilter}
-              onChange={setNameFilter}
-              options={nameOptions}
-              allowAll
-              className="w-56"
-            />
-            <F9SearchSelect
-              label="Type"
-              value={typeFilter}
-              onChange={setTypeFilter}
-              options={TYPE_OPTIONS}
-              allowAll
-              className="w-52"
-            />
-            <F9SearchSelect
-              label="Route"
-              value={routeFilter}
-              onChange={setRouteFilter}
-              options={routeOptions}
-              allowAll
-              className="w-56"
-            />
-            <F9SearchSelect
-              label="Batch"
-              value={batchFilter}
-              onChange={setBatchFilter}
-              options={batchOptions}
-              allowAll
-              className="w-48"
-            />
-            <Button onClick={() => setGenerated(true)}>Generate Table</Button>
-            {generated && (
-              <Button variant="outline" onClick={clearFilters}>
-                <X className="h-4 w-4 mr-1" /> Clear
-              </Button>
-            )}
-          </FilterBar>
-        </>
-      }
-    >
-      {!generated ? (
-        <EmptyHint message="Set filters above (or leave as All) and click Generate Table." />
-      ) : isLoading ? (
-        <ScrollableTableBody>
-          <div className="p-6 space-y-2">
-            {Array.from({ length: 10 }).map((_, i) => (
-              <Skeleton key={i} className="h-8 w-full" />
-            ))}
-          </div>
-        </ScrollableTableBody>
-      ) : (
-        <ScrollableTableBody>
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/50 backdrop-blur border-b">
-              <tr className="text-xs text-muted-foreground">
-                <th className="text-left py-2.5 px-3 font-medium">Code</th>
-                <th className="text-left py-2.5 px-3 font-medium">Name</th>
-                <th className="text-left py-2.5 px-3 font-medium">Type</th>
-                <th className="text-left py-2.5 px-3 font-medium">Route</th>
-                <th className="text-left py-2.5 px-3 font-medium">Phone</th>
-                <th className="text-left py-2.5 px-3 font-medium">City</th>
-                <th className="text-right py-2.5 px-3 font-medium">Credit Limit</th>
-                <th className="text-left py-2.5 px-3 font-medium">Last Indent</th>
-                <th className="text-center py-2.5 px-3 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(c => (
-                <tr key={c.id} className="border-b hover:bg-muted/30">
-                  <td className="py-2 px-3 font-mono font-medium">{c.code}</td>
-                  <td className="py-2 px-3 font-medium">{c.name}</td>
-                  <td className="py-2 px-3 text-xs">{c.type}</td>
-                  <td className="py-2 px-3 text-xs">{c.routeCode ? `${c.routeCode} — ${c.routeName}` : "—"}</td>
-                  <td className="py-2 px-3 font-mono text-xs">{c.phone}</td>
-                  <td className="py-2 px-3 text-xs">{c.city || "—"}</td>
-                  <td className="py-2 px-3 text-xs text-right font-mono">
-                    {fmtINR(c.creditLimit ?? 0)}
-                  </td>
-                  <td className="py-2 px-3 text-xs">{formatLastIndent(c.lastIndentAt)}</td>
-                  <td className="py-2 px-3">
-                    <div className="flex items-center justify-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title="View details"
-                        onClick={() => setViewing(c)}
-                      >
-                        <Eye className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title="Edit"
-                        onClick={() => setEditing(c)}
-                      >
-                        <Edit className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="py-10 text-center text-muted-foreground text-sm">
-                    No customers match the selected filters.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </ScrollableTableBody>
-      )}
-
-      {/* View dialog */}
-      <CustomerDetailDialog customer={viewing} onClose={() => setViewing(null)} />
-
-      {/* Edit dialog */}
-      <Dialog open={!!editing} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Edit Customer — {editing?.code}</DialogTitle>
-          </DialogHeader>
-          {editing && (
-            <CustomerForm
-              initialData={editing}
-              onCancel={() => setEditing(null)}
-              onSubmit={async (data) => {
-                await updateMutation.mutateAsync({ id: editing.id, data });
-                setEditing(null);
-              }}
-              isSubmitting={updateMutation.isPending}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
-    </PageShell>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════
-// Customer detail (read-only) dialog
-// ══════════════════════════════════════════════════════════════════
-function CustomerDetailDialog({
-  customer,
-  onClose,
-}: {
-  customer: Customer | null;
-  onClose: () => void;
-}) {
-  return (
-    <Dialog open={!!customer} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>{customer?.name} ({customer?.code})</DialogTitle>
-        </DialogHeader>
-        {customer && (
-          <div className="space-y-4 text-sm">
-            <DetailSection title="Identity">
-              <DetailRow label="Name" value={customer.name} />
-              <DetailRow label="Phone" value={customer.phone} />
-              <DetailRow label="Email" value={customer.email || "—"} />
-              <DetailRow label="Status" value={customer.status} />
-            </DetailSection>
-
-            <DetailSection title="Business">
-              <DetailRow label="Type" value={customer.type} />
-              <DetailRow label="Rate Category" value={customer.rateCategory} />
-              <DetailRow label="Pay Mode" value={customer.payMode} />
-              <DetailRow label="Officer" value={customer.officerName || "—"} />
-              <DetailRow label="Bank" value={customer.bank || "—"} />
-              <DetailRow label="Account No." value={customer.accountNo || "—"} />
-              <DetailRow label="Credit Limit" value={fmtINR(customer.creditLimit ?? 0)} />
-              <DetailRow label="Wallet Balance" value={fmtINR(customer.creditBalance ?? 0)} />
-              <DetailRow label="Last Indent" value={formatLastIndent(customer.lastIndentAt)} />
-            </DetailSection>
-
-            <DetailSection title="Address">
-              <DetailRow label="Address Type" value={customer.addressType || "—"} />
-              <DetailRow label="State" value={customer.state || "—"} />
-              <DetailRow label="Taluka" value={customer.zoneName || "—"} />
-              <DetailRow label="City" value={customer.city || "—"} />
-              <DetailRow label="Area" value={customer.area || "—"} />
-              <DetailRow label="House No." value={customer.houseNo || "—"} />
-              <DetailRow label="Street" value={customer.street || "—"} />
-              <DetailRow label="Full Address" value={customer.address || "—"} />
-            </DetailSection>
-
-            <DetailSection title="Routes">
-              {customer.routes && customer.routes.length > 0 ? (
-                <ul className="col-span-2 space-y-1">
-                  {customer.routes.map((r: any) => (
-                    <li key={r.routeId} className="flex items-center gap-2">
-                      <span className="font-mono text-xs">{r.routeCode}</span>
-                      <span>{r.routeName}</span>
-                      {r.isPrimary && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">
-                          Primary
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-muted-foreground col-span-2">No routes assigned.</p>
-              )}
-            </DetailSection>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">{title}</h3>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">{children}</div>
-    </div>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: string | number }) {
-  return (
-    <>
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
-    </>
-  );
-}
-
-function EmptyHint({ message }: { message: string }) {
-  return (
-    <div className="h-full flex items-center justify-center">
-      <Card className="max-w-md">
-        <CardContent className="p-8 text-center">
-          <p className="text-sm text-muted-foreground">{message}</p>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════
-// Assign Route tab — F9 + LiveSearchTable
-// ══════════════════════════════════════════════════════════════════
-function AssignRouteTab({ customers, routes }: { customers: Customer[]; routes: any[] }) {
-  const qc = useQueryClient();
-  const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
-
-  const assignMutation = useMutation({
-    mutationFn: ({ customerId, routeId }: { customerId: string; routeId: string }) =>
-      assignCustomerToRoute(customerId, routeId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["customers"] });
-      toast.success("Customer assigned to route");
-    },
-    onError: (e: any) => toast.error(e?.message || "Failed to assign customer"),
-  });
-
+ 
   const removeMutation = useMutation({
     mutationFn: ({ customerId, routeId }: { customerId: string; routeId: string }) =>
       removeCustomerFromRoute(customerId, routeId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["customers-page"] });
       toast.success("Route removed from customer");
     },
-    onError: (e: any) => toast.error(e?.message || "Failed to remove route"),
+    onError: (err: any) => toast.error(err?.message || "Failed to remove route"),
   });
-
-  const routeOptions: F9Option[] = useMemo(
-    () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
-    [routes]
-  );
-
-  // Customers already on this route
-  const routeCustomers = useMemo(() => {
-    if (!selectedRoute) return [];
-    return customers.filter(
-      c =>
-        c.routeId === selectedRoute ||
-        (c.routes ?? []).some((r: any) => r.routeId === selectedRoute)
-    );
-  }, [customers, selectedRoute]);
-
-  // Customers NOT yet on this route (for the add-customer F9)
-  const addableCustomers: F9Option[] = useMemo(() => {
-    if (!selectedRoute) return [];
-    return customers
-      .filter(c => c.status === "Active")
-      .filter(
-        c =>
-          c.routeId !== selectedRoute &&
-          !(c.routes ?? []).some((r: any) => r.routeId === selectedRoute)
-      )
-      .map(c => ({ value: c.id, label: c.name, sublabel: c.code }));
-  }, [customers, selectedRoute]);
-
-  const [customerToAdd, setCustomerToAdd] = useState<string | null>(null);
-
-  const handleAddCustomer = () => {
-    if (!customerToAdd || !selectedRoute) return;
-    assignMutation.mutate(
-      { customerId: customerToAdd, routeId: selectedRoute },
-      { onSuccess: () => setCustomerToAdd(null) }
-    );
+ 
+  const assignMutation = useMutation({
+    mutationFn: ({ customerId, routeId }: { customerId: string; routeId: string }) =>
+      assignCustomerToRoute(customerId, routeId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["customers-page"] });
+      toast.success("Customer assigned to route");
+    },
+    onError: () => toast.error("Failed to assign customer"),
+  });
+ 
+  // ── Assign-route derivations (NOT hooks — safe inside conditionals) ──
+  const routeCustomers = allCustomers.filter((c: any) =>
+    c.routes?.some((r: any) => r.routeId === selectedRoute));
+  const eligibleToAdd = allCustomers.filter((c: any) => {
+    if (!selectedRoute) return false;
+    if (c.routes?.some((r: any) => r.routeId === selectedRoute)) return false;
+    if (!pickerQuery.trim()) return true;
+    const q = pickerQuery.trim().toLowerCase();
+    return c.name.toLowerCase().includes(q)
+        || c.code.toLowerCase().includes(q)
+        || (c.phone ?? "").toString().includes(q);
+  });
+ 
+  const exportCsv = () => {
+    const header = ["Code", "Name", "Type", "Routes", "Phone", "Pay Mode", "City", "Status"];
+    const data = pageRows.map((c: any) => [
+      c.code, c.name, c.type,
+      (c.routes ?? []).map((r: any) => r.routeCode).join(" | "),
+      c.phone, c.payMode, c.city,
+      c.active === false ? "Inactive" : "Active",
+    ]);
+    const csv = toCsv([header, ...data]);
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().slice(0, 10);
+    a.href = url; a.download = `customers_page${page}_${ts}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${data.length} row(s)`);
   };
-
-  return (
-    <PageShell
-      header={
-        <>
-          <PageHeader title="Assign Route" description="Assign customers to routes" />
-          <FilterBar>
+ 
+  // ─────────────────────────────────────────────────────────────────
+  // ASSIGN-ROUTE TAB
+  // ─────────────────────────────────────────────────────────────────
+  if (tab === "assign-route") {
+    return (
+      <div>
+        <PageHeader
+          title="Assign Route"
+          subtitle="Add or remove customers on a route"
+          actions={
+            <Button
+              size="sm" className="h-8" disabled={!selectedRoute}
+              onClick={() => { setPickerQuery(""); setPickerOpen(true); }}
+            >
+              <Plus className="w-3.5 h-3.5 mr-1.5" />Add Customer
+            </Button>
+          }
+        />
+        <FilterBar>
+          <Field label="Route" hint="F9">
             <F9SearchSelect
-              label="Select Route"
-              value={selectedRoute}
-              onChange={setSelectedRoute}
-              options={routeOptions}
+              value={selectedRoute || null}
+              onChange={v => setSelectedRoute(v ?? "")}
+              options={routeOpts}
               className="w-72"
             />
-            {selectedRoute && (
-              <>
-                <F9SearchSelect
-                  label="Add Customer to Route"
-                  value={customerToAdd}
-                  onChange={setCustomerToAdd}
-                  options={addableCustomers}
-                  className="w-72"
-                />
-                <Button
-                  onClick={handleAddCustomer}
-                  disabled={!customerToAdd || assignMutation.isPending}
-                >
-                  <UserPlus className="h-4 w-4 mr-1" /> Assign
-                </Button>
-              </>
-            )}
-          </FilterBar>
-        </>
-      }
-    >
-      {!selectedRoute ? (
-        <EmptyHint message="Select a route to see and manage its customers." />
-      ) : (
-        <ScrollableTableBody className="p-4">
-          <div className="mb-3">
-            <h3 className="text-sm font-medium">
-              Customers on {routes.find((r: any) => r.id === selectedRoute)?.name}{" "}
-              <span className="text-muted-foreground">({routeCustomers.length})</span>
-            </h3>
+          </Field>
+        </FilterBar>
+ 
+        {!selectedRoute ? (
+          <div className="p-4">
+            <div className="erp-panel py-12 text-center text-muted-foreground text-[13px]">
+              Select a route above to view its customers.
+            </div>
           </div>
-          <LiveSearchTable
-            items={routeCustomers}
-            getSearchableText={c => `${c.code} ${c.name} ${c.phone} ${c.city}`}
-            placeholder="Search by name, code, phone, or city..."
-          >
-            {filtered => (
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 z-10 bg-muted/50 backdrop-blur border-b">
-                  <tr className="text-xs text-muted-foreground">
-                    <th className="text-left py-2.5 px-3 font-medium">Code</th>
-                    <th className="text-left py-2.5 px-3 font-medium">Name</th>
-                    <th className="text-left py-2.5 px-3 font-medium">Type</th>
-                    <th className="text-left py-2.5 px-3 font-medium">Phone</th>
-                    <th className="text-left py-2.5 px-3 font-medium">City</th>
-                    <th className="text-center py-2.5 px-3 font-medium">Action</th>
-                  </tr>
+        ) : (
+          <div className="p-4 space-y-3">
+            <div className="erp-panel">
+              <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2 flex items-center justify-between">
+                <span>Customers on Route — {routes.find((r: any) => r.id === selectedRoute)?.code}</span>
+                <span className="text-[11px] normal-case font-normal text-muted-foreground num">
+                  {routeCustomers.length} on route
+                </span>
+              </div>
+              <div className="overflow-auto max-h-[calc(100vh-340px)]">
+                <table className="erp-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "50px" }}>#</th>
+                      <th>Code</th><th>Name</th><th>Type</th><th>Phone</th>
+                      <th style={{ textAlign: "right", width: "110px" }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {routeCustomers.length === 0 ? (
+                      <tr><td colSpan={6} className="text-center text-muted-foreground py-8">
+                        No customers assigned. Click <strong>Add Customer</strong> to assign one.
+                      </td></tr>
+                    ) : routeCustomers.map((c: any, i: number) => (
+                      <tr key={c.id}>
+                        <td className="num">{i + 1}</td>
+                        <td className="font-mono text-[12px]">{c.code}</td>
+                        <td className="font-medium">{c.name}</td>
+                        <td><span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary">{c.type}</span></td>
+                        <td>{c.phone}</td>
+                        <td style={{ textAlign: "right" }}>
+                          <Button
+                            variant="ghost" size="sm" className="h-7 px-2 text-destructive hover:text-destructive"
+                            onClick={() => removeMutation.mutate({ customerId: c.id, routeId: selectedRoute })}
+                          >
+                            Remove
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+ 
+        <Dialog open={pickerOpen} onOpenChange={o => !o && setPickerOpen(false)}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                Add Customer to Route — {routes.find((r: any) => r.id === selectedRoute)?.code}
+              </DialogTitle>
+            </DialogHeader>
+            <Input
+              className="erp-input"
+              placeholder="Search by code, name, or phone…"
+              value={pickerQuery}
+              onChange={e => setPickerQuery(e.target.value)}
+              autoFocus
+            />
+            <div className="erp-panel max-h-[50vh] overflow-auto">
+              <table className="erp-table">
+                <thead>
+                  <tr><th>Code</th><th>Name</th><th>Type</th><th>Phone</th><th></th></tr>
                 </thead>
                 <tbody>
-                  {filtered.map(c => (
-                    <tr key={c.id} className="border-b hover:bg-muted/30">
-                      <td className="py-2 px-3 font-mono">{c.code}</td>
-                      <td className="py-2 px-3 font-medium">{c.name}</td>
-                      <td className="py-2 px-3 text-xs">{c.type}</td>
-                      <td className="py-2 px-3 font-mono text-xs">{c.phone}</td>
-                      <td className="py-2 px-3 text-xs">{c.city || "—"}</td>
-                      <td className="py-2 px-3 text-center">
+                  {eligibleToAdd.length === 0 ? (
+                    <tr><td colSpan={5} className="text-center text-muted-foreground py-6">
+                      No customers match. {pickerQuery && "Try a different search."}
+                    </td></tr>
+                  ) : eligibleToAdd.slice(0, 50).map((c: any) => (
+                    <tr key={c.id}>
+                      <td className="font-mono text-[12px]">{c.code}</td>
+                      <td className="font-medium">{c.name}</td>
+                      <td>{c.type}</td>
+                      <td>{c.phone}</td>
+                      <td>
                         <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 text-destructive hover:text-destructive"
-                          onClick={() =>
-                            removeMutation.mutate({ customerId: c.id, routeId: selectedRoute })
-                          }
-                          disabled={removeMutation.isPending}
-                        >
-                          <X className="h-3.5 w-3.5 mr-1" /> Remove
-                        </Button>
+                          size="sm" className="h-7"
+                          onClick={() => {
+                            assignMutation.mutate(
+                              { customerId: c.id, routeId: selectedRoute },
+                              { onSuccess: () => setPickerOpen(false) },
+                            );
+                          }}
+                          disabled={assignMutation.isPending}
+                        >Add</Button>
                       </td>
                     </tr>
                   ))}
-                  {filtered.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="py-10 text-center text-muted-foreground text-sm">
-                        {routeCustomers.length === 0
-                          ? "No customers on this route yet."
-                          : "No matches."}
-                      </td>
-                    </tr>
-                  )}
                 </tbody>
               </table>
-            )}
-          </LiveSearchTable>
-        </ScrollableTableBody>
-      )}
-    </PageShell>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" size="sm" onClick={() => setPickerOpen(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  }
+ 
+  // ─────────────────────────────────────────────────────────────────
+  // NEW TAB
+  // ─────────────────────────────────────────────────────────────────
+  if (tab === "new") {
+    return (
+      <div>
+        <PageHeader
+          title="New Customer"
+          subtitle={`Code will be ${nextCode} (auto-generated from selected letter).`}
+          actions={
+            <Button variant="outline" size="sm" className="h-8" asChild>
+              <a href="/masters/customers">Cancel</a>
+            </Button>
+          }
+        />
+        <div className="p-4 max-w-4xl space-y-3">
+          {/* B3: alphabet selector — drives nextCode */}
+          <div className="erp-panel p-3">
+            <div className="grid grid-cols-2 gap-3 max-w-xl">
+              <Field label="Code Prefix (Alphabet)" required>
+                <Select value={selectedLetter} onValueChange={setSelectedLetter}>
+                  <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {LETTERS.map(l => (
+                      <SelectItem key={l} value={l}>{l}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Generated Code">
+                <Input className="erp-input bg-muted font-mono" value={nextCode} disabled />
+              </Field>
+            </div>
+          </div>
+ 
+          <CustomerFormBody
+            mode="new"
+            initial={{
+              code: nextCode,
+              type: "Retail-Dealer", payMode: "Cash",
+              state: "Karnataka", active: true,
+            }}
+            routes={routes}
+            zones={zones}
+            rateCategories={rateCategories}
+            officers={officers}
+            onCancel={() => history.back()}
+            onSaved={() => {
+              qc.invalidateQueries({ queryKey: ["customers"] });
+              qc.invalidateQueries({ queryKey: ["customers-page"] });
+              window.location.href = "/masters/customers";
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+ 
+  // ─────────────────────────────────────────────────────────────────
+  // LIST TAB
+  // ─────────────────────────────────────────────────────────────────
+  return (
+    <div>
+      <PageHeader
+        title="All Customers"
+        subtitle={`${totalCount} customer(s) registered`}
+        actions={
+          <>
+            <Button variant="outline" size="sm" className="h-8" onClick={exportCsv}>
+              <Download className="w-3.5 h-3.5 mr-1.5" />Export CSV
+            </Button>
+            <Button size="sm" className="h-8 bg-primary hover:bg-primary-hover" asChild>
+              <a href="/masters/customers/new"><Plus className="w-3.5 h-3.5 mr-1.5" />New Customer</a>
+            </Button>
+          </>
+        }
+      />
+      <FilterBar>
+        <Field label="Search">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+            <Input placeholder="Code, name, or phone…" value={search}
+                   onChange={e => setSearch(e.target.value)}
+                   className="erp-input pl-8 w-64" />
+          </div>
+        </Field>
+        <Field label="Type">
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger className="erp-input w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>{TYPE_OPTIONS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+          </Select>
+        </Field>
+        <Field label="Route" hint="F9">
+          <F9SearchSelect
+            value={routeFilter}
+            onChange={setRouteFilter}
+            options={routeOpts}
+            allowAll
+            className="w-56"
+          />
+        </Field>
+        <div className="ml-auto text-[11px] text-muted-foreground self-center num">
+          {pageRows.length} on page · {totalCount} total
+        </div>
+      </FilterBar>
+ 
+      <div className="p-4 space-y-3">
+        <div className="erp-panel overflow-hidden">
+          <div className="overflow-auto max-h-[calc(100vh-320px)]">
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 80 }}>Code</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Route(s)</th>
+                  <th style={{ width: 120 }}>Phone</th>
+                  <th style={{ width: 70 }}>Pay</th>
+                  <th style={{ width: 180, textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageQuery.isLoading ? (
+                  Array.from({ length: 8 }).map((_, i) => (
+                    <tr key={`s${i}`}>
+                      {Array.from({ length: 7 }).map((_, j) => (
+                        <td key={j}><div className="h-3.5 bg-muted/70 rounded-sm animate-pulse" /></td>
+                      ))}
+                    </tr>
+                  ))
+                ) : pageRows.length === 0 ? (
+                  <tr><td colSpan={7} className="text-center py-8 text-muted-foreground">
+                    No customers match the current filter.
+                  </td></tr>
+                ) : pageRows.map((c: any) => (
+                  <tr key={c.id}>
+                    <td className="font-mono text-[12px]">{c.code}</td>
+                    <td className="font-medium">{c.name}</td>
+                    <td><span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">{c.type}</span></td>
+                    <td>
+                      {c.routes && c.routes.length > 0 ? (
+                        <div className="flex flex-col gap-0.5">
+                          {c.routes.map((r: any) => (
+                            <span key={r.routeId} className="text-[12px]">
+                              <span className="font-mono">{r.routeCode}</span> — {r.routeName}
+                              {r.isPrimary && c.routes!.length > 1 && (
+                                <span className="ml-1 text-muted-foreground text-[11px]">(primary)</span>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      ) : <span className="text-muted-foreground">—</span>}
+                    </td>
+                    <td>{c.phone}</td>
+                    <td>{c.payMode}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]"
+                                onClick={() => setViewing(c)}>View</Button>
+                        <Button size="sm" className="h-7 px-2.5 text-[12px]"
+                                onClick={() => setEditing(c)}>Update</Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+ 
+          {/* Server-side pagination footer */}
+          <div className="px-3 py-2 border-t border-border bg-muted/30 text-[12px] flex items-center gap-3">
+            <span className="text-muted-foreground">
+              Page <span className="num font-medium">{page}</span> of <span className="num">{totalPages}</span>
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-muted-foreground text-[11px]">Rows / page:</span>
+              <Select value={String(pageSize)} onValueChange={v => setPageSize(Number(v))}>
+                <SelectTrigger className="erp-input h-7 w-20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {[25, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" className="h-7 px-2"
+                      disabled={page <= 1 || pageQuery.isFetching}
+                      onClick={() => setPage(p => Math.max(1, p - 1))}>
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 px-2"
+                      disabled={page >= totalPages || pageQuery.isFetching}
+                      onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+ 
+      <CustomerViewDialog customer={viewing} routes={routes} onClose={() => setViewing(null)} />
+      <CustomerEditDialog
+        customer={editing}
+        routes={routes}
+        zones={zones}
+        rateCategories={rateCategories}
+        officers={officers}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          qc.invalidateQueries({ queryKey: ["customers"] });
+          qc.invalidateQueries({ queryKey: ["customers-page"] });
+        }}
+      />
+    </div>
+  );
+}
+ 
+// ─────────────────────────────────────────────────────────────────
+// CustomerViewDialog (unchanged from previous version)
+// ─────────────────────────────────────────────────────────────────
+function CustomerViewDialog({
+  customer, routes, onClose,
+}: {
+  customer: Customer | null;
+  routes: any[];
+  onClose: () => void;
+}) {
+  if (!customer) return null;
+  const Row = ({ label, value }: { label: string; value: any }) => (
+    <div className="flex items-baseline gap-2 py-1 border-b border-border/60 last:border-0">
+      <span className="text-[11px] uppercase tracking-wide text-muted-foreground w-32 shrink-0">{label}</span>
+      <span className="text-[13px] font-medium">{value || <span className="text-muted-foreground">—</span>}</span>
+    </div>
+  );
+  return (
+    <Dialog open onOpenChange={open => !open && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="text-[15px]">{customer.code} — {customer.name}</DialogTitle>
+        </DialogHeader>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-0">
+          <Row label="Code" value={<span className="font-mono">{customer.code}</span>} />
+          <Row label="Status" value={<StatusPill status={(customer as any).active !== false ? "active" : "draft"} />} />
+          <Row label="Name" value={customer.name} />
+          <Row label="Phone" value={customer.phone} />
+          <Row label="Email" value={(customer as any).email} />
+          <Row label="GST" value={(customer as any).gstNumber || (customer as any).gst} />
+          <Row label="Type" value={customer.type} />
+          <Row label="Pay Mode" value={customer.payMode} />
+          <Row label="Rate Category" value={customer.rateCategory} />
+          <Row label="Officer" value={(customer as any).officerName} />
+          <Row label="Bank" value={(customer as any).bank} />
+          <Row label="Account No." value={(customer as any).accountNo} />
+          <Row label="Credit Limit" value={(customer as any).creditLimit != null
+            ? `₹${Number((customer as any).creditLimit).toLocaleString("en-IN")}` : "—"} />
+          <Row label="Wallet / Credit Bal." value={(customer as any).creditBalance != null
+            ? `₹${Number((customer as any).creditBalance).toLocaleString("en-IN")}` : "—"} />
+          <Row label="Address Type" value={(customer as any).addressType} />
+          <Row label="State" value={(customer as any).state} />
+          <Row label="Taluka" value={(customer as any).zoneName
+            || routes.find((r: any) => r.id === customer.routeId)?.taluka} />
+          <Row label="City" value={(customer as any).city} />
+          <Row label="Area" value={(customer as any).area} />
+          <Row label="House No." value={(customer as any).houseNo} />
+          <Row label="Street" value={(customer as any).street} />
+          <Row label="Address" value={(customer as any).address} />
+          <Row label="Routes" value={
+            customer.routes?.length
+              ? customer.routes.map((r: any) => `${r.routeCode}${r.isPrimary ? " ★" : ""}`).join(", ")
+              : "—"
+          } />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+ 
+function CustomerEditDialog({
+  customer, routes, zones, rateCategories, officers, onClose, onSaved,
+}: {
+  customer: Customer | null;
+  routes: any[]; zones: any[]; rateCategories: any[]; officers: any[];
+  onClose: () => void; onSaved: () => void;
+}) {
+  if (!customer) return null;
+  return (
+    <Dialog open onOpenChange={open => !open && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-auto">
+        <DialogHeader><DialogTitle>Edit Customer — {customer.code}</DialogTitle></DialogHeader>
+        <CustomerFormBody
+          mode="edit"
+          initial={customer as any}
+          routes={routes} zones={zones}
+          rateCategories={rateCategories} officers={officers}
+          onCancel={onClose}
+          onSaved={() => { onSaved(); onClose(); }}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────
+// CustomerFormBody — shared between New page + Edit dialog
+// All F9-able selects go through F9SearchSelect.
+// ─────────────────────────────────────────────
+
+function CustomerFormBody({
+  mode, initial, routes, zones, rateCategories, officers, onCancel, onSaved,
+}: {
+  mode: "new" | "edit";
+  initial: any;
+  routes: any[];
+  zones: any[];
+  rateCategories: any[];
+  officers: any[];
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const qc = useQueryClient();
+  const form = useForm<CustomerFormData & { gstNumber?: string }>({
+    resolver: zodResolver(customerSchema),
+    defaultValues: {
+      name: initial?.name ?? "",
+      phone: initial?.phone ?? "",
+      email: initial?.email ?? "",
+      type: initial?.type ?? "Retail-Dealer",
+      rateCategory: initial?.rateCategory ?? "Retail-Dealer",
+      payMode: initial?.payMode ?? "Cash",
+      officerName: initial?.officerName ?? "",
+      bank: initial?.bank ?? "",
+      accountNo: initial?.accountNo ?? "",
+      creditLimit: initial?.creditLimit ?? 0,
+      addressType: initial?.addressType ?? "",
+      state: initial?.state ?? "Karnataka",
+      zoneId: initial?.zoneId ?? "",
+      city: initial?.city ?? "",
+      area: initial?.area ?? "",
+      houseNo: initial?.houseNo ?? "",
+      street: initial?.street ?? "",
+      address: initial?.address ?? "",
+      routeId: initial?.routeId ?? (initial?.routes?.find((r: any) => r.isPrimary)?.routeId ?? ""),
+      active: initial?.active ?? true,
+    } as any,
+  });
+
+  // GST is not in customerSchema yet — keep it as a separate controlled field.
+  const [gstNumber, setGstNumber] = useState<string>(initial?.gstNumber ?? initial?.gst ?? "");
+
+  const save = useMutation({
+    mutationFn: async (d: CustomerFormData) => {
+      const payload = { ...d, gstNumber, code: initial?.code };
+      if (mode === "new") return createCustomer(payload as any);
+      const { updateCustomer } = await import("@/services/api"); // lazy to avoid circular
+      return updateCustomer(initial.id, payload as any);
+    },
+    onSuccess: () => {
+      toast.success(mode === "new" ? "Customer created" : "Customer updated");
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      onSaved();
+    },
+    onError: (e: any) => toast.error(e?.message || "Save failed"),
+  });
+
+  // F9 option lists
+  const zoneOpts: F9Option[]     = useMemo(() => zones.map((z: any) => ({ value: z.id, label: z.name })), [zones]);
+  const officerOpts: F9Option[]  = useMemo(() => (officers ?? []).map((o: any) => ({ value: o.name ?? o.id, label: o.name ?? o })), [officers]);
+  const rateCatOpts: F9Option[]  = useMemo(() => (rateCategories ?? []).map((r: any) => ({ value: r.value ?? r, label: r.label ?? r })), [rateCategories]);
+  const routeOpts: F9Option[]    = useMemo(() => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })), [routes]);
+
+  // Distinct cities derived from existing dealers — populated lazily.
+  const { data: existingCustomers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
+  const cityOpts: F9Option[] = useMemo(() => {
+    const set = new Set<string>();
+    existingCustomers.forEach((c: any) => { if (c.city) set.add(c.city); });
+    return Array.from(set).sort().map(c => ({ value: c, label: c }));
+  }, [existingCustomers]);
+
+  return (
+    <form onSubmit={form.handleSubmit(d => save.mutate(d))} className="space-y-3 pb-20">
+      <FormSection title="Identity" cols={3}>
+        <Field label="Code" hint="auto">
+          <Input className="erp-input bg-muted" value={initial?.code ?? ""} readOnly />
+        </Field>
+        <Field label="Name" required error={form.formState.errors.name?.message}>
+          <Input className="erp-input" {...form.register("name")} />
+        </Field>
+        <Field label="Phone" required error={form.formState.errors.phone?.message}>
+          <Input className="erp-input" {...form.register("phone")} maxLength={10} />
+        </Field>
+        <Field label="Email" error={form.formState.errors.email?.message}>
+          <Input className="erp-input" {...form.register("email")} placeholder="email@example.com" />
+        </Field>
+        <Field label="GST No.">
+          <Input className="erp-input" value={gstNumber} onChange={e => setGstNumber(e.target.value.toUpperCase())} placeholder="22AAAAA0000A1Z5" />
+        </Field>
+        <Field label="Status">
+          <div className="flex items-center gap-2 h-10">
+            <Switch checked={form.watch("active")} onCheckedChange={v => form.setValue("active", v)} />
+            <span className="text-[13px]">{form.watch("active") ? "Active" : "Inactive"}</span>
+          </div>
+        </Field>
+      </FormSection>
+
+      <FormSection title="Business" cols={3}>
+        <Field label="Type" required>
+          <Select value={form.watch("type")} onValueChange={v => form.setValue("type", v as any)}>
+            <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {["Retail-Dealer","Credit Inst-MRP","Credit Inst-Dealer","Parlour-Dealer"].map(t =>
+                <SelectItem key={t} value={t}>{t}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Rate Category" hint="F9">
+          <F9SearchSelect
+            value={form.watch("rateCategory") ?? null}
+            onChange={v => form.setValue("rateCategory", v ?? "")}
+            options={rateCatOpts}
+            className="w-full"
+          />
+        </Field>
+        <Field label="Pay Mode">
+          <Select value={form.watch("payMode")} onValueChange={v => form.setValue("payMode", v as any)}>
+            <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Cash">Cash</SelectItem>
+              <SelectItem value="Credit">Credit</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Officer" hint="F9">
+          <F9SearchSelect
+            value={form.watch("officerName") || null}
+            onChange={v => form.setValue("officerName", v ?? "")}
+            options={officerOpts}
+            className="w-full"
+          />
+        </Field>
+        <Field label="Bank">
+          <Input className="erp-input" {...form.register("bank")} />
+        </Field>
+        <Field label="Account No.">
+          <Input className="erp-input" {...form.register("accountNo")} />
+        </Field>
+        <Field label="Credit Limit">
+          <Input
+            className="erp-input num"
+            type="number" step="0.01" min="0"
+            {...form.register("creditLimit", { valueAsNumber: true })}
+          />
+        </Field>
+        <Field label="Primary Route" hint="F9">
+          <F9SearchSelect
+            value={form.watch("routeId") || null}
+            onChange={v => form.setValue("routeId", v ?? "")}
+            options={routeOpts}
+            className="w-full"
+          />
+        </Field>
+      </FormSection>
+
+      <FormSection title="Address" cols={3}>
+        <Field label="Address Type">
+          <Select value={form.watch("addressType") || ""} onValueChange={v => form.setValue("addressType", v as any)}>
+            <SelectTrigger className="erp-input"><SelectValue placeholder="Select…" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Office">Office</SelectItem>
+              <SelectItem value="Residence">Residence</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="State">
+          <Input className="erp-input" {...form.register("state")} />
+        </Field>
+        <Field label="Taluka / Zone" hint="F9">
+          <F9SearchSelect
+            value={form.watch("zoneId") || null}
+            onChange={v => form.setValue("zoneId", v ?? "")}
+            options={zoneOpts}
+            className="w-full"
+          />
+        </Field>
+        <Field label="City" hint="F9">
+          <F9SearchSelect
+            value={form.watch("city") || null}
+            onChange={v => form.setValue("city", v ?? "")}
+            options={cityOpts}
+            className="w-full"
+          />
+        </Field>
+        <Field label="Area">
+          <Input className="erp-input" {...form.register("area")} />
+        </Field>
+        <Field label="House No.">
+          <Input className="erp-input" {...form.register("houseNo")} />
+        </Field>
+        <Field label="Street">
+          <Input className="erp-input" {...form.register("street")} />
+        </Field>
+        <Field label="Full Address">
+          <Input className="erp-input" {...form.register("address")} placeholder="Free-form, optional" />
+        </Field>
+      </FormSection>
+
+      <FormFooter>
+        <Button type="button" variant="ghost" size="sm" className="h-8" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          className="h-8 bg-primary hover:bg-primary-hover"
+          disabled={save.isPending}
+          onClick={() => form.handleSubmit(d => save.mutate(d))()}
+        >
+          {save.isPending ? "Saving..." : "Save Customer"}
+        </Button>
+      </FormFooter>
+    </form>
   );
 }

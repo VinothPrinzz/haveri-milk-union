@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+**/dist
+**/.env
+.git
+apps/web
+apps/mobile
+packages/types
+packages/utils

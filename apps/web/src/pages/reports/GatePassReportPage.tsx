@@ -1,23 +1,25 @@
+// apps/web/src/pages/reports/GatePassReportPage.tsx
+// ════════════════════════════════════════════════════════════════════
+// Gate Pass Report — ledger style, CSV + Tally exports.
+// ════════════════════════════════════════════════════════════════════
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import PageHeader from "@/components/PageHeader";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Printer } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { fmtINR, fmtDate } from "@/components/PageHeader";
+import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import { fetchGatePassReport, type GatePassResponse } from "@/services/report";
+import { toCsv, toTallyCsv, toTallyXml,
+         type TallyVoucher, type TallySalesVoucher, LEDGER_MAP } from "@/lib/exporters";
 
-const fmtINR = (n: number | string) => `₹${Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
-
-const ROWS_PER_PAGE = 20;
+const ROWS_PER_PAGE = 35;   // dense ledger rows fit more per page
 
 export default function GatePassReportPage() {
   const today = new Date().toISOString().split("T")[0];
   const monthStart = today.substring(0, 8) + "01";
 
   const [fromDate, setFromDate] = useState(monthStart);
-  const [toDate, setToDate] = useState(today);
-  const [showReport, setShowReport] = useState(false);
-  const [currentPage, setCurrentPage] = useState(0);
+  const [toDate, setToDate]     = useState(today);
+  const [generated, setGenerated] = useState(false);
 
   const { data, isLoading, refetch } = useQuery<GatePassResponse>({
     queryKey: ["gate-pass-report", fromDate, toDate],
@@ -27,114 +29,142 @@ export default function GatePassReportPage() {
 
   const handleGenerate = async () => {
     await refetch();
-    setCurrentPage(0);
-    setShowReport(true);
+    setGenerated(true);
   };
 
   const rows = data?.rows ?? [];
   const totalAmount = data?.totalAmount ?? 0;
 
-  // Client-side visual pagination (~20 rows per printed page)
   const pageCount = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
-  const visibleRows = rows.slice(currentPage * ROWS_PER_PAGE, (currentPage + 1) * ROWS_PER_PAGE);
-
-  const reportPage = (
-    <div>
-      <div className="text-center mb-3">
-        <h2 className="text-sm font-bold uppercase tracking-wide">HAVERI MILK UNION LTD — HAVERI</h2>
-        <p className="text-xs font-bold mt-1">Gate Pass Sales Report</p>
-        <p className="text-[10px] text-muted-foreground mt-0.5">Period: {fromDate} to {toDate}</p>
-      </div>
-
-      <table className="w-full text-[11px] border-collapse">
+  const pages = Array.from({ length: pageCount }).map((_, idx) => {
+    const slice = rows.slice(idx * ROWS_PER_PAGE, (idx + 1) * ROWS_PER_PAGE);
+    const isLast = idx === pageCount - 1;
+    return (
+      <table key={idx} className="report-ledger">
         <thead>
-          <tr className="border bg-muted/30">
-            <th className="border py-1.5 px-2 text-left font-bold">GP No.</th>
-            <th className="border py-1.5 px-2 text-left font-bold">Date</th>
-            <th className="border py-1.5 px-2 text-left font-bold">Agent Name</th>
-            <th className="border py-1.5 px-2 text-left font-bold">Items</th>
-            <th className="border py-1.5 px-2 text-right font-bold">Amount</th>
+          <tr>
+            <th style={{ width: 80 }}>GP No.</th>
+            <th style={{ width: 90 }}>Date</th>
+            <th>Agent</th>
+            <th>Route</th>
+            <th>Items</th>
+            <th className="num" style={{ width: 110 }}>Amount ₹</th>
           </tr>
         </thead>
         <tbody>
-          {visibleRows.map(r => (
-            <tr key={r.gpNo + r.date} className="border">
-              <td className="border py-1 px-2 font-mono">{r.gpNo}</td>
-              <td className="border py-1 px-2">{r.date}</td>
-              <td className="border py-1 px-2 font-medium">{r.agentName}</td>
-              <td className="border py-1 px-2 text-[10px] text-muted-foreground whitespace-pre-line">
-                {r.items.map(it => `${it.name} x ${it.qty}`).join(", ")}
-              </td>
-              <td className="border py-1 px-2 text-right">{fmtINR(r.amount)}</td>
+          {slice.map(r => (
+            <tr key={r.gpNo}>
+              <td className="font-mono">{r.gpNo}</td>
+              <td>{fmtDate(r.date)}</td>
+              <td>{r.agentName}</td>
+              <td>{r.routeName}</td>
+              <td className="text-[10.5px]">{r.itemsText}</td>
+              <td className="num">{fmtINR(r.amount)}</td>
             </tr>
           ))}
-
-          {/* Grand total shown only on the last visual page */}
-          {currentPage === pageCount - 1 && (
-            <tr className="border font-bold bg-muted/30">
-              <td className="border py-1.5 px-2" colSpan={4}>TOTAL</td>
-              <td className="border py-1.5 px-2 text-right">{fmtINR(totalAmount)}</td>
+          {isLast && (
+            <tr className="total-row">
+              <td colSpan={5} className="num">TOTAL</td>
+              <td className="num">{fmtINR(totalAmount)}</td>
             </tr>
-          )}
-
-          {rows.length === 0 && (
-            <tr><td colSpan={5} className="py-8 text-center text-muted-foreground">No gate pass sales in this period</td></tr>
           )}
         </tbody>
       </table>
-    </div>
-  );
+    );
+  });
+
+  // ── Exports ─────────────────────────────────────────────────────
+  const fileBase = `gate-pass_${fromDate}_${toDate}`;
+
+  const exporters: Exporter[] = data ? [
+    {
+      label: "CSV",
+      filename: `${fileBase}.csv`,
+      mimeType: "text/csv",
+      build: () => {
+        const out: (string | number)[][] = [
+          ["GP No.", "Date", "Agent", "Route", "Items", "Amount"]
+        ];
+        for (const r of rows) {
+          out.push([r.gpNo, r.date, r.agentName, r.routeName, r.itemsText, r.amount]);
+        }
+        out.push(["", "", "", "", "TOTAL", totalAmount]);
+        return toCsv(out);
+      },
+    },
+    {
+      label: "Tally CSV",
+      filename: `${fileBase}_tally.csv`,
+      mimeType: "text/csv",
+      build: () => {
+        const vchs: TallyVoucher[] = rows.map(r => ({
+          date: r.date,
+          vchType: "Sales",
+          vchNo: r.gpNo,
+          reference: r.gpNo,
+          partyLedger: r.agentName,
+          debitLedger: LEDGER_MAP.cashLedger,
+          creditLedger: LEDGER_MAP.salesLedger,
+          amount: Number(r.amount),
+          narration: `Gate Pass ${r.gpNo} · ${r.routeName}`,
+        }));
+        return toTallyCsv(vchs);
+      },
+    },
+    {
+      label: "Tally XML",
+      filename: `${fileBase}_tally.xml`,
+      mimeType: "application/xml",
+      build: () => {
+        const vchs: TallySalesVoucher[] = rows.map(r => ({
+          date: r.date,
+          vchNo: r.gpNo,
+          partyLedger: LEDGER_MAP.cashLedger,   // gate-pass = cash sale by default
+          amountInclGst: Number(r.amount),
+          baseAmount: Number(r.amount),         // GST not split in this report
+          narration: `Gate Pass ${r.gpNo} · ${r.routeName} · ${r.agentName}`,
+        }));
+        return toTallyXml(vchs);
+      },
+    },
+  ] : [];
 
   return (
-    <div>
-      <PageHeader title="Gate Pass Report" description="Summary of gate-pass (agent) direct sales" />
-
-      <Card className="mb-4">
-        <CardContent className="p-5 flex flex-wrap items-end gap-4">
+    <ReportShell
+      title="Gate Pass Report"
+      subtitle="Agent-wise direct sale gate-pass register"
+      printOrientation="portrait"
+      filters={
+        <>
           <div>
-            <label className="text-sm font-medium mb-1.5 block">From</label>
-            <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
-              className="h-9 w-44 rounded-md border border-input bg-background px-3 py-1 text-sm" />
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">From</label>
+            <Input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="erp-input w-40" />
           </div>
           <div>
-            <label className="text-sm font-medium mb-1.5 block">To</label>
-            <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
-              className="h-9 w-44 rounded-md border border-input bg-background px-3 py-1 text-sm" />
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">To</label>
+            <Input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="erp-input w-40" />
           </div>
-          <Button onClick={handleGenerate} disabled={isLoading}>
-            {isLoading ? "Generating..." : "Generate Report"}
-          </Button>
-        </CardContent>
-      </Card>
-
-      {showReport && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-medium">Gate Pass Report</span>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="icon" className="h-8 w-8"
-                onClick={() => setCurrentPage(p => Math.max(0, p - 1))} disabled={currentPage === 0}>
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <span className="text-sm text-muted-foreground">Page {currentPage + 1} of {pageCount}</span>
-              <Button variant="outline" size="icon" className="h-8 w-8"
-                onClick={() => setCurrentPage(p => Math.min(pageCount - 1, p + 1))}
-                disabled={currentPage === pageCount - 1}>
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-              <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => window.print()}>
-                <Printer className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-
-          <div className="border rounded-lg p-6 bg-card min-h-[500px]">
-            <div className="max-w-[794px] mx-auto bg-white p-8 shadow-sm print:shadow-none print:p-0">
-              {reportPage}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+        </>
+      }
+      onGenerate={handleGenerate}
+      exporters={exporters}
+      printMeta={
+        <ReportPrintMeta
+          title="Gate Pass Sales Report"
+          rows={[
+            { label: "From", value: fmtDate(fromDate) },
+            { label: "To", value: fmtDate(toDate) },
+            { label: "Rows", value: rows.length },
+            { label: "Total", value: fmtINR(totalAmount) },
+          ]}
+        />
+      }
+      state={{
+        generated,
+        loading: isLoading,
+        pages: rows.length === 0 ? [] : pages,
+        emptyMessage: "No gate-pass entries in this range",
+      }}
+    />
   );
 }

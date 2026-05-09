@@ -120,7 +120,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
       if (existing.length > 0) {
         return reply.status(409).send({
           error: "Route sheet already exists for this route/date/batch",
-          existingId: existing[0].id,
+          existingId: existing[0]?.id,
         });
       }
 

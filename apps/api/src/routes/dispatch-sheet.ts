@@ -264,7 +264,8 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
         body.vehicleNumber ?? route.contractor_vehicle ?? null;
 
       try {
-        const result = await pgClient.begin(async (tx) => {
+        const result = await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
           // ── A. UPSERT route_assignments for (route_id, date).
           // No DB-level UNIQUE on (route_id, date), so we use the
           // standard CTE-upsert pattern. Race-safe inside a tx.
@@ -334,6 +335,8 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
               AND o.status IN ('confirmed','dispatched','delivered')
           `;
 
+          if (!totals || !assignment) throw new Error("Failed to build dispatch sheet");
+
           await tx`
             UPDATE route_assignments SET
               dealer_count = ${totals.dealer_count}::int,
@@ -381,7 +384,8 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      const result = await pgClient.begin(async (tx) => {
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         // Upsert assignment to dispatched, stamp time-of-day +
         // full timestamp if not already set.
         const [assignment] = await tx`
