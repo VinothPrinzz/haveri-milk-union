@@ -8,7 +8,6 @@ import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/paginat
 
 export async function cancellationRoutes(app: FastifyInstance) {
   // GET /api/v1/cancellations — list all cancellation requests
-  // FIXED #18: Added agent_code, route info, and kept items fetching
   app.get(
     "/api/v1/cancellations",
     { preHandler: [adminAuth, requireRole("orders.view")] },
@@ -40,11 +39,11 @@ export async function cancellationRoutes(app: FastifyInstance) {
       LEFT JOIN orders o ON o.id = cr.order_id
       ORDER BY cr.created_at DESC
     `;
-    return reply.send({ data: rows });
+      return reply.send({ data: rows });
     }
   );
 
-  // PATCH /api/v1/cancellations/:id/approve — approve + cancel order + refund wallet (unchanged)
+  // PATCH /api/v1/cancellations/:id/approve — approve + cancel order + refund
   app.patch(
     "/api/v1/cancellations/:id/approve",
     { preHandler: [adminAuth, requireRole("orders.cancel")] },
@@ -62,42 +61,111 @@ export async function cancellationRoutes(app: FastifyInstance) {
 
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
+
         // 1. Update cancellation request
         await tx`
-          UPDATE cancellation_requests SET status = 'approved', reviewed_by = ${request.admin!.userId},
-          reviewed_at = now(), updated_at = now() WHERE id = ${id}
+          UPDATE cancellation_requests 
+          SET status = 'approved', 
+              reviewed_by = ${request.admin!.userId},
+              reviewed_at = now(), 
+              updated_at = now() 
+          WHERE id = ${id}
         `;
 
         // 2. Cancel the order
         await tx`
-          UPDATE orders SET status = 'cancelled', cancelled_at = now(),
-          cancellation_reason = 'Approved cancellation request', updated_at = now()
+          UPDATE orders 
+          SET status = 'cancelled', 
+              cancelled_at = now(),
+              cancellation_reason = 'Approved cancellation request', 
+              updated_at = now()
           WHERE id = ${cr.orderId}
         `;
 
-        // 3. Refund wallet if paid via wallet
-        const [order] = await tx`SELECT payment_mode, grand_total, dealer_id FROM orders WHERE id = ${cr.orderId}`;
-        if (order && order.payment_mode === "wallet") {
+        // 3. Get order details
+        const [order] = await tx`
+          SELECT payment_mode, grand_total, dealer_id 
+          FROM orders WHERE id = ${cr.orderId}
+        `;
+
+        if (!order) throw new Error("Order not found");
+
+        // ── Wallet Refund (existing logic) ─────────────────────────────
+        if (order.payment_mode === "wallet") {
           const [wallet] = await tx`
-            UPDATE dealer_wallets SET balance = balance + ${order.grand_total}::numeric, updated_at = now()
-            WHERE dealer_id = ${order.dealer_id} RETURNING balance
+            UPDATE dealer_wallets 
+            SET balance = balance + ${order.grand_total}::numeric, 
+                updated_at = now()
+            WHERE dealer_id = ${order.dealer_id} 
+            RETURNING balance
           `;
-          // 4. Ledger entry for refund
+
           await tx`
-            INSERT INTO dealer_ledger (dealer_id, type, amount, reference_id, reference_type, description, balance_after, performed_by)
-            VALUES (${order.dealer_id}, 'credit', ${order.grand_total}::numeric, ${cr.orderId}, 'refund',
-                    'Cancellation refund', ${wallet!.balance}::numeric, ${request.admin!.userId})
+            INSERT INTO dealer_ledger 
+              (dealer_id, type, amount, reference_id, reference_type, 
+               description, balance_after, performed_by)
+            VALUES 
+              (${order.dealer_id}, 'credit', ${order.grand_total}::numeric, 
+               ${cr.orderId}, 'refund', 'Cancellation refund', 
+               ${wallet!.balance}::numeric, ${request.admin!.userId})
+          `;
+        }
+
+        // ── PATCH D: Credit-mode reversal (NEW) ───────────────────────
+        if (order.payment_mode === "credit") {
+          const [bal] = await tx`
+            SELECT
+              COALESCE(d.opening_balance, 0)
+              + COALESCE((SELECT SUM(CASE WHEN dl.type='credit'
+                                            AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                          THEN dl.amount ELSE 0 END) 
+                          FROM dealer_ledger dl
+                          WHERE dl.dealer_id = d.id), 0)
+              - COALESCE((SELECT SUM(CASE WHEN dl.type='debit'
+                                            AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                          THEN dl.amount ELSE 0 END) 
+                          FROM dealer_ledger dl
+                          WHERE dl.dealer_id = d.id), 0)
+              AS bal
+            FROM dealers d 
+            WHERE d.id = ${order.dealer_id}
+          `;
+
+          const balanceAfter = parseFloat(bal!.bal) + parseFloat(order.grand_total);
+
+          await tx`
+            INSERT INTO dealer_ledger
+              (dealer_id, type, amount, reference_id, reference_type,
+               voucher_type, voucher_date,
+               description, balance_after, performed_by)
+            VALUES
+              (${order.dealer_id}, 'credit',
+               ${parseFloat(order.grand_total).toFixed(2)}::numeric,
+               ${cr.orderId}, 'order',
+               'Adjustment', now()::date,
+               ${'Cancel credit order ' + cr.orderId},
+               ${balanceAfter.toFixed(2)}::numeric,
+               ${request.admin!.userId})
           `;
         }
 
         // 5. Restore product stock
-        const items = await tx`SELECT product_id, quantity FROM order_items WHERE order_id = ${cr.orderId}`;
+        const items = await tx`
+          SELECT product_id, quantity FROM order_items WHERE order_id = ${cr.orderId}
+        `;
         for (const item of items) {
-          await tx`UPDATE products SET stock = stock + ${item.quantity}, updated_at = now() WHERE id = ${item.product_id}`;
+          await tx`
+            UPDATE products 
+            SET stock = stock + ${item.quantity}, 
+                updated_at = now() 
+            WHERE id = ${item.product_id}
+          `;
         }
       });
 
-      return reply.send({ message: "Cancellation approved, order cancelled, wallet refunded" });
+      return reply.send({ 
+        message: "Cancellation approved, order cancelled, refund processed" 
+      });
     }
   );
 

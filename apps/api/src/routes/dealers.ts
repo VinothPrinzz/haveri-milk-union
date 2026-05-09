@@ -50,6 +50,18 @@ export async function dealerRoutes(app: FastifyInstance) {
       const routeId = query.routeId ?? null;
 
       const dataRows = await pgClient`
+        WITH ledger_totals AS (
+          SELECT
+            dl.dealer_id,
+            COALESCE(SUM(CASE WHEN dl.type = 'credit'
+                              AND COALESCE(dl.voucher_type, '') <> 'Opening'
+                              THEN dl.amount ELSE 0 END), 0)::numeric AS credits,
+            COALESCE(SUM(CASE WHEN dl.type = 'debit'
+                              AND COALESCE(dl.voucher_type, '') <> 'Opening'
+                              THEN dl.amount ELSE 0 END), 0)::numeric AS debits
+          FROM dealer_ledger dl
+          GROUP BY dl.dealer_id
+        )
         SELECT
           d.id, d.name, d.phone, d.email, d.gst_number,
           d.city, d.active, d.address, d.pin_code, d.location_label,
@@ -62,8 +74,26 @@ export async function dealerRoutes(app: FastifyInstance) {
           z.name AS zone_name, z.slug AS zone_slug,
           r.name AS route_name,
           r.code AS route_code,
-          COALESCE(w.balance, 0) AS wallet_balance,
-          COALESCE(w.balance, 0) AS credit_balance,
+ 
+          -- Credit accounting (replaces wallet_balance / credit_balance)
+          COALESCE(d.credit_limit, 0)::numeric                                       AS credit_limit,
+          COALESCE(d.opening_balance, 0)::numeric                                    AS opening_balance,
+          (COALESCE(d.opening_balance, 0)
+            + COALESCE(lt.credits, 0)
+            - COALESCE(lt.debits, 0))::numeric                                       AS current_balance,
+          GREATEST(0,
+            -(COALESCE(d.opening_balance, 0)
+              + COALESCE(lt.credits, 0)
+              - COALESCE(lt.debits, 0))
+          )::numeric                                                                  AS outstanding,
+          GREATEST(0,
+            COALESCE(d.credit_limit, 0)
+            - GREATEST(0,
+                -(COALESCE(d.opening_balance, 0)
+                  + COALESCE(lt.credits, 0)
+                  - COALESCE(lt.debits, 0)))
+          )::numeric                                                                  AS credit_available,
+ 
           COALESCE(
             (SELECT json_agg(json_build_object(
                 'routeId', r2.id,
@@ -78,8 +108,8 @@ export async function dealerRoutes(app: FastifyInstance) {
           ) AS routes
         FROM dealers d
         JOIN zones z ON z.id = d.zone_id
-        LEFT JOIN routes r ON r.id = d.route_id AND r.deleted_at IS NULL
-        LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
+        LEFT JOIN routes r       ON r.id = d.route_id AND r.deleted_at IS NULL
+        LEFT JOIN ledger_totals lt ON lt.dealer_id = d.id
         WHERE d.deleted_at IS NULL
           AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""})
           AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId ?? "00000000-0000-0000-0000-000000000000"}::uuid)
@@ -90,8 +120,8 @@ export async function dealerRoutes(app: FastifyInstance) {
           AND (${query.typeFilter ?? null}::text IS NULL OR d.customer_type::text = ${query.typeFilter ?? ''})
           AND (${query.routeId ?? null}::uuid IS NULL OR d.route_id = ${query.routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${query.batchId ?? null}::uuid IS NULL OR EXISTS (
-                SELECT 1 FROM routes r 
-                WHERE r.id = d.route_id 
+                SELECT 1 FROM routes r
+                WHERE r.id = d.route_id
                   AND r.primary_batch_id = ${query.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
               ))
         ORDER BY d.name ASC
@@ -119,13 +149,43 @@ export async function dealerRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const [dealer] = await pgClient`
+        WITH ledger_totals AS (
+          SELECT
+            COALESCE(SUM(CASE WHEN dl.type = 'credit'
+                              AND COALESCE(dl.voucher_type, '') <> 'Opening'
+                              THEN dl.amount ELSE 0 END), 0)::numeric AS credits,
+            COALESCE(SUM(CASE WHEN dl.type = 'debit'
+                              AND COALESCE(dl.voucher_type, '') <> 'Opening'
+                              THEN dl.amount ELSE 0 END), 0)::numeric AS debits
+          FROM dealer_ledger dl
+          WHERE dl.dealer_id = ${id}
+        )
         SELECT
           d.*,
-          d.account_no, d.address_type, d.state, d.area, d.house_no, d.street, d.last_indent_at,
+          d.account_no, d.address_type, d.state, d.area, d.house_no, d.street,
+          d.last_indent_at,
           z.name AS zone_name,
           r.name AS route_name,
           r.code AS route_code,
-          COALESCE(w.balance, 0) AS wallet_balance,
+ 
+          COALESCE(d.credit_limit, 0)::numeric    AS credit_limit,
+          COALESCE(d.opening_balance, 0)::numeric AS opening_balance,
+          (COALESCE(d.opening_balance, 0)
+            + COALESCE(lt.credits, 0)
+            - COALESCE(lt.debits, 0))::numeric    AS current_balance,
+          GREATEST(0,
+            -(COALESCE(d.opening_balance, 0)
+              + COALESCE(lt.credits, 0)
+              - COALESCE(lt.debits, 0))
+          )::numeric                              AS outstanding,
+          GREATEST(0,
+            COALESCE(d.credit_limit, 0)
+            - GREATEST(0,
+                -(COALESCE(d.opening_balance, 0)
+                  + COALESCE(lt.credits, 0)
+                  - COALESCE(lt.debits, 0)))
+          )::numeric                              AS credit_available,
+ 
           COALESCE(
             (SELECT json_agg(json_build_object(
                 'routeId', r2.id,
@@ -140,11 +200,12 @@ export async function dealerRoutes(app: FastifyInstance) {
           ) AS routes
         FROM dealers d
         JOIN zones z ON z.id = d.zone_id
-        LEFT JOIN routes r ON r.id = d.route_id AND r.deleted_at IS NULL
-        LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
+        LEFT JOIN routes r       ON r.id = d.route_id AND r.deleted_at IS NULL
+        CROSS JOIN ledger_totals lt
         WHERE d.id = ${id} AND d.deleted_at IS NULL
         LIMIT 1
       `;
+      
       if (!dealer) return reply.status(404).send({ error: "Dealer not found" });
       return reply.send({ dealer });
     },
