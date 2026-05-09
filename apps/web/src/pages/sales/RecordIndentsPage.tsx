@@ -117,11 +117,17 @@ export default function RecordIndentsPage() {
       if (items.length === 0) throw new Error("Add at least one line");
 
       // Credit-limit guard — only for credit mode
-      if (paymentMode === "credit" && customer.creditLimit != null) {
-        const outstanding = Number((customer as any).outstanding ?? 0);
-        const available = Number(customer.creditLimit) - outstanding;
-        if (totals.total > available) {
-          throw new Error(`Credit available ₹${available.toFixed(2)}, indent ₹${totals.total.toFixed(2)}`);
+      if (paymentMode === "credit") {
+        const available = Number(
+          (customer as any).creditAvailable
+            ?? (customer.creditLimit != null
+                  ? Number(customer.creditLimit) - Number((customer as any).outstanding ?? 0)
+                  : Infinity)
+        );
+        if (Number.isFinite(available) && totals.total > available) {
+          throw new Error(
+            `Available credit ₹${available.toFixed(2)} is less than indent total ₹${totals.total.toFixed(2)}`
+          );
         }
       }
 
@@ -158,8 +164,16 @@ export default function RecordIndentsPage() {
     return () => window.removeEventListener("keydown", handler);
   }, [submit]);
 
-  const creditAvailable = customer && paymentMode === "credit" && customer.creditLimit != null
-    ? Number(customer.creditLimit) - Number((customer as any).outstanding ?? 0)
+  // Real credit-available comes from the backend now (ledger-derived).
+  // Falls back to (limit - outstanding) if only those are present, then
+  // to (limit - 0) if even outstanding is missing — same shape as
+  // before, but the first branch is the truthful one.
+  const creditAvailable = customer && paymentMode === "credit"
+    ? (customer as any).creditAvailable != null
+        ? Number((customer as any).creditAvailable)
+        : customer.creditLimit != null
+          ? Number(customer.creditLimit) - Number((customer as any).outstanding ?? 0)
+          : null
     : null;
 
   return (
@@ -202,6 +216,17 @@ export default function RecordIndentsPage() {
             <Input
               className="erp-input bg-muted num"
               value={customer?.creditLimit != null ? `₹ ${Number(customer.creditLimit).toLocaleString("en-IN")}` : ""}
+              readOnly
+            />
+          </Field>
+          <Field label="Outstanding">
+            <Input
+              className="erp-input bg-muted num"
+              value={
+                customer?.outstanding != null
+                  ? `₹ ${Number((customer as any).outstanding).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`
+                  : "—"
+              }
               readOnly
             />
           </Field>

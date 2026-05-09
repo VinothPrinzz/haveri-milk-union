@@ -61,9 +61,14 @@ function normalizeCustomer(d: Record<string, unknown>) {
     city:    (d.city ?? "") as string,
     address: (d.address ?? "") as string,
     bank:    d.bank as string | undefined,
-    creditBalance: parseFloat(
-      String(d.wallet_balance ?? d.credit_balance ?? d.creditBalance ?? 0)
-    ),
+    // ── Credit accounting (ledger-derived; wallet_balance retired) ──
+    openingBalance:  parseFloat(String(d.opening_balance  ?? d.openingBalance  ?? 0)) || 0,
+    currentBalance:  parseFloat(String(d.current_balance  ?? d.currentBalance  ?? 0)) || 0,
+    outstanding:     parseFloat(String(d.outstanding      ?? 0)) || 0,
+    creditAvailable: parseFloat(String(d.credit_available ?? d.creditAvailable ?? 0)) || 0,
+    // Back-compat alias so any old call site still rendering
+    // `creditBalance` keeps working — it now means "current balance".
+    creditBalance:   parseFloat(String(d.current_balance  ?? d.currentBalance  ?? 0)) || 0,
     status:
       d.active !== false && d.active !== null
         ? ("Active" as const)

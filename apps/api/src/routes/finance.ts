@@ -416,6 +416,37 @@ export async function financeRoutes(app: FastifyInstance) {
             const [w] = await tx`SELECT balance FROM dealer_wallets WHERE dealer_id = ${body.dealerId}`;
             await tx`INSERT INTO dealer_ledger (dealer_id, type, amount, reference_id, reference_type, description, balance_after, performed_by) VALUES (${body.dealerId}, 'debit', ${grandTotal.toFixed(2)}::numeric, ${order!.id}, 'order', ${"Call Desk order " + order!.id}, ${w!.balance}::numeric, ${request.admin!.userId})`;
           }
+
+          if (body.paymentMode === "credit") {
+            const [bal] = await tx`
+              SELECT
+                COALESCE(d.opening_balance, 0)
+                + COALESCE((SELECT SUM(CASE WHEN dl.type='credit'
+                                              AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                            THEN dl.amount ELSE 0 END) FROM dealer_ledger dl
+                            WHERE dl.dealer_id = d.id), 0)
+                - COALESCE((SELECT SUM(CASE WHEN dl.type='debit'
+                                              AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                            THEN dl.amount ELSE 0 END) FROM dealer_ledger dl
+                            WHERE dl.dealer_id = d.id), 0)
+                AS bal
+              FROM dealers d WHERE d.id = ${body.dealerId}
+            `;
+            const balanceAfter = (parseFloat(bal!.bal) - grandTotal);
+            await tx`
+              INSERT INTO dealer_ledger
+                (dealer_id, type, amount,
+                 reference_id, reference_type,
+                 voucher_type, voucher_date,
+                 description, balance_after, performed_by)
+              VALUES
+                (${body.dealerId}, 'debit', ${grandTotal.toFixed(2)}::numeric,
+                 ${order!.id}, 'order',
+                 'Invoice', now()::date,
+                 ${'Call Desk credit indent ' + order!.id},
+                 ${balanceAfter.toFixed(2)}::numeric, ${request.admin!.userId})
+            `;
+          }
           return order;
         });
 

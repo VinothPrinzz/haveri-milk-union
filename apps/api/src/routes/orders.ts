@@ -228,7 +228,7 @@ export async function orderRoutes(app: FastifyInstance) {
                 currentBalance: wallet?.balance ?? "0",                     
                 orderTotal: grandTotal.toFixed(2),                          
               });                                                           
-            }                                                               
+            }                                                              
             const walletBalance = (deducted[0] as any).balance;
             await tx`
               INSERT INTO dealer_ledger (dealer_id, type, amount, reference_id, reference_type, description, balance_after)
@@ -236,8 +236,45 @@ export async function orderRoutes(app: FastifyInstance) {
                       ${order!.id}, 'order', ${"Order " + order!.id}, ${walletBalance}::numeric)
             `;
           }
+
+          // Credit-mode orders are debits against the dealer's credit line.
+          // No wallet movement; just an audit row + running balance for
+          // the credit-available calculation.
+          if (body.paymentMode === "credit") {
+            const [bal] = await tx`
+              SELECT
+                COALESCE(d.opening_balance, 0)
+                + COALESCE((SELECT SUM(CASE WHEN dl.type='credit'
+                                              AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                            THEN dl.amount ELSE 0 END) FROM dealer_ledger dl
+                            WHERE dl.dealer_id = d.id), 0)
+                - COALESCE((SELECT SUM(CASE WHEN dl.type='debit'
+                                              AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                            THEN dl.amount ELSE 0 END) FROM dealer_ledger dl
+                            WHERE dl.dealer_id = d.id), 0)
+                AS bal
+              FROM dealers d WHERE d.id = ${dealer.dealerId}
+            `;
+            const balanceAfter = (parseFloat(bal!.bal) - grandTotal);
+            await tx`
+              INSERT INTO dealer_ledger
+                (dealer_id, type, amount,
+                reference_id, reference_type,
+                voucher_type, voucher_date,
+                description, balance_after)
+              VALUES
+                (${dealer.dealerId}, 'debit', ${grandTotal.toFixed(2)}::numeric,
+                ${order!.id}, 'order',
+                'Invoice', now()::date,
+                ${'Credit indent ' + order!.id},
+                ${balanceAfter.toFixed(2)}::numeric)
+            `;
+          }
+
           return order;
         });
+
+
 
         // ── Auto-generate GST Invoice + Push Notification ──
         if (result?.id) {
@@ -713,6 +750,55 @@ export async function orderRoutes(app: FastifyInstance) {
             await tx`INSERT INTO dealer_ledger (dealer_id, type, amount, reference_id, reference_type, description, balance_after, performed_by)
                     VALUES (${existing.dealer_id}, 'credit', ${refund.toFixed(2)}::numeric, ${id},
                             'adjustment', ${'Modify refund ' + id}, ${w!.balance}::numeric, ${request.admin!.userId})`;
+          }
+        }
+
+        if (existing.payment_mode === "credit" && delta !== 0) {
+          // For credit orders, only the ledger needs adjusting — the
+          // running balance reflects updated outstanding.
+          const [bal] = await tx`
+            SELECT
+              COALESCE(d.opening_balance, 0)
+              + COALESCE((SELECT SUM(CASE WHEN dl.type='credit'
+                                            AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                          THEN dl.amount ELSE 0 END) FROM dealer_ledger dl
+                          WHERE dl.dealer_id = d.id), 0)
+              - COALESCE((SELECT SUM(CASE WHEN dl.type='debit'
+                                            AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                          THEN dl.amount ELSE 0 END) FROM dealer_ledger dl
+                          WHERE dl.dealer_id = d.id), 0)
+              AS bal
+            FROM dealers d WHERE d.id = ${existing.dealer_id}
+          `;
+          if (delta > 0) {
+            const balanceAfter = (parseFloat(bal!.bal) - delta);
+            await tx`
+              INSERT INTO dealer_ledger
+                (dealer_id, type, amount, reference_id, reference_type,
+                 voucher_type, voucher_date,
+                 description, balance_after, performed_by)
+              VALUES
+                (${existing.dealer_id}, 'debit', ${delta.toFixed(2)}::numeric, ${id},
+                 'adjustment',
+                 'Adjustment', now()::date,
+                 ${'Modify credit order ' + id},
+                 ${balanceAfter.toFixed(2)}::numeric, ${request.admin!.userId})
+            `;
+          } else {
+            const refund = Math.abs(delta);
+            const balanceAfter = (parseFloat(bal!.bal) + refund);
+            await tx`
+              INSERT INTO dealer_ledger
+                (dealer_id, type, amount, reference_id, reference_type,
+                 voucher_type, voucher_date,
+                 description, balance_after, performed_by)
+              VALUES
+                (${existing.dealer_id}, 'credit', ${refund.toFixed(2)}::numeric, ${id},
+                 'adjustment',
+                 'Adjustment', now()::date,
+                 ${'Modify credit refund ' + id},
+                 ${balanceAfter.toFixed(2)}::numeric, ${request.admin!.userId})
+            `;
           }
         }
       });
