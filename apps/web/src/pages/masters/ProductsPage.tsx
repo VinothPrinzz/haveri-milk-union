@@ -304,8 +304,20 @@ function ProductFormBody({
           )}/>
           <FormField control={form.control} name="reportAlias" render={({ field }) => (
             <FormItem>
-              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Report Alias</FormLabel>
-              <FormControl><Input placeholder="Milk 500ml" {...field} /></FormControl>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">
+                Report Alias <span className="text-muted-foreground/70 normal-case font-normal">(max 8)</span>
+              </FormLabel>
+              <FormControl>
+                <Input
+                  placeholder="Milk500"
+                  maxLength={8}
+                  {...field}
+                  onChange={e => field.onChange(e.target.value.slice(0, 8))}
+                />
+              </FormControl>
+              <div className="text-[10.5px] text-muted-foreground tabular-nums">
+                {(field.value ?? "").length}/8
+              </div>
               <FormMessage className="text-[11.5px]" />
             </FormItem>
           )}/>

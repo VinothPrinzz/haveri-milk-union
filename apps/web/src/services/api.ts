@@ -395,11 +395,74 @@ function mapCancellationStatus(s: string): "Pending" | "Approved" | "Rejected" {
 // CUSTOMERS (= Dealers in the API)
 // ══════════════════════════════════════
 export const fetchCustomers = async () => {
-  const data = await get<{ data: Record<string, unknown>[] }>("/dealers", {
-    limit: 100,
-    page: 1,
+  const PAGE_SIZE = 100;
+  const all: Record<string, unknown>[] = [];
+ 
+  // Pull first page to discover totalPages
+  const first = await get<{
+    data: Record<string, unknown>[];
+    page?: number;
+    totalPages?: number;
+    total?: number;
+  }>("/dealers", { limit: PAGE_SIZE, page: 1 });
+ 
+  all.push(...(first.data ?? []));
+  const totalPages = first.totalPages
+    ?? (first.total ? Math.ceil(first.total / PAGE_SIZE) : 1);
+ 
+  // Fetch remaining pages in parallel (cap at 50 pages = 5000 dealers)
+  if (totalPages > 1) {
+    const pages = Array.from(
+      { length: Math.min(totalPages - 1, 49) },
+      (_, i) => i + 2,
+    );
+    const rest = await Promise.all(
+      pages.map(p =>
+        get<{ data: Record<string, unknown>[] }>("/dealers", {
+          limit: PAGE_SIZE,
+          page: p,
+        }),
+      ),
+    );
+    rest.forEach(r => all.push(...(r.data ?? [])));
+  }
+  return all.map(normalizeCustomer);
+};
+ 
+// ── NEW: server-side paginated fetch for All Customers list ───────
+export type DealerListParams = {
+  page?: number;
+  limit?: number;          // backend max = 100
+  search?: string;         // matches code | name | phone
+  customerType?: string;   // dealers `customer_type`
+  payMode?: string;        // 'Cash' | 'Credit'
+  routeId?: string;
+  zoneId?: string;
+};
+ 
+export const fetchCustomersPage = async (params: DealerListParams = {}) => {
+  const limit = Math.min(Math.max(params.limit ?? 25, 1), 100);
+  const page  = Math.max(params.page ?? 1, 1);
+  const data  = await get<{
+    data: Record<string, unknown>[];
+    page: number;
+    totalPages: number;
+    total: number;
+  }>("/dealers", {
+    page,
+    limit,
+    ...(params.search       ? { search: params.search }             : {}),
+    ...(params.customerType ? { customerType: params.customerType } : {}),
+    ...(params.payMode      ? { payMode: params.payMode }           : {}),
+    ...(params.routeId      ? { routeId: params.routeId }           : {}),
+    ...(params.zoneId       ? { zoneId: params.zoneId }             : {}),
   });
-  return (data.data ?? []).map(normalizeCustomer);
+  return {
+    rows: (data.data ?? []).map(normalizeCustomer),
+    page: data.page ?? page,
+    totalPages: data.totalPages ?? 1,
+    total: data.total ?? (data.data?.length ?? 0),
+  };
 };
 
 export const getAgents = () => {
@@ -1049,13 +1112,24 @@ export const sendDealerNotification = async (b: {
 }) => post("/notifications/send", b);
 
 export const fetchDealersLite = async () => {
-  const data = await get<{ data: any[] }>("/dealers", { limit: 1000, page: 1 });
-  return (data.data ?? []).map((d: any) => ({
-    id: d.id,
-    name: d.name,
-    code: d.code,
-    zoneId: d.zone_id,
-    zoneName: d.zone_name,
+  const PAGE_SIZE = 100;
+  const all: any[] = [];
+  const first = await get<{ data: any[]; totalPages?: number }>(
+    "/dealers", { limit: PAGE_SIZE, page: 1 },
+  );
+  all.push(...(first.data ?? []));
+  const totalPages = first.totalPages ?? 1;
+  if (totalPages > 1) {
+    const pages = Array.from({ length: Math.min(totalPages - 1, 49) },
+      (_, i) => i + 2);
+    const rest = await Promise.all(pages.map(p =>
+      get<{ data: any[] }>("/dealers", { limit: PAGE_SIZE, page: p }),
+    ));
+    rest.forEach(r => all.push(...(r.data ?? [])));
+  }
+  return all.map((d: any) => ({
+    id: d.id, name: d.name, code: d.code,
+    zoneId: d.zone_id, zoneName: d.zone_name,
   }));
 };
 

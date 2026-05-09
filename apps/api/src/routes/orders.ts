@@ -511,6 +511,72 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
+  // POST /api/v1/orders/bulk-confirm
+  // Bulk-transition pending → confirmed for the All-Indents page.
+  app.post(
+    "/api/v1/orders/bulk-confirm",
+    { preHandler: [adminAuth, requireRole("orders.update")] },
+    async (request, reply) => {
+      const schema = z.object({
+        ids: z.array(z.string().uuid()).min(1).max(500),
+      });
+      const { ids } = schema.parse(request.body);
+  
+      // 1. Look up the orders we'll touch (only those still pending)
+      const pending = await pgClient`
+        SELECT id, dealer_id
+        FROM orders
+        WHERE id = ANY(${ids}::uuid[])
+          AND status = 'pending'
+        FOR UPDATE
+      ` as Array<{ id: string; dealer_id: string }>;
+  
+      if (pending.length === 0) {
+        return reply.status(200).send({
+          message: "No pending orders to confirm",
+          requested: ids.length,
+          confirmed: 0,
+          skipped: ids.length,
+        });
+      }
+  
+      const confirmIds = pending.map((o) => o.id);
+  
+      // 2. Flip them to confirmed in a single statement
+      const updated = await pgClient`
+        UPDATE orders
+        SET status       = 'confirmed'::order_status,
+            confirmed_at = now(),
+            updated_at   = now()
+        WHERE id = ANY(${confirmIds}::uuid[])
+          AND status = 'pending'
+        RETURNING id, dealer_id
+      ` as Array<{ id: string; dealer_id: string }>;
+  
+      // 3. Best-effort side effects (don't fail the request if these throw)
+      for (const o of updated) {
+        try { await enqueuePDFInvoice(o.id); } catch { /* logged in helper */ }
+        try {
+          await enqueuePushNotification({
+            event:    "order.confirmed",
+            dealerId: o.dealer_id,
+            orderId:  o.id,
+            title:    "Indent confirmed",
+            body:     `Your indent #${String(o.id).slice(-4).toUpperCase()} has been posted for dispatch.`,
+          });
+        } catch { /* logged in helper */ }
+      }
+  
+      return reply.status(200).send({
+        message:   `Confirmed ${updated.length} of ${ids.length} order(s)`,
+        requested: ids.length,
+        confirmed: updated.length,
+        skipped:   ids.length - updated.length,
+        ids:       updated.map((o) => o.id),
+      });
+    },
+  );
+
   // POST /api/v1/orders/:id/cancel
   app.post(
     "/api/v1/orders/:id/cancel",

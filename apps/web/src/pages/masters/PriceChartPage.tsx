@@ -1,6 +1,11 @@
 // ════════════════════════════════════════════════════════════════════
-// Price Chart — read-only matrix of products × rate-categories
-// Route preserved: /masters/price-chart
+// FULL REPLACEMENT for: apps/web/src/pages/masters/PriceChartPage.tsx
+//
+// Fix B9: Print produced a blank page because the global print CSS
+// (apps/web/src/index.css) hides everything by default and only shows
+// elements inside `.print-document`. Wrap the table in that class and
+// add a `print-only` letterhead so the printed page actually has
+// content.
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -10,11 +15,15 @@ import { Button } from "@/components/ui/button";
 import { Printer, Search } from "lucide-react";
 import { fetchProducts, getRateCategories, type Product } from "@/services/api";
 
-const fetchRateCategories = () => getRateCategories().map((name, i) => ({ id: String(i), name }));
+const fetchRateCategories = () =>
+  getRateCategories().map((name, i) => ({ id: String(i), name }));
 
 export default function PriceChartPage() {
   const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
-  const { data: categories = [] } = useQuery({ queryKey: ["rate-categories"], queryFn: fetchRateCategories });
+  const { data: categories = [] } = useQuery({
+    queryKey: ["rate-categories"],
+    queryFn: fetchRateCategories,
+  });
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
@@ -22,7 +31,7 @@ export default function PriceChartPage() {
     if (!s) return products;
     return products.filter((p: Product) =>
       p.name?.toLowerCase().includes(s) ||
-      p.code?.toLowerCase().includes(s)
+      p.code?.toLowerCase().includes(s),
     );
   }, [products, q]);
 
@@ -44,13 +53,28 @@ export default function PriceChartPage() {
         <Field label="Search">
           <div className="relative">
             <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input className="erp-input pl-7 w-72" placeholder="Search product…" value={q} onChange={e => setQ(e.target.value)} />
+            <Input
+              className="erp-input pl-7 w-72"
+              placeholder="Search product…"
+              value={q}
+              onChange={e => setQ(e.target.value)}
+            />
           </div>
         </Field>
       </FilterBar>
 
       <div className="flex-1 overflow-auto p-3">
-        <div className="erp-panel overflow-hidden">
+        {/* B9: wrap in .print-document so global print CSS shows it */}
+        <div className="erp-panel overflow-hidden print-document">
+          {/* Letterhead — visible only when printing */}
+          <div className="print-only print-header px-3 py-3 text-center">
+            <div className="font-bold text-[15pt]">HAVERI MILK UNION</div>
+            <div className="text-[11pt]">Price Chart</div>
+            <div className="text-[10pt] text-muted-foreground">
+              Generated {new Date().toLocaleDateString("en-IN")} {new Date().toLocaleTimeString("en-IN")}
+            </div>
+          </div>
+
           {filtered.length === 0 ? (
             <EmptyState title="No products found." />
           ) : (
@@ -74,13 +98,20 @@ export default function PriceChartPage() {
                     <td className="text-[12.5px]">{p.packSize ?? "—"}</td>
                     <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
                     {categories.map((c: any) => (
-                      <td key={c.id} className="num" style={{ textAlign: "right" }}>{fmtINR(rateOf(p, c.name))}</td>
+                      <td key={c.id} className="num" style={{ textAlign: "right" }}>
+                        {fmtINR(rateOf(p, c.name))}
+                      </td>
                     ))}
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+
+          {/* Footer for print */}
+          <div className="print-only print-footer px-3 py-2 text-[9pt] text-muted-foreground border-t mt-2">
+            {filtered.length} product(s) · Haveri Milk Union — System Generated
+          </div>
         </div>
       </div>
     </div>

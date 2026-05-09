@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════
 // All Contractors / New Contractor — ERP refactor
-// Routes preserved: /masters/contractors  +  /masters/contractors/new
+// Routes preserved: /masters/contractors + /masters/contractors/new
 // All mutations and ContractorForm wiring identical to v1.4 source.
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
@@ -18,7 +18,7 @@ import type { Column } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Edit, X, Plus } from "lucide-react";
+import { X, Plus } from "lucide-react";
 import {
   fetchContractors,
   fetchRoutes,
@@ -51,7 +51,7 @@ export default function ContractorsPage({ tab = "list" }: Props) {
     routes.forEach((r: any) => m.set(r.id, { code: r.code, name: r.name }));
     return m;
   }, [routes]);
-
+  
   const [viewing, setViewing] = useState<Contractor | null>(null);
   const [editing, setEditing] = useState<Contractor | null>(null);
 
@@ -88,17 +88,17 @@ export default function ContractorsPage({ tab = "list" }: Props) {
       width: "180px",
       cell: c => (
         <div className="flex items-center justify-end gap-1.5">
-          <Button 
-            variant="outline" 
-            size="sm" 
-            className="h-7 px-2.5 text-[12px]" 
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-[12px]"
             onClick={() => setViewing(c)}
           >
             View
           </Button>
-          <Button 
-            size="sm" 
-            className="h-7 px-2.5 text-[12px]" 
+          <Button
+            size="sm"
+            className="h-7 px-2.5 text-[12px]"
             onClick={() => setEditing(c)}
           >
             Update
@@ -224,7 +224,7 @@ function ContractorListTab({
           </Button>
         }
       />
-
+      
       <FilterBar>
         <Field label="Name">
           <F9SearchSelect value={nameFilter} onChange={setNameFilter} options={nameOptions} allowAll className="w-64" />
@@ -268,7 +268,7 @@ function ContractorListTab({
                   <th style={{ width: 110 }}>Period From</th>
                   <th style={{ width: 110 }}>Period To</th>
                   <th style={{ width: 90 }}>Status</th>
-                  <th style={{ width: 70, textAlign: "center" }}>Actions</th>
+                  <th style={{ width: 180, textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -280,27 +280,40 @@ function ContractorListTab({
                     <td className="font-mono text-[12.5px]">{c.vehicleNumber || "—"}</td>
                     <td>
                       {(c.routeIds ?? []).length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {(c.routeIds ?? []).slice(0, 3).map(rid => (
-                            <span key={rid} className="font-mono text-[11.5px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">
-                              {routeCodeById.get(rid) ?? "?"}
-                            </span>
-                          ))}
-                          {(c.routeIds ?? []).length > 3 && (
-                            <span className="text-muted-foreground text-[11.5px]">
-                              +{(c.routeIds ?? []).length - 3}
-                            </span>
-                          )}
+                        <div className="flex flex-col gap-0.5">
+                          {(c.routeIds ?? []).map(rid => {
+                            const r = routeMap.get(rid);
+                            return (
+                              <span key={rid} className="text-[12px]">
+                                <span className="font-mono">{r?.code ?? "?"}</span>
+                                {r?.name ? ` — ${r.name}` : ""}
+                              </span>
+                            );
+                          })}
                         </div>
                       ) : <span className="text-muted-foreground">—</span>}
                     </td>
                     <td className="text-[12.5px]">{fmtDate(c.periodFrom)}</td>
                     <td className="text-[12.5px]">{fmtDate(c.periodTo)}</td>
                     <td><StatusPill status={c.status === "Active" ? "active" : "draft"} /></td>
-                    <td style={{ textAlign: "center" }}>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit (F4)" onClick={() => setEditing(c)}>
-                        <Edit className="h-3.5 w-3.5" />
-                      </Button>
+                    <td style={{ textAlign: "right" }}>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2.5 text-[12px]"
+                          onClick={() => setViewing(c)}
+                        >
+                          View
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="h-7 px-2.5 text-[12px]"
+                          onClick={() => setEditing(c)}
+                        >
+                          Update
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -313,6 +326,26 @@ function ContractorListTab({
         </div>
       </div>
 
+      {/* Edit Dialog */}
+      {editing && (
+        <Dialog open onOpenChange={o => !o && setEditing(null)}>
+          <DialogContent className="max-w-3xl max-h-[90vh] overflow-auto">
+            <DialogHeader>
+              <DialogTitle>Edit Contractor — {editing.code}</DialogTitle>
+            </DialogHeader>
+            <ContractorForm
+              initialData={editing as any}
+              isSubmitting={updateMutation.isPending}
+              onSubmit={async data => {
+                await updateMutation.mutateAsync({ id: editing.id, data });
+                setEditing(null);
+              }}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* View Dialog */}
       <Dialog open={!!viewing} onOpenChange={o => !o && setViewing(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader><DialogTitle>{viewing?.code} — {viewing?.name}</DialogTitle></DialogHeader>
@@ -325,18 +358,18 @@ function ContractorListTab({
             );
             return (
               <div className="grid grid-cols-2 gap-x-6">
-                <Row label="Code"      value={<span className="font-mono">{viewing.code}</span>} />
-                <Row label="Status"    value={<StatusPill status={(viewing as any).active ? "active" : "draft"} />} />
-                <Row label="Name"      value={viewing.name} />
-                <Row label="Phone"     value={viewing.phone} />
-                <Row label="Email"     value={(viewing as any).email} />
-                <Row label="Vehicle"   value={viewing.vehicleNumber} />
-                <Row label="License"   value={(viewing as any).licenseNo} />
-                <Row label="Period"    value={`${(viewing as any).periodFrom ?? "—"} → ${(viewing as any).periodTo ?? "—"}`} />
-                <Row label="Bank"      value={(viewing as any).bank?.name ?? (viewing as any).bankName} />
-                <Row label="Account"   value={(viewing as any).bank?.account ?? (viewing as any).accountNo} />
-                <Row label="Address"   value={(viewing as any).address} />
-                <Row label="Routes"    value={
+                <Row label="Code" value={<span className="font-mono">{viewing.code}</span>} />
+                <Row label="Status" value={<StatusPill status={(viewing as any).active ? "active" : "draft"} />} />
+                <Row label="Name" value={viewing.name} />
+                <Row label="Phone" value={viewing.phone} />
+                <Row label="Email" value={(viewing as any).email} />
+                <Row label="Vehicle" value={viewing.vehicleNumber} />
+                <Row label="License" value={(viewing as any).licenseNo} />
+                <Row label="Period" value={`${(viewing as any).periodFrom ?? "—"} → ${(viewing as any).periodTo ?? "—"}`} />
+                <Row label="Bank" value={(viewing as any).bank?.name ?? (viewing as any).bankName} />
+                <Row label="Account" value={(viewing as any).bank?.account ?? (viewing as any).accountNo} />
+                <Row label="Address" value={(viewing as any).address} />
+                <Row label="Routes" value={
                   ((viewing as any).routeIds ?? []).length
                     ? ((viewing as any).routeIds as string[]).map(id => routeMap.get(id)?.code ?? id.slice(0, 6)).join(", ")
                     : "—"

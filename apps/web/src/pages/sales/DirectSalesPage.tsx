@@ -1,13 +1,23 @@
 // ════════════════════════════════════════════════════════════════════
-// Direct Sales: Gate-Pass / Cash Customer / Modify — ERP refactor
-// Routes: /sales/direct-sales/gate-pass | /cash-customer | /modify
+// FULL REPLACEMENT for: apps/web/src/pages/sales/DirectSalesPage.tsx
+//
+// Fix B12: The Items card on Gate-Pass and Cash-Customer tabs now
+// matches the look & functionality of the Record-Indents card:
+//   • Product picker is F9SearchSelect (was a plain Select that doesn't
+//     scale beyond a handful of products)
+//   • Picking a product auto-fills Rate + GST% from product master
+//   • Columns: # | Product | Qty | Rate | Subtotal | GST % | GST ₹ |
+//              Line Total | (delete)
+//   • Footer row: Subtotal · GST · Grand Total (matches indent layout)
+//   • Add-line button moved INTO the table footer (like indents)
+//   • Modify tab is unchanged.
 // ════════════════════════════════════════════════════════════════════
-import { useMemo, useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import PageHeader, {
-  FilterBar, FormSection, FormFooter, Field, EmptyState, fmtINR, fmtDate, StatusPill, Kbd,
+  FilterBar, FormSection, FormFooter, Field, fmtINR, fmtDate, StatusPill, Kbd,
 } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,67 +25,227 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
-import { Plus, Save, Trash2, Search } from "lucide-react";
+import { Plus, Save, Trash2 } from "lucide-react";
 import {
-  fetchProducts, fetchCustomers, fetchRoutes, getRateCategories, fetchCashCustomers,
-  createGatePassSale, createCashSale, fetchRecentDirectSales,
+  fetchProducts, fetchCustomers, fetchRoutes,
+  createGatePassSale, createCashSale,
   type Product,
 } from "@/services/api";
 import { get, patch } from "@/lib/apiClient";
 
-const fetchRateCategories = () => getRateCategories().map((name, i) => ({ id: String(i), name }));
-
 interface Props { tab?: "gate-pass" | "cash-customer" | "modify"; }
-type Line = { productId: string; qty: number; rate: number; gstPercent?: number };
+
+// Shared line shape — productName cached so totals stay correct after
+// the row's Product changes mid-edit (same approach as RecordIndents).
+type Line = {
+  id: string;
+  productId: string;
+  qty: number;
+  rate: number;
+  gstPercent: number;
+};
+
+const rid = () => Math.random().toString(36).slice(2, 9);
+const newLine = (): Line => ({ id: rid(), productId: "", qty: 1, rate: 0, gstPercent: 0 });
 
 export default function DirectSalesPage({ tab = "gate-pass" }: Props) {
   if (tab === "cash-customer") return <CashCustomerTab />;
-  if (tab === "modify") return <ModifyTab />;
+  if (tab === "modify")        return <ModifyTab />;
   return <GatePassTab />;
 }
 
-// ───────────────────────────────────────────────────────────── Gate Pass
+// ════════════════════════════════════════════════════════════════════
+// Shared Items table (mirrors Record-Indents) — used by both
+// Gate-Pass and Cash-Customer tabs.
+// ════════════════════════════════════════════════════════════════════
+function ItemsCard({
+  lines, setLines, products,
+}: {
+  lines: Line[];
+  setLines: React.Dispatch<React.SetStateAction<Line[]>>;
+  products: Product[];
+}) {
+  const productOpts: F9Option[] = useMemo(
+    () => products.map(p => ({ value: p.id, label: p.name, sublabel: p.code })),
+    [products],
+  );
+
+  const lineCalc = (l: Line) => {
+    const sub   = (l.qty || 0) * (l.rate || 0);
+    const gstRs = sub * ((l.gstPercent || 0) / 100);
+    return { sub, gstRs, total: sub + gstRs };
+  };
+
+  const totals = useMemo(() => {
+    let sub = 0, gst = 0;
+    for (const l of lines) {
+      const c = lineCalc(l);
+      sub += c.sub; gst += c.gstRs;
+    }
+    return { sub, gst, total: sub + gst };
+  }, [lines]);
+
+  const addLine = () => setLines(prev => [...prev, newLine()]);
+  const removeLine = (id: string) =>
+    setLines(prev => prev.length === 1 ? prev : prev.filter(l => l.id !== id));
+
+  const setLineProduct = (id: string, productId: string | null) =>
+    setLines(prev => prev.map(l => {
+      if (l.id !== id) return l;
+      const p = products.find(x => x.id === productId);
+      // Auto-fill rate + GST from master, like RecordIndents does.
+      return {
+        ...l,
+        productId: productId ?? "",
+        rate:        p ? (parseFloat(String(p.mrp ?? 0))         || l.rate)        : l.rate,
+        gstPercent:  p ? (parseFloat(String(p.gstPercent ?? 0))  || l.gstPercent)  : l.gstPercent,
+      };
+    }));
+
+  const setQty = (id: string, qty: number) =>
+    setLines(prev => prev.map(l => l.id === id ? { ...l, qty: Math.max(0, qty || 0) } : l));
+  const setRate = (id: string, rate: number) =>
+    setLines(prev => prev.map(l => l.id === id ? { ...l, rate: Math.max(0, rate || 0) } : l));
+  const setGstPct = (id: string, pct: number) =>
+    setLines(prev => prev.map(l => l.id === id ? { ...l, gstPercent: Math.max(0, pct || 0) } : l));
+
+  return (
+    <div className="erp-panel">
+      <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2 flex items-center justify-between">
+        <span>Items</span>
+        <span className="text-[11px] normal-case font-normal text-muted-foreground">
+          <Kbd>F2</Kbd> add line · <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd> submit
+        </span>
+      </div>
+      <div className="overflow-auto">
+        <table className="erp-table">
+          <thead>
+            <tr>
+              <th style={{ width: 40 }}>#</th>
+              <th style={{ width: "32%" }}>Product</th>
+              <th style={{ width: 90 }}  className="num">Qty</th>
+              <th style={{ width: 100 }} className="num">Rate</th>
+              <th style={{ width: 110 }} className="num">Subtotal</th>
+              <th style={{ width: 70  }} className="num">GST %</th>
+              <th style={{ width: 110 }} className="num">GST ₹</th>
+              <th style={{ width: 130 }} className="num">Line Total</th>
+              <th style={{ width: 40 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l, i) => {
+              const c = lineCalc(l);
+              return (
+                <tr key={l.id}>
+                  <td className="num">{i + 1}</td>
+                  <td>
+                    <F9SearchSelect
+                      value={l.productId || null}
+                      onChange={v => setLineProduct(l.id, v)}
+                      options={productOpts}
+                      className="w-full"
+                    />
+                  </td>
+                  <td>
+                    <Input
+                      className="erp-input num text-right"
+                      type="number" min="0" step="1"
+                      value={l.qty}
+                      onChange={e => setQty(l.id, parseFloat(e.target.value))}
+                    />
+                  </td>
+                  <td>
+                    <Input
+                      className="erp-input num text-right"
+                      type="number" min="0" step="0.01"
+                      value={l.rate}
+                      onChange={e => setRate(l.id, parseFloat(e.target.value))}
+                    />
+                  </td>
+                  <td className="num">{c.sub ? fmtINR(c.sub) : "—"}</td>
+                  <td>
+                    <Input
+                      className="erp-input num text-right"
+                      type="number" min="0" max="100" step="0.01"
+                      value={l.gstPercent}
+                      onChange={e => setGstPct(l.id, parseFloat(e.target.value))}
+                    />
+                  </td>
+                  <td className="num">{c.gstRs ? fmtINR(c.gstRs) : "—"}</td>
+                  <td className="num font-semibold">{c.total ? fmtINR(c.total) : "—"}</td>
+                  <td>
+                    <Button
+                      variant="ghost" size="icon" className="h-7 w-7 text-destructive"
+                      onClick={() => removeLine(l.id)}
+                      disabled={lines.length === 1}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={9} className="!border-t-2">
+                <Button variant="outline" size="sm" className="h-7" onClick={addLine}>
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Add Line  <Kbd className="ml-2">F2</Kbd>
+                </Button>
+              </td>
+            </tr>
+            <tr className="bg-muted/40">
+              <td colSpan={4} className="text-right uppercase text-[12px] font-semibold tracking-wide">Subtotal</td>
+              <td className="num">{fmtINR(totals.sub)}</td>
+              <td className="text-right uppercase text-[12px] font-semibold tracking-wide">GST</td>
+              <td className="num">{fmtINR(totals.gst)}</td>
+              <td className="num font-bold text-[14px]">{fmtINR(totals.total)}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Gate Pass tab
+// ════════════════════════════════════════════════════════════════════
 function GatePassTab() {
   const qc = useQueryClient();
   const navigate = useNavigate();
 
-  // ── Added queries ────────────────────────────────────────────────
   const { data: customers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
-  const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
-  const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
+  const { data: routes = [] }    = useQuery({ queryKey: ["routes"],    queryFn: fetchRoutes });
+  const { data: products = [] }  = useQuery({ queryKey: ["products"],  queryFn: fetchProducts });
 
-  // ── Added option memos ───────────────────────────────────────────
   const customerOpts: F9Option[] = useMemo(
     () => customers.map((c: any) => ({ value: c.id, label: c.name, sublabel: c.code })),
-    [customers]
+    [customers],
   );
   const routeOpts: F9Option[] = useMemo(
     () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
-    [routes]
+    [routes],
   );
 
   const today = new Date().toISOString().slice(0, 10);
-  const [date, setDate] = useState(today);
-  const [customer, setCustomer] = useState<any>(null);
-  const [routeId, setRouteId] = useState<string | null>(null);
+  const [date, setDate]               = useState(today);
+  const [customerId, setCustomerId]   = useState<string | null>(null);
+  const [routeId, setRouteId]         = useState<string | null>(null);
   const [paymentMode, setPaymentMode] = useState<"cash" | "credit">("cash");
-  const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState<Line[]>([]);
+  const [notes, setNotes]             = useState("");
+  const [lines, setLines]             = useState<Line[]>([newLine()]);
 
-  const lineTotal = (l: Line) => (l.qty || 0) * (l.rate || 0);
-  const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
-  const gstTotal = lines.reduce((s, l) => s + lineTotal(l) * ((l.gstPercent || 0) / 100), 0);
-  const grandTotal = subtotal + gstTotal;
+  const customer = customers.find((c: any) => c.id === customerId);
 
-  const addLine = () => setLines(prev => [...prev, { productId: "", qty: 0, rate: 0 }]);
-
-  const updateLine = (idx: number, patch: Partial<Line>) => {
-    setLines(prev => prev.map((l, i) => i === idx ? { ...l, ...patch } : l));
-  };
-
-  const removeLine = (idx: number) => {
-    setLines(prev => prev.filter((_, i) => i !== idx));
-  };
+  // Auto-default route to customer's primary, like RecordIndents
+  useEffect(() => {
+    if (!customer) return;
+    const primary = customer.routes?.find((r: any) => r.isPrimary)?.routeId
+                 ?? customer.routeId ?? null;
+    setRouteId(prev => prev ?? primary);
+  }, [customer]);
 
   const submit = useMutation({
     mutationFn: () => createGatePassSale({
@@ -84,31 +254,40 @@ function GatePassTab() {
       routeId: routeId ?? undefined,
       paymentMode,
       notes,
-      items: lines.filter(l => l.productId && l.qty > 0).map(l => ({ ...l, quantity: l.qty })),
-    }),
+      items: lines
+        .filter(l => l.productId && l.qty > 0)
+        .map(l => ({
+          productId:  l.productId,
+          quantity:   l.qty,
+          unitPrice:  l.rate,
+          gstPercent: l.gstPercent,
+        })),
+    } as any),
     onSuccess: () => {
       toast.success("Gate Pass issued");
       qc.invalidateQueries({ queryKey: ["direct-sales"] });
       qc.invalidateQueries({ queryKey: ["indents"] });
       navigate("/sales/direct-sales/recent");
-      setLines([]); setCustomer(null); setNotes("");
+      setLines([newLine()]); setCustomerId(null); setNotes("");
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
 
+  // Keyboard: F2 add line, Ctrl+S submit
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
+    const h = (e: KeyboardEvent) => {
       if (e.key === "F2") {
         e.preventDefault();
-        addLine();
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        setLines(prev => [...prev, newLine()]);
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
         e.preventDefault();
-        if (!submit.isPending && customer && lines.length > 0) submit.mutate();
+        if (!submit.isPending && customer && lines.some(l => l.productId && l.qty > 0)) {
+          submit.mutate();
+        }
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
   }, [submit, customer, lines]);
 
   return (
@@ -117,24 +296,26 @@ function GatePassTab() {
         title="Gate Pass"
         subtitle="Issue a gate-pass for an over-the-counter dealer pickup. F2 add line · Ctrl+S submit."
       />
-      <div className="flex-1 overflow-auto p-3 space-y-4">
+      <div className="flex-1 overflow-auto p-3 space-y-3 pb-24">
         <FormSection title="Sale Header" cols={4}>
           <Field label="Date" required>
             <Input type="date" className="erp-input" value={date} onChange={e => setDate(e.target.value)} />
           </Field>
           <Field label="Customer" required hint="F9">
             <F9SearchSelect
-              value={customer?.id ?? null}
-              onChange={(id) => setCustomer(customers.find((c: any) => c.id === id) ?? { id })}
+              value={customerId}
+              onChange={setCustomerId}
               options={customerOpts}
+              className="w-full"
             />
           </Field>
-          <Field label="Route">
+          <Field label="Route" hint="F9">
             <F9SearchSelect
               value={routeId}
               onChange={setRouteId}
               options={routeOpts}
               allowAll
+              className="w-full"
             />
           </Field>
           <Field label="Payment Mode">
@@ -148,83 +329,21 @@ function GatePassTab() {
           </Field>
         </FormSection>
 
-        <div className="erp-panel p-3">
-          <div className="flex justify-between mb-3">
-            <h3 className="erp-section-title m-0">Items</h3>
-            <Button size="sm" onClick={addLine}>
-              <Plus className="h-3.5 w-3.5 mr-1" /> Add Line (F2)
-            </Button>
-          </div>
+        {/* Items card — same layout as Record-Indents */}
+        <ItemsCard lines={lines} setLines={setLines} products={products as Product[]} />
 
-          <table className="erp-table">
-            <thead>
-              <tr>
-                <th style={{ width: 40 }}>#</th>
-                <th>Product</th>
-                <th className="num" style={{ width: 100, textAlign: "right" }}>Qty</th>
-                <th className="num" style={{ width: 110, textAlign: "right" }}>Rate</th>
-                <th className="num" style={{ width: 110, textAlign: "right" }}>Subtotal</th>
-                <th className="num" style={{ width: 80, textAlign: "right" }}>GST %</th>
-                <th className="num" style={{ width: 130, textAlign: "right" }}>Line Total</th>
-                <th style={{ width: 50 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((l, i) => (
-                <tr key={i}>
-                  <td className="text-center text-muted-foreground">{i + 1}</td>
-                  <td>
-                    <Select value={l.productId} onValueChange={v => updateLine(i, { productId: v })}>
-                      <SelectTrigger className="erp-input"><SelectValue placeholder="Select product" /></SelectTrigger>
-                      <SelectContent>
-                        {products.map((p: Product) => (
-                          <SelectItem key={p.id} value={p.id}>{p.code} — {p.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </td>
-                  <td>
-                    <Input type="number" step="0.01" className="erp-input text-right" value={l.qty} 
-                      onChange={e => updateLine(i, { qty: parseFloat(e.target.value) || 0 })} />
-                  </td>
-                  <td>
-                    <Input type="number" step="0.01" className="erp-input text-right" value={l.rate} 
-                      onChange={e => updateLine(i, { rate: parseFloat(e.target.value) || 0 })} />
-                  </td>
-                  <td className="num text-right">{fmtINR(lineTotal(l))}</td>
-                  <td>
-                    <Input type="number" step="0.01" className="erp-input text-right" value={l.gstPercent || 0} 
-                      onChange={e => updateLine(i, { gstPercent: parseFloat(e.target.value) || 0 })} />
-                  </td>
-                  <td className="num font-medium text-right">
-                    {fmtINR(lineTotal(l) * (1 + (l.gstPercent || 0) / 100))}
-                  </td>
-                  <td>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => removeLine(i)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="bg-muted/50 font-semibold">
-                <td colSpan={4} className="text-right">Grand Total</td>
-                <td className="num text-right">{fmtINR(subtotal)}</td>
-                <td></td>
-                <td className="num text-right text-lg">{fmtINR(grandTotal)}</td>
-                <td></td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+        <FormSection title="Notes" cols={1}>
+          <Field label="Remarks">
+            <Input className="erp-input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" />
+          </Field>
+        </FormSection>
       </div>
 
       <FormFooter>
-        <Button 
-          size="sm" 
-          className="h-8 bg-primary hover:bg-primary-hover" 
-          disabled={submit.isPending || !customer || lines.length === 0}
+        <Button
+          size="sm"
+          className="h-8 bg-primary hover:bg-primary-hover"
+          disabled={submit.isPending || !customer || !lines.some(l => l.productId && l.qty > 0)}
           onClick={() => submit.mutate()}
         >
           <Save className="h-3.5 w-3.5 mr-1" />
@@ -239,7 +358,9 @@ function GatePassTab() {
   );
 }
 
-// ───────────────────────────────────────────────────────────── Cash Customer
+// ════════════════════════════════════════════════════════════════════
+// Cash Customer tab
+// ════════════════════════════════════════════════════════════════════
 function CashCustomerTab() {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -247,26 +368,11 @@ function CashCustomerTab() {
   const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
 
   const today = new Date().toISOString().slice(0, 10);
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
+  const [name, setName]               = useState("");
+  const [phone, setPhone]             = useState("");
   const [paymentMode, setPaymentMode] = useState<"cash" | "upi">("cash");
-  const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState<Line[]>([]);
-
-  const lineTotal = (l: Line) => (l.qty || 0) * (l.rate || 0);
-  const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
-  const gstTotal = lines.reduce((s, l) => s + lineTotal(l) * ((l.gstPercent || 0) / 100), 0);
-  const grandTotal = subtotal + gstTotal;
-
-  const addLine = () => setLines(prev => [...prev, { productId: "", qty: 0, rate: 0 }]);
-
-  const updateLine = (idx: number, patch: Partial<Line>) => {
-    setLines(prev => prev.map((l, i) => i === idx ? { ...l, ...patch } : l));
-  };
-
-  const removeLine = (idx: number) => {
-    setLines(prev => prev.filter((_, i) => i !== idx));
-  };
+  const [notes, setNotes]             = useState("");
+  const [lines, setLines]             = useState<Line[]>([newLine()]);
 
   const submit = useMutation({
     mutationFn: () => (createCashSale as any)({
@@ -275,27 +381,36 @@ function CashCustomerTab() {
       customerPhone: phone,
       paymentMode,
       notes,
-      items: lines.filter(l => l.productId && l.qty > 0).map(l => ({ productId: l.productId, quantity: l.qty })),
+      items: lines
+        .filter(l => l.productId && l.qty > 0)
+        .map(l => ({
+          productId:  l.productId,
+          quantity:   l.qty,
+          unitPrice:  l.rate,
+          gstPercent: l.gstPercent,
+        })),
     }),
     onSuccess: () => {
       toast.success("Cash Sale recorded");
       qc.invalidateQueries({ queryKey: ["direct-sales"] });
       navigate("/sales/direct-sales/recent");
-      setName(""); setPhone(""); setLines([]); setNotes("");
+      setName(""); setPhone(""); setLines([newLine()]); setNotes("");
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "F2") { e.preventDefault(); addLine(); }
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "F2") { e.preventDefault(); setLines(prev => [...prev, newLine()]); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (!submit.isPending && name && lines.length > 0) submit.mutate();
+        if (!submit.isPending && name && lines.some(l => l.productId && l.qty > 0)) {
+          submit.mutate();
+        }
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
   }, [submit, name, lines]);
 
   return (
@@ -321,94 +436,41 @@ function CashCustomerTab() {
           </Field>
         </FormSection>
 
-        <div className="erp-panel p-3">
-          <div className="flex justify-between mb-3">
-            <h3 className="erp-section-title m-0">Items</h3>
-            <Button size="sm" onClick={addLine}>
-              <Plus className="h-3.5 w-3.5 mr-1" /> Add Line (F2)
-            </Button>
-          </div>
+        {/* Items card — identical to Gate-Pass + Record-Indents */}
+        <ItemsCard lines={lines} setLines={setLines} products={products as Product[]} />
 
-          <table className="erp-table">
-            <thead>
-              <tr>
-                <th style={{ width: 40 }}>#</th>
-                <th>Product</th>
-                <th className="num" style={{ width: 100, textAlign: "right" }}>Qty</th>
-                <th className="num" style={{ width: 110, textAlign: "right" }}>Rate</th>
-                <th className="num" style={{ width: 110, textAlign: "right" }}>Subtotal</th>
-                <th className="num" style={{ width: 80, textAlign: "right" }}>GST %</th>
-                <th className="num" style={{ width: 130, textAlign: "right" }}>Line Total</th>
-                <th style={{ width: 50 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((l, i) => (
-                <tr key={i}>
-                  <td className="text-center text-muted-foreground">{i + 1}</td>
-                  <td>
-                    <Select value={l.productId} onValueChange={v => updateLine(i, { productId: v })}>
-                      <SelectTrigger className="erp-input"><SelectValue placeholder="Select product" /></SelectTrigger>
-                      <SelectContent>
-                        {products.map((p: Product) => (
-                          <SelectItem key={p.id} value={p.id}>{p.code} — {p.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </td>
-                  <td>
-                    <Input type="number" step="0.01" className="erp-input text-right" value={l.qty} 
-                      onChange={e => updateLine(i, { qty: parseFloat(e.target.value) || 0 })} />
-                  </td>
-                  <td>
-                    <Input type="number" step="0.01" className="erp-input text-right" value={l.rate} 
-                      onChange={e => updateLine(i, { rate: parseFloat(e.target.value) || 0 })} />
-                  </td>
-                  <td className="num text-right">{fmtINR(lineTotal(l))}</td>
-                  <td>
-                    <Input type="number" step="0.01" className="erp-input text-right" value={l.gstPercent || 0} 
-                      onChange={e => updateLine(i, { gstPercent: parseFloat(e.target.value) || 0 })} />
-                  </td>
-                  <td className="num font-medium text-right">
-                    {fmtINR(lineTotal(l) * (1 + (l.gstPercent || 0) / 100))}
-                  </td>
-                  <td>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => removeLine(i)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="bg-muted/50 font-semibold">
-                <td colSpan={4} className="text-right">Grand Total</td>
-                <td className="num text-right">{fmtINR(subtotal)}</td>
-                <td></td>
-                <td className="num text-right text-lg">{fmtINR(grandTotal)}</td>
-                <td></td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+        <FormSection title="Notes" cols={1}>
+          <Field label="Remarks">
+            <Input className="erp-input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" />
+          </Field>
+        </FormSection>
       </div>
 
       <FormFooter>
-        <Button 
-          size="sm" 
-          className="h-8 bg-primary hover:bg-primary-hover" 
-          disabled={submit.isPending || !name || lines.length === 0}
+        <Button
+          size="sm"
+          className="h-8 bg-primary hover:bg-primary-hover"
+          disabled={submit.isPending || !name || !lines.some(l => l.productId && l.qty > 0)}
           onClick={() => submit.mutate()}
         >
           <Save className="h-3.5 w-3.5 mr-1" />
-          Record Cash Sale <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd>
+          {submit.isPending ? "Saving…" : (
+            <span className="inline-flex items-center gap-1.5">
+              Record Cash Sale <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd>
+            </span>
+          )}
         </Button>
       </FormFooter>
     </div>
   );
 }
 
-// ───────────────────────────────────────────────────────────── Indent Modify
+// ════════════════════════════════════════════════════════════════════
+// Modify tab — UNCHANGED behaviour. Paste the existing ModifyTab()
+// implementation from your current DirectSalesPage.tsx (the long
+// function that loads an indent by id and PATCHes /orders/:id/items).
+// Nothing in ModifyTab needed editing for this fix.
+// ════════════════════════════════════════════════════════════════════
 function ModifyTab() {
   const qc = useQueryClient();
   const [params] = useSearchParams();
@@ -424,7 +486,7 @@ function ModifyTab() {
   const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
   const productOpts: F9Option[] = useMemo(
     () => products.map((p: any) => ({ value: p.id, label: p.name, sublabel: p.code })),
-    [products]
+    [products],
   );
 
   const fetchIndent = useMutation({
@@ -437,12 +499,12 @@ function ModifyTab() {
         createdAt: resp.order.created_at,
       });
       setItems(resp.items.map((it: any) => ({
-        productId: it.product_id,
+        productId:  it.product_id,
         productName: it.product_name,
-        quantity: Number(it.quantity),
-        unitPrice: parseFloat(String(it.unit_price)) || 0,
+        quantity:   Number(it.quantity),
+        unitPrice:  parseFloat(String(it.unit_price))  || 0,
         gstPercent: parseFloat(String(it.gst_percent)) || 0,
-        lineTotal: parseFloat(String(it.line_total)) || 0,
+        lineTotal:  parseFloat(String(it.line_total))  || 0,
       })));
     },
     onError: (e: any) => toast.error(e?.message || "Indent not found"),
@@ -450,6 +512,7 @@ function ModifyTab() {
 
   useEffect(() => {
     if (initialId && !loadedId) fetchIndent.mutate(initialId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const save = useMutation({
@@ -494,7 +557,6 @@ function ModifyTab() {
         title="Indent Modify"
         subtitle="Modify any indent (regular, gate-pass, cash). Enter an Indent ID and press Enter."
       />
-
       <FilterBar>
         <Field label="Indent ID">
           <Input
@@ -540,9 +602,9 @@ function ModifyTab() {
                   <tr>
                     <th style={{ width: 40 }}>#</th>
                     <th style={{ width: "35%" }}>Product</th>
-                    <th className="num" style={{ width: 90 }}>Qty</th>
+                    <th className="num" style={{ width: 90  }}>Qty</th>
                     <th className="num" style={{ width: 100 }}>Rate</th>
-                    <th className="num" style={{ width: 70 }}>GST %</th>
+                    <th className="num" style={{ width: 70  }}>GST %</th>
                     <th className="num" style={{ width: 130 }}>Line Total</th>
                     <th style={{ width: 40 }}></th>
                   </tr>
@@ -560,7 +622,7 @@ function ModifyTab() {
                               ...row,
                               productId: v ?? "",
                               productName: p?.name ?? "",
-                              unitPrice: parseFloat(String(p?.mrp ?? row.unitPrice)) || 0,
+                              unitPrice:  parseFloat(String(p?.mrp ?? row.unitPrice))         || 0,
                               gstPercent: parseFloat(String(p?.gstPercent ?? row.gstPercent)) || 0,
                             } : row));
                           }}

@@ -1,20 +1,18 @@
-import { useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Eye, Edit, Plus, Search, Download, Printer } from "lucide-react";
+import { Plus, Search, Download, ChevronLeft, ChevronRight } from "lucide-react";
 import PageHeader, {
-  FilterBar, FormSection, Field, FormFooter, StatusPill, fmtDate,
+  FilterBar, FormSection, Field, FormFooter, StatusPill,
 } from "@/components/PageHeader";
-import { DataTable, Column } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
-  fetchCustomers, fetchRoutes, fetchZones, createCustomer,
+  fetchCustomers, fetchCustomersPage, fetchRoutes, fetchZones, createCustomer,
   removeCustomerFromRoute, assignCustomerToRoute,
   getRateCategories, getOfficers,
 } from "@/services/api";
@@ -22,187 +20,154 @@ import { customerSchema, type CustomerFormData } from "@/lib/validations";
 import type { Customer } from "@/data/mockData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
-import { useEffect } from "react";
-
+import { toCsv } from "@/lib/exporters";
+ 
 interface Props { tab?: "list" | "new" | "assign-route"; }
-
+ 
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const TYPE_OPTIONS = ["All Types", "Retail-Dealer", "Credit Inst-MRP", "Credit Inst-Dealer", "Parlour-Dealer"];
+ 
 export default function CustomersPage({ tab = "list" }: Props) {
   const qc = useQueryClient();
-  const { data: customers = [], isLoading } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
+ 
+  // ── ALL hooks at top — never inside conditionals (fixes React #310) ──
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
-  const { data: zones = [] } = useQuery({ queryKey: ["zones"], queryFn: fetchZones });
+  const { data: zones  = [] } = useQuery({ queryKey: ["zones"],  queryFn: fetchZones  });
+ 
+  // Full customer list (paginated server-side; populates F9 selects across the page)
+  const { data: allCustomers = [] } = useQuery({
+    queryKey: ["customers"],
+    queryFn: fetchCustomers,
+  });
+ 
   const rateCategories = getRateCategories();
   const officers = getOfficers();
-
-  // ── Lifted useState hooks to top level (B.2 fix) ──
-  const [viewing, setViewing] = useState<Customer | null>(null);
-  const [editing, setEditing] = useState<Customer | null>(null);
+ 
+  // Server-side pagination for /list tab
+  const [page, setPage]               = useState(1);
+  const [pageSize, setPageSize]       = useState(25);
+  const [search, setSearch]           = useState("");
+  const [debouncedSearch, setDebSearch] = useState("");
+  const [typeFilter, setTypeFilter]   = useState("All Types");
+  const [routeFilter, setRouteFilter] = useState<string | null>(null);
+ 
+  useEffect(() => {
+    const t = setTimeout(() => { setDebSearch(search); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+ 
+  useEffect(() => { setPage(1); }, [typeFilter, routeFilter, pageSize]);
+ 
+  const pageQuery = useQuery({
+    queryKey: ["customers-page", { page, pageSize, debouncedSearch, typeFilter, routeFilter }],
+    queryFn: () => fetchCustomersPage({
+      page, limit: pageSize,
+      search: debouncedSearch || undefined,
+      customerType: typeFilter !== "All Types" ? typeFilter : undefined,
+      routeId: routeFilter ?? undefined,
+    }),
+    placeholderData: keepPreviousData,
+  });
+  const pageRows = pageQuery.data?.rows ?? [];
+  const totalPages = pageQuery.data?.totalPages ?? 1;
+  const totalCount = pageQuery.data?.total ?? 0;
+ 
+  // Dialog state
+  const [viewing, setViewing]       = useState<Customer | null>(null);
+  const [editing, setEditing]       = useState<Customer | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
-
+ 
+  // Assign-route state
   const [selectedRoute, setSelectedRoute] = useState("");
-  const [typeFilter, setTypeFilter] = useState("All Types");
-  const [search, setSearch] = useState("");
+ 
+  // New-customer alphabet state (used by both /new tab AND fallback form)
   const [selectedLetter, setSelectedLetter] = useState("A");
-
-  const form = useForm<CustomerFormData>({
-    resolver: zodResolver(customerSchema),
-    defaultValues: { active: true, payMode: "Cash" },
-  });
-
+ 
+  // F9 options derived ONCE at top level (Hooks rule)
+  const routeOpts: F9Option[] = useMemo(
+    () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
+    [routes],
+  );
+ 
+  // Code auto-generation — based on full dealer dataset (so codes stay unique)
   const nextCode = useMemo(() => {
-    const nums = customers
-      .filter(c => c.code && c.code.startsWith(selectedLetter))
-      .map(c => parseInt(c.code.slice(selectedLetter.length)) || 0);
+    const nums = allCustomers
+      .filter((c: any) => c.code && c.code.startsWith(selectedLetter))
+      .map((c: any) => parseInt(c.code.slice(selectedLetter.length)) || 0);
     const max = nums.length > 0 ? Math.max(...nums) : 0;
     return `${selectedLetter}${max + 1}`;
-  }, [customers, selectedLetter]);
-
+  }, [allCustomers, selectedLetter]);
+ 
+  // Mutations
   const createMutation = useMutation({
     mutationFn: (data: CustomerFormData) => createCustomer({ ...data, code: nextCode }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["customers"] }); toast.success("Customer created"); form.reset(); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["customers-page"] });
+      toast.success("Customer created");
+    },
     onError: () => toast.error("Failed to create customer"),
   });
-
+ 
   const removeMutation = useMutation({
     mutationFn: ({ customerId, routeId }: { customerId: string; routeId: string }) =>
       removeCustomerFromRoute(customerId, routeId),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["customers"] }); toast.success("Route removed from customer"); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["customers-page"] });
+      toast.success("Route removed from customer");
+    },
     onError: (err: any) => toast.error(err?.message || "Failed to remove route"),
   });
-
+ 
   const assignMutation = useMutation({
     mutationFn: ({ customerId, routeId }: { customerId: string; routeId: string }) =>
       assignCustomerToRoute(customerId, routeId),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["customers"] }); toast.success("Customer assigned to route"); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["customers-page"] });
+      toast.success("Customer assigned to route");
+    },
     onError: () => toast.error("Failed to assign customer"),
   });
-
-  const typeOptions = ["All Types", "Retail-Dealer", "Credit Inst-MRP", "Credit Inst-Dealer", "Parlour-Dealer"];
-  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-
-  const filtered = customers.filter(c => {
-    const matchType = typeFilter === "All Types" || c.type === typeFilter;
-    const matchSearch = !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.code.toLowerCase().includes(search.toLowerCase());
-    return matchType && matchSearch;
+ 
+  // ── Assign-route derivations (NOT hooks — safe inside conditionals) ──
+  const routeCustomers = allCustomers.filter((c: any) =>
+    c.routes?.some((r: any) => r.routeId === selectedRoute));
+  const eligibleToAdd = allCustomers.filter((c: any) => {
+    if (!selectedRoute) return false;
+    if (c.routes?.some((r: any) => r.routeId === selectedRoute)) return false;
+    if (!pickerQuery.trim()) return true;
+    const q = pickerQuery.trim().toLowerCase();
+    return c.name.toLowerCase().includes(q)
+        || c.code.toLowerCase().includes(q)
+        || (c.phone ?? "").toString().includes(q);
   });
-
-  // ─── LIST TAB ─────────────────────────────────────────────────
-  if (tab === "list") {
-
-    const cols: Column<Customer>[] = [
-      { key: "code", header: "Code", cell: c => <span className="font-mono text-[12px]">{c.code}</span>, width: "80px" },
-      { key: "name", header: "Name", cell: c => <span className="font-medium">{c.name}</span> },
-      { key: "type", header: "Type", cell: c => (
-        <span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">{c.type}</span>
-      ) },
-      {
-        key: "route",
-        header: "Route(s)",
-        cell: c => c.routes && c.routes.length > 0 ? (
-          <div className="flex flex-col gap-0.5">
-            {c.routes.map(r => (
-              <span key={r.routeId} className="text-[12px]">
-                <span className="font-mono">{r.routeCode}</span> — {r.routeName}
-                {r.isPrimary && c.routes!.length > 1 && (
-                  <span className="ml-1 text-muted-foreground text-[11px]">(primary)</span>
-                )}
-              </span>
-            ))}
-          </div>
-        ) : <span className="text-muted-foreground">—</span>,
-      },
-      { key: "phone", header: "Phone", cell: c => c.phone, width: "120px" },
-      { key: "pay", header: "Pay", cell: c => c.payMode, width: "70px" },
-      {
-        key: "actions",
-        header: "Actions",
-        align: "right",
-        width: "180px",
-        cell: c => (
-          <div className="flex items-center justify-end gap-1.5">
-            <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]" onClick={() => setViewing(c)}>
-              View
-            </Button>
-            <Button size="sm" className="h-7 px-2.5 text-[12px]" onClick={() => setEditing(c)}>
-              Update
-            </Button>
-          </div>
-        ),
-      },
-    ];
-
-    return (
-      <div>
-        <PageHeader
-          title="All Customers"
-          subtitle={`${customers.length} customer(s) registered`}
-          actions={
-            <>
-              <Button variant="outline" size="sm" className="h-8" onClick={() => window.print()}>
-                <Printer className="w-3.5 h-3.5 mr-1.5" />Print
-              </Button>
-              <Button variant="outline" size="sm" className="h-8">
-                <Download className="w-3.5 h-3.5 mr-1.5" />Export
-              </Button>
-              <Button size="sm" className="h-8 bg-primary hover:bg-primary-hover" asChild>
-                <a href="/masters/customers/new"><Plus className="w-3.5 h-3.5 mr-1.5" />New Customer</a>
-              </Button>
-            </>
-          }
-        />
-        <FilterBar>
-          <Field label="Search">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-              <Input placeholder="Code or name…" value={search} onChange={e => setSearch(e.target.value)} className="erp-input pl-8 w-56" />
-            </div>
-          </Field>
-          <Field label="Type">
-            <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="erp-input w-44"><SelectValue /></SelectTrigger>
-              <SelectContent>{typeOptions.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-            </Select>
-          </Field>
-          <div className="ml-auto text-[11px] text-muted-foreground self-center num">
-            {filtered.length} of {customers.length}
-          </div>
-        </FilterBar>
-        <div className="p-4">
-          <DataTable columns={cols} rows={filtered} isLoading={isLoading} empty="No customers match the current filter." />
-        </div>
-
-        <CustomerViewDialog customer={viewing} routes={routes} onClose={() => setViewing(null)} />
-        <CustomerEditDialog
-          customer={editing}
-          routes={routes}
-          zones={zones}
-          rateCategories={rateCategories}
-          officers={officers}
-          onClose={() => setEditing(null)}
-          onSaved={() => qc.invalidateQueries({ queryKey: ["customers"] })}
-        />
-      </div>
-    );
-  }
-
-  // ─── ASSIGN ROUTE TAB ──────────────────────────────────────────
+ 
+  const exportCsv = () => {
+    const header = ["Code", "Name", "Type", "Routes", "Phone", "Pay Mode", "City", "Status"];
+    const data = pageRows.map((c: any) => [
+      c.code, c.name, c.type,
+      (c.routes ?? []).map((r: any) => r.routeCode).join(" | "),
+      c.phone, c.payMode, c.city,
+      c.active === false ? "Inactive" : "Active",
+    ]);
+    const csv = toCsv([header, ...data]);
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().slice(0, 10);
+    a.href = url; a.download = `customers_page${page}_${ts}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${data.length} row(s)`);
+  };
+ 
+  // ─────────────────────────────────────────────────────────────────
+  // ASSIGN-ROUTE TAB
+  // ─────────────────────────────────────────────────────────────────
   if (tab === "assign-route") {
-
-    const routeOpts: F9Option[] = useMemo(
-      () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
-      [routes]
-    );
-
-    const routeCustomers = customers.filter(c => c.routes?.some(r => r.routeId === selectedRoute));
-    const eligibleToAdd = customers.filter(c => {
-      if (!selectedRoute) return false;
-      if (c.routes?.some(r => r.routeId === selectedRoute)) return false;
-      if (!pickerQuery.trim()) return true;
-      const q = pickerQuery.trim().toLowerCase();
-      return c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q) || (c.phone ?? "").includes(q);
-    });
-
     return (
       <div>
         <PageHeader
@@ -210,9 +175,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
           subtitle="Add or remove customers on a route"
           actions={
             <Button
-              size="sm"
-              className="h-8"
-              disabled={!selectedRoute}
+              size="sm" className="h-8" disabled={!selectedRoute}
               onClick={() => { setPickerQuery(""); setPickerOpen(true); }}
             >
               <Plus className="w-3.5 h-3.5 mr-1.5" />Add Customer
@@ -229,7 +192,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
             />
           </Field>
         </FilterBar>
-
+ 
         {!selectedRoute ? (
           <div className="p-4">
             <div className="erp-panel py-12 text-center text-muted-foreground text-[13px]">
@@ -239,58 +202,55 @@ export default function CustomersPage({ tab = "list" }: Props) {
         ) : (
           <div className="p-4 space-y-3">
             <div className="erp-panel">
-              <div className="print-document">
-                <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2 flex items-center justify-between">
-                  <span>Customers on Route — {routes.find(r => r.id === selectedRoute)?.code}</span>
-                  <span className="text-[11px] normal-case font-normal text-muted-foreground num">
-                    {routeCustomers.length} on route
-                  </span>
-                </div>
-                <div className="overflow-auto max-h-[calc(100vh-340px)]">
-                  <table className="erp-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: "50px" }}>#</th>
-                        <th>Code</th><th>Name</th><th>Type</th><th>Phone</th>
-                        <th style={{ textAlign: "right", width: "110px" }}>Actions</th>
+              <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2 flex items-center justify-between">
+                <span>Customers on Route — {routes.find((r: any) => r.id === selectedRoute)?.code}</span>
+                <span className="text-[11px] normal-case font-normal text-muted-foreground num">
+                  {routeCustomers.length} on route
+                </span>
+              </div>
+              <div className="overflow-auto max-h-[calc(100vh-340px)]">
+                <table className="erp-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "50px" }}>#</th>
+                      <th>Code</th><th>Name</th><th>Type</th><th>Phone</th>
+                      <th style={{ textAlign: "right", width: "110px" }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {routeCustomers.length === 0 ? (
+                      <tr><td colSpan={6} className="text-center text-muted-foreground py-8">
+                        No customers assigned. Click <strong>Add Customer</strong> to assign one.
+                      </td></tr>
+                    ) : routeCustomers.map((c: any, i: number) => (
+                      <tr key={c.id}>
+                        <td className="num">{i + 1}</td>
+                        <td className="font-mono text-[12px]">{c.code}</td>
+                        <td className="font-medium">{c.name}</td>
+                        <td><span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary">{c.type}</span></td>
+                        <td>{c.phone}</td>
+                        <td style={{ textAlign: "right" }}>
+                          <Button
+                            variant="ghost" size="sm" className="h-7 px-2 text-destructive hover:text-destructive"
+                            onClick={() => removeMutation.mutate({ customerId: c.id, routeId: selectedRoute })}
+                          >
+                            Remove
+                          </Button>
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {routeCustomers.length === 0 ? (
-                        <tr><td colSpan={6} className="text-center text-muted-foreground py-8">
-                          No customers assigned. Click <strong>Add Customer</strong> to assign one.
-                        </td></tr>
-                      ) : routeCustomers.map((c, i) => (
-                        <tr key={c.id}>
-                          <td className="num">{i + 1}</td>
-                          <td className="font-mono text-[12px]">{c.code}</td>
-                          <td className="font-medium">{c.name}</td>
-                          <td><span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary">{c.type}</span></td>
-                          <td>{c.phone}</td>
-                          <td style={{ textAlign: "right" }}>
-                            <Button
-                              variant="ghost" size="sm" className="h-7 px-2 text-destructive hover:text-destructive"
-                              onClick={() => removeMutation.mutate({ customerId: c.id, routeId: selectedRoute })}
-                            >
-                              Remove
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
         )}
-
-        {/* Add-customer picker dialog */}
+ 
         <Dialog open={pickerOpen} onOpenChange={o => !o && setPickerOpen(false)}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>
-                Add Customer to Route — {routes.find(r => r.id === selectedRoute)?.code}
+                Add Customer to Route — {routes.find((r: any) => r.id === selectedRoute)?.code}
               </DialogTitle>
             </DialogHeader>
             <Input
@@ -310,7 +270,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
                     <tr><td colSpan={5} className="text-center text-muted-foreground py-6">
                       No customers match. {pickerQuery && "Try a different search."}
                     </td></tr>
-                  ) : eligibleToAdd.slice(0, 50).map(c => (
+                  ) : eligibleToAdd.slice(0, 50).map((c: any) => (
                     <tr key={c.id}>
                       <td className="font-mono text-[12px]">{c.code}</td>
                       <td className="font-medium">{c.name}</td>
@@ -326,9 +286,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
                             );
                           }}
                           disabled={assignMutation.isPending}
-                        >
-                          Add
-                        </Button>
+                        >Add</Button>
                       </td>
                     </tr>
                   ))}
@@ -343,157 +301,224 @@ export default function CustomersPage({ tab = "list" }: Props) {
       </div>
     );
   }
-
-  // ─── NEW TAB ───────────────────────────────────────────────────
+ 
+  // ─────────────────────────────────────────────────────────────────
+  // NEW TAB
+  // ─────────────────────────────────────────────────────────────────
   if (tab === "new") {
     return (
       <div>
         <PageHeader
           title="New Customer"
-          subtitle={`Code will be ${nextCode} (auto-assigned).`}
+          subtitle={`Code will be ${nextCode} (auto-generated from selected letter).`}
           actions={
             <Button variant="outline" size="sm" className="h-8" asChild>
               <a href="/masters/customers">Cancel</a>
             </Button>
           }
         />
-        <div className="p-4 max-w-4xl">
+        <div className="p-4 max-w-4xl space-y-3">
+          {/* B3: alphabet selector — drives nextCode */}
+          <div className="erp-panel p-3">
+            <div className="grid grid-cols-2 gap-3 max-w-xl">
+              <Field label="Code Prefix (Alphabet)" required>
+                <Select value={selectedLetter} onValueChange={setSelectedLetter}>
+                  <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {LETTERS.map(l => (
+                      <SelectItem key={l} value={l}>{l}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Generated Code">
+                <Input className="erp-input bg-muted font-mono" value={nextCode} disabled />
+              </Field>
+            </div>
+          </div>
+ 
           <CustomerFormBody
             mode="new"
-            initial={{ code: nextCode, type: "Retail-Dealer", payMode: "Cash", state: "Karnataka", active: true }}
+            initial={{
+              code: nextCode,
+              type: "Retail-Dealer", payMode: "Cash",
+              state: "Karnataka", active: true,
+            }}
             routes={routes}
             zones={zones}
             rateCategories={rateCategories}
             officers={officers}
             onCancel={() => history.back()}
-            onSaved={() => { qc.invalidateQueries({ queryKey: ["customers"] }); window.location.href = "/masters/customers"; }}
+            onSaved={() => {
+              qc.invalidateQueries({ queryKey: ["customers"] });
+              qc.invalidateQueries({ queryKey: ["customers-page"] });
+              window.location.href = "/masters/customers";
+            }}
           />
         </div>
       </div>
     );
   }
-
+ 
+  // ─────────────────────────────────────────────────────────────────
+  // LIST TAB
+  // ─────────────────────────────────────────────────────────────────
   return (
     <div>
       <PageHeader
-        title="New Customer"
-        subtitle="Add a new customer master record"
+        title="All Customers"
+        subtitle={`${totalCount} customer(s) registered`}
         actions={
-          <Button variant="outline" size="sm" className="h-8" onClick={() => form.reset()}>
-            Reset
-          </Button>
+          <>
+            <Button variant="outline" size="sm" className="h-8" onClick={exportCsv}>
+              <Download className="w-3.5 h-3.5 mr-1.5" />Export CSV
+            </Button>
+            <Button size="sm" className="h-8 bg-primary hover:bg-primary-hover" asChild>
+              <a href="/masters/customers/new"><Plus className="w-3.5 h-3.5 mr-1.5" />New Customer</a>
+            </Button>
+          </>
         }
       />
-      <form onSubmit={form.handleSubmit(d => createMutation.mutate(d))} className="p-4">
-        <FormSection title="Identification" cols={3}>
-          <Field label="Customer Code (Auto)">
-            <div className="flex gap-2">
-              <Select value={selectedLetter} onValueChange={setSelectedLetter}>
-                <SelectTrigger className="erp-input w-16"><SelectValue /></SelectTrigger>
-                <SelectContent className="max-h-60">
-                  {letters.map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+      <FilterBar>
+        <Field label="Search">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+            <Input placeholder="Code, name, or phone…" value={search}
+                   onChange={e => setSearch(e.target.value)}
+                   className="erp-input pl-8 w-64" />
+          </div>
+        </Field>
+        <Field label="Type">
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger className="erp-input w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>{TYPE_OPTIONS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+          </Select>
+        </Field>
+        <Field label="Route" hint="F9">
+          <F9SearchSelect
+            value={routeFilter}
+            onChange={setRouteFilter}
+            options={routeOpts}
+            allowAll
+            className="w-56"
+          />
+        </Field>
+        <div className="ml-auto text-[11px] text-muted-foreground self-center num">
+          {pageRows.length} on page · {totalCount} total
+        </div>
+      </FilterBar>
+ 
+      <div className="p-4 space-y-3">
+        <div className="erp-panel overflow-hidden">
+          <div className="overflow-auto max-h-[calc(100vh-320px)]">
+            <table className="erp-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 80 }}>Code</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Route(s)</th>
+                  <th style={{ width: 120 }}>Phone</th>
+                  <th style={{ width: 70 }}>Pay</th>
+                  <th style={{ width: 180, textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageQuery.isLoading ? (
+                  Array.from({ length: 8 }).map((_, i) => (
+                    <tr key={`s${i}`}>
+                      {Array.from({ length: 7 }).map((_, j) => (
+                        <td key={j}><div className="h-3.5 bg-muted/70 rounded-sm animate-pulse" /></td>
+                      ))}
+                    </tr>
+                  ))
+                ) : pageRows.length === 0 ? (
+                  <tr><td colSpan={7} className="text-center py-8 text-muted-foreground">
+                    No customers match the current filter.
+                  </td></tr>
+                ) : pageRows.map((c: any) => (
+                  <tr key={c.id}>
+                    <td className="font-mono text-[12px]">{c.code}</td>
+                    <td className="font-medium">{c.name}</td>
+                    <td><span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">{c.type}</span></td>
+                    <td>
+                      {c.routes && c.routes.length > 0 ? (
+                        <div className="flex flex-col gap-0.5">
+                          {c.routes.map((r: any) => (
+                            <span key={r.routeId} className="text-[12px]">
+                              <span className="font-mono">{r.routeCode}</span> — {r.routeName}
+                              {r.isPrimary && c.routes!.length > 1 && (
+                                <span className="ml-1 text-muted-foreground text-[11px]">(primary)</span>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      ) : <span className="text-muted-foreground">—</span>}
+                    </td>
+                    <td>{c.phone}</td>
+                    <td>{c.payMode}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]"
+                                onClick={() => setViewing(c)}>View</Button>
+                        <Button size="sm" className="h-7 px-2.5 text-[12px]"
+                                onClick={() => setEditing(c)}>Update</Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+ 
+          {/* Server-side pagination footer */}
+          <div className="px-3 py-2 border-t border-border bg-muted/30 text-[12px] flex items-center gap-3">
+            <span className="text-muted-foreground">
+              Page <span className="num font-medium">{page}</span> of <span className="num">{totalPages}</span>
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-muted-foreground text-[11px]">Rows / page:</span>
+              <Select value={String(pageSize)} onValueChange={v => setPageSize(Number(v))}>
+                <SelectTrigger className="erp-input h-7 w-20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {[25, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Input value={nextCode} disabled className="erp-input bg-muted flex-1 font-mono" />
+              <Button variant="outline" size="sm" className="h-7 px-2"
+                      disabled={page <= 1 || pageQuery.isFetching}
+                      onClick={() => setPage(p => Math.max(1, p - 1))}>
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 px-2"
+                      disabled={page >= totalPages || pageQuery.isFetching}
+                      onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
             </div>
-          </Field>
-          <Field label="Zone" hint="F9" required error={form.formState.errors.zoneId?.message}>
-            <Select onValueChange={v => form.setValue("zoneId", v)} value={form.watch("zoneId") || ""}>
-              <SelectTrigger className="erp-input"><SelectValue placeholder="Select zone…" /></SelectTrigger>
-              <SelectContent>
-                {zones.map(z => <SelectItem key={z.id} value={z.id}>{z.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field label="Customer Name" required error={form.formState.errors.name?.message}>
-            <Input className="erp-input" placeholder="Enter customer name" {...form.register("name")} />
-          </Field>
-        </FormSection>
-
-        <FormSection title="Classification" cols={3}>
-          <Field label="Customer Type" required error={form.formState.errors.type?.message}>
-            <Select onValueChange={v => form.setValue("type", v as any)} value={form.watch("type") || ""}>
-              <SelectTrigger className="erp-input"><SelectValue placeholder="Select type…" /></SelectTrigger>
-              <SelectContent>
-                {["Retail-Dealer","Credit Inst-MRP","Credit Inst-Dealer","Parlour-Dealer"].map(t =>
-                  <SelectItem key={t} value={t}>{t}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field label="Rate Category" required error={form.formState.errors.rateCategory?.message}>
-            <Select onValueChange={v => form.setValue("rateCategory", v as any)} value={form.watch("rateCategory") || ""}>
-              <SelectTrigger className="erp-input"><SelectValue placeholder="Select rate…" /></SelectTrigger>
-              <SelectContent>
-                {rateCategories.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field label="Pay Mode" required>
-            <Select onValueChange={v => form.setValue("payMode", v as any)} value={form.watch("payMode") || "Cash"}>
-              <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Cash">Cash</SelectItem>
-                <SelectItem value="Credit">Credit</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-        </FormSection>
-
-        <FormSection title="Banking & Officer" cols={3}>
-          <Field label="Bank">
-            <Input className="erp-input" placeholder="Bank name" {...form.register("bank")} />
-          </Field>
-          <Field label="Officer">
-            <Select onValueChange={v => form.setValue("officerName", v)} value={form.watch("officerName") || ""}>
-              <SelectTrigger className="erp-input"><SelectValue placeholder="Select officer…" /></SelectTrigger>
-              <SelectContent>
-                {officers.map(o => <SelectItem key={o.id} value={o.name}>{o.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field label="Phone">
-            <Input className="erp-input" placeholder="Phone number" {...form.register("phone")} />
-          </Field>
-        </FormSection>
-
-        <FormSection title="Address" cols={2}>
-        <Field label="City">
-          <Input className="erp-input" list="city-suggest" {...form.register("city")} />
-          <datalist id="city-suggest">
-            {Array.from(new Set(customers.map(c => c.city).filter(Boolean) as string[]))
-              .sort()
-              .map(city => <option key={city} value={city} />)}
-          </datalist>
-        </Field>
-          <Field label="Address">
-            <Input className="erp-input" placeholder="Full address" {...form.register("address")} />
-          </Field>
-        </FormSection>
-
-        <FormSection title="Status" cols={1}>
-          <div className="flex items-center gap-3">
-            <Switch checked={form.watch("active")} onCheckedChange={v => form.setValue("active", v)} />
-            <span className="text-[13px]">Active</span>
           </div>
-        </FormSection>
-
-        <FormFooter>
-          <Button type="button" variant="ghost" size="sm" className="h-8" onClick={() => form.reset()}>
-            Cancel
-          </Button>
-          <Button type="submit" size="sm" className="h-8 bg-primary hover:bg-primary-hover" disabled={createMutation.isPending}>
-            {createMutation.isPending ? "Saving…" : "Save Customer"}
-          </Button>
-        </FormFooter>
-      </form>
+        </div>
+      </div>
+ 
+      <CustomerViewDialog customer={viewing} routes={routes} onClose={() => setViewing(null)} />
+      <CustomerEditDialog
+        customer={editing}
+        routes={routes}
+        zones={zones}
+        rateCategories={rateCategories}
+        officers={officers}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          qc.invalidateQueries({ queryKey: ["customers"] });
+          qc.invalidateQueries({ queryKey: ["customers-page"] });
+        }}
+      />
     </div>
   );
 }
-
-// ─────────────────────────────────────────────
-// View dialog (read-only; full info)
-// ─────────────────────────────────────────────
-
+ 
+// ─────────────────────────────────────────────────────────────────
+// CustomerViewDialog (unchanged from previous version)
+// ─────────────────────────────────────────────────────────────────
 function CustomerViewDialog({
   customer, routes, onClose,
 }: {
@@ -512,13 +537,11 @@ function CustomerViewDialog({
     <Dialog open onOpenChange={open => !open && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="text-[15px]">
-            {customer.code} — {customer.name}
-          </DialogTitle>
+          <DialogTitle className="text-[15px]">{customer.code} — {customer.name}</DialogTitle>
         </DialogHeader>
         <div className="grid grid-cols-2 gap-x-6 gap-y-0">
           <Row label="Code" value={<span className="font-mono">{customer.code}</span>} />
-          <Row label="Status" value={<StatusPill status={(customer as any).active ? "active" : "draft"} />} />
+          <Row label="Status" value={<StatusPill status={(customer as any).active !== false ? "active" : "draft"} />} />
           <Row label="Name" value={customer.name} />
           <Row label="Phone" value={customer.phone} />
           <Row label="Email" value={(customer as any).email} />
@@ -530,11 +553,13 @@ function CustomerViewDialog({
           <Row label="Bank" value={(customer as any).bank} />
           <Row label="Account No." value={(customer as any).accountNo} />
           <Row label="Credit Limit" value={(customer as any).creditLimit != null
-            ? `₹${Number((customer as any).creditLimit).toLocaleString("en-IN")}`
-            : "—"} />
+            ? `₹${Number((customer as any).creditLimit).toLocaleString("en-IN")}` : "—"} />
+          <Row label="Wallet / Credit Bal." value={(customer as any).creditBalance != null
+            ? `₹${Number((customer as any).creditBalance).toLocaleString("en-IN")}` : "—"} />
           <Row label="Address Type" value={(customer as any).addressType} />
           <Row label="State" value={(customer as any).state} />
-          <Row label="Taluka" value={routes.find((r: any) => r.id === customer.routeId)?.taluka || (customer as any).zoneName} />
+          <Row label="Taluka" value={(customer as any).zoneName
+            || routes.find((r: any) => r.id === customer.routeId)?.taluka} />
           <Row label="City" value={(customer as any).city} />
           <Row label="Area" value={(customer as any).area} />
           <Row label="House No." value={(customer as any).houseNo} />
@@ -542,7 +567,7 @@ function CustomerViewDialog({
           <Row label="Address" value={(customer as any).address} />
           <Row label="Routes" value={
             customer.routes?.length
-              ? customer.routes.map(r => `${r.routeCode}${r.isPrimary ? " ★" : ""}`).join(", ")
+              ? customer.routes.map((r: any) => `${r.routeCode}${r.isPrimary ? " ★" : ""}`).join(", ")
               : "—"
           } />
         </div>
@@ -553,34 +578,24 @@ function CustomerViewDialog({
     </Dialog>
   );
 }
-
+ 
 function CustomerEditDialog({
   customer, routes, zones, rateCategories, officers, onClose, onSaved,
 }: {
   customer: Customer | null;
-  routes: any[];
-  zones: any[];
-  rateCategories: any[];
-  officers: any[];
-  onClose: () => void;
-  onSaved: () => void;
+  routes: any[]; zones: any[]; rateCategories: any[]; officers: any[];
+  onClose: () => void; onSaved: () => void;
 }) {
   if (!customer) return null;
-  // Lazy import to avoid circular ref with the page itself.
-  // The form renders all the same fields the New form has (see Fix #3).
   return (
     <Dialog open onOpenChange={open => !open && onClose()}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-auto">
-        <DialogHeader>
-          <DialogTitle>Edit Customer — {customer.code}</DialogTitle>
-        </DialogHeader>
+        <DialogHeader><DialogTitle>Edit Customer — {customer.code}</DialogTitle></DialogHeader>
         <CustomerFormBody
           mode="edit"
           initial={customer as any}
-          routes={routes}
-          zones={zones}
-          rateCategories={rateCategories}
-          officers={officers}
+          routes={routes} zones={zones}
+          rateCategories={rateCategories} officers={officers}
           onCancel={onClose}
           onSaved={() => { onSaved(); onClose(); }}
         />
