@@ -36,6 +36,8 @@ export const dealers = pgTable(
     name: text("name").notNull(),
     phone: text("phone").notNull().unique(),
     email: text("email"),
+    username:      text("username").unique(),        
+    passwordHash:  text("password_hash"),
     gstNumber: text("gst_number"),
 
     zoneId: uuid("zone_id")
