@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, Outlet } from "react-router-dom";
 import {
   LayoutDashboard, Database, ShoppingCart, Truck, Boxes,
   BookOpenCheck, FileBarChart2, ShieldCheck, Search, Bell,
@@ -21,14 +21,14 @@ export type ModuleKey =
   | "reports" | "sales-reports" | "system";
 
 export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType<any>; path: string }[] = [
-  { key: "dashboard",      label: "Dashboard",     icon: LayoutDashboard, path: "/" },
-  { key: "masters",        label: "Masters",       icon: Database,        path: "/masters/customers" },
-  { key: "sales",          label: "Sales",         icon: ShoppingCart,    path: "/sales/record-indents" },
-  { key: "fgs",            label: "Stock & Dispatch", icon: Truck,        path: "/fgs/dashboard" },
-  { key: "finance",        label: "Finance",       icon: Wallet,          path: "/finance/payments" },
-  { key: "reports",        label: "Reports",       icon: FileBarChart2,   path: "/reports/route-sheet" },
+  { key: "dashboard",      label: "Dashboard",      icon: LayoutDashboard, path: "/" },
+  { key: "masters",        label: "Masters",        icon: Database,        path: "/masters/customers" },
+  { key: "sales",          label: "Sales",          icon: ShoppingCart,    path: "/sales/record-indents" },
+  { key: "fgs",            label: "Stock & Dispatch", icon: Truck,         path: "/fgs/dashboard" },
+  { key: "finance",        label: "Finance",        icon: Wallet,          path: "/finance/payments" },
+  { key: "reports",        label: "Reports",        icon: FileBarChart2,   path: "/reports/route-sheet" },
   { key: "sales-reports",  label: "Sales Reports", icon: FileBarChart2,   path: "/sales-reports/daily-statement" },
-  { key: "system",         label: "Admin",         icon: ShieldCheck,     path: "/system/users" },
+  { key: "system",         label: "Admin",          icon: ShieldCheck,     path: "/system/users" },
 ];
 
 // Map a pathname to the active module key
@@ -137,7 +137,7 @@ const COMMAND_ITEMS: { label: string; path: string }[] = [
 
 // ─── ErpShell ─────────────────────────────────────────────────────────
 
-interface AppLayoutProps { children: React.ReactNode; }
+interface AppLayoutProps { children?: React.ReactNode; }
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const { user, logout } = useAuth();
@@ -149,6 +149,32 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
 
   const activeModule = useMemo(() => moduleOfPath(pathname), [pathname]);
   const breadcrumb = useBreadcrumb();
+
+  // --- Clean View Patch Start ---
+  const __location = useLocation();
+  const __isCleanView = new URLSearchParams(__location.search).get("clean") === "1";
+
+  if (__isCleanView) {
+    return (
+      <div className="erp-clean-shell h-screen w-screen bg-background overflow-hidden flex flex-col">
+        <div className="erp-clean-bar h-9 px-3 flex items-center text-[12px] text-muted-foreground border-b border-border bg-panel no-print">
+          <span className="font-medium">Haveri Milk Union ERP — Clean View</span>
+          <span className="mx-2">·</span>
+          <span>Ctrl+P to print · ← / → to navigate</span>
+          <button
+            className="ml-auto h-7 px-2 text-[11.5px] border border-border rounded-sm hover:bg-accent"
+            onClick={() => window.close()}
+          >
+            Close
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto">
+          {children || <Outlet />}
+        </div>
+      </div>
+    );
+  }
+  // --- Clean View Patch End ---
 
   // Ctrl+K command palette + Esc close
   useEffect(() => {
@@ -296,7 +322,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           </div>
 
           {/* PAGE CONTENT */}
-          <div className="flex-1 overflow-auto">{children}</div>
+          <div className="flex-1 overflow-auto">{children || <Outlet />}</div>
 
           {/* Print-only footer */}
           <div className="print-only print-footer">
