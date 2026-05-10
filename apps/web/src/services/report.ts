@@ -20,15 +20,22 @@ export interface RouteSheetAcrossProduct {
   id: string;
   code: string;
   reportAlias: string;
+  category: string;
   packetsCrate: number;
+  packSize: number;
+  unit: string;
 }
-
-export interface RouteSheetDownProduct {
+ 
+export interface RouteSheetOtherProduct {
   id: string;
   code: string;
   reportAlias: string;
+  category: string;
+  packetsCrate: number;
+  packSize: number;
+  unit: string;
 }
-
+ 
 export interface RouteSheetCustomer {
   sl: number;
   id: string;
@@ -40,30 +47,71 @@ export interface RouteSheetCustomer {
   netAmount: number;
   crates: number;
 }
-
+ 
+export interface RouteSheetAbstractItem {
+  productId: string;
+  alias: string;
+  sortOrder: number;
+  packetsCrate: number;
+  packSize: number;
+  unit: string;
+  crates: number;
+  packets: number;
+  kgLtr: number;
+  amount: number;
+  pktPlus: number;
+  pktMinus: number;
+}
+ 
+export interface RouteSheetAbstract {
+  items: RouteSheetAbstractItem[];
+  totals: {
+    packets: number;
+    kgLtr: number;
+    amount: number;
+    crates: number;
+    pktPlus: number;
+    pktMinus: number;
+  };
+}
+ 
 export interface RouteSheetRoute {
   id: string;
   code: string;
   name: string;
-  contractor: { id: string | null; name: string | null; vehicleNumber: string | null };
+  contractor: {
+    id: string | null;
+    name: string | null;
+    vehicleNumber: string | null;
+  };
   dispatchTime: string | null;
+  batchName: string | null;
+  batchCode: string | null;
   customers: RouteSheetCustomer[];
   totals: {
     acrossQty: Record<string, number>;
     othersQty: number;
     netAmount: number;
     crates: number;
+    totalAcrossQty: number;
+    totalAllQty: number;
   };
+  abstract: RouteSheetAbstract;
 }
-
+ 
 export interface RouteSheetResponse {
   date: string;
-  batch: { id: string; name: string; batchNumber: string | null } | null;
+  batch: {
+    id: string;
+    name: string;
+    batchNumber: string | null;
+    dispatchTime: string | null;
+  } | null;
   acrossProducts: RouteSheetAcrossProduct[];
-  downProducts: RouteSheetDownProduct[];
+  otherProducts: RouteSheetOtherProduct[];
   routes: RouteSheetRoute[];
 }
-
+ 
 export const fetchRouteSheet = (params: { date: string; batchId?: string }) =>
   get<RouteSheetResponse>("/reports/route-sheet", params);
 
