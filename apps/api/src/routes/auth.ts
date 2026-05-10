@@ -24,220 +24,75 @@ import { env } from "../lib/env.js";
 import { nanoid } from "nanoid";
 
 export async function authRoutes(app: FastifyInstance) {
-  // ════════════════════════════════════════════
-  // DEALER AUTH — OTP-based
-  // ════════════════════════════════════════════
+  // ─────────────────────────────────────────────────────────────
+  // DEALER LOGIN — Username + Password (NEW)
+  // ─────────────────────────────────────────────────────────────
+  app.post("/api/v1/auth/dealer/login", async (request, reply) => {
+    const schema = z.object({
+      username: z.string().min(1),   // can be phone or custom username
+      password: z.string().min(1),
+    });
 
-  // POST /api/v1/auth/dealer/request-otp
-  // Sends an OTP to the dealer's phone. In dev, returns it directly.
-  app.post("/api/v1/auth/dealer/request-otp", async (request, reply) => {
-    const schema = z.object({ phone: z.string().min(10).max(15) });
-    const body = schema.parse(request.body);
+    const { username, password } = schema.parse(request.body);
 
-    // Check dealer exists and is active
     const [dealer] = await db
       .select({
         id: dealers.id,
-        name: dealers.name,
+        phone: dealers.phone,
+        zoneId: dealers.zoneId,
+        passwordHash: dealers.passwordHash,
         active: dealers.active,
         deletedAt: dealers.deletedAt,
       })
       .from(dealers)
-      .where(eq(dealers.phone, body.phone))
+      .where(
+        and(
+          eq(dealers.username, username),
+          isNull(dealers.deletedAt)
+        )
+      )
       .limit(1);
 
     if (!dealer || !dealer.active || dealer.deletedAt) {
-      return reply.status(404).send({
-        error: "Not Found",
-        message: "No active dealer found with this phone number",
-      });
-    }
-
-    // Generate OTP
-    const otp = generateOTP();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-    await db.insert(dealerOtps).values({
-      phone: body.phone,
-      otp, // In production: hash this
-      expiresAt,
-    });
-
-    // In development, return the OTP directly (no SMS integration yet)
-    const response: Record<string, unknown> = {
-      message: "OTP sent successfully",
-      expiresIn: 300,
-    };
-
-    if (env.NODE_ENV === "development") {
-      response.otp = otp; // Only in dev!
-    }
-
-    return reply.status(200).send(response);
-  });
-
-  // POST /api/v1/auth/dealer/verify-otp
-  // Verifies OTP and returns access + refresh tokens.
-  app.post("/api/v1/auth/dealer/verify-otp", async (request, reply) => {
-    const schema = z.object({
-      phone: z.string().min(10).max(15),
-      otp: z.string().length(6),
-    });
-    const body = schema.parse(request.body);
-
-    // Find the most recent unexpired, unverified OTP for this phone
-    const [otpRecord] = await db
-      .select()
-      .from(dealerOtps)
-      .where(
-        and(
-          eq(dealerOtps.phone, body.phone),
-          eq(dealerOtps.verified, false),
-          gt(dealerOtps.expiresAt, new Date()),
-        ),
-      )
-      .orderBy(desc(dealerOtps.createdAt))
-      .limit(1);
-
-    if (!otpRecord || otpRecord.otp !== body.otp) {
       return reply.status(401).send({
         error: "Unauthorized",
-        message: "Invalid or expired OTP",
+        message: "Invalid username or password",
       });
     }
 
-    // Mark OTP as verified
-    await db
-      .update(dealerOtps)
-      .set({ verified: true })
-      .where(eq(dealerOtps.id, otpRecord.id));
-
-    // Get dealer details
-    const [dealer] = await db
-      .select({
-        id: dealers.id,
-        name: dealers.name,
-        phone: dealers.phone,
-        zoneId: dealers.zoneId,
-      })
-      .from(dealers)
-      .where(and(eq(dealers.phone, body.phone), isNull(dealers.deletedAt)))
-      .limit(1);
-
-    if (!dealer) {
-      return reply.status(404).send({
-        error: "Not Found",
-        message: "Dealer not found",
+    const passwordMatch = await comparePassword(password, dealer.passwordHash || "");
+    if (!passwordMatch) {
+      return reply.status(401).send({
+        error: "Unauthorized",
+        message: "Invalid username or password",
       });
     }
 
-    // Generate token family for refresh token rotation
-    const family = nanoid(32);
-
-    const tokenPayload = {
+    // Generate tokens
+    const payload = {
       dealerId: dealer.id,
       phone: dealer.phone,
       zoneId: dealer.zoneId,
     };
 
-    const accessToken = signDealerAccessToken(tokenPayload);
-    const refreshToken = signDealerRefreshToken({ ...tokenPayload, family });
+    const accessToken = signDealerAccessToken(payload);
+    const refreshToken = signDealerRefreshToken({ ...payload, family: "dealer" });
 
     // Store refresh token
     await db.insert(dealerRefreshTokens).values({
       dealerId: dealer.id,
       token: refreshToken,
-      family,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+      family: "dealer",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
 
-    return reply.status(200).send({
+    return reply.send({
       accessToken,
       refreshToken,
       dealer: {
         id: dealer.id,
-        name: dealer.name,
         phone: dealer.phone,
-        zoneId: dealer.zoneId,
       },
-    });
-  });
-
-  // POST /api/v1/auth/dealer/refresh
-  // Rotates refresh token — issues new access + refresh tokens.
-  app.post("/api/v1/auth/dealer/refresh", async (request, reply) => {
-    const schema = z.object({ refreshToken: z.string().min(1) });
-    const body = schema.parse(request.body);
-
-    let payload;
-    try {
-      payload = verifyDealerRefreshToken(body.refreshToken);
-    } catch {
-      return reply.status(401).send({
-        error: "Unauthorized",
-        message: "Invalid refresh token",
-      });
-    }
-
-    // Find the stored token record
-    const [storedToken] = await db
-      .select()
-      .from(dealerRefreshTokens)
-      .where(
-        and(
-          eq(dealerRefreshTokens.token, body.refreshToken),
-          isNull(dealerRefreshTokens.revokedAt),
-        ),
-      )
-      .limit(1);
-
-    if (!storedToken) {
-      // Token reuse detected — revoke entire family (possible token theft)
-      await db
-        .update(dealerRefreshTokens)
-        .set({ revokedAt: new Date() })
-        .where(eq(dealerRefreshTokens.family, payload.family));
-
-      request.log.warn(
-        { dealerId: payload.dealerId, family: payload.family },
-        "Refresh token reuse detected — entire family revoked",
-      );
-
-      return reply.status(401).send({
-        error: "Unauthorized",
-        message: "Token has been revoked. Please login again.",
-      });
-    }
-
-    // Revoke old token
-    await db
-      .update(dealerRefreshTokens)
-      .set({ revokedAt: new Date() })
-      .where(eq(dealerRefreshTokens.id, storedToken.id));
-
-    // Issue new tokens
-    const tokenPayload = {
-      dealerId: payload.dealerId,
-      phone: payload.phone,
-      zoneId: payload.zoneId,
-    };
-
-    const newAccessToken = signDealerAccessToken(tokenPayload);
-    const newRefreshToken = signDealerRefreshToken({
-      ...tokenPayload,
-      family: payload.family,
-    });
-
-    await db.insert(dealerRefreshTokens).values({
-      dealerId: payload.dealerId,
-      token: newRefreshToken,
-      family: payload.family,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-    });
-
-    return reply.status(200).send({
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
     });
   });
 
