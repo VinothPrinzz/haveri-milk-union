@@ -42,14 +42,13 @@ export async function reportsRoutes(app: FastifyInstance) {
       `;
    
       // ── 2. Bucketing: 8 across max (milk + curd by sort_order) ──
-      const ACROSS_CATEGORIES = new Set(["milk", "curd"]);
-      const ACROSS_CAP = 8;
-      const isAcrossCat = (catName: string) =>
-        ACROSS_CATEGORIES.has((catName ?? "").trim().toLowerCase());
-   
-      const acrossEligible = (prodRows as any[]).filter(p => isAcrossCat(p.category_name));
-   
-      const acrossProducts = acrossEligible.slice(0, ACROSS_CAP).map(p => ({
+      // filter by print_direction column as intended
+      // const ACROSS_CAP = 12; // or remove .slice(0, ACROSS_CAP) entirely
+      const acrossEligible = (prodRows as any[]).filter(
+        p => (p.print_direction ?? "").trim().toLowerCase() === "across"
+      );
+
+      const acrossProducts = acrossEligible.map(p => ({
         id: p.id,
         code: p.code ?? "",
         reportAlias: p.report_alias ?? p.name,

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 import { z } from "zod";
-import { eq, and, gt, desc, isNull } from "drizzle-orm";
+import { eq, and, sql, gt, desc, isNull } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
 import {
   dealers,
@@ -34,7 +34,7 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     const { username, password } = schema.parse(request.body);
-
+    
     const [dealer] = await db
       .select({
         id: dealers.id,
@@ -103,73 +103,79 @@ export async function authRoutes(app: FastifyInstance) {
   // POST /api/v1/auth/admin/login
   app.post("/api/v1/auth/admin/login", async (request, reply) => {
     const schema = z.object({
-      email: z.string().email(),
+      username: z.string().min(1),   // ← was: email: z.string().email()
       password: z.string().min(1),
     });
     const body = schema.parse(request.body);
-
-    // Find user
+   
+    // Look up by username (case-insensitive for convenience)
     const [user] = await db
       .select()
       .from(users)
-      .where(and(eq(users.email, body.email), isNull(users.deletedAt)))
+      .where(
+        and(
+          eq(sql`LOWER(${users.username})`, body.username.toLowerCase()),
+          isNull(users.deletedAt),
+        ),
+      )
       .limit(1);
-
+   
     if (!user || !user.active) {
       return reply.status(401).send({
         error: "Unauthorized",
-        message: "Invalid email or password",
+        message: "Invalid username or password",
       });
     }
-
+   
     // Verify password
     const valid = await comparePassword(body.password, user.passwordHash);
     if (!valid) {
       return reply.status(401).send({
         error: "Unauthorized",
-        message: "Invalid email or password",
+        message: "Invalid username or password",
       });
     }
-
+   
     // Create session
     const token = generateSessionToken();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
+   
     await db.insert(adminSessions).values({
-      userId: user.id,
+      userId:    user.id,
       token,
       ipAddress: request.ip,
       userAgent: request.headers["user-agent"] ?? null,
       expiresAt,
     });
-
-    // Update last login
+   
+    // Update last login timestamp
     await db
       .update(users)
       .set({ lastLoginAt: new Date() })
       .where(eq(users.id, user.id));
-
+   
     // Set httpOnly cookie
     reply.setCookie("hmu_session", token, {
       httpOnly: true,
-      secure: true,       // SameSite=None requires Secure
-      sameSite: "none",   // cross-origin cookie (frontend on different domain)
-      path: "/",
-      maxAge: 24 * 60 * 60,
+      secure:   true,
+      sameSite: "none",
+      path:     "/",
+      maxAge:   24 * 60 * 60,
     });
-
+   
     return reply.status(200).send({
       message: "Login successful",
       user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        zoneId: user.zoneId,
+        id:       user.id,
+        name:     user.name,
+        username: user.username,   // ← added
+        email:    user.email,
+        role:     user.role,
+        zoneId:   user.zoneId,
       },
-      sessionToken: token, // Also return in body for x-session-token header usage
+      sessionToken: token,
     });
-  });
+  });  
 
   // POST /api/v1/auth/admin/logout
   app.post("/api/v1/auth/admin/logout", async (request, reply) => {
@@ -219,6 +225,7 @@ export async function authRoutes(app: FastifyInstance) {
       .select({
         id: users.id,
         name: users.name,
+        username: users.username,
         email: users.email,
         role: users.role,
         zoneId: users.zoneId,
