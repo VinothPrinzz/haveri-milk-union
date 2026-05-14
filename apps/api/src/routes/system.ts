@@ -15,15 +15,38 @@ export async function systemRoutes(app: FastifyInstance) {
     "/api/v1/users",
     { preHandler: [adminAuth, requireRole("system.users")] },
     async (request, reply) => {
-      const query = paginationSchema.parse(request.query);
+      const query  = paginationSchema.parse(request.query);
       const offset = offsetFromPage(query.page, query.limit);
+   
       const [rows, [countRow]] = await Promise.all([
-        db.select({ id: users.id, name: users.name, email: users.email, role: users.role, phone: users.phone, active: users.active, lastLoginAt: users.lastLoginAt, createdAt: users.createdAt })
-          .from(users).where(isNull(users.deletedAt)).orderBy(desc(users.createdAt)).limit(query.limit).offset(offset),
-        db.select({ count: sql<number>`count(*)::int` }).from(users).where(isNull(users.deletedAt)),
+        db
+          .select({
+            id:          users.id,
+            name:        users.name,
+            username:    users.username,   // ← added
+            email:       users.email,
+            role:        users.role,
+            phone:       users.phone,
+            active:      users.active,
+            lastLoginAt: users.lastLoginAt,
+            createdAt:   users.createdAt,
+          })
+          .from(users)
+          .where(isNull(users.deletedAt))
+          .orderBy(desc(users.createdAt))
+          .limit(query.limit)
+          .offset(offset),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(users)
+          .where(isNull(users.deletedAt)),
       ]);
-      return reply.send({ data: rows, ...paginationMeta(countRow?.count ?? 0, query.page, query.limit) });
-    }
+   
+      return reply.send({
+        data: rows,
+        ...paginationMeta(countRow?.count ?? 0, query.page, query.limit),
+      });
+    },
   );
 
   // POST /api/v1/users
@@ -32,15 +55,41 @@ export async function systemRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("system.users")] },
     async (request, reply) => {
       const schema = z.object({
-        name: z.string().min(1), email: z.string().email(), password: z.string().min(6),
-        role: z.enum(["super_admin", "manager", "dispatch_officer", "accountant", "call_desk"]),
-        phone: z.string().optional(), zoneId: z.string().uuid().optional(),
+        name:     z.string().min(1),
+        username: z.string().min(3).max(32).regex(/^[a-z0-9_]+$/i, "Username may only contain letters, numbers and underscores"),
+        email:    z.string().email(),
+        password: z.string().min(6),
+        role:     z.enum(["super_admin", "manager", "dispatch_officer", "accountant", "call_desk"]),
+        phone:    z.string().optional(),
+        zoneId:   z.string().uuid().optional(),
       });
-      const body = schema.parse(request.body);
+   
+      const body         = schema.parse(request.body);
       const passwordHash = await hashPassword(body.password);
-      const [user] = await db.insert(users).values({ ...body, password: undefined, passwordHash } as any).returning({ id: users.id, name: users.name, email: users.email, role: users.role });
+   
+      // Check username uniqueness (gives a cleaner error than a DB constraint violation)
+      const [existing] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(
+          and(
+            eq(sql`LOWER(${users.username})`, body.username.toLowerCase()),
+            isNull(users.deletedAt),
+          ),
+        )
+        .limit(1);
+   
+      if (existing) {
+        return reply.status(409).send({ error: "Conflict", message: "Username already taken" });
+      }
+   
+      const [user] = await db
+        .insert(users)
+        .values({ ...body, password: undefined, passwordHash } as any)
+        .returning({ id: users.id, name: users.name, username: users.username, email: users.email, role: users.role });
+   
       return reply.status(201).send({ user });
-    }
+    },
   );
 
   // PATCH /api/v1/users/:id
@@ -49,16 +98,45 @@ export async function systemRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("system.users")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+   
       const schema = z.object({
-        name: z.string().min(1).optional(), email: z.string().email().optional(),
-        role: z.enum(["super_admin", "manager", "dispatch_officer", "accountant", "call_desk"]).optional(),
-        phone: z.string().optional(), active: z.boolean().optional(),
+        name:     z.string().min(1).optional(),
+        username: z.string().min(3).max(32).regex(/^[a-z0-9_]+$/i).optional(),
+        email:    z.string().email().optional(),
+        role:     z.enum(["super_admin", "manager", "dispatch_officer", "accountant", "call_desk"]).optional(),
+        phone:    z.string().optional(),
+        active:   z.boolean().optional(),
       });
+   
       const body = schema.parse(request.body);
-      const [updated] = await db.update(users).set({ ...body, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+   
+      // If changing username, check uniqueness first
+      if (body.username) {
+        const [conflict] = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(
+            and(
+              eq(sql`LOWER(${users.username})`, body.username.toLowerCase()),
+              isNull(users.deletedAt),
+            ),
+          )
+          .limit(1);
+   
+        if (conflict && conflict.id !== id) {
+          return reply.status(409).send({ error: "Conflict", message: "Username already taken" });
+        }
+      }
+   
+      const [updated] = await db
+        .update(users)
+        .set({ ...body, updatedAt: new Date() })
+        .where(eq(users.id, id))
+        .returning();
+   
       if (!updated) return reply.status(404).send({ error: "User not found" });
       return reply.send({ user: updated });
-    }
+    },
   );
 
   // PATCH /api/v1/users/:id/reset-password
@@ -66,13 +144,12 @@ export async function systemRoutes(app: FastifyInstance) {
     "/api/v1/users/:id/reset-password",
     { preHandler: [adminAuth, requireRole("system.users")] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const schema = z.object({ password: z.string().min(6) });
-      const body = schema.parse(request.body);
-      const passwordHash = await hashPassword(body.password);
+      const { id }       = request.params as { id: string };
+      const { password } = z.object({ password: z.string().min(6) }).parse(request.body);
+      const passwordHash = await hashPassword(password);
       await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, id));
       return reply.send({ message: "Password reset" });
-    }
+    },
   );
 
   // ═══ REGISTRATIONS ═══

@@ -13,32 +13,33 @@ import { zones } from "./zones.js";
 // Roles: super_admin, manager, dispatch_officer, accountant, call_desk
 // zone_id null = access to all zones
 export const users = pgTable("users", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  name: text("name").notNull(),
-  email: text("email").notNull().unique(),
+  id:           uuid("id").defaultRandom().primaryKey(),
+  name:         text("name").notNull(),
+  username:     text("username").notNull().unique(),   // ← login credential (short handle)
+  email:        text("email").notNull().unique(),       // kept for notifications / contact
   passwordHash: text("password_hash").notNull(),
-  role: userRoleEnum("role").notNull(),
-  zoneId: uuid("zone_id").references(() => zones.id, { onDelete: "set null" }), // null = all zones
-  phone: text("phone"),
-  active: boolean("active").notNull().default(true),
-  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }), // soft delete
+  role:         userRoleEnum("role").notNull(),
+  zoneId:       uuid("zone_id").references(() => zones.id, { onDelete: "set null" }),
+  phone:        text("phone"),
+  active:       boolean("active").notNull().default(true),
+  lastLoginAt:  timestamp("last_login_at",  { withTimezone: true }),
+  createdAt:    timestamp("created_at",     { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:    timestamp("updated_at",     { withTimezone: true }).notNull().defaultNow(),
+  deletedAt:    timestamp("deleted_at",     { withTimezone: true }), // soft delete
 });
 
 // ── Admin Sessions ──
 // Server-side sessions (NOT JWT). Must be revocable — Super Admin can kill compromised sessions.
 export const adminSessions = pgTable("admin_sessions", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id")
+  id:         uuid("id").defaultRandom().primaryKey(),
+  userId:     uuid("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
-  token: text("token").notNull().unique(), // session token stored in httpOnly cookie
-  ipAddress: text("ip_address"),
-  userAgent: text("user_agent"),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  token:      text("token").notNull().unique(),
+  ipAddress:  text("ip_address"),
+  userAgent:  text("user_agent"),
+  expiresAt:  timestamp("expires_at",  { withTimezone: true }).notNull(),
+  createdAt:  timestamp("created_at",  { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ── Relations ──

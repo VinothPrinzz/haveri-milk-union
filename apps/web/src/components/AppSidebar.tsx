@@ -4,7 +4,7 @@ import {
   TrendingUp, History, FileText, Send, ClipboardCheck, ScrollText, CreditCard,
   Receipt, XCircle, Warehouse, BarChart3, FileSpreadsheet, Plus, Truck,
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
-  ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon,
+  ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ModuleKey } from "@/components/AppLayout";
@@ -71,6 +71,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Notifications",          path: "/system/notifications",        icon: Bell },
     { label: "Dealer Notifications",   path: "/system/dealer-notifications", icon: Bell },
     { label: "Banner Management",      path: "/system/banners",              icon: ImageIcon },
+    { label: "Database Health",        path: "/system/db-health",            icon: Database },
   ],
 };
 
