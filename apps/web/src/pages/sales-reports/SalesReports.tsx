@@ -19,6 +19,7 @@ import {
 } from "@/services/report";
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import { toCsv } from "@/lib/exporters";
+import { ColumnPagedTable, paginateColumns } from "@/lib/reportColumnPaging";
 
 const fmtQty = (n: number | string) => String(Number(n || 0));
 
@@ -174,34 +175,29 @@ export const DailySalesStatement = () => (
     fetcher={(from, to) => fetchDailyStatement({ from, to })}
     renderPages={(from, to, apiData) => {
       if (!apiData) return [];
-      return apiData.groups.map((group, gi) => (
-        <div key={gi}>
-          <ReportHeader title={`Daily Sales Statement — ${group.label}`} subtitle={`Period: ${from} to ${to}`} />
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                {group.products.map(p => <th key={p.id} className="num">{p.reportAlias}</th>)}
-                <th className="num">Total Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {group.rows.map(row => (
-                <tr key={row.date}>
-                  <td>{row.date}</td>
-                  {group.products.map(p => <td key={p.id} className="num">{fmtQty(row.qty[p.id] ?? 0)}</td>)}
-                  <td className="num">{fmtINR(row.totalAmount)}</td>
-                </tr>
-              ))}
-              <tr className="font-bold">
-                <td>TOTAL</td>
-                {group.products.map(p => <td key={p.id} className="num">{fmtQty(group.totals.qty[p.id] ?? 0)}</td>)}
-                <td className="num">{fmtINR(group.totals.totalAmount)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      ));
+    
+      return apiData.groups.flatMap((group, gi) => {
+        const productPages = paginateColumns(group.products, 12);
+    
+        return productPages.map((prodChunk, pi) => (
+          <ColumnPagedTable
+            key={`${gi}-${pi}`}
+            title={`Daily Sales Statement — ${group.label} • Cols ${pi + 1}/${productPages.length}`}
+            fixedHead={[{ label: "Date", accessor: r => r.date }]}
+            productCols={prodChunk}
+            productCellRender={(row, p) => fmtQty(row.qty[p.id] ?? 0)}
+            trailingHead={[
+              { label: "Total Amount", accessor: r => fmtINR(r.totalAmount), num: true }
+            ]}
+            rows={group.rows}
+            totalRow={{
+              fixedCells: ["TOTAL"],
+              productCell: (p) => fmtQty(group.totals.qty[p.id] ?? 0),
+              trailingCells: [fmtINR(group.totals.totalAmount)],
+            }}
+          />
+        ));
+      });
     }}
     buildCsv={(from, to, d) => {
       const out: any[][] = [];
@@ -333,7 +329,42 @@ export const CashSalesReport = () => (
     title="Cash Sales"
     description="Cash-mode sales grid by route × product"
     fetcher={(from, to) => fetchCashSales({ from, to })}
-    renderPages={(from, to, apiData) => apiData ? [renderSalesGridPage("Cash Sales", from, to, apiData)] : []}
+    printOrientation="landscape"
+    renderPages={(from, to, apiData) => {
+      if (!apiData) return [];
+
+      const productPages = paginateColumns(apiData.products, 10);
+
+      return productPages.map((cols, i) => (
+        <ColumnPagedTable
+          key={i}
+          title={`Cash Sales • Columns ${i + 1}/${productPages.length}`}
+          fixedHead={[
+            { label: "Code", accessor: r => r.code },
+            { label: "Route", accessor: r => r.name },
+            { label: "Contractor", accessor: r => r.contractorName ?? "—" },
+          ]}
+          productCols={cols}
+          productCellRender={(row, p) => fmtQty(row.qty[p.id] ?? 0)}
+          trailingHead={[
+            { label: "Milk ₹", accessor: r => fmtINR(r.milkAmount), num: true },
+            { label: "Product ₹", accessor: r => fmtINR(r.productAmount), num: true },
+            { label: "Total ₹", accessor: r => fmtINR(r.total), num: true },
+          ]}
+          rows={apiData.routes}
+          rowKey={r => r.id}
+          totalRow={{
+            fixedCells: ["TOTAL", "", ""],
+            productCell: (p) => fmtQty(apiData.totals.qty[p.id] ?? 0),
+            trailingCells: [
+              fmtINR(apiData.totals.milkAmount),
+              fmtINR(apiData.totals.productAmount),
+              fmtINR(apiData.totals.total),
+            ],
+          }}
+        />
+      ));
+    }}
     buildCsv={buildSalesGridCsv}
   />
 );
@@ -344,7 +375,50 @@ export const SalesRegister = () => (
     title="Sales Register"
     description="All sales (cash + credit) by route × product"
     fetcher={(from, to) => fetchSalesRegister({ from, to })}
-    renderPages={(from, to, apiData) => apiData ? [renderSalesGridPage("Sales Register", from, to, apiData)] : []}
+    printOrientation="landscape"
+    renderPages={(from, to, apiData) => {
+      if (!apiData) return [];
+
+      const COLUMNS_PER_PAGE = 10; // Adjust after print testing
+
+      const productPages = paginateColumns(apiData.products, COLUMNS_PER_PAGE);
+
+      return productPages.map((productChunk, i) => (
+        <ColumnPagedTable
+          key={i}
+          title={`Sales Register • Columns ${i + 1} of ${productPages.length}`}
+          // pageInfo={{ current: i + 1, total: productPages.length }} // alternative
+
+          fixedHead={[
+            { label: "Code", accessor: r => r.code },
+            { label: "Route", accessor: r => r.name },
+            { label: "Contractor", accessor: r => r.contractorName ?? "—" },
+          ]}
+
+          productCols={productChunk}
+          productCellRender={(row, prod) => fmtQty(row.qty[prod.id] ?? 0)}
+
+          trailingHead={[
+            { label: "Milk ₹", accessor: r => fmtINR(r.milkAmount), num: true },
+            { label: "Product ₹", accessor: r => fmtINR(r.productAmount), num: true },
+            { label: "Total ₹", accessor: r => fmtINR(r.total), num: true },
+          ]}
+
+          rows={apiData.routes}
+          rowKey={r => r.id}
+
+          totalRow={{
+            fixedCells: ["TOTAL", "", ""],
+            productCell: (prod) => fmtQty(apiData.totals.qty[prod.id] ?? 0),
+            trailingCells: [
+              fmtINR(apiData.totals.milkAmount),
+              fmtINR(apiData.totals.productAmount),
+              fmtINR(apiData.totals.total),
+            ],
+          }}
+        />
+      ));
+    }}
     buildCsv={buildSalesGridCsv}
   />
 );

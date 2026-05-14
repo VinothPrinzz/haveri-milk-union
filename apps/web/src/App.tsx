@@ -32,6 +32,7 @@ import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
 import InvoicesListPage from "@/pages/sales/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
 import PaymentsOverviewPage from "@/pages/finance/PaymentsOverviewPage";
+import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
 import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
@@ -132,6 +133,7 @@ function AppInner() {
           <Route path="/system/banners" element={<BannerManagementPage />} />
           <Route path="/system/roles" element={<RolesPage />} />
           <Route path="/system/users" element={<UserManagementPage />} />
+          <Route path="/system/db-health" element={<DatabaseHealthPage />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </AppLayout>

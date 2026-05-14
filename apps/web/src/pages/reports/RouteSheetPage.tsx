@@ -235,8 +235,19 @@ function RouteRowsPage({
             <th>Code</th>
             <th>Dealer</th>
             {acrossProducts.map(p => (
-              <th key={p.id} className="vert-text" title={p.reportAlias}>
-                <VerticalText text={p.reportAlias} />
+              <th
+                key={p.id}
+                title={p.reportAlias}
+                style={{
+                  whiteSpace: "normal",
+                  wordBreak: "break-word",
+                  textAlign: "center",
+                  verticalAlign: "bottom",
+                  lineHeight: "1.2",
+                  fontSize: "10px",
+                }}
+              >
+                {p.reportAlias}
               </th>
             ))}
             <th>Other Products</th>
@@ -472,15 +483,5 @@ function RouteStrip({
         <span><strong>Completion:</strong> ____</span>
       </div>
     </div>
-  );
-}
-
-function VerticalText({ text }: { text: string }) {
-  return (
-    <span aria-label={text}>
-      {Array.from(text).map((ch, i) => (
-        <span key={i} className="vert-letter">{ch}</span>
-      ))}
-    </span>
   );
 }

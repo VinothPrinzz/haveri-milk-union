@@ -6,33 +6,41 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { post, get } from "@/lib/apiClient";
 
 export interface AdminUser {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-  zoneId: string | null;
+  id:       string;
+  name:     string;
+  username: string;   // ← replaces email as the login identifier
+  email:    string;   // kept — still useful for display / notifications
+  role:     string;
+  zoneId:   string | null;
 }
 
 interface AuthContextValue {
-  user: AdminUser | null;
+  user:    AdminUser | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
+  login:   (username: string, password: string) => Promise<void>;
+  logout:  () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthContextValue>({
-  user: null,
+  user:    null,
   loading: true,
-  login: async () => {},
-  logout: async () => {},
+  login:   async () => {},
+  logout:  async () => {},
 });
 
 export function useAuth() {
   return useContext(AuthContext);
 }
 
-export async function loginAdmin(email: string, password: string): Promise<AdminUser> {
-  const data = await post<{ user: AdminUser; sessionToken: string }>("/auth/admin/login", { email, password });
+/** Send username + password, store session token, return the user object. */
+export async function loginAdmin(
+  username: string,
+  password: string,
+): Promise<AdminUser> {
+  const data = await post<{ user: AdminUser; sessionToken: string }>(
+    "/auth/admin/login",
+    { username, password },   // ← was: { email, password }
+  );
   if (data.sessionToken) {
     localStorage.setItem("hmu_session", data.sessionToken);
   }
