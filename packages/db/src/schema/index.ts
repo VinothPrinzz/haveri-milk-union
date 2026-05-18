@@ -161,3 +161,11 @@ export {
   gatePassItemsRelations,
   routeSheetsRelations,
 } from "./marketing.js";
+
+// ── VIP / Employee masters ──
+export {
+  vipContacts,
+  employees,
+  employeeSubsidyRules,
+  employeeSubsidyRulesRelations,
+} from "./vipEmployee.js";

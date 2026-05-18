@@ -101,8 +101,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
           ra.driver_name AS "driverName",
           -- Resolved dispatch_time: assignment > batch > route
           COALESCE(ra.departure_time::text,
-                   b.dispatch_time::text,
-                   r.dispatch_time)            AS "dispatchTime",
+            r.dispatch_time::text)            AS "dispatchTime",
           COALESCE(ra.status::text, 'pending') AS "status",
           ra.id         AS "assignmentId",
           ro.order_count   AS "dealerCount",
@@ -111,7 +110,6 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
         FROM route_orders ro
         JOIN routes r           ON r.id = ro.route_id AND r.deleted_at IS NULL
         LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
-        LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
         LEFT JOIN route_assignments ra
                ON ra.route_id = r.id AND ra.date = ${targetDate}::date
         ORDER BY r.code
@@ -249,17 +247,15 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
         SELECT r.id, r.code, r.name, r.zone_id, r.contractor_id,
                r.dispatch_time AS route_dispatch_time,
                ct.vehicle_number AS contractor_vehicle,
-               b.dispatch_time::text AS batch_dispatch_time
         FROM routes r
         LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
-        LEFT JOIN batches b      ON b.id = ${body.batchId ?? null}::uuid AND b.deleted_at IS NULL
         WHERE r.id = ${body.routeId} AND r.deleted_at IS NULL
         LIMIT 1
       `;
       if (!route) return reply.status(404).send({ error: "Route not found" });
 
       const resolvedDispatchTime =
-        body.dispatchTime ?? route.batch_dispatch_time ?? route.route_dispatch_time ?? null;
+        body.dispatchTime ?? route.route_dispatch_time ?? null;
       const resolvedVehicle =
         body.vehicleNumber ?? route.contractor_vehicle ?? null;
 

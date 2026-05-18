@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════
 // All Batches / New Batch — ERP refactor
-// Routes preserved: /masters/batches  +  /masters/batches/new
+// Routes preserved: /masters/batches + /masters/batches/new
 // All mutations (create/update/delete/removeRouteFromBatch) preserved.
 // ════════════════════════════════════════════════════════════════════
 import { useState } from "react";
@@ -33,6 +33,7 @@ import {
 import { batchSchema, type BatchFormData } from "@/lib/validations";
 
 interface Props { tab?: "list" | "new"; }
+
 const BATCH_WHICH_OPTIONS = ["Morning", "Afternoon", "Evening", "Night"] as const;
 
 export default function BatchesPage({ tab = "list" }: Props) {
@@ -48,11 +49,13 @@ export default function BatchesPage({ tab = "list" }: Props) {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["batches"] }); toast.success("Batch saved"); },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
+
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: BatchFormData }) => updateBatch(id, data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["batches"] }); toast.success("Batch updated"); },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteBatch(id),
     onSuccess: () => {
@@ -63,6 +66,7 @@ export default function BatchesPage({ tab = "list" }: Props) {
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
+
   const removeRouteMutation = useMutation({
     mutationFn: ({ batchId, routeId }: { batchId: string; routeId: string }) =>
       removeRouteFromBatch(batchId, routeId),
@@ -76,7 +80,7 @@ export default function BatchesPage({ tab = "list" }: Props) {
 
   const createForm = useForm<BatchFormData>({
     resolver: zodResolver(batchSchema),
-    defaultValues: { batchCode: "", whichBatch: "Morning", timing: "", dispatchTime: "" },
+    defaultValues: { batchCode: "", whichBatch: "Morning", timing: "" },
   });
 
   if (tab === "new") {
@@ -134,9 +138,6 @@ export default function BatchesPage({ tab = "list" }: Props) {
                 </div>
                 <p className="text-[12.5px] text-muted-foreground mt-0.5">
                   {batch.whichBatch} — {batch.timing}
-                  {batch.dispatchTime && (
-                    <> · Dispatch at <span className="font-mono">{batch.dispatchTime}</span></>
-                  )}
                 </p>
               </div>
               <div className="flex items-center gap-1">
@@ -160,7 +161,6 @@ export default function BatchesPage({ tab = "list" }: Props) {
                   <tr>
                     <th style={{ width: 90 }}>Code</th>
                     <th>Route Name</th>
-                    <th style={{ width: 110 }}>Dispatch</th>
                     <th style={{ width: 90 }}>Status</th>
                     <th style={{ width: 110, textAlign: "right" }}>Action</th>
                   </tr>
@@ -173,7 +173,6 @@ export default function BatchesPage({ tab = "list" }: Props) {
                       <tr key={rid}>
                         <td className="font-mono">{r.code}</td>
                         <td className="font-medium">{r.name}</td>
-                        <td className="text-[12.5px]">{r.dispatchTime || "—"}</td>
                         <td><StatusPill status={r.status === "Active" ? "active" : "draft"} /></td>
                         <td style={{ textAlign: "right" }}>
                           <Button
@@ -278,13 +277,6 @@ function BatchFormFields({ control, isEdit = false }: { control: any; isEdit?: b
           <FormMessage className="text-[11.5px]" />
         </FormItem>
       )}/>
-      <FormField control={control} name="dispatchTime" render={({ field }) => (
-        <FormItem>
-          <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Dispatch Time</FormLabel>
-          <FormControl><Input type="time" {...field} /></FormControl>
-          <FormMessage className="text-[11.5px]" />
-        </FormItem>
-      )}/>
     </>
   );
 }
@@ -303,9 +295,9 @@ function BatchEditForm({
       batchCode: initialData.batchCode,
       whichBatch: initialData.whichBatch as any,
       timing: initialData.timing ?? "",
-      dispatchTime: initialData.dispatchTime ?? "",
     },
   });
+
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(data => onSubmit(data))}>

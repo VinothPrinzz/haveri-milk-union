@@ -1,3 +1,4 @@
+// apps/web/src/pages/masters/RoutesPage.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -16,14 +17,13 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import {
-  fetchRoutes, 
-  fetchContractors, 
-  fetchZones, 
+  fetchRoutes,
+  fetchContractors,
   fetchBatches,
-  fetchCustomers,        // ← added
-  createRoute, 
-  updateRoute, 
-  deleteRoute, 
+  fetchCustomers,
+  createRoute,
+  updateRoute,
+  deleteRoute,
   type Route as RouteType,
 } from "@/services/api";
 import { routeSchema, type RouteFormData } from "@/lib/validations";
@@ -43,10 +43,8 @@ function RouteFormBody({
 }) {
   const isEdit = Boolean(initialData);
   const { data: contractors = [] } = useQuery({ queryKey: ["contractors"], queryFn: fetchContractors });
-  const { data: zones = [] } = useQuery({ queryKey: ["zones"], queryFn: fetchZones });
   const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
 
-  const talukaOptions: F9Option[] = useMemo(() => zones.map(z => ({ value: z.id, label: z.name })), [zones]);
   const contractorOptions: F9Option[] = useMemo(
     () => contractors.map((c: any) => ({ value: c.id, label: c.name, sublabel: c.code })),
     [contractors],
@@ -60,9 +58,9 @@ function RouteFormBody({
     resolver: zodResolver(routeSchema),
     defaultValues: initialData
       ? {
-          code: initialData.code, 
+          code: initialData.code,
           name: initialData.name,
-          zoneId: initialData.zoneId ?? "",
+          dispatchTime: initialData.dispatchTime ?? "",
           contractorId: initialData.contractorId ?? "",
           primaryBatchId: initialData.primaryBatchId ?? "",
           active: initialData.status === "Active",
@@ -77,7 +75,6 @@ function RouteFormBody({
   const submit = form.handleSubmit(
     async data => {
       if (!data.primaryBatchId) return toast.error("Batch is required");
-      if (!data.zoneId) return toast.error("Taluka is required");
       try { await onSubmit(data); }
       catch (e: any) { toast.error(e?.message || "Failed to save"); }
     },
@@ -101,11 +98,11 @@ function RouteFormBody({
           <Field label="Route Name" required error={form.formState.errors.name?.message}>
             <Input className="erp-input" placeholder="Haveri City Route 1" {...form.register("name")} />
           </Field>
-          <Field label="Taluka" hint="F9" required>
-            <F9SearchSelect
-              value={form.watch("zoneId") || null}
-              onChange={v => form.setValue("zoneId", v ?? "")}
-              options={talukaOptions}
+          <Field label="Dispatch Time" hint="HH:MM (24h)" error={form.formState.errors.dispatchTime?.message}>
+            <Input
+              type="time"
+              className="erp-input"
+              {...form.register("dispatchTime")}
             />
           </Field>
           <Field label="Contractor" hint="F9">
@@ -160,11 +157,11 @@ export default function RoutesPage({ tab = "list" }: Props) {
   const { data: routes = [], isLoading } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
   const { data: contractors = [] } = useQuery({ queryKey: ["contractors"], queryFn: fetchContractors });
   const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
-  const { data: customers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers }); // ← added
+  const { data: customers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
 
   const [editing, setEditing] = useState<RouteType | null>(null);
   const [deleting, setDeleting] = useState<RouteType | null>(null);
-  const [viewing, setViewing] = useState<RouteType | null>(null); // ← added
+  const [viewing, setViewing] = useState<RouteType | null>(null);
 
   const nextCode = useMemo(() => {
     const nums = routes.map(r => r.code).filter(c => /^R\d+$/.test(c)).map(c => parseInt(c.slice(1)));
@@ -220,7 +217,6 @@ export default function RoutesPage({ tab = "list" }: Props) {
           </Button>
         }
       />
-
       <div className="p-4">
         <div className="erp-panel overflow-hidden">
           <div className="overflow-auto max-h-[calc(100vh-220px)]">
@@ -229,7 +225,6 @@ export default function RoutesPage({ tab = "list" }: Props) {
                 <tr>
                   <th>Code</th>
                   <th>Route Name</th>
-                  <th>Taluka</th>
                   <th>Contractor</th>
                   <th>Batch</th>
                   <th>Dispatch</th>
@@ -239,17 +234,15 @@ export default function RoutesPage({ tab = "list" }: Props) {
               <tbody>
                 {isLoading && Array.from({ length: 6 }).map((_, i) => (
                   <tr key={`s-${i}`} className={i % 2 === 1 ? "zebra" : ""}>
-                    {Array.from({ length: 7 }).map((_, j) => (
+                    {Array.from({ length: 6 }).map((_, j) => (
                       <td key={j}><Skeleton className="h-3.5 w-full" /></td>
                     ))}
                   </tr>
                 ))}
-
                 {!isLoading && routes.map((r, i) => (
                   <tr key={r.id} className={i % 2 === 1 ? "zebra" : ""}>
                     <td className="font-mono text-[12px]">{r.code}</td>
                     <td className="font-medium">{r.name}</td>
-                    <td>{r.taluka || "—"}</td>
                     <td>{r.contractorName || contractors.find((c: any) => c.id === r.contractorId)?.name || "—"}</td>
                     <td>
                       {r.primaryBatchId ? (
@@ -261,18 +254,18 @@ export default function RoutesPage({ tab = "list" }: Props) {
                     <td>{r.dispatchTime || "—"}</td>
                     <td style={{ textAlign: "center" }}>
                       <div className="flex items-center justify-center gap-1.5">
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          className="h-7 px-2.5 text-[12px]" 
-                          onClick={() => setViewing(r)}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2.5 text-[12px]"
+                          onClick={() => setViewing(r as RouteType)}
                         >
                           View
                         </Button>
-                        <Button 
-                          size="sm" 
-                          className="h-7 px-2.5 text-[12px]" 
-                          onClick={() => setEditing(r)}
+                        <Button
+                          size="sm"
+                          className="h-7 px-2.5 text-[12px]"
+                          onClick={() => setEditing(r as RouteType)}
                         >
                           Update
                         </Button>
@@ -280,9 +273,8 @@ export default function RoutesPage({ tab = "list" }: Props) {
                     </td>
                   </tr>
                 ))}
-
                 {!isLoading && routes.length === 0 && (
-                  <tr><td colSpan={7} className="py-8 text-center text-muted-foreground">No routes configured yet.</td></tr>
+                  <tr><td colSpan={6} className="py-8 text-center text-muted-foreground">No routes configured yet.</td></tr>
                 )}
               </tbody>
             </table>
@@ -290,7 +282,7 @@ export default function RoutesPage({ tab = "list" }: Props) {
         </div>
       </div>
 
-      {/* Edit dialog - unchanged */}
+      {/* Edit dialog */}
       <Dialog open={!!editing} onOpenChange={open => !open && setEditing(null)}>
         <DialogContent className="max-w-3xl rounded-sm">
           <DialogHeader>
@@ -311,38 +303,34 @@ export default function RoutesPage({ tab = "list" }: Props) {
         </DialogContent>
       </Dialog>
 
-      {/* View dialog - added */}
+      {/* View dialog */}
       <Dialog open={!!viewing} onOpenChange={o => !o && setViewing(null)}>
         <DialogContent className="max-w-3xl max-h-[85vh] overflow-auto">
           <DialogHeader>
             <DialogTitle>{viewing?.code} — {viewing?.name}</DialogTitle>
           </DialogHeader>
           {viewing && (() => {
-            const onRoute = customers.filter((c: any) => 
+            const onRoute = customers.filter((c: any) =>
               c.routes?.some((r: any) => r.routeId === viewing.id)
             );
-
             const Row = ({ label, value }: { label: string; value: any }) => (
               <div className="flex items-baseline gap-2 py-1 border-b border-border/60 last:border-0">
                 <span className="text-[11px] uppercase tracking-wide text-muted-foreground w-32 shrink-0">{label}</span>
                 <span className="text-[13px] font-medium">{value || <span className="text-muted-foreground">—</span>}</span>
               </div>
             );
-
             return (
               <>
                 <div className="grid grid-cols-2 gap-x-6">
-                  <Row label="Code"         value={<span className="font-mono">{viewing.code}</span>} />
-                  <Row label="Status"       value={<StatusPill status={(viewing as any).active === false ? "draft" : "active"} />} />
-                  <Row label="Name"         value={viewing.name} />
-                  <Row label="Taluka"       value={viewing.taluka} />
-                  <Row label="Contractor"   value={viewing.contractorName} />
-                  <Row label="Batch"        value={batchLabelById.get(viewing.primaryBatchId)} />
-                  <Row label="Dispatch"     value={viewing.dispatchTime} />
-                  <Row label="Vehicle"      value={(viewing as any).vehicleNumber} />
-                  <Row label="Driver"       value={(viewing as any).driverName} />
+                  <Row label="Code" value={<span className="font-mono">{viewing.code}</span>} />
+                  <Row label="Status" value={<StatusPill status={(viewing as any).active === false ? "draft" : "active"} />} />
+                  <Row label="Name" value={viewing.name} />
+                  <Row label="Contractor" value={viewing.contractorName} />
+                  <Row label="Batch" value={batchLabelById.get(viewing.primaryBatchId)} />
+                  <Row label="Dispatch" value={viewing.dispatchTime} />
+                  <Row label="Vehicle" value={(viewing as any).vehicleNumber} />
+                  <Row label="Driver" value={(viewing as any).driverName} />
                 </div>
-
                 <div className="erp-panel mt-4">
                   <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2 flex items-center justify-between">
                     <span>Customers Assigned</span>
@@ -372,14 +360,13 @@ export default function RoutesPage({ tab = "list" }: Props) {
               </>
             );
           })()}
-
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setViewing(null)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirm - unchanged */}
+      {/* Delete confirm */}
       <Dialog open={!!deleting} onOpenChange={open => !open && setDeleting(null)}>
         <DialogContent className="max-w-md rounded-sm">
           <DialogHeader>

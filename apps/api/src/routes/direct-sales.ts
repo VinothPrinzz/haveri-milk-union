@@ -91,6 +91,7 @@ export async function directSalesRoutes(app: FastifyInstance) {
           CASE
             WHEN ds.customer_type = 'agent' THEN d.name
             WHEN ds.customer_type = 'cash'  THEN cc.name
+            ELSE ds.recipient_name          -- covers vip_sample + employee_subsidy
           END AS customer_name,
           CASE
             WHEN ds.customer_type = 'agent' THEN d.phone
@@ -179,12 +180,16 @@ export async function directSalesRoutes(app: FastifyInstance) {
         `;
       }
 
-      // Resolve customer name
+      // Replace the existing customer-resolution if/else with:
       let customer: any = null;
       if (sale.customer_type === "agent") {
         [customer] = await pgClient`SELECT id, name, phone, gst_number FROM dealers WHERE id = ${sale.customer_id}`;
-      } else {
+      } else if (sale.customer_type === "cash") {
         [customer] = await pgClient`SELECT id, name, phone FROM cash_customers WHERE id = ${sale.customer_id}`;
+      } else if (sale.customer_type === "vip_sample") {
+        [customer] = await pgClient`SELECT id, name, phone, designation FROM vip_contacts WHERE id = ${sale.customer_id}`;
+      } else if (sale.customer_type === "employee_subsidy") {
+        [customer] = await pgClient`SELECT id, employee_code, name, phone, department, designation FROM employees WHERE id = ${sale.customer_id}`;
       }
 
       return reply.send({ sale, items, gatePassItems, customer });
@@ -358,6 +363,217 @@ export async function directSalesRoutes(app: FastifyInstance) {
         await pgClient`
           UPDATE products SET stock = GREATEST(stock - ${item.quantity}, 0), updated_at = now()
           WHERE id = ${item.productId}
+        `;
+      }
+
+      return reply.status(201).send({ sale, items: lineItems });
+    }
+  );
+
+  // ────────────────────────────────────────────────────────────────────
+  // POST /api/v1/direct-sales/vip-sample
+  // Free issue to a VIP. Forces all prices and GST to 0.
+  // ────────────────────────────────────────────────────────────────────
+  app.post(
+    "/api/v1/direct-sales/vip-sample",
+    { preHandler: [adminAuth, requireRole("direct_sales.manage")] },
+    async (request, reply) => {
+      const body = z.object({
+        customerId: z.string().uuid(),   // vip_contacts.id
+        routeId:    z.string().uuid().optional(),
+        batchId:    z.string().uuid().optional(),
+        saleDate:   z.string().optional(),
+        notes:      z.string().optional(),
+        items:      z.array(saleItemSchema).min(1),
+      }).parse(request.body);
+
+      const saleDate = body.saleDate ?? new Date().toISOString().slice(0, 10);
+
+      // Resolve VIP for recipient_name snapshot
+      const [vip] = await pgClient`
+        SELECT id, name FROM vip_contacts
+        WHERE id = ${body.customerId} AND deleted_at IS NULL
+      `;
+      if (!vip) return reply.status(400).send({ error: "VIP contact not found" });
+
+      // Fetch product names for snapshots
+      const productIds = body.items.map(i => i.productId);
+      const productRows = await pgClient`
+        SELECT id, name FROM products
+        WHERE id = ANY(${productIds}::uuid[]) AND deleted_at IS NULL
+      `;
+      const productMap = new Map(productRows.map((p: any) => [p.id, p]));
+
+      const lineItems = body.items.map((it) => {
+        const product = productMap.get(it.productId);
+        if (!product) throw new Error(`Product ${it.productId} not found`);
+        return {
+          productId:   it.productId,
+          productName: product.name,
+          quantity:    it.quantity,
+          unitPrice:   0,
+          gstPercent:  0,
+          gstAmount:   0,
+          lineTotal:   0,
+        };
+      });
+
+      const [sale] = await pgClient`
+        INSERT INTO direct_sales (
+          customer_type, customer_id, recipient_name, route_id, officer_id, batch_id,
+          sale_date, payment_mode, payment_ref,
+          subtotal, total_gst, grand_total, notes
+        )
+        VALUES (
+          'vip_sample', ${body.customerId}, ${vip.name},
+          ${body.routeId ?? null}, ${request.admin!.userId}, ${body.batchId ?? null},
+          ${saleDate}::date, 'complimentary'::payment_mode, NULL,
+          0, 0, 0, ${body.notes ?? null}
+        )
+        RETURNING *
+      `;
+      if (!sale) return reply.status(500).send({ error: "Failed to create sale" });
+
+      for (const item of lineItems) {
+        await pgClient`
+          INSERT INTO direct_sale_items (
+            direct_sale_id, product_id, product_name, quantity,
+            unit_price, gst_percent, gst_amount, line_total
+          ) VALUES (
+            ${sale.id}, ${item.productId}, ${item.productName}, ${item.quantity},
+            0, 0, 0, 0
+          )
+        `;
+        // Free issues still deduct FGS stock — the goods physically left the warehouse.
+        await pgClient`
+          UPDATE products SET stock = GREATEST(stock - ${item.quantity}, 0), updated_at = now()
+          WHERE id = ${item.productId}
+        `;
+      }
+
+      return reply.status(201).send({ sale, items: lineItems });
+    }
+  );
+
+  // ────────────────────────────────────────────────────────────────────
+  // POST /api/v1/direct-sales/employee-subsidy
+  // Employee buys at MRP × (1 − subsidy%). Server applies discount, staff cannot override.
+  // Only products with an active row in employee_subsidy_rules are accepted.
+  // ────────────────────────────────────────────────────────────────────
+  app.post(
+    "/api/v1/direct-sales/employee-subsidy",
+    { preHandler: [adminAuth, requireRole("direct_sales.manage")] },
+    async (request, reply) => {
+      const body = z.object({
+        customerId:  z.string().uuid(),   // employees.id
+        routeId:     z.string().uuid().optional(),
+        batchId:     z.string().uuid().optional(),
+        saleDate:    z.string().optional(),
+        paymentMode: z.enum(["cash", "upi"]).default("cash"),
+        paymentRef:  z.string().optional(),
+        notes:       z.string().optional(),
+        items:       z.array(saleItemSchema).min(1),
+      }).parse(request.body);
+
+      if (body.paymentMode === "upi" && !body.paymentRef?.trim()) {
+        return reply.status(400).send({ error: "paymentRef is required for UPI" });
+      }
+
+      const saleDate = body.saleDate ?? new Date().toISOString().slice(0, 10);
+
+      // Resolve employee
+      const [employee] = await pgClient`
+        SELECT id, name, active FROM employees
+        WHERE id = ${body.customerId} AND deleted_at IS NULL
+      `;
+      if (!employee)         return reply.status(400).send({ error: "Employee not found" });
+      if (!employee.active)  return reply.status(400).send({ error: "Employee is inactive" });
+
+      // Validate every line is in the eligible product list, and resolve subsidy %
+      const productIds = body.items.map(i => i.productId);
+      const eligible = await pgClient`
+        SELECT r.product_id, r.subsidy_percent,
+              p.name, p.base_price, p.gst_percent
+        FROM employee_subsidy_rules r
+        JOIN products p ON p.id = r.product_id
+        WHERE r.active = true
+          AND p.deleted_at IS NULL
+          AND r.product_id = ANY(${productIds}::uuid[])
+      `;
+      const ruleMap = new Map(eligible.map((r: any) => [r.product_id, r]));
+      for (const it of body.items) {
+        if (!ruleMap.has(it.productId)) {
+          return reply.status(400).send({
+            error: `Product ${it.productId} is not eligible for employee subsidy`,
+          });
+        }
+      }
+
+      let subtotal = 0, totalGst = 0;
+      const lineItems: any[] = [];
+
+      for (const it of body.items) {
+        const rule = ruleMap.get(it.productId)!;
+        const mrp        = parseFloat(rule.base_price);
+        const subsidyPct = parseFloat(rule.subsidy_percent);
+        const gstPct     = parseFloat(rule.gst_percent);
+
+        const unitPrice  = +(mrp * (1 - subsidyPct / 100)).toFixed(2);
+        const lineSub    = +(unitPrice * it.quantity).toFixed(2);
+        const gstAmount  = +(lineSub * gstPct / 100).toFixed(2);
+        const lineTotal  = +(lineSub + gstAmount).toFixed(2);
+
+        subtotal += lineSub;
+        totalGst += gstAmount;
+
+        lineItems.push({
+          productId:   it.productId,
+          productName: rule.name,
+          quantity:    it.quantity,
+          unitPrice,
+          gstPercent:  gstPct,
+          gstAmount,
+          lineTotal,
+          subsidyPercent: subsidyPct,
+          mrpReference:   mrp,
+        });
+      }
+      const grandTotal = +(subtotal + totalGst).toFixed(2);
+
+      const subsidyNote = lineItems
+        .map(li => `${li.productName}: MRP ₹${li.mrpReference} − ${li.subsidyPercent}% subsidy = ₹${li.unitPrice}`)
+        .join("; ");
+
+      const [sale] = await pgClient`
+        INSERT INTO direct_sales (
+          customer_type, customer_id, recipient_name, route_id, officer_id, batch_id,
+          sale_date, payment_mode, payment_ref,
+          subtotal, total_gst, grand_total, notes
+        )
+        VALUES (
+          'employee_subsidy', ${body.customerId}, ${employee.name},
+          ${body.routeId ?? null}, ${request.admin!.userId}, ${body.batchId ?? null},
+          ${saleDate}::date, ${body.paymentMode}::payment_mode, ${body.paymentRef ?? null},
+          ${subtotal}, ${totalGst}, ${grandTotal},
+          ${body.notes ? `${body.notes} | ${subsidyNote}` : subsidyNote}
+        )
+        RETURNING *
+      `;
+      if (!sale) return reply.status(500).send({ error: "Failed to create sale" });
+
+      for (const it of lineItems) {
+        await pgClient`
+          INSERT INTO direct_sale_items (
+            direct_sale_id, product_id, product_name, quantity,
+            unit_price, gst_percent, gst_amount, line_total
+          ) VALUES (
+            ${sale.id}, ${it.productId}, ${it.productName}, ${it.quantity},
+            ${it.unitPrice}, ${it.gstPercent}, ${it.gstAmount}, ${it.lineTotal}
+          )
+        `;
+        await pgClient`
+          UPDATE products SET stock = GREATEST(stock - ${it.quantity}, 0), updated_at = now()
+          WHERE id = ${it.productId}
         `;
       }
 

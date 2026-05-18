@@ -85,8 +85,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
                d.name AS dealer_name, d.phone AS dealer_phone
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
-        JOIN routes r ON r.zone_id = o.zone_id
-        WHERE r.id = ${sheet.route_id}
+        WHERE d.route_id = ${sheet.route_id}::uuid
           AND o.created_at::date = ${sheet.date}::date
           AND o.status IN ('confirmed', 'dispatched', 'delivered')
         ORDER BY d.name
@@ -114,7 +113,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
         SELECT id FROM route_sheets
         WHERE route_id = ${body.routeId}
           AND date = ${body.date}::date
-          AND (${body.batchId ?? null}::uuid IS NULL OR o.batch_id = ${body.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${body.batchId ?? null}::uuid IS NULL OR rs.batch_id = ${body.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
         LIMIT 1
       `;
       if (existing.length > 0) {
@@ -126,23 +125,22 @@ export async function routeSheetRoutes(app: FastifyInstance) {
 
       // Get route + contractor info
       const [route] = await pgClient`
-        SELECT r.id, r.code, r.name, r.zone_id, r.contractor_id,
-               ct.name AS contractor_name, ct.vehicle_number
-        FROM routes r
-        LEFT JOIN contractors ct ON ct.id = r.contractor_id
+        SELECT r.id, r.code, r.name, r.contractor_id,
+              ct.name AS contractor_name, ct.vehicle_number
+        FROM routes r LEFT JOIN contractors ct ON ct.id = r.contractor_id
         WHERE r.id = ${body.routeId}
       `;
       if (!route) return reply.status(404).send({ error: "Route not found" });
 
-      // Count orders for this route's zone on this date
       const [orderStats] = await pgClient`
         SELECT count(*)::int AS dealer_count,
-               COALESCE(sum(grand_total), 0)::numeric AS total_amount,
-               COALESCE(sum(item_count), 0)::int AS total_items
-        FROM orders
-        WHERE zone_id = ${route.zone_id}
-          AND created_at::date = ${body.date}::date
-          AND status IN ('pending', 'confirmed')
+              COALESCE(sum(o.grand_total), 0)::numeric AS total_amount,
+              COALESCE(sum(o.item_count), 0)::int AS total_items
+        FROM orders o
+        JOIN dealers d ON d.id = o.dealer_id
+        WHERE d.route_id = ${body.routeId}
+          AND o.created_at::date = ${body.date}::date
+          AND o.status IN ('pending', 'confirmed')
       `;
 
       // Estimate crates: ~20 items per crate
@@ -162,7 +160,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
       // Update pending orders to confirmed for this zone+date
       await pgClient`
         UPDATE orders SET status = 'confirmed', confirmed_at = now(), updated_at = now()
-        WHERE zone_id = ${route.zone_id}
+        WHERE dealer_id IN (SELECT id FROM dealers WHERE route_id = ${body.routeId}::uuid AND deleted_at IS NULL)
           AND created_at::date = ${body.date}::date
           AND status = 'pending'
       `;

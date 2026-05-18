@@ -12,7 +12,6 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { dispatchStatusEnum } from "./enums.js";
-import { zones } from "./zones.js";
 
 // ── Routes ──
 // Route master: name, zone, stops, distance, active.
@@ -21,13 +20,12 @@ export const routes = pgTable("routes", {
   id: uuid("id").defaultRandom().primaryKey(),
   code: text("code").notNull().unique(), // e.g. "R1", "R2"
   name: text("name").notNull(), // e.g. "Haveri City Route 1"
-  zoneId: uuid("zone_id")
-    .notNull()
-    .references(() => zones.id, { onDelete: "restrict" }),
   stops: integer("stops").notNull().default(0),
   distanceKm: numeric("distance_km", { precision: 6, scale: 1 }),
   stopDetails: text("stop_details"), // JSONB stored as text for Drizzle compatibility (added in 0002)
   contractorId: uuid("contractor_id"), // Phase 2: FK to contractors (no inline ref to avoid circular import)
+  primaryBatchId: uuid("primary_batch_id"),
+  dispatchTime: time("dispatch_time"),  
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -77,10 +75,6 @@ export const routeAssignments = pgTable("route_assignments", {
 // Note: contractor relation for routes is defined in contractors.ts to avoid circular imports.
 // The relation from routes → zone is here.
 export const routesRelations = relations(routes, ({ one, many }) => ({
-  zone: one(zones, {
-    fields: [routes.zoneId],
-    references: [zones.id],
-  }),
   assignments: many(routeAssignments),
 }));
 

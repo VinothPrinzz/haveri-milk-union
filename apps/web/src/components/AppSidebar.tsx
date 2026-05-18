@@ -4,7 +4,8 @@ import {
   TrendingUp, History, FileText, Send, ClipboardCheck, ScrollText, CreditCard,
   Receipt, XCircle, Warehouse, BarChart3, FileSpreadsheet, Plus, Truck,
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
-  ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database
+  ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
+  Star, Briefcase, Gift, BadgePercent
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ModuleKey } from "@/components/AppLayout";
@@ -27,21 +28,26 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Add Product",      path: "/masters/products/add",      icon: PackagePlus },
     { label: "Price Chart",      path: "/masters/price-chart",       icon: TrendingUp },
     { label: "Price Revisions",  path: "/masters/price-revisions",   icon: History },
+    { label: "VIP Contacts",     path: "/masters/vip-contacts",      icon: Star      /* or Users */ },
+    { label: "Employees",        path: "/masters/employees",         icon: Briefcase /* or IdCard */ },
   ],
   sales: [
     { label: "Record Indents",   path: "/sales/record-indents",                  icon: FileText },
     { label: "Post Indent",      path: "/sales/post-indent",                     icon: Send },
     { label: "All Indents",      path: "/sales/all-indents",                     icon: ClipboardCheck },
-    { label: "Direct — Gate Pass", path: "/sales/direct-sales/gate-pass",        icon: ScrollText },
-    { label: "Direct — Cash",    path: "/sales/direct-sales/cash-customer",      icon: CreditCard },
-    { label: "Indent Modify",  path: "/sales/direct-sales/modify",             icon: ClipboardList },
+    { label: "Direct - Gate Pass", path: "/sales/direct-sales/gate-pass",        icon: ScrollText },
+    { label: "Direct - Cash",    path: "/sales/direct-sales/cash-customer",      icon: CreditCard },
+    { label: "Direct - VIP Sample",     path: "/sales/direct-sales/vip-sample",        icon: Gift },
+    { label: "Direct - Employee",       path: "/sales/direct-sales/employee-subsidy",  icon: BadgePercent },
+    { label: "Indent Modify",    path: "/sales/direct-sales/modify",         icon: ClipboardList },
     { label: "Recent Sales",     path: "/sales/direct-sales/recent",             icon: Receipt },
     { label: "All Invoices",     path: "/sales/invoices",                        icon: Receipt },
     { label: "Cancellations",    path: "/sales/cancellations",                   icon: XCircle },
   ],
   fgs: [
     { label: "Stock Overview",   path: "/fgs/dashboard",            icon: BarChart3 },
-    { label: "Stock Entry",      path: "/fgs/stock-entry",          icon: Warehouse },
+    { label: "Stock Entry - Milk & Curd",     path: "/fgs/stock-entry/milk-curd", icon: Warehouse },
+    { label: "Stock Entry - Other Products", path: "/fgs/stock-entry/others",    icon: Warehouse },
     { label: "Stock Reports",    path: "/fgs/reports",              icon: FileSpreadsheet },
     { label: "Dispatch Sheet",   path: "/fgs/dispatch-sheet",       icon: ClipboardList },
     { label: "Create Dispatch",  path: "/fgs/dispatch/create",      icon: Plus },

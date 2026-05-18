@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -17,11 +17,14 @@ import PriceChartPage from "@/pages/masters/PriceChartPage";
 import RecordIndentsPage from "@/pages/sales/RecordIndentsPage";
 import AllIndentsPage from "@/pages/sales/AllIndentsPage";
 import DirectSalesPage from "@/pages/sales/DirectSalesPage";
+import VipContactsPage from "@/pages/masters/VipContactsPage";
+import EmployeesPage   from "@/pages/masters/EmployeesPage";
 import RecentSalesPage from "@/pages/sales/RecentSalesPage";
 import PostIndentPage from "@/pages/sales/PostIndentPage";
 import CancellationRequestsPage from "@/pages/sales/CancellationRequestsPage";
 import StockDashboard from "@/pages/fgs/StockDashboard";
-import StockEntryPage from "@/pages/fgs/StockEntryPage";
+import StockEntryMilkCurdPage from "@/pages/fgs/StockEntryMilkCurdPage";
+import StockEntryOthersPage   from "@/pages/fgs/StockEntryOthersPage";
 import StockReportsPage from "@/pages/fgs/StockReportsPage";
 import DispatchPage from "@/pages/fgs/DispatchPage";
 import DispatchSheetPage from "@/pages/fgs/DispatchSheetPage";
@@ -32,6 +35,7 @@ import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
 import InvoicesListPage from "@/pages/sales/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
 import PaymentsOverviewPage from "@/pages/finance/PaymentsOverviewPage";
+// import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
 import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
@@ -84,6 +88,8 @@ function AppInner() {
           <Route path="/masters/customers/assign-route" element={<CustomersPage tab="assign-route" />} />
           <Route path="/masters/contractors" element={<ContractorsPage tab="list" />} />
           <Route path="/masters/contractors/new" element={<ContractorsPage tab="new" />} />
+          <Route path="/masters/vip-contacts" element={<VipContactsPage />} />
+          <Route path="/masters/employees"    element={<EmployeesPage />} />
           <Route path="/masters/routes" element={<RoutesPage tab="list" />} />
           <Route path="/masters/routes/new" element={<RoutesPage tab="new" />} />
           <Route path="/masters/batches" element={<BatchesPage tab="list" />} />
@@ -100,12 +106,16 @@ function AppInner() {
           <Route path="/sales/direct-sales/cash-customer" element={<DirectSalesPage tab="cash-customer" />} />
           <Route path="/sales/direct-sales/modify" element={<DirectSalesPage tab="modify" />} />
           <Route path="/sales/direct-sales/recent" element={<RecentSalesPage />} />
+          <Route path="/sales/direct-sales/vip-sample"        element={<DirectSalesPage tab="vip-sample" />} />
+          <Route path="/sales/direct-sales/employee-subsidy"  element={<DirectSalesPage tab="employee-subsidy" />} />
           <Route path="/sales/cancellations" element={<CancellationRequestsPage />} />
           <Route path="/sales/invoices"      element={<InvoicesListPage />} />
           <Route path="/sales/invoices/:id"  element={<InvoiceDetailPage />} />
           {/* FGS */}
           <Route path="/fgs/dashboard" element={<StockDashboard />} />
-          <Route path="/fgs/stock-entry" element={<StockEntryPage />} />
+          <Route path="/fgs/stock-entry"            element={<Navigate to="/fgs/stock-entry/milk-curd" replace />} />
+          <Route path="/fgs/stock-entry/milk-curd"  element={<StockEntryMilkCurdPage />} />
+          <Route path="/fgs/stock-entry/others"     element={<StockEntryOthersPage   />} />
           <Route path="/fgs/reports" element={<StockReportsPage />} />
           <Route path="/fgs/dispatch" element={<DispatchPage />} />
           <Route path="/fgs/dispatch-sheet" element={<DispatchSheetPage />} />
@@ -132,6 +142,7 @@ function AppInner() {
           <Route path="/system/banners" element={<BannerManagementPage />} />
           <Route path="/system/roles" element={<RolesPage />} />
           <Route path="/system/users" element={<UserManagementPage />} />
+          {/* <Route path="/system/db-health" element={<DatabaseHealthPage />} /> */}
           <Route path="*" element={<NotFound />} />
         </Routes>
       </AppLayout>

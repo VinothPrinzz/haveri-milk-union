@@ -158,6 +158,14 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "direct_sales.view":   ["super_admin", "manager", "call_desk", "officer"],
   "direct_sales.manage": ["super_admin", "manager", "call_desk", "officer"],
 
+  // VIP Contacts
+  "vip_contacts.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "vip_contacts.manage": ["super_admin", "manager"],
+
+  // Employees (HR-ish master)
+  "employees.view":   ["super_admin", "manager", "call_desk", "officer", "accountant"],
+  "employees.manage": ["super_admin", "manager"],
+
   // Price Chart (Masters → Price Chart)
   "price_chart.view":   ["super_admin", "manager", "accountant", "officer"],
   "price_chart.manage": ["super_admin", "manager"],

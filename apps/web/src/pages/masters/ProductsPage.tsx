@@ -291,6 +291,9 @@ function ProductFormBody({
     },
   });
 
+  const printDirection = form.watch("printDirection") ?? "Across";
+  const aliasMax       = printDirection === "Down" ? 22 : 14;
+
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(async d => { await onSubmit(d); if (!embedded) form.reset(); })}>
@@ -305,20 +308,22 @@ function ProductFormBody({
           <FormField control={form.control} name="reportAlias" render={({ field }) => (
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">
-                Report Alias <span className="text-muted-foreground/70 normal-case font-normal">(max 8)</span>
+                Report Alias{" "}
+                <span className="text-muted-foreground/70 normal-case font-normal">
+                  (max {aliasMax})
+                </span>
               </FormLabel>
               <FormControl>
                 <Input
-                  placeholder="Milk500"
-                  maxLength={8}
+                  placeholder={printDirection === "Down" ? "Toned Milk 500ml Pouch" : "Milk500ml"}
+                  maxLength={aliasMax}
                   {...field}
-                  onChange={e => field.onChange(e.target.value.slice(0, 8))}
+                  onChange={e => field.onChange(e.target.value.slice(0, aliasMax))}
                 />
               </FormControl>
               <div className="text-[10.5px] text-muted-foreground tabular-nums">
-                {(field.value ?? "").length}/8
+                {(field.value ?? "").length}/{aliasMax}
               </div>
-              <FormMessage className="text-[11.5px]" />
             </FormItem>
           )}/>
           <FormField control={form.control} name="category" render={({ field }) => (

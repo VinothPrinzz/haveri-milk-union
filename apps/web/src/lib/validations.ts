@@ -36,6 +36,7 @@ export const customerSchema = z.object({
   area: z.string().default(""),
   houseNo: z.string().default(""),
   street: z.string().default(""),
+  pinCode: z.string().default(""),
   address: z.string().default(""),            // free-form full address (optional)
 
   // Assignment
@@ -90,9 +91,9 @@ export type ContractorFormData = z.infer<typeof contractorSchema>;
 export const routeSchema = z.object({
   code:           z.string().default(""),
   name:           z.string().min(2, "Route name required").default(""),
-  zoneId:         z.string().min(1, "Taluka required").default(""),
   contractorId:   z.string().optional().default(""),
   primaryBatchId: z.string().optional().default(""),
+  dispatchTime:   z.string().regex(/^\d{2}:\d{2}$/, "Use HH:MM").optional().default(""),
   active:         z.boolean().default(true),
 });
 
@@ -106,10 +107,15 @@ export const batchSchema = z.object({
   batchCode:    z.string().min(1, "Batch code required").default(""),
   whichBatch:   z.enum(["Morning", "Afternoon", "Evening", "Night"]).default("Morning"),
   timing:       z.string().min(1, "Timing required").default(""),
-  dispatchTime: z.string().optional().default(""),   // "HH:MM" — matches <input type="time">
 });
 
 export type BatchFormData = z.infer<typeof batchSchema>;
+
+// Import / co-locate the same constant (or import from a shared package):
+export const REPORT_ALIAS_MAX: Record<"Across" | "Down", number> = {
+  Across: 14,
+  Down:   22,
+};
 
 // Fix #10w: productSchema — all fields get proper defaults
 export const productSchema = z.object({
@@ -130,5 +136,20 @@ export const productSchema = z.object({
   printDirection: z.enum(["Across", "Down"]).default("Across"),
   makeZeroInIndents: z.boolean().default(false),
   terminated: z.boolean().default(false),
+}).superRefine((data, ctx) => {
+  if (!data.reportAlias) return;
+  const direction = (data.printDirection ?? "Across") as "Across" | "Down";
+  const maxLen    = REPORT_ALIAS_MAX[direction];
+  if (data.reportAlias.length > maxLen) {
+    ctx.addIssue({
+      code:    z.ZodIssueCode.too_big,
+      type:    "string",
+      maximum: maxLen,
+      inclusive: true,
+      message: `Max ${maxLen} characters for ${direction} products`,
+      path:    ["reportAlias"],
+    });
+  }
 });
+
 export type ProductFormData = z.infer<typeof productSchema>;
