@@ -1,55 +1,163 @@
 // ════════════════════════════════════════════════════════════════════
-// Invoice Detail — printable A4 invoice
+// Invoice Detail — printable A4 GST tax invoice
 // Route preserved: /sales/invoices/:id
+//
+// Layout reference: client-provided MANMUL retailer GST invoice.
+// Letterhead style reference: RouteSheetPage's <RouteLetterhead/>
+// (same centered company name + GST/Admin Office/Phone meta block,
+// so every printed document carries the same masthead).
 // ════════════════════════════════════════════════════════════════════
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import PageHeader, {
-  StatusPill, EmptyState, fmtINR, fmtDate,
-} from "@/components/PageHeader";
+import PageHeader, { EmptyState, fmtDate } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Printer, Send, Ban } from "lucide-react";
-import { fetchInvoiceById as fetchInvoice, sendInvoice, cancelInvoice } from "@/services/api";
+import {
+  fetchInvoiceById as fetchInvoice,
+  sendInvoice,
+  cancelInvoice,
+} from "@/services/api";
 
+// ── Company info — mirrors RouteLetterhead in RouteSheetPage.tsx ────
+const COMPANY = {
+  name:      "Haveri District Co-operative Milk Producers Societies Union Ltd",
+  gstin:     "29AADAH7841L1Z6",
+  pan:       "AADAH7841L",              // derived from GSTIN[2..11]
+  address:   "Veterinary Hospital Compound, PB Road, Haveri - 581110",
+  phone:     "08375200650",
+  email:     "admin@haverimunion.coop",
+  fssai:     "10012043000208",
+  stateName: "KARNATAKA",
+  stateCode: "29",
+};
+
+// ── Tiny format helper: 2-decimal plain number (no ₹ symbol) ────────
+const fmt2 = (n: number | string | null | undefined): string => {
+  const v = typeof n === "string" ? parseFloat(n) : (n ?? 0);
+  if (!Number.isFinite(v)) return "0.00";
+  return v.toFixed(2);
+};
+
+// ── Indian-system number to words, returns UPPERCASE without suffix ─
+function numToWordsIndian(num: number): string {
+  const n = Math.round(num);
+  if (n === 0) return "ZERO";
+
+  const ones = [
+    "", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE",
+    "TEN", "ELEVEN", "TWELVE", "THIRTEEN", "FOURTEEN", "FIFTEEN", "SIXTEEN",
+    "SEVENTEEN", "EIGHTEEN", "NINETEEN",
+  ];
+  const tens = [
+    "", "", "TWENTY", "THIRTY", "FORTY", "FIFTY", "SIXTY", "SEVENTY", "EIGHTY", "NINETY",
+  ];
+
+  const two = (x: number): string => {
+    if (x < 20) return ones[x];
+    const t = Math.floor(x / 10);
+    const o = x % 10;
+    return o ? `${tens[t]}-${ones[o]}` : tens[t];
+  };
+  const three = (x: number): string => {
+    const h = Math.floor(x / 100);
+    const r = x % 100;
+    const parts: string[] = [];
+    if (h) parts.push(`${ones[h]} HUNDRED`);
+    if (r) parts.push(two(r));
+    return parts.join(" ");
+  };
+
+  const crore = Math.floor(n / 10000000);
+  const lakh  = Math.floor((n % 10000000) / 100000);
+  const thou  = Math.floor((n % 100000) / 1000);
+  const rest  = n % 1000;
+
+  const parts: string[] = [];
+  if (crore) parts.push(`${two(crore)} CRORE`);
+  if (lakh)  parts.push(`${two(lakh)} LAKH`);
+  if (thou)  parts.push(`${two(thou)} THOUSAND`);
+  if (rest)  parts.push(three(rest));
+  return parts.join(" ");
+}
+
+// ── Qty: show as integer if whole, else 2-decimal ───────────────────
+const fmtQty = (q: number): string =>
+  q % 1 === 0 ? String(q) : q.toFixed(2);
+
+// ════════════════════════════════════════════════════════════════════
+// PAGE
+// ════════════════════════════════════════════════════════════════════
 export default function InvoiceDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const qc = useQueryClient();
+
   const { data: invData, isLoading } = useQuery({
     queryKey: ["invoice", id],
-    queryFn: () => fetchInvoice(id),
-    enabled: !!id,
+    queryFn:  () => fetchInvoice(id),
+    enabled:  !!id,
   });
   const inv = invData?.invoice as any;
-  const invLines = invData?.items ?? [];
+  const invLines = (invData?.items ?? []) as any[];
 
   const send = useMutation({
     mutationFn: () => sendInvoice(id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["invoice", id] }); toast.success("Invoice sent"); },
-    onError: (e: any) => toast.error(e?.message || "Failed"),
+    onSuccess:  () => { qc.invalidateQueries({ queryKey: ["invoice", id] }); toast.success("Invoice sent"); },
+    onError:    (e: any) => toast.error(e?.message || "Failed"),
   });
   const cancel = useMutation({
     mutationFn: () => cancelInvoice(id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["invoice", id] }); toast.success("Invoice cancelled"); },
-    onError: (e: any) => toast.error(e?.message || "Failed"),
+    onSuccess:  () => { qc.invalidateQueries({ queryKey: ["invoice", id] }); toast.success("Invoice cancelled"); },
+    onError:    (e: any) => toast.error(e?.message || "Failed"),
   });
 
-  if (isLoading) return <div className="p-4 space-y-2">{Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}</div>;
+  if (isLoading) {
+    return (
+      <div className="p-4 space-y-2">
+        {Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
+      </div>
+    );
+  }
   if (!invData) return <EmptyState title="Invoice not found." />;
 
-  const subtotal = invLines.reduce((s: number, l: any) => s + (l.quantity || 0) * parseFloat(String(l.unitPrice || l.rate || 0)), 0);
-  const cgst = parseFloat(String(inv?.cgst ?? 0)) || 0;
-  const sgst = parseFloat(String(inv?.sgst ?? 0)) || 0;
-  const total = parseFloat(String(inv?.totalAmount ?? 0)) || subtotal + cgst + sgst;
-  const paid = parseFloat(String(inv?.paidAmount ?? 0)) || 0;
-  const balance = total - paid;
+  // ── Aggregate calculations ─────────────────────────────────────────
+  const taxable = invLines.reduce((s, l) => {
+    const basic = parseFloat(String(l.basic ?? ""));
+    if (Number.isFinite(basic) && basic > 0) return s + basic;
+    const qty  = Number(l.quantity ?? 0);
+    const rate = parseFloat(String(l.unitPrice ?? 0)) || 0;
+    return s + qty * rate;
+  }, 0);
+  const cgst       = parseFloat(String(inv?.cgst ?? 0)) || 0;
+  const sgst       = parseFloat(String(inv?.sgst ?? 0)) || 0;
+  const igst       = parseFloat(String(inv?.igst ?? 0)) || 0;
+  const totalTax   = cgst + sgst + igst;
+  const grandTotal = parseFloat(String(inv?.totalAmount ?? 0)) || (taxable + totalTax);
+  const netAmount  = Math.round(grandTotal);
+  const roundingAdj = +(netAmount - grandTotal).toFixed(2);
+
+  // ── Receiver fields ────────────────────────────────────────────────
+  const dealerName    = inv?.dealerName ?? inv?.currentDealerName ?? "—";
+  const dealerAddress = inv?.dealerAddressSnapshot ?? inv?.dealerAddress ?? "—";
+  const dealerCity    = inv?.dealerCity ?? "—";
+  const dealerState   = inv?.dealerState ?? COMPANY.stateName;
+  const dealerPhone   = inv?.dealerPhone ?? "—";
+  const dealerGst     = inv?.dealerGstNumber ?? inv?.dealerCurrentGst ?? "—";
+  const dealerCode    = inv?.dealerCode ?? "—";
+  const dealerEmail   = inv?.dealerEmail ?? "";
+  const poNumber      = inv?.poNumber ?? inv?.orderId ?? "—";
+  const routeDisplay  = inv?.routeName
+    ? `${inv.routeName}${inv.routeCode ? `[${inv.routeCode}]` : ""}`
+    : "—";
+  // const vehicleNo     = inv?.vehicleNumber ?? inv?.contractor?.vehicleNumber ?? "—";
 
   return (
     <div className="flex flex-col h-full">
+      {/* ── Screen-only action bar ────────────────────────────────── */}
       <PageHeader
-        title={`Invoice ${inv?.invoiceNumber ?? inv?.number ?? inv?.code ?? id}`}
-        subtitle={`Issued ${fmtDate(inv?.invoiceDate ?? inv?.date ?? inv?.issuedAt)}`}
+        title={`Invoice ${inv?.invoiceNumber ?? id}`}
+        subtitle={`Issued ${fmtDate(inv?.invoiceDate)}`}
         actions={
           <>
             <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
@@ -61,8 +169,13 @@ export default function InvoiceDetailPage() {
               </Button>
             )}
             {inv?.paymentStatus !== "paid" && (
-              <Button size="sm" variant="outline" className="h-8 text-destructive border-destructive/40 hover:bg-destructive/10"
-                onClick={() => cancel.mutate()} disabled={cancel.isPending}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-destructive border-destructive/40 hover:bg-destructive/10"
+                onClick={() => cancel.mutate()}
+                disabled={cancel.isPending}
+              >
                 <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
               </Button>
             )}
@@ -71,82 +184,269 @@ export default function InvoiceDetailPage() {
       />
 
       <div className="flex-1 overflow-auto p-4">
-        <div className="erp-panel p-6 max-w-[840px] mx-auto print:max-w-full print:p-0 print:border-0 print:shadow-none">
-          <div className="print-document">
-            <div className="flex justify-between items-start mb-6 pb-4 border-b border-border">
-              <div>
-                <p className="text-[11.5px] uppercase tracking-wide text-muted-foreground">Tax Invoice</p>
-                <p className="text-[20px] font-semibold font-mono mt-1">{inv?.invoiceNumber ?? inv?.number ?? id}</p>
+        <div className="erp-panel p-6 max-w-[900px] mx-auto print:max-w-full print:p-0 print:border-0 print:shadow-none">
+          {/* Scoped print overrides — strip the global heavy grid border
+              the index.css print rules add to every td/th inside
+              .print-document. We restore only the subtle screen look
+              so print and screen render identically. */}
+          <style>{`
+            @media print {
+              .print-document.inv-doc table,
+              .print-document.inv-doc table th,
+              .print-document.inv-doc table td {
+                border: 0 !important;
+                background: transparent !important;
+                padding: 2px 6px !important;
+                color: #000 !important;
+              }
+              .print-document.inv-doc .erp-table thead th {
+                border-top: 1px solid #000 !important;
+                border-bottom: 1px solid #000 !important;
+                background: transparent !important;
+                font-weight: 700 !important;
+              }
+              .print-document.inv-doc .erp-table tbody td {
+                border-bottom: 1px dotted #bbb !important;
+              }
+              .print-document.inv-doc .inv-total-row td {
+                border-top: 1px solid #000 !important;
+                border-bottom: 1px solid #000 !important;
+                font-weight: 700 !important;
+              }
+              .print-document.inv-doc .inv-net-row td {
+                border-top: 1px solid #000 !important;
+                font-weight: 700 !important;
+              }
+              .print-document.inv-doc .inv-section-bar {
+                border-top: 1px solid #000 !important;
+                border-bottom: 1px solid #000 !important;
+              }
+              .print-document.inv-doc .inv-footer-divider {
+                border-top: 1px solid #000 !important;
+              }
+            }
+          `}</style>
+          <div className="print-document inv-doc">
+
+            {/* ── LETTERHEAD — same style as Route Sheet ──────────── */}
+            <div className="rs-letterhead">
+              <div className="rs-lh-co">{COMPANY.name}</div>
+              <div className="rs-lh-meta">
+                <span><strong>GST No.:</strong> {COMPANY.gstin}</span>
+                <span><strong>Admin Office:</strong> {COMPANY.address}</span>
+                <span><strong>Phone:</strong> {COMPANY.phone}</span>
               </div>
-              <div className="text-right text-[12.5px]">
-                <p><span className="text-muted-foreground">Date</span> &nbsp; {fmtDate(inv?.invoiceDate ?? inv?.date)}</p>
-                {inv?.dueDate && <p><span className="text-muted-foreground">Due</span> &nbsp; {fmtDate(inv.dueDate)}</p>}
-                <p className="mt-1"><StatusPill status={inv?.paymentStatus ?? inv?.status} /></p>
-              </div>
+              <div className="rs-lh-title">TAX INVOICE</div>
             </div>
 
-            <div className="grid grid-cols-2 gap-6 mb-6 text-[13px]">
-              <div>
-                <p className="erp-section-title mb-1">Bill To</p>
-                <p className="font-semibold">{inv?.dealerName ?? inv?.currentDealerName ?? "—"}</p>
-                <p className="text-muted-foreground whitespace-pre-line">{inv?.dealerAddress ?? inv?.dealerAddressSnapshot ?? ""}</p>
-                {(inv?.dealerGstNumber ?? inv?.dealerCurrentGst) && <p className="font-mono text-[12px] mt-1">GSTIN: {inv?.dealerGstNumber ?? inv?.dealerCurrentGst}</p>}
-              </div>
-              <div className="text-right">
-                <p className="erp-section-title mb-1">Reference</p>
-                {inv?.orderId && <p>Order <span className="font-mono">{inv.orderId}</span></p>}
-                {inv?.routeName && <p>Route <span className="font-medium">{inv.routeName}</span></p>}
-                {inv?.routeCode && <p>Route Code <span className="font-medium">{inv.routeCode}</span></p>}
-              </div>
-            </div>
-
-            <table className="erp-table mb-4">
-              <thead>
-                <tr>
-                  <th style={{ width: 36 }}>#</th>
-                  <th>Product</th>
-                  <th style={{ width: 80 }}>HSN</th>
-                  <th className="num" style={{ width: 100, textAlign: "right" }}>Qty</th>
-                  <th className="num" style={{ width: 110, textAlign: "right" }}>Rate ₹</th>
-                  <th className="num" style={{ width: 110, textAlign: "right" }}>Amount ₹</th>
-                </tr>
-              </thead>
+            {/* ── Invoice meta (two columns) ──────────────────────── */}
+            <table className="w-full text-[12px] border-collapse mb-2">
               <tbody>
-                {invLines.map((l: any, i: number) => (
-                  <tr key={i}>
-                    <td className="num text-muted-foreground" style={{ textAlign: "center" }}>{i + 1}</td>
-                    <td>
-                      <div className="font-medium">{l.productName}</div>
-                      {l.packSize && <div className="text-[12px] text-muted-foreground">{l.packSize}</div>}
-                    </td>
-                    <td className="font-mono text-[12px]">{l.hsnNo ?? "—"}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{Number(l.quantity ?? 0).toFixed(2)}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(parseFloat(String(l.unitPrice ?? 0)))}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(parseFloat(String(l.lineTotal ?? 0)))}</td>
-                  </tr>
-                ))}
+                <tr>
+                  <td className="py-[2px] pr-3 align-top w-1/2">
+                    <span className="text-muted-foreground">Invoice No :</span>{" "}
+                    <span className="font-mono font-medium">{inv?.invoiceNumber ?? id}</span>
+                  </td>
+                  <td className="py-[2px] pr-3 align-top w-1/2">
+                    <span className="text-muted-foreground">Invoice Date :</span>{" "}
+                    <span className="font-medium">{fmtDate(inv?.invoiceDate)}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">GSTIN :</span>{" "}
+                    <span className="font-mono">{COMPANY.gstin}</span>
+                  </td>
+                  <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">State :</span> {COMPANY.stateName}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">PAN No :</span>{" "}
+                    <span className="font-mono">{COMPANY.pan}</span>
+                  </td>
+                  <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">State Code :</span> {COMPANY.stateCode}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">Route Name :</span> {routeDisplay}
+                  </td>
+                  {/* <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">Vehicle No :</span>{" "}
+                    <span className="font-mono">{vehicleNo}</span>
+                  </td> */}
+                </tr>
+                <tr>
+                  <td className="py-[2px] pr-3 align-top" colSpan={2}>
+                    <span className="text-muted-foreground">Fssai Licence Number :</span>{" "}
+                    <span className="font-mono">{COMPANY.fssai}</span>
+                  </td>
+                </tr>
               </tbody>
             </table>
 
-            <div className="flex justify-end mb-4">
-              <table className="text-[13px] w-72">
+            {/* ── Details of Receiver / Bill to ───────────────────── */}
+            <div className="inv-section-bar border-y border-black text-center text-[12px] font-semibold uppercase tracking-wide py-1 mb-2">
+              Details of Receiver / Bill to
+            </div>
+
+            <div className="grid grid-cols-2 gap-x-6 mb-3 text-[12px] leading-[1.45]">
+              {/* Billing side */}
+              <div>
+                <p><span className="text-muted-foreground">Name :</span> <span className="font-semibold">{dealerName}</span></p>
+                <p className="whitespace-pre-line"><span className="text-muted-foreground">Billing Address :</span> {dealerAddress}</p>
+                <p><span className="text-muted-foreground">City :</span> {dealerCity}</p>
+                <p><span className="text-muted-foreground">District :</span> {dealerCity}</p>
+                <p><span className="text-muted-foreground">GST No :</span> <span className="font-mono">{dealerGst}</span></p>
+                <p><span className="text-muted-foreground">Dealer Id :</span> <span className="font-mono">{dealerCode}</span></p>
+                <p><span className="text-muted-foreground">PO Number :</span> <span className="font-mono">{poNumber}</span></p>
+              </div>
+              {/* Shipping side */}
+              <div>
+                {/* <p><span className="text-muted-foreground">Name :</span> <span className="font-semibold">{dealerName}</span></p> */}
+                <p className="whitespace-pre-line"><span className="text-muted-foreground">Ship/Deliver Address :</span> {dealerAddress}</p>
+                <p><span className="text-muted-foreground">State :</span> {dealerState}</p>
+                <p><span className="text-muted-foreground">Phone No :</span> {dealerPhone}</p>
+                <p><span className="text-muted-foreground">Email :</span> {dealerEmail}</p>
+              </div>
+            </div>
+
+            {/* ── Line items table ────────────────────────────────── */}
+            <table className="erp-table mb-3 text-[10.5px]">
+              <thead>
+                <tr>
+                  <th style={{ width: 32 }}>Sl No</th>
+                  <th>Description of Goods</th>
+                  <th style={{ width: 68 }}>HSN CODE</th>
+                  <th className="num" style={{ width: 48, textAlign: "right" }}>Qty</th>
+                  <th className="num" style={{ width: 58, textAlign: "right" }}>Rate</th>
+                  <th className="num" style={{ width: 78, textAlign: "right" }}>Taxable Value</th>
+                  <th className="num" style={{ width: 42, textAlign: "right" }}>GST %</th>
+                  <th className="num" style={{ width: 64, textAlign: "right" }}>CGST Value</th>
+                  <th className="num" style={{ width: 64, textAlign: "right" }}>SGST Value</th>
+                  <th className="num" style={{ width: 60, textAlign: "right" }}>IGST Value</th>
+                  <th className="num" style={{ width: 78, textAlign: "right" }}>Net Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invLines.map((l, i) => {
+                  const qty     = Number(l.quantity ?? 0);
+                  const rate    = parseFloat(String(l.unitPrice ?? 0)) || 0;
+                  const basicV  = parseFloat(String(l.basic ?? "")) || qty * rate;
+                  const gstPct  = parseFloat(String(l.gstPercent ?? 0)) || 0;
+                  const cgstAmt = parseFloat(String(l.cgstAmount ?? 0)) || 0;
+                  const sgstAmt = parseFloat(String(l.sgstAmount ?? 0)) || 0;
+                  const igstAmt = parseFloat(String(l.igstAmount ?? 0)) || 0;
+                  const lineTot = parseFloat(String(l.lineTotal ?? "")) || (basicV + cgstAmt + sgstAmt + igstAmt);
+                  return (
+                    <tr key={i}>
+                      <td className="num" style={{ textAlign: "center" }}>{i + 1}</td>
+                      <td>
+                        {l.productName}
+                        {l.packSize ? ` ${l.packSize}` : ""}
+                      </td>
+                      <td className="font-mono">{l.hsnNo ?? "—"}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtQty(qty)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmt2(rate)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmt2(basicV)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{gstPct === 0 ? "0" : fmt2(gstPct)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmt2(cgstAmt)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmt2(sgstAmt)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmt2(igstAmt)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmt2(lineTot)}</td>
+                    </tr>
+                  );
+                })}
+
+                {/* Total row */}
+                <tr className="inv-total-row font-semibold" style={{ borderTop: "1px solid #000", borderBottom: "1px solid #000" }}>
+                  <td colSpan={5} style={{ textAlign: "right" }}>Total</td>
+                  <td className="num" style={{ textAlign: "right" }}>{fmt2(taxable)}</td>
+                  <td></td>
+                  <td className="num" style={{ textAlign: "right" }}>{fmt2(cgst)}</td>
+                  <td className="num" style={{ textAlign: "right" }}>{fmt2(sgst)}</td>
+                  <td className="num" style={{ textAlign: "right" }}>{fmt2(igst)}</td>
+                  <td className="num" style={{ textAlign: "right" }}>{fmt2(grandTotal)}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            {/* ── Invoice Value in Words + Remarks ────────────────── */}
+            <div className="grid grid-cols-[1fr_auto] gap-x-6 mb-4 text-[12px]">
+              <div>
+                <p className="font-semibold">Invoice Value (In Words) :</p>
+                <p className="italic">(Rs : {numToWordsIndian(netAmount)} RUPEES )</p>
+                <p className="font-semibold mt-3">REMARKS</p>
+              </div>
+
+              <table className="text-[12px] min-w-[260px] border-collapse">
                 <tbody>
-                  <tr><td className="text-muted-foreground py-1">Subtotal</td><td className="num py-1" style={{ textAlign: "right" }}>{fmtINR(subtotal)}</td></tr>
-                  {cgst > 0 && <tr><td className="text-muted-foreground py-1">CGST</td><td className="num py-1" style={{ textAlign: "right" }}>{fmtINR(cgst)}</td></tr>}
-                  {sgst > 0 && <tr><td className="text-muted-foreground py-1">SGST</td><td className="num py-1" style={{ textAlign: "right" }}>{fmtINR(sgst)}</td></tr>}
-                  <tr className="border-t border-border"><td className="font-semibold py-1.5">Total</td><td className="num font-bold py-1.5" style={{ textAlign: "right" }}>{fmtINR(total)}</td></tr>
-                  {paid > 0 && <tr><td className="text-muted-foreground py-1">Paid</td><td className="num py-1" style={{ textAlign: "right" }}>{fmtINR(paid)}</td></tr>}
-                  <tr><td className="font-semibold py-1">Balance Due</td><td className={`num font-semibold py-1 ${balance > 0 ? "text-warning" : "text-success"}`} style={{ textAlign: "right" }}>{fmtINR(balance)}</td></tr>
+                  <tr>
+                    <td className="text-muted-foreground py-[2px] pr-4">Total Taxable Value</td>
+                    <td className="num py-[2px]" style={{ textAlign: "right" }}>{fmt2(taxable)}</td>
+                  </tr>
+                  {cgst > 0 && (
+                    <tr>
+                      <td className="text-muted-foreground py-[2px] pr-4">CGST</td>
+                      <td className="num py-[2px]" style={{ textAlign: "right" }}>{fmt2(cgst)}</td>
+                    </tr>
+                  )}
+                  {sgst > 0 && (
+                    <tr>
+                      <td className="text-muted-foreground py-[2px] pr-4">SGST</td>
+                      <td className="num py-[2px]" style={{ textAlign: "right" }}>{fmt2(sgst)}</td>
+                    </tr>
+                  )}
+                  {igst > 0 && (
+                    <tr>
+                      <td className="text-muted-foreground py-[2px] pr-4">IGST</td>
+                      <td className="num py-[2px]" style={{ textAlign: "right" }}>{fmt2(igst)}</td>
+                    </tr>
+                  )}
+                  {totalTax > 0 && (
+                    <tr>
+                      <td className="text-muted-foreground py-[2px] pr-4">Total GST</td>
+                      <td className="num py-[2px]" style={{ textAlign: "right" }}>{fmt2(totalTax)}</td>
+                    </tr>
+                  )}
+                  <tr>
+                    <td className="font-semibold py-[2px] pr-4">Grand Total</td>
+                    <td className="num font-semibold py-[2px]" style={{ textAlign: "right" }}>{fmt2(grandTotal)}</td>
+                  </tr>
+                  <tr>
+                    <td className="text-muted-foreground py-[2px] pr-4">ROUNDING ADJ</td>
+                    <td className="num py-[2px]" style={{ textAlign: "right" }}>
+                      {roundingAdj < 0 ? "-" : ""}{fmt2(Math.abs(roundingAdj))}
+                    </td>
+                  </tr>
+                  <tr className="inv-net-row" style={{ borderTop: "1px solid #000" }}>
+                    <td className="font-bold py-1 pr-4">NET AMOUNT</td>
+                    <td className="num font-bold py-1" style={{ textAlign: "right" }}>{netAmount}</td>
+                  </tr>
                 </tbody>
               </table>
             </div>
 
-            {inv?.notes && (
-              <div className="text-[12.5px] text-muted-foreground border-t border-border pt-3">
-                <p className="erp-section-title mb-1">Notes</p>
-                <p>{inv.notes}</p>
+            {/* ── Footer: certification + signatures ──────────────── */}
+            <div className="inv-footer-divider border-t border-black pt-3 grid grid-cols-2 gap-6 text-[11.5px]">
+              <div>
+                <p className="mt-12">Goods Receiver Signature</p>
               </div>
-            )}
+              <div className="text-right">
+                <p>Certified that the Particulars given above</p>
+                <p>are true and correct</p>
+                <p className="mt-1">for {COMPANY.name}.,</p>
+                <p className="mt-10">Authorised Signatory</p>
+              </div>
+            </div>
+
+            <p className="text-center text-[10.5px] italic text-muted-foreground mt-4">
+              NOTE: Electronically generated details do not require any signature.
+            </p>
+
           </div>
         </div>
       </div>
