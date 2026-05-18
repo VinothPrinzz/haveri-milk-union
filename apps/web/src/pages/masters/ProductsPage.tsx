@@ -285,7 +285,7 @@ function ProductFormBody({
     defaultValues: {
       name: initialData?.name ?? "",
       reportAlias: initialData?.reportAlias ?? "",
-      category: initialData?.categoryId ?? "",
+      category: (initialData as any)?.categoryId ?? "",
       packSize: initialData?.packSize ?? 1,
       unit: initialData?.unit ?? "L",
       mrp: initialData?.mrp ?? 0,
