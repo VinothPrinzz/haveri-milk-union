@@ -4,25 +4,27 @@
 //
 // Per route we emit:
 //   • N customer-rows pages (≤ ROWS_PER_PAGE each), final page carries
-//     the route TOTAL row and a separate "Total Qty (Pkts)" row below
-//     it so the Other Products column gets its own breathing room.
+//     the route TOTAL row and a "Total Crates" row below it (for the
+//     9 across products), showing crates ± leftover packets.
 //   • 1 abstract page  → Route Sheet Abstract table + ₹ summary line.
-//                         (TM/HM-Qty Ltr & FCM-Qty Ltr columns removed,
-//                          signatures & return-particulars removed.)
+//                         Qty (Kg/Ltr) column shows values divided by
+//                         1000 so pack_size in ml/g converts correctly.
 //   • 1 security page  → Despatch Summary For Security checklist with
-//                         "Crates In / Crates Out" rows + Return
-//                         Particulars block + 2 signatures
-//                         (Security, Contractor).
+//                         "Crates Out" (prefilled total) and
+//                         "Crates In"  (blank fill-line for security).
 //
-// Every page carries its own letterhead so the printout repeats the
-// company name / GST / address on every paper sheet. ReportShell's
-// global `printMeta` is therefore unused here.
-//
-// Constraints / layout:
-//   • Designed to fit A4 landscape.
-//   • Vehicle No and Top-Light removed from the per-page strip per
-//     client request.
-//   • Crates column sits BEFORE Net ₹ on the rows table.
+// Fixes applied vs previous version:
+//   1. acrossProducts sorted by fixed product-code order:
+//        HTM-1000ML → HTM-500ML → HCM-500ML → SHBM 1000ML → SHBM 500ML
+//        → SHBM 200ML → SAMRUDHI 500ML → CURD 200GM → CURD 500GM
+//   2. Total Crates row added on page 1 below the TOTAL row (same styling
+//        as TOTAL row), showing crates+pkts or crates-pkts per column.
+//   3. Qty (Kg/Ltr) on page 2 uses computeKgLtr() which inspects the unit
+//        text: pack_size is in ml/g for liquid/solid small packs (÷1000),
+//        but already in Kg/Ltr for large bulk packs like 5KG, 10KG (×1).
+//        Root cause: migration 0006 seeds pack_size by extracting the leading
+//        number from the unit text — "500ml Pouch" → 500 (ml), "5KG" → 5 (Kg).
+//   4. Security page: Crates Out (prefilled) and Crates In (blank).
 // ════════════════════════════════════════════════════════════════════
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -41,8 +43,68 @@ import {
 } from "@/services/report";
 import { toCsv } from "@/lib/exporters";
 
-// 16 dealer rows per A4 landscape page leaves comfortable headroom for
-// the Others column to wrap to 2-3 lines. Tune here if needed.
+// ── Fixed display order for the 9 across-product columns ──────────
+// Products are matched by their `code` field (case-insensitive).
+// Any product whose code is NOT in this list is appended at the end
+// in its original sort_order so we never silently drop data.
+const ACROSS_CODE_ORDER = [
+  "HTM-1000ML",
+  "HTM-500ML",
+  "HCM-500ML",
+  "SHBM 1000ML",
+  "SHBM 500ML",
+  "SHBM 200ML",
+  "SAMRUDHI 500ML",
+  "CURD 200GM",
+  "CURD 500GM",
+];
+
+function sortAcrossProducts(products: RouteSheetAcrossProduct[]): RouteSheetAcrossProduct[] {
+  const orderMap = new Map(
+    ACROSS_CODE_ORDER.map((code, idx) => [code.toUpperCase(), idx])
+  );
+  return [...products].sort((a, b) => {
+    const ai = orderMap.get(a.code.toUpperCase()) ?? ACROSS_CODE_ORDER.length;
+    const bi = orderMap.get(b.code.toUpperCase()) ?? ACROSS_CODE_ORDER.length;
+    return ai - bi;
+  });
+}
+
+// ── Helper: format crates ± leftover packets ───────────────────────
+// Returns "2+6", "1-3", "4", or "" (if 0 crates and 0 packets).
+function fmtCratePkts(crates: number, pktPlus: number, pktMinus: number): string {
+  if (crates === 0 && pktPlus === 0 && pktMinus === 0) return "";
+  if (pktPlus > 0) return `${crates}+${pktPlus}`;
+  if (pktMinus > 0) return `${crates}-${pktMinus}`;
+  return `${crates}`;
+}
+
+// ── Helper: convert packets × pack_size → Kg or Ltr ───────────────
+// Root cause (migration 0006): pack_size is seeded by extracting the
+// leading number from the product unit text:
+//   "500ml Pouch"  → pack_size=500 (ml  → ÷1000 → Ltr)
+//   "200g Block"   → pack_size=200 (g   → ÷1000 → Kg)
+//   "5KG Bucket"   → pack_size=5   (Kg  → ×1, no division)
+//   "10KG Bucket"  → pack_size=10  (Kg  → ×1, no division)
+//   "1Ltr Pouch"   → pack_size=1   (Ltr → ×1, no division)
+// We detect macro-unit products by scanning the unit string for "kg"
+// or "ltr/litre/liter" keywords (case-insensitive).
+function computeKgLtr(packets: number, packSize: number, unit: string): number {
+  const u = unit.toLowerCase();
+  // pack_size extracted from unit text by migration 0006 (leading number):
+  //   "500ml Pouch"  → 500  (ml  → ÷1000)   "200g Block" → 200  (g → ÷1000)
+  //   "5KG Bucket"   → 5    (Kg  → ×1)       "10KG Bucket"→ 10   (Kg → ×1)
+  //   "1Ltr Pouch"   → 1    (Ltr → ×1)
+  //
+  // NOTE: no \b before "kg" — "5KG" has no whitespace between digit and K,
+  // so \bkg\b would NOT match it. Simple substring check is correct here.
+  const alreadyMacro =
+    /kg/.test(u) ||                  // 5KG, 10 KG, 5kg, kilogram…
+    /ltr|litre|liter/.test(u);        // 1Ltr, 1 litre, 1 liter
+  return alreadyMacro ? packets * packSize : packets * packSize / 1000;
+}
+
+// 13 dealer rows per A4 landscape page.
 const ROWS_PER_PAGE = 13;
 
 export default function RouteSheetPage() {
@@ -75,12 +137,14 @@ export default function RouteSheetPage() {
     .filter(r => r.customers.length > 0);
 
   // Only render across columns that have at least one nonzero entry
-  // anywhere in the dataset. Keeps narrow days narrow.
+  // anywhere in the dataset. Then apply the fixed sort order.
   const usedIds = new Set<string>();
   routesWithData.forEach(r => r.customers.forEach(c => {
     Object.entries(c.acrossQty).forEach(([pid, q]) => { if (q > 0) usedIds.add(pid); });
   }));
-  const acrossProducts = (data?.acrossProducts ?? []).filter(p => usedIds.has(p.id));
+  const acrossProducts = sortAcrossProducts(
+    (data?.acrossProducts ?? []).filter(p => usedIds.has(p.id))
+  );
 
   // ── Build pages: per route → N row-pages + abstract page + security page ──
   const pages: ReactNode[] = [];
@@ -220,7 +284,11 @@ function RouteRowsPage({
   pageNum: number;
   pageCount: number;
 }) {
-  const totalCols = 3 + acrossProducts.length + 1 + 2; // Sl..Dealer + N + Others + Crates + Net
+  // Build a map: productId → abstract item (for crates / pktPlus / pktMinus).
+  // Used by the Total Crates row.
+  const abstractByPid = new Map(
+    route.abstract.items.map(i => [i.productId, i])
+  );
 
   return (
     <div className="rs-page rs-rows-page">
@@ -240,19 +308,19 @@ function RouteRowsPage({
           <col style={{ width: "82px" }} />                                        {/* Net Amount             */}
         </colgroup>
         <thead>
-        <tr>
-          <th>Sl</th>
-          <th>Dealer</th>
-          {acrossProducts.map(p => (
-            <th key={p.id} className="vert-text" title={p.reportAlias}>
-              <span>{p.reportAlias}</span>
-            </th>
-          ))}
-          <th>Other Products</th>
-          <th className="num">Crates</th>
-          <th className="num">Net Amount</th>
-        </tr>
-      </thead>
+          <tr>
+            <th>Sl</th>
+            <th>Dealer</th>
+            {acrossProducts.map(p => (
+              <th key={p.id} className="vert-text" title={p.reportAlias}>
+                <span>{p.reportAlias}</span>
+              </th>
+            ))}
+            <th>Other Products</th>
+            <th className="num">Crates</th>
+            <th className="num">Net Amount</th>
+          </tr>
+        </thead>
         <tbody>
           {rows.map(c => (
             <tr key={c.id}>
@@ -276,9 +344,10 @@ function RouteRowsPage({
             </tr>
           ))}
 
+          {/* TOTAL row — shown only on the last chunk page */}
           {showTotal && (
             <tr className="total-row">
-              <td colSpan={2} className="num">TOTAL</td>          {/* was colSpan={3} */}
+              <td colSpan={2} className="num">TOTAL</td>
               {acrossProducts.map(p => (
                 <td key={p.id} className="center num">
                   {fmtNum(route.totals.acrossQty[p.id] ?? 0)}
@@ -291,6 +360,30 @@ function RouteRowsPage({
               <td className="num">{fmtINR(route.totals.netAmount)}</td>
             </tr>
           )}
+
+          {/* TOTAL CRATES row — one crate±pkts cell per across product */}
+          {showTotal && (
+            <tr className="total-row rs-total-crates-row">
+              <td colSpan={2} className="num">
+                Total Crates
+              </td>
+              {acrossProducts.map(p => {
+                const item = abstractByPid.get(p.id);
+                const label = item
+                  ? fmtCratePkts(item.crates, item.pktPlus, item.pktMinus)
+                  : "";
+                return (
+                  <td key={p.id} className="center num">
+                    {label}
+                  </td>
+                );
+              })}
+              {/* Others and trailing columns left blank */}
+              <td />
+              <td />
+              <td />
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -300,6 +393,7 @@ function RouteRowsPage({
 // ════════════════════════════════════════════════════════════════════
 // PAGE 2: Route Sheet Abstract (per-product breakdown only)
 // — No TM/HM-Qty, no FCM-Qty, no signatures, no return particulars —
+// Qty (Kg/Ltr) = packets × pack_size ÷ 1000 (pack_size stored in ml/g)
 // ════════════════════════════════════════════════════════════════════
 function AbstractPage({
   data, route,
@@ -309,6 +403,9 @@ function AbstractPage({
 }) {
   const items = route.abstract.items;
   const t = route.abstract.totals;
+
+  // Recompute totals kgLtr correctly using unit-aware helper
+  const totalKgLtr = items.reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit), 0);
 
   return (
     <div className="rs-page rs-abstract-page">
@@ -339,22 +436,25 @@ function AbstractPage({
           </tr>
         </thead>
         <tbody>
-          {items.map(i => (
-            <tr key={i.productId}>
-              <td>{i.alias}</td>
-              <td className="num">{fmtNum(i.crates)}</td>
-              <td className="num">{fmtNum(i.packets)}</td>
-              <td className="num">{i.kgLtr.toFixed(2)}</td>
-              <td className="num">{fmtINR(i.amount)}</td>
-              <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : "—"}</td>
-              <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : "—"}</td>
-            </tr>
-          ))}
+          {items.map(i => {
+            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit);
+            return (
+              <tr key={i.productId}>
+                <td>{i.alias}</td>
+                <td className="num">{fmtNum(i.crates)}</td>
+                <td className="num">{fmtNum(i.packets)}</td>
+                <td className="num">{kgLtrCorrect.toFixed(3)}</td>
+                <td className="num">{fmtINR(i.amount)}</td>
+                <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : "—"}</td>
+                <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : "—"}</td>
+              </tr>
+            );
+          })}
           <tr className="total-row">
             <td className="num">Total Milk \ Amount</td>
             <td className="num">{fmtNum(t.crates)}</td>
             <td className="num">{fmtNum(t.packets)}</td>
-            <td className="num">{t.kgLtr.toFixed(2)}</td>
+            <td className="num">{totalKgLtr.toFixed(3)}</td>
             <td className="num">{fmtINR(t.amount)}</td>
             <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : "—"}</td>
             <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : "—"}</td>
@@ -376,7 +476,8 @@ function AbstractPage({
 
 // ════════════════════════════════════════════════════════════════════
 // PAGE 3: Despatch Summary For Security
-// — Crates In/Out rows, Return Particulars, 2 signatures —
+// — Crates Out (prefilled dispatch total) first,
+//   Crates In  (blank fill-line for security to write on) second.
 // ════════════════════════════════════════════════════════════════════
 function SecurityPage({
   data, route,
@@ -418,15 +519,18 @@ function SecurityPage({
               <td className="center">__</td>
             </tr>
           ))}
-          {/* Replace the old "Total Crates" row with two clearer rows */}
+
+          {/* Crates Out — prefilled with the dispatch total */}
           <tr className="total-row">
-            <td className="num">Crates In</td>
+            <td className="num">Crates Out</td>
             <td className="num">{fmtNum(t.crates)}</td>
             <td className="num">{fmtNum(t.packets)}</td>
             <td />
           </tr>
-          <tr className="total-row rs-crates-out">
-            <td className="num">Crates Out</td>
+
+          {/* Crates In — blank fill-line for the security guard to write on return */}
+          <tr className="total-row rs-crates-in">
+            <td className="num">Crates In</td>
             <td className="rs-fill-line" />
             <td className="rs-fill-line" />
             <td />
@@ -443,7 +547,7 @@ function SecurityPage({
         <span><strong>Credit:</strong> {fmtINR(0)}</span>
       </div>
 
-      {/* Return Particulars block (moved from old abstract page) */}
+      {/* Return Particulars block */}
       <div className="rs-returns">
         <div className="rs-returns-head">Return Particulars</div>
         <div className="rs-returns-grid">
