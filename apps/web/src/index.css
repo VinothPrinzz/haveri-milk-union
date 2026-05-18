@@ -726,30 +726,51 @@
 
 /* Combined Code – Dealer column: explicit cap so long names wrap inside
    the cell instead of bleeding into the product columns. */
-   .rs-ledger col.col-dealer {
-    width: 200px;
-  }
-  .rs-ledger td.dealer-cell {
-    white-space: normal;
-    word-break: break-word;
-    overflow-wrap: anywhere;
-    line-height: 1.3;
-    max-width: 200px;
-  }
-  .rs-ledger td.dealer-cell .dealer-sep {
-    color: #555;
-    margin: 0 2px;
-  }
-  
-  /* More vertical breathing room — easier to read screen + print. */
-  .rs-ledger th { padding: 6px 6px !important; }
-  .rs-ledger td { padding: 6px 6px !important; vertical-align: middle; }
-  .rs-ledger .others-cell { vertical-align: middle; }
-  
-  /* Faint guide between rows (no full border — keeps the ledger look). */
-  .rs-ledger tbody tr + tr td {
-    border-top: 1px dotted #d0d0d0;
-  }
+   .rs-ledger col.col-dealer { width: 200px; }
+   .rs-ledger td.dealer-cell {
+     white-space: normal;
+     word-break: break-word;
+     overflow-wrap: anywhere;
+     line-height: 1.3;
+     max-width: 200px;
+   }
+   .rs-ledger td.dealer-cell .dealer-sep { color: #555; margin: 0 2px; }
+   
+   /* Vertical product headers — span inside makes layout real and the
+   row auto-grows to wrap the longest alias. No fixed heights. */
+.rs-ledger thead th.vert-text {
+  text-align: center;          /* horizontally centred over its column */
+  vertical-align: bottom;      /* text "sits" on the bottom header line */
+  padding: 0.5em 0.15em !important;
+  font-weight: 600;
+  font-size: 10.5px;
+  line-height: 1;
+}
+.rs-ledger thead th.vert-text > span {
+  display: inline-block;
+  writing-mode: vertical-rl;   /* gives the box real vertical layout */
+  transform: rotate(180deg);   /* flips glyphs so reading is C→U→R→D */
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+  line-height: 1.15;
+  /* enough horizontal breathing space inside the 28-px column */
+  padding: 0.3em 0;
+}
+
+/* Body cells: same vertical-align, same line-height, same vertical
+   padding so the first text baseline lines up across Sl, Dealer,
+   Qty, Other Products, Crates and Net. All in em — no hard pixels. */
+.rs-ledger tbody td {
+  vertical-align: top !important;
+  line-height: 1.4;
+  padding-top: 0.7em !important;
+  padding-bottom: 0.7em !important;
+}
+.rs-ledger td.dealer-cell { line-height: 1.4; }   /* was 1.3 — now matches */
+.rs-ledger .others-cell   { line-height: 1.4; vertical-align: top; }
+
+/* Faint divider stays — separates dealers without busy borders. */
+.rs-ledger tbody tr + tr td { border-top: 1px dotted #d0d0d0; }
 
 /* ──────────────────────────────────────────────────────────────────
    ABSTRACT PAGE
@@ -901,14 +922,31 @@
   .rs-lh-details   { font-size: 8.5pt; gap: 1pt 12pt; }
 
   /* Customer-rows table — tight but readable on A4 landscape */
-  .rs-ledger th { font-size: 9.5pt !important; padding: 4pt 6pt !important; }
-  .rs-ledger td { font-size: 9pt   !important; padding: 4pt 6pt !important; }
-  .rs-ledger tbody tr + tr td { border-top: 1px dotted #999 !important; }
-  .rs-ledger td.dealer-cell { max-width: 56mm; }     /* ~200px on print */
-  .rs-ledger th.rs-prod-head { font-size: 7.5pt !important; padding: 2pt 1pt !important; }
-  .rs-ledger .others-cell    { font-size: 7.5pt !important; line-height: 1.18; }
-  .rs-ledger tr.total-row td,
-  .rs-ledger tr.total-qty-row td { font-size: 8.5pt !important; }
+  .rs-ledger th { font-size: 9pt !important; padding: 0.5em 0.5em !important; }
+.rs-ledger td {
+  font-size: 9pt !important;
+  vertical-align: top !important;
+  line-height: 1.4;
+  padding: 0.7em 0.5em !important;
+}
+.rs-ledger thead th.vert-text {
+  font-size: 8pt !important;
+  text-align: center !important;
+  vertical-align: bottom !important;
+  padding: 0.5em 0.15em !important;
+}
+.rs-ledger thead th.vert-text > span {
+  display: inline-block;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+  line-height: 1.15;
+  padding: 0.3em 0;
+}
+.rs-ledger .others-cell { font-size: 7.5pt !important; line-height: 1.3; vertical-align: top !important; }
+.rs-ledger tbody tr + tr td { border-top: 1px dotted #999 !important; }
+.rs-ledger td.dealer-cell { max-width: 56mm; line-height: 1.4; }
 
   /* Abstract / Security tables — slightly tighter */
   .rs-abstract-page,
