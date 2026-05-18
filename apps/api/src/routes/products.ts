@@ -12,11 +12,17 @@ function deriveBasePriceFromMrp(mrp: number, gstPercent: number): number {
   return Math.round((mrp / (1 + safeGst / 100)) * 100) / 100;
 }
 
+// Constants — single source of truth referenced by both API and web.
+export const REPORT_ALIAS_MAX: Record<"Across" | "Down", number> = {
+  Across: 14,
+  Down:   22,
+};
+
 // Updated schema for writing products — now accepts MRP
-const productWriteSchema = z.object({
+const productBaseSchema = z.object({
   code: z.string().min(1).optional(),
   name: z.string().min(1),
-  mrp: z.number().nonnegative(),                    // ← NEW: MRP (incl. GST)
+  mrp: z.number().nonnegative(),
   gstPercent: z.number().min(0).max(50).default(0),
   categoryId: z.string().uuid(),
   icon: z.string().optional(),
@@ -27,11 +33,49 @@ const productWriteSchema = z.object({
   packSize: z.union([z.string(), z.number()]).optional(),
   printDirection: z.enum(["Across", "Down"]).optional(),
   packetsCrate: z.number().int().min(0).optional(),
-  reportAlias: z.string().optional(),
+  reportAlias: z.string().max(22).optional(),
   retailDealerPrice: z.union([z.string(), z.number()]).optional(),
   creditInstMrpPrice: z.union([z.string(), z.number()]).optional(),
   creditInstDealerPrice: z.union([z.string(), z.number()]).optional(),
   parlourDealerPrice: z.union([z.string(), z.number()]).optional(),
+});
+
+const productWriteSchema = productBaseSchema
+  .superRefine((data, ctx) => {
+    if (!data.reportAlias) return;
+
+    const direction = data.printDirection ?? "Across";
+    const maxLen = REPORT_ALIAS_MAX[direction];
+
+    if (data.reportAlias.length > maxLen) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_big,
+        type: "string",
+        maximum: maxLen,
+        inclusive: true,
+        message: `Report alias for ${direction} products must be ≤ ${maxLen} characters (got ${data.reportAlias.length})`,
+        path: ["reportAlias"],
+      });
+    }
+  });
+
+// For PATCH - make it partial
+const productUpdateSchema = productBaseSchema.partial().superRefine((data, ctx) => {
+  if (!data.reportAlias) return;
+
+  const direction = data.printDirection ?? "Across";
+  const maxLen = REPORT_ALIAS_MAX[direction];
+
+  if (data.reportAlias.length > maxLen) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_big,
+      type: "string",
+      maximum: maxLen,
+      inclusive: true,
+      message: `Report alias for ${direction} products must be ≤ ${maxLen} characters (got ${data.reportAlias.length})`,
+      path: ["reportAlias"],
+    });
+  }
 });
 
 export async function productRoutes(app: FastifyInstance) {
@@ -156,7 +200,7 @@ export async function productRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("products.manage")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const body = productWriteSchema.partial().parse(request.body);
+      const body = productUpdateSchema.parse(request.body);
 
       // Fetch current MRP & GST to recompute base_price if needed
       const [current] = await pgClient`

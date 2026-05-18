@@ -27,6 +27,7 @@ export const paymentModeEnum = pgEnum("payment_mode", [
   "upi",
   "credit",
   "cash",
+  "complimentary",
 ]);
 
 // ── Cancellation request status ──
@@ -113,6 +114,8 @@ export const batchStatusEnum = pgEnum("batch_status", [
 export const directSaleCustomerTypeEnum = pgEnum("direct_sale_customer_type", [
   "agent",
   "cash",
+  "vip_sample",
+  "employee_subsidy",
 ]);
 
 // ── Route sheet lifecycle ──

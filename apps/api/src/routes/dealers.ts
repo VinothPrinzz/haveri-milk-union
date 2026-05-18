@@ -39,6 +39,7 @@ export async function dealerRoutes(app: FastifyInstance) {
         name: z.string().optional(),
         typeFilter: z.string().optional(),
         batchId: z.string().uuid().optional(),
+        activeFilter: z.enum(["true", "false"]).optional(),
       });
 
       const query = querySchema.parse(request.query);
@@ -99,7 +100,8 @@ export async function dealerRoutes(app: FastifyInstance) {
                 'routeId', r2.id,
                 'routeCode', r2.code,
                 'routeName', r2.name,
-                'isPrimary', dr.is_primary
+                'isPrimary', dr.is_primary,
+                'position',  dr.position
               ) ORDER BY dr.is_primary DESC, r2.code)
             FROM dealer_routes dr
             JOIN routes r2 ON r2.id = dr.route_id AND r2.deleted_at IS NULL
@@ -124,6 +126,8 @@ export async function dealerRoutes(app: FastifyInstance) {
                 WHERE r.id = d.route_id
                   AND r.primary_batch_id = ${query.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
               ))
+          AND (${query.activeFilter ?? null}::text IS NULL
+                OR d.active = (${query.activeFilter ?? 'true'} = 'true'))
         ORDER BY d.name ASC
         LIMIT ${query.limit} OFFSET ${offset}
       `;
@@ -131,8 +135,11 @@ export async function dealerRoutes(app: FastifyInstance) {
       const [countRow] = await pgClient`
         SELECT count(*)::int AS count FROM dealers d
         WHERE d.deleted_at IS NULL
-          AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""})
+          AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""})
           AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId ?? "00000000-0000-0000-0000-000000000000"}::uuid)
+          AND (${query.customerType ?? null}::text IS NULL OR d.customer_type::text = ${query.customerType ?? ""})
+          AND (${query.routeId ?? null}::uuid IS NULL OR EXISTS (SELECT 1 FROM dealer_routes dr WHERE dr.dealer_id = d.id AND dr.route_id = ${query.routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
+          AND (${query.activeFilter ?? null}::text IS NULL OR d.active = (${query.activeFilter ?? 'true'} = 'true'))
       `;
 
       return reply.send({
@@ -192,6 +199,7 @@ export async function dealerRoutes(app: FastifyInstance) {
                 'routeCode', r2.code,
                 'routeName', r2.name,
                 'isPrimary', dr.is_primary
+                'position',  dr.position
               ) ORDER BY dr.is_primary DESC, r2.code)
             FROM dealer_routes dr
             JOIN routes r2 ON r2.id = dr.route_id AND r2.deleted_at IS NULL
@@ -380,6 +388,7 @@ export async function dealerRoutes(app: FastifyInstance) {
       const schema = z.object({
         routeId: z.string().uuid(),
         isPrimary: z.boolean().optional().default(false),
+        position:  z.number().int().min(1).optional(),
       });
       const body = schema.parse(request.body);
 
@@ -387,12 +396,14 @@ export async function dealerRoutes(app: FastifyInstance) {
       const [d] =
         await pgClient`SELECT id FROM dealers WHERE id = ${id} AND deleted_at IS NULL`;
       if (!d) return reply.status(404).send({ error: "Dealer not found" });
+
       const [r] =
         await pgClient`SELECT id FROM routes WHERE id = ${body.routeId} AND deleted_at IS NULL`;
       if (!r) return reply.status(404).send({ error: "Route not found" });
 
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
+
         if (body.isPrimary) {
           // Demote any existing primary first
           await tx`UPDATE dealer_routes SET is_primary = false WHERE dealer_id = ${id}`;
@@ -406,18 +417,34 @@ export async function dealerRoutes(app: FastifyInstance) {
           }
         }
 
+        let positionToUse = body.position;
+
+        if (positionToUse == null) {
+          // Default: end of the list = (max + 10), with floor of 10.
+          const [maxRow] = await tx`
+            SELECT COALESCE(MAX(position), 0) + 10 AS next_pos
+            FROM dealer_routes WHERE route_id = ${body.routeId}::uuid
+          `;
+
+          positionToUse = maxRow?.next_pos ?? 10;   // ← Fixed: safe fallback
+        }
+
+        // Ensure it's always a number
+        const finalPosition = Number(positionToUse);
+
         await tx`
-          INSERT INTO dealer_routes (dealer_id, route_id, is_primary)
-          VALUES (${id}, ${body.routeId}::uuid, ${body.isPrimary || false})
+          INSERT INTO dealer_routes (dealer_id, route_id, is_primary, position)
+          VALUES (${id}, ${body.routeId}::uuid, ${body.isPrimary || false}, ${finalPosition})
           ON CONFLICT (dealer_id, route_id) DO UPDATE
-            SET is_primary = EXCLUDED.is_primary OR dealer_routes.is_primary
-        `;
+            SET is_primary = EXCLUDED.is_primary OR dealer_routes.is_primary,
+                position   = COALESCE(EXCLUDED.position, dealer_routes.position)
+      `;
       });
 
       // Return the updated set of routes for this dealer
       const routes = await pgClient`
         SELECT r.id AS "routeId", r.code AS "routeCode", r.name AS "routeName",
-               dr.is_primary AS "isPrimary"
+               dr.is_primary AS "isPrimary", dr.position AS "position"
         FROM dealer_routes dr JOIN routes r ON r.id = dr.route_id
         WHERE dr.dealer_id = ${id}
         ORDER BY dr.is_primary DESC, r.code
@@ -460,7 +487,7 @@ export async function dealerRoutes(app: FastifyInstance) {
 
       const routes = await pgClient`
         SELECT r.id AS "routeId", r.code AS "routeCode", r.name AS "routeName",
-               dr.is_primary AS "isPrimary"
+               dr.is_primary AS "isPrimary", dr.position AS "position"
         FROM dealer_routes dr JOIN routes r ON r.id = dr.route_id
         WHERE dr.dealer_id = ${id}
         ORDER BY dr.is_primary DESC, r.code

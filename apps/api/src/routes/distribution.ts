@@ -18,17 +18,14 @@ export async function distributionRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const allRoutes = await pgClient`
         SELECT r.id, r.code, r.name, r.stops, r.distance_km, r.active,
-               r.zone_id, r.contractor_id, r.primary_batch_id,
-               -- Resolved dispatch_time: batch's takes precedence over route's
-               COALESCE(b.dispatch_time::text, r.dispatch_time) AS dispatch_time,
-               z.name AS zone_name, z.slug AS zone_slug, z.icon AS zone_icon,
-               ct.name AS contractor_name,
+               r.contractor_id, r.primary_batch_id,
+               r.dispatch_time::text AS dispatch_time,
+               ct.name AS contractor_name, 
                b.name AS batch_name,
                b.batch_number AS batch_code,
                (SELECT count(*)::int FROM dealers d
                 WHERE d.route_id = r.id AND d.deleted_at IS NULL) AS dealer_count
         FROM routes r
-        JOIN zones z ON z.id = r.zone_id
         LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
         LEFT JOIN batches b ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
         WHERE r.deleted_at IS NULL
@@ -44,14 +41,13 @@ export async function distributionRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("distribution.manage")] },
     async (request, reply) => {
       const schema = z.object({
-        name: z.string().min(1),
-        code: z.string().optional(),
-        zoneId: z.string().uuid(),
-        contractorId: z.string().uuid().optional(),
+        name:           z.string().min(1),
+        code:           z.string().optional(),
+        contractorId:   z.string().uuid().optional(),
         primaryBatchId: z.string().uuid().optional(),
-        dispatchTime: z.string().optional(),          // kept for backward compat, no longer required
-        stopDetails: z.array(stopSchema).optional(),
-        active: z.boolean().optional(),
+        active:         z.boolean().optional(),
+        dispatchTime:   z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),  // "HH:MM"
+        stopDetails:    z.array(z.any()).optional(),
       });
       const body = schema.parse(request.body);
 
@@ -76,17 +72,23 @@ export async function distributionRoutes(app: FastifyInstance) {
         const tx = _tx as unknown as typeof pgClient;
         const [route] = await tx`
           INSERT INTO routes (
-            code, name, zone_id, contractor_id, primary_batch_id,
-            dispatch_time, stops, distance_km, stop_details, active
-          ) VALUES (
-            ${code}, ${body.name}, ${body.zoneId}, ${body.contractorId ?? null},
+            code, name,
+            contractor_id, primary_batch_id,
+            dispatch_time,
+            stops, distance_km, stop_details,
+            active
+          )
+          VALUES (
+            ${code}, ${body.name},
+            ${body.contractorId ?? null}::uuid,
             ${body.primaryBatchId ?? null}::uuid,
-            ${body.dispatchTime ?? null},
+            ${body.dispatchTime ?? null}::time,
             ${stopDetails.length}, ${totalDistance.toFixed(1)}::numeric,
             ${JSON.stringify(stopDetails)}::jsonb,
             ${body.active !== false}
           )
-          RETURNING id, code, name, stops, distance_km, stop_details, contractor_id, dispatch_time
+          RETURNING id, code, name, stops, distance_km, stop_details,
+                    contractor_id, primary_batch_id, dispatch_time
         `;
 
         if (!route) throw new Error("Failed to create route");
@@ -114,11 +116,11 @@ export async function distributionRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const schema = z.object({
-        name: z.string().min(1).optional(),
-        zoneId: z.string().uuid().optional(),
-        contractorId: z.string().uuid().nullable().optional(),
+        name:           z.string().min(1).optional(),
+        contractorId:   z.string().uuid().nullable().optional(),
         primaryBatchId: z.string().uuid().nullable().optional(),
-        active: z.boolean().optional(),
+        active:         z.boolean().optional(),
+        dispatchTime:   z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
       });
       const body = schema.parse(request.body);
 
@@ -127,16 +129,18 @@ export async function distributionRoutes(app: FastifyInstance) {
         const [updated] = await tx`
           UPDATE routes SET
             name = COALESCE(${body.name ?? null}, name),
-            zone_id = COALESCE(${body.zoneId ?? null}::uuid, zone_id),
             contractor_id = CASE WHEN ${body.contractorId !== undefined}
                                   THEN ${body.contractorId ?? null}::uuid
                                   ELSE contractor_id END,
             primary_batch_id = CASE WHEN ${body.primaryBatchId !== undefined}
-                                     THEN ${body.primaryBatchId ?? null}::uuid
-                                     ELSE primary_batch_id END,
+                                    THEN ${body.primaryBatchId ?? null}::uuid
+                                    ELSE primary_batch_id END,
+            dispatch_time = CASE WHEN ${body.dispatchTime !== undefined}
+                                  THEN ${body.dispatchTime ?? null}::time
+                                  ELSE dispatch_time END,
             active = COALESCE(${body.active ?? null}::boolean, active),
             updated_at = now()
-          WHERE id = ${id} AND deleted_at IS NULL
+          WHERE id = ${id}
           RETURNING *
         `;
         if (!updated) return null;
@@ -176,6 +180,51 @@ export async function distributionRoutes(app: FastifyInstance) {
     }
   );
 
+  // PATCH /api/v1/routes/:routeId/dealer-positions
+  // Body: { positions: [{ dealerId, position }, ...] }
+  // Rewrites positions for the given dealers on this route in a single tx.
+  app.patch(
+    "/api/v1/routes/:routeId/dealer-positions",
+    { preHandler: [adminAuth, requireRole("distribution.manage")] },
+    async (request, reply) => {
+      const { routeId } = request.params as { routeId: string };
+      const schema = z.object({
+        positions: z.array(z.object({
+          dealerId: z.string().uuid(),
+          position: z.number().int().min(1),
+        })).min(1).max(2000),
+      });
+      const body = schema.parse(request.body);
+
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        // Unnest arrays for a single round-trip update.
+        const dealerIds = body.positions.map(p => p.dealerId);
+        const positions = body.positions.map(p => p.position);
+        await tx`
+          UPDATE dealer_routes dr
+            SET position = v.position
+            FROM (
+              SELECT UNNEST(${dealerIds}::uuid[]) AS dealer_id,
+                    UNNEST(${positions}::int[])  AS position
+            ) v
+          WHERE dr.route_id  = ${routeId}::uuid
+            AND dr.dealer_id = v.dealer_id
+        `;
+      });
+
+      // Return the new ordered list for the route
+      const rows = await pgClient`
+        SELECT d.id, d.code, d.name, dr.position, dr.is_primary
+          FROM dealer_routes dr
+          JOIN dealers d ON d.id = dr.dealer_id AND d.deleted_at IS NULL
+        WHERE dr.route_id = ${routeId}::uuid
+        ORDER BY dr.position NULLS LAST, d.code, d.name
+      `;
+      return reply.send({ routeId, dealers: rows });
+    }
+  );
+
   // GET /api/v1/vehicles
   app.get(
     "/api/v1/vehicles",
@@ -200,11 +249,9 @@ export async function distributionRoutes(app: FastifyInstance) {
                ra.dealer_count, ra.item_count, ra.status, ra.notes,
                ra.vehicle_number,
                r.code AS route_code, r.name AS route_name,
-               z.name AS zone_name,
                COALESCE(v.number, ra.vehicle_number) AS vehicle_number
         FROM route_assignments ra
         JOIN routes r ON r.id = ra.route_id
-        JOIN zones z ON z.id = r.zone_id
         LEFT JOIN vehicles v ON v.id = ra.vehicle_id
         WHERE ra.date = ${targetDate}::date
         ORDER BY ra.departure_time
@@ -226,10 +273,8 @@ export async function distributionRoutes(app: FastifyInstance) {
                ra.departure_time, ra.actual_departure_time,
                ra.dealer_count, ra.item_count, ra.status,
                r.name AS route_name, r.code AS route_code, r.stop_details,
-               z.name AS zone_name
         FROM route_assignments ra
         JOIN routes r ON r.id = ra.route_id
-        JOIN zones z ON z.id = r.zone_id
         WHERE ra.date = ${targetDate}::date
         ORDER BY r.code
       `;
@@ -240,7 +285,7 @@ export async function distributionRoutes(app: FastifyInstance) {
                  o.item_count, o.grand_total, o.status AS order_status
           FROM orders o
           JOIN dealers d ON d.id = o.dealer_id
-          WHERE o.zone_id = (SELECT zone_id FROM routes WHERE id = ${a.route_id})
+          WHERE d.route_id = ${a.route_id}::uuid
             AND o.created_at::date = ${targetDate}::date
             AND o.status != 'cancelled'
           ORDER BY d.name
@@ -309,9 +354,8 @@ export async function distributionRoutes(app: FastifyInstance) {
       const goingToDelivered = body.status === "delivered";
       // Look up route_id + date so we can cascade to the orders on that route/date.
       const [existing] = await pgClient`
-        SELECT ra.route_id, ra.date, r.zone_id
+        SELECT ra.route_id, ra.date
         FROM route_assignments ra
-        JOIN routes r ON r.id = ra.route_id
         WHERE ra.id = ${id}
       `;
       if (!existing) return reply.status(404).send({ error: "Assignment not found" });
@@ -348,7 +392,7 @@ export async function distributionRoutes(app: FastifyInstance) {
               status = 'dispatched',
               dispatched_at = now(),
               updated_at = now()
-            WHERE zone_id = ${existing.zone_id}
+            WHERE dealer_id IN (SELECT id FROM dealers WHERE route_id = ${existing.route_id}::uuid AND deleted_at IS NULL)
               AND created_at::date = ${existing.date}::date
               AND status = 'confirmed'
           `;
@@ -358,7 +402,7 @@ export async function distributionRoutes(app: FastifyInstance) {
               status = 'delivered',
               delivered_at = now(),
               updated_at = now()
-            WHERE zone_id = ${existing.zone_id}
+            WHERE dealer_id IN (SELECT id FROM dealers WHERE route_id = ${existing.route_id}::uuid AND deleted_at IS NULL)
               AND created_at::date = ${existing.date}::date
               AND status = 'dispatched'
           `;

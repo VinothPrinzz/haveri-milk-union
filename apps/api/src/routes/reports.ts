@@ -91,13 +91,12 @@ export async function reportsRoutes(app: FastifyInstance) {
       let batch: any = null;
       if (batchId) {
         const [b] = await pgClient`
-          SELECT id, name, batch_number, dispatch_time
+          SELECT id, name, batch_number
             FROM batches
-           WHERE id = ${batchId} AND deleted_at IS NULL
+          WHERE id = ${batchId} AND deleted_at IS NULL
         `;
         if (b) batch = {
           id: b.id, name: b.name, batchNumber: b.batch_number,
-          dispatchTime: b.dispatch_time?.toString() ?? null,
         };
       }
    
@@ -142,12 +141,20 @@ export async function reportsRoutes(app: FastifyInstance) {
       const routeIds = (routes as any[]).map(r => r.id);
    
       // ── 5. Dealers on those routes ──
+      // Pull position from dealer_routes for the dealer's primary route
+      // so the printed sheet matches the delivery driver's actual path.
       const dealers = await pgClient`
-        SELECT d.id, d.code, d.name, d.route_id
-          FROM dealers d
-         WHERE d.deleted_at IS NULL
-           AND d.route_id = ANY(${routeIds}::uuid[])
-         ORDER BY d.code, d.name
+      SELECT d.id, d.code, d.name, d.route_id,
+            dr.position AS position
+        FROM dealers d
+        JOIN dealer_routes dr
+          ON dr.dealer_id = d.id
+        AND dr.route_id  = d.route_id      -- primary route only (matches existing filter)
+      WHERE d.deleted_at IS NULL
+        AND d.route_id = ANY(${routeIds}::uuid[])
+      ORDER BY dr.route_id,
+                dr.position NULLS LAST,
+                d.code, d.name
       `;
    
       // ── 6. Order items for the day (no batch filter — routes are

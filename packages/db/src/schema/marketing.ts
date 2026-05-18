@@ -103,6 +103,7 @@ export const directSales = pgTable("direct_sales", {
   saleDate: date("sale_date").notNull(),
   paymentMode: paymentModeEnum("payment_mode").notNull().default("cash"),
   paymentRef: text("payment_ref"),           // UPI ref or receipt number
+  recipientName: text("recipient_name"),
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).notNull(),
   totalGst: numeric("total_gst", { precision: 10, scale: 2 }).notNull().default("0"),
   grandTotal: numeric("grand_total", { precision: 10, scale: 2 }).notNull(),

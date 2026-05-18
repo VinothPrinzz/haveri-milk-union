@@ -21,6 +21,7 @@ export type {
   Banner,
   SystemUser,
 } from "@/data/mockData";
+import type { StockBucket } from "@/lib/stock-buckets";
 
 // ── Normalizers: map snake_case API → camelCase UI ──
 function normalizeCustomer(d: Record<string, unknown>) {
@@ -30,6 +31,7 @@ function normalizeCustomer(d: Record<string, unknown>) {
     routeCode: (r.routeCode ?? r.route_code) as string,
     routeName: (r.routeName ?? r.route_name) as string,
     isPrimary: Boolean(r.isPrimary ?? r.is_primary ?? false),
+    position:  (r.position as number | null | undefined) ?? null,
   }));
   return {
     id: d.id as string,
@@ -56,6 +58,7 @@ function normalizeCustomer(d: Record<string, unknown>) {
     area:        (d.area ?? "") as string,
     houseNo:     (d.house_no ?? d.houseNo ?? "") as string,
     street:      (d.street ?? "") as string,
+    pinCode:     (d.pin_code ?? d.pinCode ?? "") as string,
     lastIndentAt: (d.last_indent_at ?? d.lastIndentAt ?? null) as string | null,
 
     city:    (d.city ?? "") as string,
@@ -109,32 +112,30 @@ function normalizeContractor(d: Record<string, unknown>) {
 }
 
 function normalizeRoute(d: Record<string, unknown>) {
+  // Postgres returns "HH:MM:SS"; the time input wants "HH:MM"
+  const rawDispatch = (d.dispatch_time ?? d.dispatchTime ?? "") as string;
+  const dispatchTime = rawDispatch ? String(rawDispatch).slice(0, 5) : "";
   return {
     id:             d.id as string,
     code:           (d.code ?? "") as string,
     name:           (d.name ?? "") as string,
-    taluka:         (d.zone_name ?? d.taluka ?? "") as string,
-    zoneId:         (d.zone_id ?? d.zoneId ?? "") as string,
     contractorId:   (d.contractor_id ?? d.contractorId ?? "") as string,
     contractorName: (d.contractor_name ?? "") as string,
     dealerCount:    parseInt(String(d.dealer_count ?? 0)),
-    dispatchTime:   (d.dispatch_time ?? d.dispatchTime ?? "") as string,
-
-    // v1.4
+    dispatchTime,
     primaryBatchId: (d.primary_batch_id ?? d.primaryBatchId ?? null) as string | null,
-
     status: d.active !== false ? ("Active" as const) : ("Inactive" as const),
+    // removed: taluka, zoneId
   };
 }
 
 function normalizeBatch(d: Record<string, unknown>) {
   return {
-    id:           d.id as string,
-    batchCode:    (d.batch_number ?? d.batch_code ?? d.batchCode ?? "") as string,
-    whichBatch:   (d.which_batch ?? d.whichBatch ?? d.name ?? "") as string,
-    timing:       (d.timing ?? "") as string,
-    dispatchTime: (d.dispatch_time ?? d.dispatchTime ?? "") as string, // v1.4
-    routeIds:     (d.route_ids ?? d.routeIds ?? []) as string[],
+    id:         d.id as string,
+    batchCode:  (d.batch_number ?? d.batch_code ?? d.batchCode ?? "") as string,
+    whichBatch: (d.which_batch ?? d.whichBatch ?? d.name ?? "") as string,
+    timing:     (d.timing ?? "") as string,
+    routeIds:   (d.route_ids ?? d.routeIds ?? []) as string[],
     status:
       d.status === "active" || d.active !== false
         ? ("Active" as const)
@@ -443,6 +444,7 @@ export type DealerListParams = {
   payMode?: string;        // 'Cash' | 'Credit'
   routeId?: string;
   zoneId?: string;
+  activeFilter?: "true" | "false";
 };
  
 export const fetchCustomersPage = async (params: DealerListParams = {}) => {
@@ -461,6 +463,7 @@ export const fetchCustomersPage = async (params: DealerListParams = {}) => {
     ...(params.payMode      ? { payMode: params.payMode }           : {}),
     ...(params.routeId      ? { routeId: params.routeId }           : {}),
     ...(params.zoneId       ? { zoneId: params.zoneId }             : {}),
+    ...(params.activeFilter  ? { activeFilter: params.activeFilter } : {}),
   });
   return {
     rows: (data.data ?? []).map(normalizeCustomer),
@@ -492,6 +495,7 @@ export const createCustomer = async (body: Record<string, unknown>) => {
     area: body.area || undefined,
     houseNo: body.houseNo || undefined,
     street: body.street || undefined,
+    pinCode: body.pinCode || undefined,
     address: body.address || undefined,
     code: body.code,
     active: body.active !== false,
@@ -512,6 +516,7 @@ export const updateCustomer = async (id: string, body: Record<string, unknown>) 
     addressType: body.addressType || undefined, state: body.state || undefined,
     city: body.city || undefined, area: body.area || undefined,
     houseNo: body.houseNo || undefined, street: body.street || undefined,
+    pinCode: body.pinCode || undefined,
     address: body.address || undefined,
     gstNumber: body.gstNumber || undefined,
     active: body.active !== false,
@@ -629,25 +634,24 @@ export const fetchZones = async () => {
 
 export const createRoute = async (body: Record<string, unknown>) => {
   const data = await post<{ route: Record<string, unknown> }>("/routes", {
-    name: body.name,
-    code: body.code,
-    zoneId: body.zoneId,
-    contractorId: body.contractorId || undefined,
+    name:           body.name,
+    code:           body.code,
+    contractorId:   body.contractorId || undefined,
     primaryBatchId: body.primaryBatchId || undefined,
-    active: body.active !== false,
-    stopDetails: [],
+    dispatchTime:   body.dispatchTime || null,
+    active:         body.active !== false,
+    stopDetails:    [],
   });
   return normalizeRoute(data.route);
 };
 
-// ── NEW ──
 export const updateRoute = async (id: string, body: Record<string, unknown>) => {
   const data = await patch<{ route: Record<string, unknown> }>(`/routes/${id}`, {
-    name: body.name,
-    zoneId: body.zoneId,
-    contractorId: body.contractorId || null,
+    name:           body.name,
+    contractorId:   body.contractorId || null,
     primaryBatchId: body.primaryBatchId || null,
-    active: body.active !== false,
+    dispatchTime:   body.dispatchTime || null,
+    active:         body.active !== false,
   });
   return normalizeRoute(data.route);
 };
@@ -673,7 +677,6 @@ export const createBatch = async (body: Record<string, unknown>) => {
     name: body.whichBatch,
     whichBatch: body.whichBatch,
     timing: body.timing || null,
-    dispatchTime: body.dispatchTime || null,
     routeIds: body.routeIds ?? [],
   });
   return normalizeBatch(data.batch);
@@ -684,7 +687,6 @@ export const updateBatch = async (id: string, body: Record<string, unknown>) => 
   const data = await patch<{ batch: Record<string, unknown> }>(`/batches/${id}`, {
     whichBatch: body.whichBatch,
     timing: body.timing ?? null,
-    dispatchTime: body.dispatchTime || null,
   });
   return normalizeBatch(data.batch);
 };
@@ -908,6 +910,115 @@ export const createCashSale = async (body: {
   return normalizeDirectSale(data.sale);
 };
 
+// ══════════════════════════════════════════════════════
+// VIP CONTACTS
+// ══════════════════════════════════════════════════════
+export const fetchVipContacts = async (search?: string) => {
+  const data = await get<{ data: Record<string, unknown>[] }>(
+    "/vip-contacts",
+    search ? { search } : undefined,
+  );
+  return data.data ?? [];
+};
+
+export const createVipContact = async (body: {
+  name: string; phone?: string; designation?: string; notes?: string;
+}) => {
+  const data = await post<{ contact: Record<string, unknown> }>("/vip-contacts", body);
+  return data.contact;
+};
+
+export const updateVipContact = async (id: string, body: Record<string, unknown>) => {
+  const data = await patch<{ contact: Record<string, unknown> }>(`/vip-contacts/${id}`, body);
+  return data.contact;
+};
+
+export const deleteVipContact = async (id: string) => {
+  await del(`/vip-contacts/${id}`);
+};
+
+// ══════════════════════════════════════════════════════
+// EMPLOYEES
+// ══════════════════════════════════════════════════════
+export const fetchEmployees = async (opts?: { search?: string; activeOnly?: boolean }) => {
+  const data = await get<{ data: Record<string, unknown>[] }>("/employees", {
+    ...(opts?.search ? { search: opts.search } : {}),
+    activeOnly: opts?.activeOnly ?? true,
+  });
+  return data.data ?? [];
+};
+
+export const createEmployee = async (body: {
+  employeeCode?: string; name: string; phone?: string;
+  department?: string; designation?: string; active?: boolean;
+}) => {
+  const data = await post<{ employee: Record<string, unknown> }>("/employees", body);
+  return data.employee;
+};
+
+export const updateEmployee = async (id: string, body: Record<string, unknown>) => {
+  const data = await patch<{ employee: Record<string, unknown> }>(`/employees/${id}`, body);
+  return data.employee;
+};
+
+export const deleteEmployee = async (id: string) => {
+  await del(`/employees/${id}`);
+};
+
+export const fetchEmployeeSubsidyRules = async () => {
+  const data = await get<{ data: Array<{
+    id: string; product_id: string; subsidy_percent: string; active: boolean;
+    product_name: string; product_code: string;
+    base_price: string; gst_percent: string; unit: string;
+  }> }>("/employee-subsidy-rules");
+  return (data.data ?? []).map(r => ({
+    id:             r.id,
+    productId:      r.product_id,
+    productName:    r.product_name,
+    productCode:    r.product_code,
+    subsidyPercent: parseFloat(r.subsidy_percent),
+    basePrice:      parseFloat(r.base_price),
+    gstPercent:     parseFloat(r.gst_percent),
+    unit:           r.unit,
+    active:         r.active,
+  }));
+};
+
+// ══════════════════════════════════════════════════════
+// DIRECT SALES — VIP + EMPLOYEE
+// ══════════════════════════════════════════════════════
+export const createVipSampleSale = async (body: {
+  customerId: string;          // vip_contacts.id
+  routeId?: string;
+  batchId?: string;
+  saleDate?: string;
+  notes?: string;
+  items: Array<{ productId: string; quantity: number }>;
+}) => {
+  const data = await post<{ sale: Record<string, unknown> }>(
+    "/direct-sales/vip-sample",
+    body,
+  );
+  return data.sale;
+};
+
+export const createEmployeeSubsidySale = async (body: {
+  customerId: string;          // employees.id
+  routeId?: string;
+  batchId?: string;
+  saleDate?: string;
+  paymentMode: "cash" | "upi";
+  paymentRef?: string;
+  notes?: string;
+  items: Array<{ productId: string; quantity: number }>;
+}) => {
+  const data = await post<{ sale: Record<string, unknown> }>(
+    "/direct-sales/employee-subsidy",
+    body,
+  );
+  return data.sale;
+};
+
 // ══════════════════════════════════════
 // CANCELLATION REQUESTS
 // ══════════════════════════════════════
@@ -964,11 +1075,13 @@ export const updateStockEntry = async (
   );
 };
 
-export const fetchStockEntries = async (date?: string) => {
-  const params = date ? { date } : undefined;
+export const fetchStockEntries = async (date?: string, bucket?: StockBucket) => {
+  const params: Record<string, string> = {};
+  if (date)   params.date   = date;
+  if (bucket) params.bucket = bucket;
   const data = await get<{ products: Record<string, unknown>[] }>(
     "/fgs/overview",
-    params,
+    Object.keys(params).length ? params : undefined,
   );
   return (data.products ?? []).map(normalizeStockEntry);
 };

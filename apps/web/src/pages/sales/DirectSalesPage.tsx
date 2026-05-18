@@ -29,11 +29,16 @@ import { Plus, Save, Trash2 } from "lucide-react";
 import {
   fetchProducts, fetchCustomers, fetchRoutes,
   createGatePassSale, createCashSale,
+  fetchVipContacts, createVipContact, createVipSampleSale,
+  fetchEmployees, fetchEmployeeSubsidyRules, createEmployeeSubsidySale,
   type Product,
 } from "@/services/api";
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { get, patch } from "@/lib/apiClient";
 
-interface Props { tab?: "gate-pass" | "cash-customer" | "modify"; }
+interface Props { tab?: "gate-pass" | "cash-customer" | "modify"| "vip-sample" | "employee-subsidy"; }
 
 // Shared line shape — productName cached so totals stay correct after
 // the row's Product changes mid-edit (same approach as RecordIndents).
@@ -51,6 +56,8 @@ const newLine = (): Line => ({ id: rid(), productId: "", qty: 1, rate: 0, gstPer
 export default function DirectSalesPage({ tab = "gate-pass" }: Props) {
   if (tab === "cash-customer") return <CashCustomerTab />;
   if (tab === "modify")        return <ModifyTab />;
+  if (tab === "vip-sample")        return <VipSampleTab />;
+  if (tab === "employee-subsidy")  return <EmployeeSubsidyTab />;
   return <GatePassTab />;
 }
 
@@ -233,7 +240,8 @@ function GatePassTab() {
   const [date, setDate]               = useState(today);
   const [customerId, setCustomerId]   = useState<string | null>(null);
   const [routeId, setRouteId]         = useState<string | null>(null);
-  const [paymentMode, setPaymentMode] = useState<"cash" | "credit">("cash");
+  const [paymentMode, setPaymentMode] = useState<"cash" | "upi" | "credit">("cash");
+  const [paymentRef,  setPaymentRef]  = useState("");     // UPI txn ID / receipt no.
   const [notes, setNotes]             = useState("");
   const [lines, setLines]             = useState<Line[]>([newLine()]);
 
@@ -253,6 +261,7 @@ function GatePassTab() {
       customerId: customer?.id,
       routeId: routeId ?? undefined,
       paymentMode,
+      paymentRef: paymentRef.trim() || undefined,   // ← ADD
       notes,
       items: lines
         .filter(l => l.productId && l.qty > 0)
@@ -268,7 +277,7 @@ function GatePassTab() {
       qc.invalidateQueries({ queryKey: ["direct-sales"] });
       qc.invalidateQueries({ queryKey: ["indents"] });
       navigate("/sales/direct-sales/recent");
-      setLines([newLine()]); setCustomerId(null); setNotes("");
+      setLines([newLine()]); setCustomerId(null); setNotes(""); setPaymentRef("");
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
@@ -297,37 +306,54 @@ function GatePassTab() {
         subtitle="Issue a gate-pass for an over-the-counter dealer pickup. F2 add line · Ctrl+S submit."
       />
       <div className="flex-1 overflow-auto p-3 space-y-3 pb-24">
-        <FormSection title="Sale Header" cols={4}>
-          <Field label="Date" required>
-            <Input type="date" className="erp-input" value={date} onChange={e => setDate(e.target.value)} />
-          </Field>
-          <Field label="Customer" required hint="F9">
-            <F9SearchSelect
-              value={customerId}
-              onChange={setCustomerId}
-              options={customerOpts}
-              className="w-full"
+      <FormSection title="Sale Header" cols={4}>
+        <Field label="Date" required>
+          <Input type="date" className="erp-input" value={date} onChange={e => setDate(e.target.value)} />
+        </Field>
+        <Field label="Customer" required hint="F9">
+          <F9SearchSelect
+            value={customerId}
+            onChange={setCustomerId}
+            options={customerOpts}
+            className="w-full"
+          />
+        </Field>
+        <Field label="Route" hint="F9">
+          <F9SearchSelect
+            value={routeId}
+            onChange={setRouteId}
+            options={routeOpts}
+            allowAll
+            className="w-full"
+          />
+        </Field>
+        <Field label="Payment Mode">
+          <Select
+            value={paymentMode}
+            onValueChange={(v: any) => { setPaymentMode(v); setPaymentRef(""); }}
+          >
+            <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="cash">Cash</SelectItem>
+              <SelectItem value="upi">UPI</SelectItem>
+              <SelectItem value="credit">Credit</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+    
+        {/* UPI Reference — shown only when UPI is selected */}
+        {paymentMode === "upi" && (
+          <Field label="UPI Reference / Txn ID" required>
+            <Input
+              className="erp-input"
+              value={paymentRef}
+              onChange={e => setPaymentRef(e.target.value)}
+              placeholder="e.g. 406812345678"
+              autoFocus
             />
           </Field>
-          <Field label="Route" hint="F9">
-            <F9SearchSelect
-              value={routeId}
-              onChange={setRouteId}
-              options={routeOpts}
-              allowAll
-              className="w-full"
-            />
-          </Field>
-          <Field label="Payment Mode">
-            <Select value={paymentMode} onValueChange={(v: any) => setPaymentMode(v)}>
-              <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="cash">Cash</SelectItem>
-                <SelectItem value="credit">Credit</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-        </FormSection>
+        )}
+      </FormSection>
 
         {/* Items card — same layout as Record-Indents */}
         <ItemsCard lines={lines} setLines={setLines} products={products as Product[]} />
@@ -343,7 +369,12 @@ function GatePassTab() {
         <Button
           size="sm"
           className="h-8 bg-primary hover:bg-primary-hover"
-          disabled={submit.isPending || !customer || !lines.some(l => l.productId && l.qty > 0)}
+          disabled={
+            submit.isPending ||
+            !customer ||
+            !lines.some(l => l.productId && l.qty > 0) ||
+            (paymentMode === "upi" && !paymentRef.trim())
+          }
           onClick={() => submit.mutate()}
         >
           <Save className="h-3.5 w-3.5 mr-1" />
@@ -371,6 +402,7 @@ function CashCustomerTab() {
   const [name, setName]               = useState("");
   const [phone, setPhone]             = useState("");
   const [paymentMode, setPaymentMode] = useState<"cash" | "upi">("cash");
+  const [paymentRef,  setPaymentRef]  = useState("");
   const [notes, setNotes]             = useState("");
   const [lines, setLines]             = useState<Line[]>([newLine()]);
 
@@ -380,6 +412,7 @@ function CashCustomerTab() {
       customerName: name,
       customerPhone: phone,
       paymentMode,
+      paymentRef: paymentRef.trim() || undefined,
       notes,
       items: lines
         .filter(l => l.productId && l.qty > 0)
@@ -394,7 +427,7 @@ function CashCustomerTab() {
       toast.success("Cash Sale recorded");
       qc.invalidateQueries({ queryKey: ["direct-sales"] });
       navigate("/sales/direct-sales/recent");
-      setName(""); setPhone(""); setLines([newLine()]); setNotes("");
+      setName(""); setPhone(""); setLines([newLine()]); setNotes(""); setPaymentRef("");
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
@@ -434,6 +467,17 @@ function CashCustomerTab() {
               </SelectContent>
             </Select>
           </Field>
+          {paymentMode === "upi" && (
+            <Field label="UPI Reference / Txn ID" required>
+              <Input
+                className="erp-input"
+                value={paymentRef}
+                onChange={e => setPaymentRef(e.target.value)}
+                placeholder="e.g. 406812345678"
+                autoFocus
+              />
+            </Field>
+          )}
         </FormSection>
 
         {/* Items card — identical to Gate-Pass + Record-Indents */}
@@ -450,7 +494,12 @@ function CashCustomerTab() {
         <Button
           size="sm"
           className="h-8 bg-primary hover:bg-primary-hover"
-          disabled={submit.isPending || !name || !lines.some(l => l.productId && l.qty > 0)}
+          disabled={
+            submit.isPending ||
+            !name.trim() ||
+            !lines.some(l => l.productId && l.qty > 0) ||
+            (paymentMode === "upi" && !paymentRef.trim()) 
+          }
           onClick={() => submit.mutate()}
         >
           <Save className="h-3.5 w-3.5 mr-1" />
@@ -673,6 +722,389 @@ function ModifyTab() {
           </FormFooter>
         </>
       )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// VIP Free Sample tab
+// ════════════════════════════════════════════════════════════════════
+function VipSampleTab() {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+
+  const { data: products = [] } = useQuery({ queryKey: ["products"],     queryFn: fetchProducts });
+  const { data: vips     = [] } = useQuery({ queryKey: ["vip-contacts"], queryFn: () => fetchVipContacts() });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const [vipId, setVipId]   = useState<string | null>(null);
+  const [notes, setNotes]   = useState("");
+  const [lines, setLines]   = useState<Line[]>([newLine()]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [newName, setNewName]   = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newDesig, setNewDesig] = useState("");
+
+  // Force all lines to ₹0 / 0% — staff can't override prices in this flow
+  const forceZero = (ls: Line[]) =>
+    ls.map(l => ({ ...l, rate: 0, gstPercent: 0 }));
+  useEffect(() => { setLines(prev => forceZero(prev)); /* eslint-disable-next-line */ }, []);
+
+  const vipOpts: F9Option[] = useMemo(
+    () => (vips as any[]).map(v => ({
+      value: v.id, label: v.name,
+      sublabel: [v.designation, v.phone].filter(Boolean).join(" · "),
+    })),
+    [vips],
+  );
+
+  const addVip = useMutation({
+    mutationFn: () => createVipContact({
+      name: newName.trim(),
+      phone: newPhone.trim() || undefined,
+      designation: newDesig.trim() || undefined,
+    }),
+    onSuccess: async (c: any) => {
+      toast.success("VIP added");
+      await qc.invalidateQueries({ queryKey: ["vip-contacts"] });
+      setVipId(c.id);
+      setAddOpen(false);
+      setNewName(""); setNewPhone(""); setNewDesig("");
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed to add VIP"),
+  });
+
+  const submit = useMutation({
+    mutationFn: () => createVipSampleSale({
+      saleDate:   today,
+      customerId: vipId!,
+      notes,
+      items: lines
+        .filter(l => l.productId && l.qty > 0)
+        .map(l => ({ productId: l.productId, quantity: l.qty })),
+    }),
+    onSuccess: () => {
+      toast.success("VIP sample issued");
+      qc.invalidateQueries({ queryKey: ["direct-sales"] });
+      navigate("/sales/direct-sales/recent");
+      setVipId(null); setLines([newLine()]); setNotes("");
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
+
+  const canSubmit = !!vipId && lines.some(l => l.productId && l.qty > 0) && !submit.isPending;
+
+  return (
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title="VIP Free Sample"
+        subtitle="Complimentary issue. Grand total = ₹0. F2 add line · Ctrl+S submit."
+      />
+
+      <div className="flex-1 overflow-auto p-3 space-y-3 pb-24">
+        <FormSection title="Recipient" cols={3}>
+          <Field label="VIP Contact" required hint="F9">
+            <F9SearchSelect
+              value={vipId}
+              onChange={setVipId}
+              options={vipOpts}
+              placeholder="Search by name or phone"
+            />
+          </Field>
+          <Field label="Not in list?">
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setAddOpen(true)}>
+              <Plus className="h-3.5 w-3.5 mr-1" /> Add new VIP
+            </Button>
+          </Field>
+        </FormSection>
+
+        {/* Items — but ItemsCard rate/GST inputs are visual-only here; backend forces 0 */}
+        <ItemsCard lines={lines} setLines={setLines} products={products as Product[]} />
+
+        <FormSection title="Notes" cols={1}>
+          <Field label="Remarks">
+            <Input
+              className="erp-input"
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="e.g. for AGM hospitality"
+            />
+          </Field>
+        </FormSection>
+
+        <p className="text-[11px] text-muted-foreground px-1">
+          ℹ Prices are forced to ₹0 server-side. No payment will be collected or recorded.
+        </p>
+      </div>
+
+      <FormFooter>
+        <Button
+          size="sm"
+          className="h-8 bg-primary hover:bg-primary-hover"
+          disabled={!canSubmit}
+          onClick={() => submit.mutate()}
+        >
+          <Save className="h-3.5 w-3.5 mr-1" />
+          {submit.isPending ? "Saving…" : (
+            <span className="inline-flex items-center gap-1.5">
+              Issue Free Sample <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd>
+            </span>
+          )}
+        </Button>
+      </FormFooter>
+
+      {/* Inline Add-VIP dialog */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Add VIP Contact</DialogTitle></DialogHeader>
+          <div className="grid grid-cols-1 gap-3 p-1">
+            <Field label="Name" required>
+              <Input className="erp-input" value={newName} onChange={e => setNewName(e.target.value)} autoFocus />
+            </Field>
+            <Field label="Phone">
+              <Input className="erp-input" value={newPhone} onChange={e => setNewPhone(e.target.value)} maxLength={10} />
+            </Field>
+            <Field label="Designation">
+              <Input className="erp-input" value={newDesig} onChange={e => setNewDesig(e.target.value)} placeholder="e.g. MLA, Minister" />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setAddOpen(false)}>Cancel</Button>
+            <Button
+              size="sm"
+              disabled={!newName.trim() || addVip.isPending}
+              onClick={() => addVip.mutate()}
+            >
+              {addVip.isPending ? "Adding…" : "Add"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Employee Subsidy tab — locked to eligible products + fixed subsidy %
+// ════════════════════════════════════════════════════════════════════
+function EmployeeSubsidyTab() {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+
+  const { data: employees = [] } = useQuery({
+    queryKey: ["employees"],
+    queryFn: () => fetchEmployees({ activeOnly: true }),
+  });
+  const { data: rules = [], isLoading: rulesLoading } = useQuery({
+    queryKey: ["emp-subsidy-rules"],
+    queryFn: fetchEmployeeSubsidyRules,
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const [empId, setEmpId]             = useState<string | null>(null);
+  const [productId, setProductId]     = useState<string | null>(null);
+  const [qty, setQty]                 = useState(1);
+  const [paymentMode, setPaymentMode] = useState<"cash" | "upi">("cash");
+  const [paymentRef, setPaymentRef]   = useState("");
+  const [notes, setNotes]             = useState("");
+
+  const empOpts: F9Option[] = useMemo(
+    () => (employees as any[]).map(e => ({
+      value: e.id,
+      label: e.name,
+      sublabel: [e.employee_code, e.department].filter(Boolean).join(" · "),
+    })),
+    [employees],
+  );
+
+  const productOpts: F9Option[] = useMemo(
+    () => rules.map(r => ({
+      value: r.productId,
+      label: `${r.productName}${r.unit ? ` (${r.unit})` : ""}`,
+      sublabel: `MRP ₹${r.basePrice.toFixed(2)} · ${r.subsidyPercent}% subsidy`,
+    })),
+    [rules],
+  );
+
+  // Auto-select if only one eligible product (today: just HTM-1000ml)
+  useEffect(() => {
+    if (!productId && rules.length === 1) setProductId(rules[0].productId);
+  }, [rules, productId]);
+
+  const rule = rules.find(r => r.productId === productId);
+
+  const pricing = useMemo(() => {
+    if (!rule) return null;
+    const mrp        = rule.basePrice;
+    const unitPrice  = +(mrp * (1 - rule.subsidyPercent / 100)).toFixed(2);
+    const lineSub    = +(unitPrice * qty).toFixed(2);
+    const gstAmount  = +(lineSub * rule.gstPercent / 100).toFixed(2);
+    const total      = +(lineSub + gstAmount).toFixed(2);
+    const youSave    = +(mrp * qty - lineSub).toFixed(2);
+    return { mrp, unitPrice, lineSub, gstAmount, total, youSave };
+  }, [rule, qty]);
+
+  const submit = useMutation({
+    mutationFn: () => createEmployeeSubsidySale({
+      saleDate: today,
+      customerId: empId!,
+      paymentMode,
+      paymentRef: paymentRef.trim() || undefined,
+      notes,
+      items: [{ productId: productId!, quantity: qty }],
+    }),
+    onSuccess: () => {
+      toast.success("Employee subsidy sale recorded");
+      qc.invalidateQueries({ queryKey: ["direct-sales"] });
+      navigate("/sales/direct-sales/recent");
+      setEmpId(null); setProductId(null); setQty(1);
+      setPaymentMode("cash"); setPaymentRef(""); setNotes("");
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
+
+  const canSubmit =
+    !!empId && !!productId && qty > 0 && !submit.isPending &&
+    (paymentMode === "cash" || paymentRef.trim().length > 0);
+
+  // Keyboard: Ctrl+S to submit
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (canSubmit) submit.mutate();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [canSubmit, submit]);
+
+  return (
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title="Employee Subsidy Sale"
+        subtitle="Subsidy auto-applied from the rule book. Ctrl+S submit."
+      />
+
+      <div className="flex-1 overflow-auto p-3 space-y-3 pb-24">
+        {/* Combined: Employee + Payment */}
+        <FormSection title="Employee" cols={3}>
+          <Field label="Employee" required hint="F9">
+            <F9SearchSelect
+              value={empId}
+              onChange={setEmpId}
+              options={empOpts}
+              placeholder="Search by name or code"
+            />
+          </Field>
+          <Field label="Payment Mode" required>
+            <Select value={paymentMode} onValueChange={v => setPaymentMode(v as any)}>
+              <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="cash">Cash</SelectItem>
+                <SelectItem value="upi">UPI</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          {paymentMode === "upi" && (
+            <Field label="UPI Reference / Txn ID" required>
+              <Input
+                className="erp-input"
+                value={paymentRef}
+                onChange={e => setPaymentRef(e.target.value)}
+                placeholder="e.g. 406812345678"
+              />
+            </Field>
+          )}
+        </FormSection>
+
+        {/* Product + qty + live pricing */}
+        <FormSection title="Product (eligible only)" cols={3}>
+          {rulesLoading ? (
+            <Field label="Product" required>
+              <div className="text-[12px] text-muted-foreground">Loading eligible products…</div>
+            </Field>
+          ) : rules.length === 0 ? (
+            <div className="col-span-3 p-3 rounded-sm border border-dashed bg-amber-50 dark:bg-amber-950/30 text-[12.5px]">
+              <strong>No eligible products configured.</strong>{" "}
+              An admin must add a row to <code>employee_subsidy_rules</code> (e.g. HTM-1000ml at 50%).
+              Until then this flow can't be used.
+            </div>
+          ) : (
+            <>
+              <Field label="Product" required hint="F9">
+                <F9SearchSelect
+                  value={productId}
+                  onChange={setProductId}
+                  options={productOpts}
+                  placeholder="Select eligible product"
+                />
+              </Field>
+              <Field label="Quantity" required>
+                <Input
+                  className="erp-input num"
+                  type="number" min={1}
+                  value={qty}
+                  onChange={e => setQty(Math.max(1, parseInt(e.target.value || "1", 10)))}
+                />
+              </Field>
+            </>
+          )}
+        </FormSection>
+
+        {pricing && rule && (
+          <div className="erp-panel p-3">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-[12.5px]">
+              <Cell label="MRP / unit"                     value={fmtINR(pricing.mrp)} />
+              <Cell label={`Subsidy ${rule.subsidyPercent}%`} value={`− ${fmtINR(pricing.mrp - pricing.unitPrice)}`} />
+              <Cell label="Employee price / unit"          value={fmtINR(pricing.unitPrice)} />
+              <Cell label="Subtotal"                       value={fmtINR(pricing.lineSub)} />
+              <Cell label={`GST (${rule.gstPercent}%)`}    value={fmtINR(pricing.gstAmount)} />
+              <Cell label="Total payable"                  value={fmtINR(pricing.total)} strong />
+            </div>
+            <div className="mt-2 text-[11px] text-muted-foreground">
+              Employee saves <span className="num font-medium">{fmtINR(pricing.youSave)}</span> on this purchase.
+            </div>
+          </div>
+        )}
+
+        <FormSection title="Notes" cols={1}>
+          <Field label="Remarks">
+            <Input
+              className="erp-input"
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Optional"
+            />
+          </Field>
+        </FormSection>
+      </div>
+
+      <FormFooter>
+        <Button
+          size="sm"
+          className="h-8 bg-primary hover:bg-primary-hover"
+          disabled={!canSubmit}
+          onClick={() => submit.mutate()}
+        >
+          <Save className="h-3.5 w-3.5 mr-1" />
+          {submit.isPending ? "Saving…" : (
+            <span className="inline-flex items-center gap-1.5">
+              Record Subsidy Sale <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd>
+            </span>
+          )}
+        </Button>
+      </FormFooter>
+    </div>
+  );
+}
+
+// Small helper used only in this tab
+function Cell({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div>
+      <div className="text-[10.5px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={`num ${strong ? "font-bold text-[14px]" : "text-[13px]"}`}>{value}</div>
     </div>
   );
 }

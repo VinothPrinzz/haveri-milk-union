@@ -11,8 +11,14 @@ export async function inventoryRoutes(app: FastifyInstance) {
     "/api/v1/fgs/overview",
     { preHandler: [adminAuth, requireRole("inventory.view")] },
     async (request, reply) => {
-      const querySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() });
-      const { date } = querySchema.parse(request.query);
+      const querySchema = z.object({
+        date:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        bucket: z.enum(["milk-curd", "others"]).optional(),
+      });
+      const { date, bucket } = querySchema.parse(request.query);
+      
+      // Keep in sync with apps/web/src/lib/stock-buckets.ts MILK_CURD_CATEGORIES
+      const MILK_CURD_CATEGORIES = ["milk", "curd"];
 
       // If date is given, return that day's snapshot from fgs_stock_log,
       // joined with products (some products may not have an entry that day).
@@ -38,6 +44,11 @@ export async function inventoryRoutes(app: FastifyInstance) {
           JOIN categories c ON c.id = p.category_id
           LEFT JOIN fgs_stock_log fsl ON fsl.product_id = p.id AND fsl.date = ${date}::date
           WHERE p.deleted_at IS NULL
+            AND (
+              ${bucket ?? null}::text IS NULL
+              OR (${bucket ?? null}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
+              OR (${bucket ?? null}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
+            )
           ORDER BY p.sort_order
         `;
         const summary = {
@@ -64,7 +75,12 @@ export async function inventoryRoutes(app: FastifyInstance) {
         FROM products p
         JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
-        ORDER BY p.sort_order
+        AND (
+          ${bucket ?? null}::text IS NULL
+          OR (${bucket ?? null}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
+          OR (${bucket ?? null}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
+        )
+      ORDER BY p.sort_order
       `;
       const summary = {
         totalProducts: stockData.length,

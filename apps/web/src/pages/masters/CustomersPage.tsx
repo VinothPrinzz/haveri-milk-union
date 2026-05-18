@@ -14,13 +14,14 @@ import { Switch } from "@/components/ui/switch";
 import {
   fetchCustomers, fetchCustomersPage, fetchRoutes, fetchZones, createCustomer,
   removeCustomerFromRoute, assignCustomerToRoute,
-  getRateCategories, getOfficers,
+  getRateCategories, getOfficers
 } from "@/services/api";
 import { customerSchema, type CustomerFormData } from "@/lib/validations";
 import type { Customer } from "@/data/mockData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { toCsv } from "@/lib/exporters";
+import { patch } from "@/lib/apiClient";
  
 interface Props { tab?: "list" | "new" | "assign-route"; }
  
@@ -50,21 +51,23 @@ export default function CustomersPage({ tab = "list" }: Props) {
   const [debouncedSearch, setDebSearch] = useState("");
   const [typeFilter, setTypeFilter]   = useState("All Types");
   const [routeFilter, setRouteFilter] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | "true" | "false">("all");
  
   useEffect(() => {
     const t = setTimeout(() => { setDebSearch(search); setPage(1); }, 300);
     return () => clearTimeout(t);
   }, [search]);
  
-  useEffect(() => { setPage(1); }, [typeFilter, routeFilter, pageSize]);
+  useEffect(() => { setPage(1); }, [typeFilter, routeFilter, statusFilter, pageSize]);
  
   const pageQuery = useQuery({
-    queryKey: ["customers-page", { page, pageSize, debouncedSearch, typeFilter, routeFilter }],
+    queryKey: ["customers-page", { page, pageSize, debouncedSearch, typeFilter, routeFilter, statusFilter }],
     queryFn: () => fetchCustomersPage({
       page, limit: pageSize,
-      search: debouncedSearch || undefined,
-      customerType: typeFilter !== "All Types" ? typeFilter : undefined,
-      routeId: routeFilter ?? undefined,
+      search:        debouncedSearch || undefined,
+      customerType:  typeFilter !== "All Types" ? typeFilter : undefined,
+      routeId:       routeFilter ?? undefined,
+      activeFilter: statusFilter !== "all" ? statusFilter as "true" | "false" : undefined,
     }),
     placeholderData: keepPreviousData,
   });
@@ -80,6 +83,37 @@ export default function CustomersPage({ tab = "list" }: Props) {
  
   // Assign-route state
   const [selectedRoute, setSelectedRoute] = useState("");
+
+  // === Position management for assign-route tab ===
+  const [pendingPos, setPendingPos] = useState<Record<string, number>>({});
+
+  const movePos = (dealerId: string, dir: "up" | "down") => {
+    const idx = routeCustomers.findIndex((c: any) => c.id === dealerId);
+    const swapIdx = dir === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= routeCustomers.length) return;
+
+    const a = routeCustomers[idx]._pos;
+    const b = routeCustomers[swapIdx]._pos;
+
+    setPendingPos((p) => ({
+      ...p,
+      [routeCustomers[idx].id]: b,
+      [routeCustomers[swapIdx].id]: a,
+    }));
+  };
+
+  const savePosMutation = useMutation({
+    mutationFn: () =>
+      patch(`/routes/${selectedRoute}/dealer-positions`, {
+        positions: Object.entries(pendingPos).map(([dealerId, position]) => ({ dealerId, position })),
+      }),
+    onSuccess: () => {
+      setPendingPos({});
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      toast.success("Positions saved");
+    },
+    onError: () => toast.error("Failed to save positions"),
+  });
  
   // New-customer alphabet state (used by both /new tab AND fallback form)
   const [selectedLetter, setSelectedLetter] = useState("A");
@@ -132,9 +166,19 @@ export default function CustomersPage({ tab = "list" }: Props) {
     onError: () => toast.error("Failed to assign customer"),
   });
  
-  // ── Assign-route derivations (NOT hooks — safe inside conditionals) ──
-  const routeCustomers = allCustomers.filter((c: any) =>
-    c.routes?.some((r: any) => r.routeId === selectedRoute));
+  // matching route entry, then sort.
+  const routeCustomers = allCustomers
+    .map((c: any) => {
+      const link = c.routes?.find((r: any) => r.routeId === selectedRoute);
+      return link ? { ...c, _pos: link.position ?? 9999 } : null;
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) => {
+      const posA = pendingPos[a.id] ?? a._pos;
+      const posB = pendingPos[b.id] ?? b._pos;
+      return (posA - posB) || a.code.localeCompare(b.code) || a.name.localeCompare(b.name);
+  });
+  
   const eligibleToAdd = allCustomers.filter((c: any) => {
     if (!selectedRoute) return false;
     if (c.routes?.some((r: any) => r.routeId === selectedRoute)) return false;
@@ -207,39 +251,63 @@ export default function CustomersPage({ tab = "list" }: Props) {
                 <span className="text-[11px] normal-case font-normal text-muted-foreground num">
                   {routeCustomers.length} on route
                 </span>
+
+                {/* === Save Order Button === */}
+                {Object.keys(pendingPos).length > 0 && (
+                  <Button 
+                    size="sm" 
+                    className="h-7 ml-2"
+                    disabled={savePosMutation.isPending}
+                    onClick={() => savePosMutation.mutate()}
+                  >
+                    Save order ({Object.keys(pendingPos).length})
+                  </Button>
+                )}
               </div>
               <div className="overflow-auto max-h-[calc(100vh-340px)]">
                 <table className="erp-table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: "50px" }}>#</th>
-                      <th>Code</th><th>Name</th><th>Type</th><th>Phone</th>
-                      <th style={{ textAlign: "right", width: "110px" }}>Actions</th>
+                <thead>
+                  <tr>
+                    <th style={{ width: "50px" }}>#</th>
+                    <th style={{ width: "90px" }}>Position</th>
+                    <th>Code</th><th>Name</th><th>Type</th><th>Phone</th>
+                    <th style={{ textAlign: "right", width: "180px" }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {routeCustomers.map((c: any, i: number) => (
+                    <tr key={c.id}>
+                      <td className="num">{i + 1}</td>
+                      <td>
+                        <Input
+                          type="number"
+                          min={1}
+                          className="erp-input h-7 w-16 num"
+                          defaultValue={c._pos}
+                          onBlur={(e) => {
+                            const next = parseInt(e.target.value, 10);
+                            if (Number.isFinite(next) && next !== c._pos) {
+                              setPendingPos((p) => ({ ...p, [c.id]: next }));
+                            }
+                          }}
+                        />
+                      </td>
+                      <td className="font-mono text-[12px]">{c.code}</td>
+                      <td className="font-medium">{c.name}</td>
+                      <td><span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary">{c.type}</span></td>
+                      <td>{c.phone}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <Button
+                          variant="ghost" size="sm"
+                          className="h-7 px-2 text-destructive hover:text-destructive"
+                          onClick={() => removeMutation.mutate({ customerId: c.id, routeId: selectedRoute })}
+                        >
+                          Remove
+                        </Button>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {routeCustomers.length === 0 ? (
-                      <tr><td colSpan={6} className="text-center text-muted-foreground py-8">
-                        No customers assigned. Click <strong>Add Customer</strong> to assign one.
-                      </td></tr>
-                    ) : routeCustomers.map((c: any, i: number) => (
-                      <tr key={c.id}>
-                        <td className="num">{i + 1}</td>
-                        <td className="font-mono text-[12px]">{c.code}</td>
-                        <td className="font-medium">{c.name}</td>
-                        <td><span className="text-[11px] px-1.5 py-0.5 rounded bg-secondary">{c.type}</span></td>
-                        <td>{c.phone}</td>
-                        <td style={{ textAlign: "right" }}>
-                          <Button
-                            variant="ghost" size="sm" className="h-7 px-2 text-destructive hover:text-destructive"
-                            onClick={() => removeMutation.mutate({ customerId: c.id, routeId: selectedRoute })}
-                          >
-                            Remove
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
+                  ))}
+                </tbody>
                 </table>
               </div>
             </div>
@@ -395,15 +463,25 @@ export default function CustomersPage({ tab = "list" }: Props) {
           </Select>
         </Field>
         <Field label="Route" hint="F9">
-          <F9SearchSelect
-            value={routeFilter}
-            onChange={setRouteFilter}
-            options={routeOpts}
-            allowAll
-            className="w-56"
-          />
-        </Field>
-        <div className="ml-auto text-[11px] text-muted-foreground self-center num">
+         <F9SearchSelect
+           value={routeFilter}
+           onChange={setRouteFilter}
+           options={routeOpts}
+           allowAll
+           className="w-56"
+         />
+       </Field>
+       <Field label="Status">
+       <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as "all" | "true" | "false")}>
+        <SelectTrigger className="erp-input w-32"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All</SelectItem>
+          <SelectItem value="true">Active</SelectItem>
+          <SelectItem value="false">Inactive</SelectItem>
+        </SelectContent>
+       </Select>
+       </Field>
+       <div className="ml-auto text-[11px] text-muted-foreground self-center num">
           {pageRows.length} on page · {totalCount} total
         </div>
       </FilterBar>
@@ -414,13 +492,14 @@ export default function CustomersPage({ tab = "list" }: Props) {
             <table className="erp-table">
               <thead>
                 <tr>
-                  <th style={{ width: 80 }}>Code</th>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Route(s)</th>
-                  <th style={{ width: 120 }}>Phone</th>
-                  <th style={{ width: 70 }}>Pay</th>
-                  <th style={{ width: 180, textAlign: "right" }}>Actions</th>
+                <th style={{ width: 80 }}>Code</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Route(s)</th>
+                <th style={{ width: 120 }}>Phone</th>
+                <th style={{ width: 70 }}>Pay</th>
+                <th style={{ width: 80 }}>Status</th>
+                <th style={{ width: 180, textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -433,7 +512,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
                     </tr>
                   ))
                 ) : pageRows.length === 0 ? (
-                  <tr><td colSpan={7} className="text-center py-8 text-muted-foreground">
+                  <tr><td colSpan={8} className="text-center py-8 text-muted-foreground">
                     No customers match the current filter.
                   </td></tr>
                 ) : pageRows.map((c: any) => (
@@ -457,7 +536,8 @@ export default function CustomersPage({ tab = "list" }: Props) {
                     </td>
                     <td>{c.phone}</td>
                     <td>{c.payMode}</td>
-                    <td style={{ textAlign: "right" }}>
+                     <td><StatusPill status={c.status === "Active" ? "active" : "draft"} /></td>
+                     <td style={{ textAlign: "right" }}>
                       <div className="flex items-center justify-end gap-1.5">
                         <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]"
                                 onClick={() => setViewing(c)}>View</Button>
@@ -541,7 +621,7 @@ function CustomerViewDialog({
         </DialogHeader>
         <div className="grid grid-cols-2 gap-x-6 gap-y-0">
           <Row label="Code" value={<span className="font-mono">{customer.code}</span>} />
-          <Row label="Status" value={<StatusPill status={(customer as any).active !== false ? "active" : "draft"} />} />
+          <Row label="Status" value={<StatusPill status={customer.status === "Active" ? "active" : "draft"} />} />
           <Row label="Name" value={customer.name} />
           <Row label="Phone" value={customer.phone} />
           <Row label="Email" value={(customer as any).email} />
@@ -562,12 +642,12 @@ function CustomerViewDialog({
             ? `₹${Number((customer as any).creditBalance).toLocaleString("en-IN")}` : "—"} />
           <Row label="Address Type" value={(customer as any).addressType} />
           <Row label="State" value={(customer as any).state} />
-          <Row label="Taluka" value={(customer as any).zoneName
-            || routes.find((r: any) => r.id === customer.routeId)?.taluka} />
+          <Row label="Taluka" value={(customer as any).zoneName} />
           <Row label="City" value={(customer as any).city} />
           <Row label="Area" value={(customer as any).area} />
           <Row label="House No." value={(customer as any).houseNo} />
           <Row label="Street" value={(customer as any).street} />
+          <Row label="Pin Code" value={(customer as any).pinCode} />
           <Row label="Address" value={(customer as any).address} />
           <Row label="Routes" value={
             customer.routes?.length
@@ -646,6 +726,7 @@ function CustomerFormBody({
       area: initial?.area ?? "",
       houseNo: initial?.houseNo ?? "",
       street: initial?.street ?? "",
+      pinCode: (initial as any)?.pinCode ?? "",
       address: initial?.address ?? "",
       routeId: initial?.routeId ?? (initial?.routes?.find((r: any) => r.isPrimary)?.routeId ?? ""),
       active: initial?.active ?? true,
@@ -805,6 +886,15 @@ function CustomerFormBody({
         </Field>
         <Field label="Street">
           <Input className="erp-input" {...form.register("street")} />
+        </Field>
+        <Field label="Pin Code">
+          <Input
+            className="erp-input"
+            {...form.register("pinCode")}
+            placeholder="e.g. 581110"
+            maxLength={6}
+            inputMode="numeric"
+          />
         </Field>
         <Field label="Full Address">
           <Input className="erp-input" {...form.register("address")} placeholder="Free-form, optional" />

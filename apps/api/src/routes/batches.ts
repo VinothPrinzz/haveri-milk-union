@@ -11,8 +11,7 @@ export async function batchRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const rows = await pgClient`
         SELECT
-          b.id, b.batch_number, b.name, b.which_batch, b.timing,
-          b.dispatch_time, b.status,
+          b.id, b.batch_number, b.name, b.which_batch, b.timing, b.status,
           COALESCE(
             ARRAY(SELECT br.route_id FROM batch_routes br WHERE br.batch_id = b.id),
             ARRAY[]::uuid[]
@@ -33,8 +32,7 @@ export async function batchRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const [batch] = await pgClient`
         SELECT
-          b.id, b.batch_number, b.name, b.which_batch, b.timing,
-          b.dispatch_time, b.status,
+          b.id, b.batch_number, b.name, b.which_batch, b.timing, b.status,
           COALESCE(
             ARRAY(SELECT br.route_id FROM batch_routes br WHERE br.batch_id = b.id),
             ARRAY[]::uuid[]
@@ -63,21 +61,17 @@ export async function batchRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const schema = z.object({
         batchNumber: z.string().min(1),
-        name: z.string().min(1),
-        whichBatch: z.string().optional(),
-        timing: z.string().optional().nullable(),
-        dispatchTime: z.string().optional().nullable(),  // HH:MM or HH:MM:SS
-        routeIds: z.array(z.string().uuid()).optional(),
+        name:        z.string().min(1),
+        whichBatch:  z.string().optional(),
+        timing:      z.string().optional().nullable(),
+        routeIds:    z.array(z.string().uuid()).optional(),
+        // remove: dispatchTime
       });
       const body = schema.parse(request.body);
 
       const [batch] = await pgClient`
-        INSERT INTO batches (batch_number, name, which_batch, timing, dispatch_time)
-        VALUES (
-          ${body.batchNumber}, ${body.name}, ${body.whichBatch ?? null},
-          ${body.timing ?? null},
-          ${body.dispatchTime ?? null}::time
-        )
+        INSERT INTO batches (batch_number, name, which_batch, timing)
+        VALUES (${body.batchNumber}, ${body.name}, ${body.whichBatch ?? null}, ${body.timing ?? null})
         RETURNING *
       `;
 
@@ -105,13 +99,12 @@ export async function batchRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const schema = z.object({
-        name: z.string().min(1).optional(),
+        name:       z.string().min(1).optional(),
         whichBatch: z.enum(["Morning", "Afternoon", "Evening", "Night"]).optional(),
-        timing: z.string().nullable().optional(),
-        notes: z.string().nullable().optional(),
-        status: z.enum(["active", "closed", "expired"]).optional(),
-        dispatchTime: z.string().optional().nullable(),
-        routeIds: z.array(z.string().uuid()).optional(),
+        timing:     z.string().nullable().optional(),
+        notes:      z.string().nullable().optional(),
+        status:     z.enum(["active", "closed", "expired"]).optional(),
+        routeIds:   z.array(z.string().uuid()).optional(),
       });
       const body = schema.parse(request.body);
 
@@ -121,9 +114,6 @@ export async function batchRoutes(app: FastifyInstance) {
           which_batch = COALESCE(${body.whichBatch ?? null}, which_batch),
           timing = CASE WHEN ${body.timing !== undefined} THEN ${body.timing ?? null} ELSE timing END,
           notes = CASE WHEN ${body.notes !== undefined} THEN ${body.notes ?? null} ELSE notes END,
-          dispatch_time = CASE WHEN ${body.dispatchTime !== undefined}
-                                THEN ${body.dispatchTime ?? null}::time
-                                ELSE dispatch_time END,
           status = COALESCE(${body.status ?? null}::batch_status, status),
           updated_at = now()
         WHERE id = ${id} AND deleted_at IS NULL

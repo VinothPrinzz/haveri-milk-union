@@ -19,9 +19,8 @@ export async function processDispatchPregenerate(job: Job) {
 
   // Get all active routes
   const routes = await sql`
-    SELECT r.id, r.name, r.zone_id, z.name AS zone_name
+    SELECT r.id, r.code, r.name
     FROM routes r
-    JOIN zones z ON z.id = r.zone_id
     WHERE r.active = true AND r.deleted_at IS NULL
     ORDER BY r.code
   `;
@@ -39,16 +38,17 @@ export async function processDispatchPregenerate(job: Job) {
       SELECT count(*)::int AS order_count,
              COALESCE(SUM(item_count), 0)::int AS total_items
       FROM orders
-      WHERE zone_id = ${route.zone_id}
-        AND created_at::date = ${today}::date
-        AND status IN ('pending', 'confirmed')
+      JOIN dealers d ON d.id = o.dealer_id
+      WHERE d.route_id = ${route.id}
+        AND o.created_at::date = ${today}::date
+        AND o.status IN ('pending', 'confirmed')
     `;
 
     // Count active dealers in this zone
     const [dealerStats] = await sql`
       SELECT count(*)::int AS dealer_count
       FROM dealers
-      WHERE zone_id = ${route.zone_id}
+      WHERE route_id = ${route.id}
         AND active = true
         AND deleted_at IS NULL
     `;
@@ -56,7 +56,10 @@ export async function processDispatchPregenerate(job: Job) {
     // Create assignment
     await sql`
       INSERT INTO route_assignments (route_id, date, dealer_count, item_count, status)
-      VALUES (${route.id}, ${today}::date, ${dealerStats?.dealer_count ?? 0}, ${orderStats?.total_items ?? 0}, 'pending')
+      VALUES (${route.id}, ${today}::date,
+              ${dealerStats?.dealer_count ?? 0},
+              ${orderStats?.total_items ?? 0},
+              'pending')
     `;
 
     created++;
