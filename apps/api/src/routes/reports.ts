@@ -30,15 +30,22 @@ export async function reportsRoutes(app: FastifyInstance) {
    
       // ── 1. All active products ──
       const prodRows = await pgClient`
-        SELECT p.id, p.code, p.report_alias, p.name,
-               p.print_direction, p.packets_crate,
-               p.pack_size, p.unit, p.sort_order,
-               c.name AS category_name
-          FROM products p
-          JOIN categories c ON c.id = p.category_id
-         WHERE p.deleted_at IS NULL
-           AND p.available  = true
-         ORDER BY p.sort_order, p.name
+      SELECT p.id, p.code, p.report_alias, p.name,
+            p.print_direction, p.packets_crate,
+            p.pack_size, p.unit, p.sort_order,
+            c.name AS category_name
+        FROM products p
+        JOIN categories c ON c.id = p.category_id
+      WHERE p.deleted_at IS NULL
+        AND p.available  = true
+      ORDER BY
+        CASE LOWER(c.name)
+          WHEN 'milk'  THEN 1
+          WHEN 'curd'  THEN 2
+          ELSE 3
+        END,
+        p.sort_order,
+        p.name
       `;
    
       // ── 2. Bucketing: 8 across max (milk + curd by sort_order) ──
