@@ -119,7 +119,7 @@ export default function AllIndentsPage() {
                   {filtered.map((i: any) => (
                     <tr key={i.id}>
                       <td className="font-mono text-[12px]">{formatIndentId(i.id)}</td>
-                      <td className="text-[12.5px]">{fmtDate(i.created_at ?? i.date)}</td>
+                      <td className="text-[12.5px]">{fmtDate(i.rawDate ?? i.date)}</td>
                       <td className="font-medium">{i.dealer_name ?? i.customerName ?? i.customerId}</td>
                       <td>{i.route_code ?? i.route_name ?? i.routeName ?? i.routeId ?? "—"}</td>
                       <td>
@@ -142,7 +142,7 @@ export default function AllIndentsPage() {
                         <Button
                           size="sm" 
                           className="h-7 px-2.5 text-[12px]"
-                          onClick={() => navigate(`/sales/direct-sales/modify?indentId=${i.id}`)}
+                          onClick={() => navigate(`/sales/direct-sales/modify?indentId=${i.id}&type=order`)}
                         >
                           Update
                         </Button>

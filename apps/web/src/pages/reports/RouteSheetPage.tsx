@@ -1,22 +1,28 @@
 // apps/web/src/pages/reports/RouteSheetPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// Route Sheet — full replacement.
+// Route Sheet — full replacement (per-page letterhead, 3-page split).
 //
 // Per route we emit:
 //   • N customer-rows pages (≤ ROWS_PER_PAGE each), final page carries
-//     the route TOTAL row.
-//   • 1 abstract page (per-product breakdown + despatch checklist).
+//     the route TOTAL row and a separate "Total Qty (Pkts)" row below
+//     it so the Other Products column gets its own breathing room.
+//   • 1 abstract page  → Route Sheet Abstract table + ₹ summary line.
+//                         (TM/HM-Qty Ltr & FCM-Qty Ltr columns removed,
+//                          signatures & return-particulars removed.)
+//   • 1 security page  → Despatch Summary For Security checklist with
+//                         "Crates In / Crates Out" rows + Return
+//                         Particulars block + 2 signatures
+//                         (Security, Contractor).
 //
-// Constraints:
-//   • Across cap = 8 (enforced by the API; UI just renders what comes).
-//   • Crates column sits BEFORE Net ₹.
-//   • Designed to fit A4 landscape; widths in CSS keep us under that.
+// Every page carries its own letterhead so the printout repeats the
+// company name / GST / address on every paper sheet. ReportShell's
+// global `printMeta` is therefore unused here.
 //
-// Pagination:
-//   Pages are pre-rendered into the `pages: ReactNode[]` that
-//   ReportShell uses for screen Prev/Next; on print, the browser
-//   page-breaks naturally because we put `page-break-after: always`
-//   between siblings.
+// Constraints / layout:
+//   • Designed to fit A4 landscape.
+//   • Vehicle No and Top-Light removed from the per-page strip per
+//     client request.
+//   • Crates column sits BEFORE Net ₹ on the rows table.
 // ════════════════════════════════════════════════════════════════════
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -25,7 +31,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { fmtNum, fmtINR, fmtDate } from "@/components/PageHeader";
-import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
+import ReportShell, { type Exporter } from "@/components/ReportShell";
 import { fetchBatches } from "@/services/api";
 import {
   fetchRouteSheet,
@@ -37,7 +43,7 @@ import { toCsv } from "@/lib/exporters";
 
 // 16 dealer rows per A4 landscape page leaves comfortable headroom for
 // the Others column to wrap to 2-3 lines. Tune here if needed.
-const ROWS_PER_PAGE = 16;
+const ROWS_PER_PAGE = 13;
 
 export default function RouteSheetPage() {
   const today = new Date().toISOString().split("T")[0];
@@ -76,7 +82,7 @@ export default function RouteSheetPage() {
   }));
   const acrossProducts = (data?.acrossProducts ?? []).filter(p => usedIds.has(p.id));
 
-  // ── Build pages: per route → N row-pages + 1 abstract page ──
+  // ── Build pages: per route → N row-pages + abstract page + security page ──
   const pages: ReactNode[] = [];
   const pageLabels: string[] = [];
 
@@ -113,6 +119,14 @@ export default function RouteSheetPage() {
       />
     );
     pageLabels.push(`${route.name} — Abstract`);
+    pages.push(
+      <SecurityPage
+        key={`${route.id}-security`}
+        data={data!}
+        route={route}
+      />
+    );
+    pageLabels.push(`${route.name} — Security`);
   });
 
   // ── CSV export (one combined file, one row per customer + Route col) ──
@@ -148,7 +162,7 @@ export default function RouteSheetPage() {
   return (
     <ReportShell
       title="Route Sheet"
-      subtitle="Per-route loading sheets — one route per group, abstract appended"
+      subtitle="Per-route loading sheets — abstract + security checklist appended"
       printOrientation="landscape"
       filters={
         <>
@@ -180,15 +194,7 @@ export default function RouteSheetPage() {
       }
       onGenerate={handleGenerate}
       exporters={exporters}
-      printMeta={
-        <ReportPrintMeta
-          title="Route Sheet"
-          rows={[
-            { label: "Date", value: data ? fmtDate(data.date) : "—" },
-            { label: "Batch", value: data?.batch?.name ?? "All" },
-          ]}
-        />
-      }
+      /* No global printMeta — each page renders its own letterhead. */
       state={{
         generated,
         loading: isLoading,
@@ -200,9 +206,9 @@ export default function RouteSheetPage() {
   );
 }
 
-// ────────────────────────────────────────────────────────────────────
-// PER-ROUTE CUSTOMER ROWS PAGE
-// ────────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+// PAGE 1: per-route customer-rows page
+// ════════════════════════════════════════════════════════════════════
 function RouteRowsPage({
   data, acrossProducts, route, rows, showTotal, pageNum, pageCount,
 }: {
@@ -214,25 +220,28 @@ function RouteRowsPage({
   pageNum: number;
   pageCount: number;
 }) {
+  const totalCols = 3 + acrossProducts.length + 1 + 2; // Sl..Dealer + N + Others + Crates + Net
+
   return (
     <div className="rs-page rs-rows-page">
-      <RouteStrip data={data} route={route} variant="sheet"
-                  pageNum={pageNum} pageCount={pageCount} />
+      <RouteLetterhead
+        data={data} route={route}
+        pageHeading="Route Sheet"
+        pageNum={pageNum} pageCount={pageCount}
+      />
 
       <table className="report-ledger compact rs-ledger">
         <colgroup>
-          <col style={{ width: "26px" }} />
-          <col style={{ width: "60px" }} />
-          <col />
-          {acrossProducts.map(p => <col key={p.id} style={{ width: "44px" }} />)}
-          <col style={{ width: "32%" }} />
-          <col style={{ width: "48px" }} />
-          <col style={{ width: "82px" }} />
+          <col style={{ width: "28px" }}   />                {/* Sl                  */}
+          <col className="col-dealer" />                     {/* Code – Dealer (capped via CSS) */}
+          {acrossProducts.map(p => <col key={p.id} style={{ width: "40px" }} />)}
+          <col style={{ width: "20%" }} />                   {/* Other Products      */}
+          <col style={{ width: "48px" }} />                  {/* Crates              */}
+          <col style={{ width: "82px" }} />                  {/* Net Amount          */}
         </colgroup>
         <thead>
           <tr>
             <th>Sl</th>
-            <th>Code</th>
             <th>Dealer</th>
             {acrossProducts.map(p => (
               <th
@@ -259,8 +268,11 @@ function RouteRowsPage({
           {rows.map(c => (
             <tr key={c.id}>
               <td className="num">{c.sl}</td>
-              <td className="font-mono">{c.code}</td>
-              <td>{c.name}</td>
+              <td className="dealer-cell">
+                <span className="font-mono">{c.code}</span>
+                <span className="dealer-sep"> – </span>
+                {c.name}
+              </td>
               {acrossProducts.map(p => (
                 <td key={p.id} className="center num">
                   {c.acrossQty[p.id] ? c.acrossQty[p.id] : ""}
@@ -277,7 +289,7 @@ function RouteRowsPage({
 
           {showTotal && (
             <tr className="total-row">
-              <td colSpan={3} className="num">TOTAL</td>
+              <td colSpan={2} className="num">TOTAL</td>          {/* was colSpan={3} */}
               {acrossProducts.map(p => (
                 <td key={p.id} className="center num">
                   {fmtNum(route.totals.acrossQty[p.id] ?? 0)}
@@ -296,9 +308,10 @@ function RouteRowsPage({
   );
 }
 
-// ────────────────────────────────────────────────────────────────────
-// PER-ROUTE ABSTRACT / DESPATCH SUMMARY PAGE
-// ────────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+// PAGE 2: Route Sheet Abstract (per-product breakdown only)
+// — No TM/HM-Qty, no FCM-Qty, no signatures, no return particulars —
+// ════════════════════════════════════════════════════════════════════
 function AbstractPage({
   data, route,
 }: {
@@ -310,103 +323,55 @@ function AbstractPage({
 
   return (
     <div className="rs-page rs-abstract-page">
-      <RouteStrip data={data} route={route} variant="abstract" />
+      <RouteLetterhead
+        data={data} route={route}
+        pageHeading="Route Sheet Abstract"
+      />
 
-      <div className="rs-abstract-grid">
-        {/* Left: full breakdown */}
-        <table className="report-ledger compact rs-ledger rs-abstract-table">
-          <colgroup>
-            <col style={{ width: "22%" }} />
-            <col style={{ width: "64px" }} />
-            <col style={{ width: "64px" }} />
-            <col style={{ width: "64px" }} />
-            <col style={{ width: "82px" }} />
-            <col style={{ width: "44px" }} />
-            <col style={{ width: "44px" }} />
-            <col style={{ width: "60px" }} />
-            <col style={{ width: "60px" }} />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>Milk \ Product</th>
-              <th className="num">Crates / Boxes</th>
-              <th className="num">Qty (Pkts)</th>
-              <th className="num">Qty (Kg/Ltr)</th>
-              <th className="num">Amount</th>
-              <th className="num">Pkt (+)</th>
-              <th className="num">Pkt (−)</th>
-              <th className="num">TM/HM-Qty (Ltr)</th>
-              <th className="num">FCM-Qty (Ltr)</th>
+      <table className="report-ledger compact rs-ledger rs-abstract-table">
+        <colgroup>
+          <col style={{ width: "30%" }} />
+          <col style={{ width: "12%" }} />
+          <col style={{ width: "12%" }} />
+          <col style={{ width: "14%" }} />
+          <col style={{ width: "16%" }} />
+          <col style={{ width: "8%" }} />
+          <col style={{ width: "8%" }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Milk \ Product</th>
+            <th className="num">Crates / Boxes</th>
+            <th className="num">Qty (Pkts)</th>
+            <th className="num">Qty (Kg/Ltr)</th>
+            <th className="num">Amount</th>
+            <th className="num">Pkt (+)</th>
+            <th className="num">Pkt (−)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map(i => (
+            <tr key={i.productId}>
+              <td>{i.alias}</td>
+              <td className="num">{fmtNum(i.crates)}</td>
+              <td className="num">{fmtNum(i.packets)}</td>
+              <td className="num">{i.kgLtr.toFixed(2)}</td>
+              <td className="num">{fmtINR(i.amount)}</td>
+              <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : "—"}</td>
+              <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : "—"}</td>
             </tr>
-          </thead>
-          <tbody>
-            {items.map(i => (
-              <tr key={i.productId}>
-                <td>{i.alias}</td>
-                <td className="num">{fmtNum(i.crates)}</td>
-                <td className="num">{fmtNum(i.packets)}</td>
-                <td className="num">{i.kgLtr.toFixed(2)}</td>
-                <td className="num">{fmtINR(i.amount)}</td>
-                <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : "—"}</td>
-                <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : "—"}</td>
-                <td className="num">{i.unit?.toLowerCase().includes("ml") || i.unit?.toLowerCase().includes("ltr")
-                  ? i.kgLtr.toFixed(2) : "0.00"}</td>
-                <td className="num">0</td>
-              </tr>
-            ))}
-            <tr className="total-row">
-              <td className="num">Total Milk \ Amount</td>
-              <td className="num">{fmtNum(t.crates)}</td>
-              <td className="num">{fmtNum(t.packets)}</td>
-              <td className="num">{t.kgLtr.toFixed(2)}</td>
-              <td className="num">{fmtINR(t.amount)}</td>
-              <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : "—"}</td>
-              <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : "—"}</td>
-              <td className="num">{t.kgLtr.toFixed(2)}</td>
-              <td className="num">0</td>
-            </tr>
-          </tbody>
-        </table>
-
-        {/* Right: Despatch Summary For Security checklist */}
-        <table className="report-ledger compact rs-ledger rs-security-table">
-          <colgroup>
-            <col />
-            <col style={{ width: "44px" }} />
-            <col style={{ width: "60px" }} />
-            <col style={{ width: "62px" }} />
-          </colgroup>
-          <thead>
-            <tr>
-              <th colSpan={4} className="rs-security-head">
-                Despatch Summary For Security
-              </th>
-            </tr>
-            <tr>
-              <th>MLK / PRDT</th>
-              <th className="num">CRTS</th>
-              <th className="num">QTY (Pkts)</th>
-              <th className="center">Checked Y/N</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map(i => (
-              <tr key={i.productId}>
-                <td>{i.alias}</td>
-                <td className="num">{fmtNum(i.crates)}</td>
-                <td className="num">{fmtNum(i.packets)}</td>
-                <td className="center">__</td>
-              </tr>
-            ))}
-            <tr className="total-row">
-              <td className="num">Total Crates</td>
-              <td className="num">{fmtNum(t.crates)}</td>
-              <td className="num">{fmtNum(t.packets)}</td>
-              <td />
-            </tr>
-          </tbody>
-        </table>
-      </div>
+          ))}
+          <tr className="total-row">
+            <td className="num">Total Milk \ Amount</td>
+            <td className="num">{fmtNum(t.crates)}</td>
+            <td className="num">{fmtNum(t.packets)}</td>
+            <td className="num">{t.kgLtr.toFixed(2)}</td>
+            <td className="num">{fmtINR(t.amount)}</td>
+            <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : "—"}</td>
+            <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : "—"}</td>
+          </tr>
+        </tbody>
+      </table>
 
       {/* Cash / Bank / Credit summary line */}
       <div className="rs-abstract-money">
@@ -416,19 +381,80 @@ function AbstractPage({
         <span><strong>Bank:</strong> {fmtINR(0)}</span>
         <span><strong>Credit:</strong> {fmtINR(0)}</span>
       </div>
+    </div>
+  );
+}
 
-      {/* Signature row */}
-      <div className="rs-signatures">
-        {["Prepared By", "Checked By", "Mktg. Incharge", "Salesman",
-          "Despatcher", "Security", "Shift-Incharge (Prodn.)"].map(role => (
-            <div key={role} className="rs-sign">
-              <div className="rs-sign-line" />
-              <div className="rs-sign-label">{role}</div>
-            </div>
+// ════════════════════════════════════════════════════════════════════
+// PAGE 3: Despatch Summary For Security
+// — Crates In/Out rows, Return Particulars, 2 signatures —
+// ════════════════════════════════════════════════════════════════════
+function SecurityPage({
+  data, route,
+}: {
+  data: RouteSheetResponse;
+  route: RouteSheetRoute;
+}) {
+  const items = route.abstract.items;
+  const t = route.abstract.totals;
+
+  return (
+    <div className="rs-page rs-security-page">
+      <RouteLetterhead
+        data={data} route={route}
+        pageHeading="Despatch Summary For Security"
+      />
+
+      <table className="report-ledger compact rs-ledger rs-security-table">
+        <colgroup>
+          <col style={{ width: "40%" }} />
+          <col style={{ width: "18%" }} />
+          <col style={{ width: "22%" }} />
+          <col style={{ width: "20%" }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>MLK / PRDT</th>
+            <th className="num">CRTS</th>
+            <th className="num">QTY (Pkts)</th>
+            <th className="center">Checked Y/N</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map(i => (
+            <tr key={i.productId}>
+              <td>{i.alias}</td>
+              <td className="num">{fmtNum(i.crates)}</td>
+              <td className="num">{fmtNum(i.packets)}</td>
+              <td className="center">__</td>
+            </tr>
           ))}
+          {/* Replace the old "Total Crates" row with two clearer rows */}
+          <tr className="total-row">
+            <td className="num">Crates In</td>
+            <td className="num">{fmtNum(t.crates)}</td>
+            <td className="num">{fmtNum(t.packets)}</td>
+            <td />
+          </tr>
+          <tr className="total-row rs-crates-out">
+            <td className="num">Crates Out</td>
+            <td className="rs-fill-line" />
+            <td className="rs-fill-line" />
+            <td />
+          </tr>
+        </tbody>
+      </table>
+
+      {/* Cash / Bank / Credit summary line (kept for despatcher reference) */}
+      <div className="rs-abstract-money">
+        <span><strong>Total Free Milk:</strong> 0 Ltr</span>
+        <span><strong>Total:</strong> 0 Crates</span>
+        <span><strong>Cash:</strong> {fmtINR(t.amount)}</span>
+        <span><strong>Bank:</strong> {fmtINR(0)}</span>
+        <span><strong>Credit:</strong> {fmtINR(0)}</span>
       </div>
 
-      {/* Return Particulars block */}
+      {/* Return Particulars block (moved from old abstract page) */}
       <div className="rs-returns">
         <div className="rs-returns-head">Return Particulars</div>
         <div className="rs-returns-grid">
@@ -444,41 +470,57 @@ function AbstractPage({
           ))}
         </div>
       </div>
+
+      {/* Only two signatures: Security + Contractor */}
+      <div className="rs-signatures rs-signatures-two">
+        {["Security", "Contractor"].map(role => (
+          <div key={role} className="rs-sign">
+            <div className="rs-sign-line" />
+            <div className="rs-sign-label">{role}</div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-// ────────────────────────────────────────────────────────────────────
-// SHARED: top header strip used on every page
-// ────────────────────────────────────────────────────────────────────
-function RouteStrip({
-  data, route, variant, pageNum, pageCount,
+// ════════════════════════════════════════════════════════════════════
+// Shared letterhead — rendered on every page (so each printed sheet
+// carries the company header without depending on browser repeat-
+// thead tricks).
+// ════════════════════════════════════════════════════════════════════
+function RouteLetterhead({
+  data, route, pageHeading, pageNum, pageCount,
 }: {
   data: RouteSheetResponse;
   route: RouteSheetRoute;
-  variant: "sheet" | "abstract";
+  pageHeading: string;
   pageNum?: number;
   pageCount?: number;
 }) {
-  const showPager = variant === "sheet" && pageCount && pageCount > 1;
+  const showPager = pageCount && pageCount > 1;
   return (
-    <div className="rs-strip">
-      <div className="rs-strip-row1">
-        <span>
-          <strong>{variant === "abstract" ? "Route Sheet Abstract" : "Route"}:</strong>{" "}
-          {route.name} ({route.code})
-        </span>
-        <span><strong>Date:</strong> {fmtDate(data.date)}</span>
-        <span><strong>Batch:</strong> {data.batch?.name ?? route.batchName ?? "—"}</span>
+    <div className="rs-letterhead">
+      <div className="rs-lh-co">
+        Haveri District Co-operative Milk Producers Societies Union Ltd
+      </div>
+      <div className="rs-lh-meta">
+        <span><strong>GST No.:</strong> 29AADAH7841L1Z6</span>
+        <span><strong>Admin Office:</strong> Veterinary Hospital Compound, PB Road, Haveri - 581110</span>
+        <span><strong>Phone:</strong> 08375200650</span>
+      </div>
+      <div className="rs-lh-title">
+        {pageHeading}
         {showPager && (
-          <span className="rs-pager">Page {pageNum} of {pageCount}</span>
+          <span className="rs-lh-pager"> &nbsp;·&nbsp; Page {pageNum} of {pageCount}</span>
         )}
       </div>
-      <div className="rs-strip-row2">
+      <div className="rs-lh-details">
+        <span><strong>Route:</strong> {route.name} ({route.code})</span>
+        <span><strong>Date:</strong> {fmtDate(data.date)}</span>
+        <span><strong>Batch:</strong> {data.batch?.name ?? route.batchName ?? "—"}</span>
         <span><strong>Contractor:</strong> {route.contractor.name ?? "—"}</span>
-        <span><strong>Vehicle No:</strong> {route.contractor.vehicleNumber ?? "—"}</span>
         <span><strong>Dispatch:</strong> {route.dispatchTime ?? "—"}</span>
-        <span><strong>Top-Light:</strong> Yes / No</span>
         <span><strong>Commencing:</strong> ____</span>
         <span><strong>Completion:</strong> ____</span>
       </div>

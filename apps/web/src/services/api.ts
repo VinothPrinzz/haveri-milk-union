@@ -194,6 +194,7 @@ function normalizeProduct(d: Record<string, unknown> | null | undefined) {
     name: (d.name ?? "") as string,
     reportAlias: (d.reportAlias ?? d.report_alias ?? d.name ?? "") as string,
     category: (d.categoryName ?? d.category_name ?? d.category ?? "") as string, // ← Issue #4
+    categoryId: (d.categoryId ?? d.category_id ?? "") as string,
     packSize: parseFloat(String(d.packSize ?? d.pack_size ?? 0)) || 0,
     unit: (d.unit ?? "pcs") as string,
     mrp,
@@ -300,23 +301,22 @@ function normalizeDirectSale(d: Record<string, unknown>) {
     rate: parseFloat(String(i.unit_price ?? i.rate ?? 0)),
   }));
   const rawId = (d.id ?? "") as string;
+  const rawCustomerType = String(d.customer_type ?? "agent");    // ← keep raw
   return {
     id: rawId,
-    gpNo: (d.gp_no ??
-      d.gpNo ??
-      (rawId ? `GP-${rawId.slice(-4).toUpperCase()}` : "")) as string, // Issue #12
+    gpNo: (d.gp_no ?? d.gpNo ?? (rawId ? `GP-${rawId.slice(-4).toUpperCase()}` : "")) as string,
+    invoiceId: (d.invoice_id ?? d.invoiceId ?? null) as string | null,   // ← surface invoice_id
     customerId: (d.customer_id ?? d.customerId) as string,
     customerName: (d.customer_name ?? d.customerName ?? "") as string,
-    type: (d.customer_type === "cash" ? "cash" : "agent") as "agent" | "cash",
-    routeId: (d.route_id ?? d.routeId ?? "") as string, // Issue #12
+    customerType: rawCustomerType as "agent" | "cash" | "vip_sample" | "employee_subsidy",
+    type: (rawCustomerType === "cash" ? "cash" : "agent") as "agent" | "cash",  // back-compat
+    routeId: (d.route_id ?? d.routeId ?? "") as string,
     routeCode: (d.route_code ?? d.routeCode ?? "") as string,
     routeName: (d.route_name ?? d.routeName ?? "") as string,
     date: String(d.sale_date ?? d.date ?? "").split("T")[0],
     items,
     total: parseFloat(String(d.grand_total ?? d.total ?? 0)),
-    payMode: (d.payment_mode === "credit" ? "Credit" : "Cash") as
-      | "Cash"
-      | "Credit",
+    payMode: (d.payment_mode === "credit" ? "Credit" : "Cash") as "Cash" | "Credit",
   };
 }
 
@@ -716,6 +716,11 @@ export const fetchProducts = async () => {
   return (data.products ?? []).map(normalizeProduct);   // ← Uses updated normalizer
 };
 
+export const fetchProductCategories = async () => {
+  const data = await get<{ categories: { id: string; name: string; icon: string | null; sortOrder: number }[] }>("/categories");
+  return data.categories ?? [];
+};
+
 export const createProduct = async (body: Record<string, unknown>) => {
   const data = await post<{ product: Record<string, unknown> }>("/products", {
     name: body.name,
@@ -811,7 +816,8 @@ export const modifyIndent = async (
 export const createIndent = async (b: {
   customerId: string;
   routeId?: string | null;
-  paymentMode: "upi" | "credit";       // dropped "wallet" from the union
+  paymentMode: "upi" | "credit";
+  paymentReference?: string;                        
   notes?: string;
   items: Array<{ productId: string; quantity: number }>;
 }) => {
@@ -819,6 +825,7 @@ export const createIndent = async (b: {
     dealerId: b.customerId,
     items: b.items,
     paymentMode: b.paymentMode,
+    paymentReference: b.paymentReference,        
     notes: b.notes,
   });
 };
@@ -1902,7 +1909,8 @@ export const getOfficers = () => [
 // STUB EXPORTS (used by pages, not yet implemented on backend)
 // ══════════════════════════════════════
 export const updateProduct = async (id: string, body: Record<string, unknown>) => {
-  const data = await patch<{ product: Record<string, unknown> }>(`/products/${id}`, body);
+  const mapped = { ...body, categoryId: body.categoryId || body.category };
+  const data = await patch<{ product: Record<string, unknown> }>(`/products/${id}`, mapped);
   return normalizeProduct(data.product);
 };
 

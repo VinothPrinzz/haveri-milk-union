@@ -581,6 +581,129 @@ export async function directSalesRoutes(app: FastifyInstance) {
     }
   );
 
+  // PATCH /api/v1/direct-sales/:id/items — qty-only modification of a direct sale
+  app.patch(
+    "/api/v1/direct-sales/:id/items",
+    { preHandler: [adminAuth, requireRole("direct_sales.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const schema = z.object({
+        items: z.array(z.object({
+          productId: z.string().uuid(),
+          quantity:  z.number().int().min(0),
+        })).min(1),
+      });
+      const body = schema.parse(request.body);
+
+      const [sale] = await pgClient`
+        SELECT id, customer_type, subtotal, total_gst, grand_total
+        FROM direct_sales WHERE id = ${id} FOR UPDATE
+      `;
+      if (!sale) return reply.status(404).send({ error: "Direct sale not found" });
+
+      // Existing rows — we keep the price/gst snapshot and only adjust qty.
+      const existingItems = await pgClient`
+        SELECT id, product_id, quantity, unit_price, gst_percent
+        FROM direct_sale_items WHERE direct_sale_id = ${id}
+      `;
+      const byProduct = new Map(existingItems.map((r: any) => [r.product_id, r]));
+
+      // Validate every productId in the payload exists on this sale.
+      for (const i of body.items) {
+        if (!byProduct.has(i.productId)) {
+          return reply.status(400).send({
+            error: `Product ${i.productId} is not part of this sale; cannot add/swap products here`,
+          });
+        }
+      }
+
+      // Recompute totals + per-line deltas
+      let newSubtotal = 0, newGst = 0;
+      const stockDeltas: Array<{ productId: string; delta: number }> = [];
+      const updates: Array<{
+        lineId: string; productId: string; quantity: number;
+        unitPrice: string; gstPercent: string;
+        gstAmount: string; lineTotal: string;
+      }> = [];
+
+      for (const i of body.items) {
+        const existing: any = byProduct.get(i.productId);
+        const unitPrice = parseFloat(existing.unit_price);
+        const gstPct    = parseFloat(existing.gst_percent);
+        const lineSub   = unitPrice * i.quantity;
+        const lineGst   = lineSub * (gstPct / 100);
+        newSubtotal += lineSub;
+        newGst      += lineGst;
+        // delta = new − old. Positive means more stock leaves the warehouse.
+        stockDeltas.push({ productId: i.productId, delta: i.quantity - Number(existing.quantity) });
+        updates.push({
+          lineId: existing.id,
+          productId: i.productId,
+          quantity: i.quantity,
+          unitPrice:  unitPrice.toFixed(2),
+          gstPercent: gstPct.toFixed(2),
+          gstAmount:  lineGst.toFixed(2),
+          lineTotal:  (lineSub + lineGst).toFixed(2),
+        });
+      }
+
+      const newGrandTotal = newSubtotal + newGst;
+
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+
+        for (const u of updates) {
+          if (u.quantity === 0) {
+            await tx`DELETE FROM direct_sale_items WHERE id = ${u.lineId}`;
+          } else {
+            await tx`
+              UPDATE direct_sale_items
+                SET quantity   = ${u.quantity},
+                    gst_amount = ${u.gstAmount}::numeric,
+                    line_total = ${u.lineTotal}::numeric
+              WHERE id = ${u.lineId}
+            `;
+          }
+        }
+
+        // Stock adjustment: refund old qty, then subtract new qty (net = delta in reverse).
+        // Implemented as a single signed update: stock -= delta.
+        for (const s of stockDeltas) {
+          if (s.delta !== 0) {
+            await tx`
+              UPDATE products
+                SET stock = stock - ${s.delta},
+                    updated_at = now()
+              WHERE id = ${s.productId}
+            `;
+          }
+        }
+
+        // For agent gate-passes, keep gate_pass_items.quantity in sync.
+        if (sale.customer_type === "agent") {
+          for (const u of updates) {
+            await tx`
+              UPDATE gate_pass_items
+                SET quantity = ${u.quantity}, updated_at = now()
+              WHERE direct_sale_id = ${id} AND product_id = ${u.productId}
+            `;
+          }
+        }
+
+        await tx`
+          UPDATE direct_sales
+            SET subtotal    = ${newSubtotal.toFixed(2)}::numeric,
+                total_gst   = ${newGst.toFixed(2)}::numeric,
+                grand_total = ${newGrandTotal.toFixed(2)}::numeric,
+                updated_at  = now()
+          WHERE id = ${id}
+        `;
+      });
+
+      return reply.send({ ok: true, id, grandTotal: newGrandTotal.toFixed(2) });
+    }
+  );
+
   // PATCH /api/v1/direct-sales/:id/returns — record gate pass returns
   app.patch(
     "/api/v1/direct-sales/:id/returns",

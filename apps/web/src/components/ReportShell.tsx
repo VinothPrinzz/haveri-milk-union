@@ -452,10 +452,14 @@ export function ReportPrintMeta({
   return (
     <div className="report-letterhead">
       <h1 className="report-letterhead-co">
-        Haveri District Co-operative Milk Producers' Union Ltd.
+        Haveri District Co-operative Milk Producers Societies Union Ltd
       </h1>
       <p className="report-letterhead-addr">
-        Haveri, Karnataka, India · GSTIN: 29XXXXXXXX1Z5
+        <strong>GST No.:</strong> 29AADAH7841L1Z6
+        &nbsp;·&nbsp;
+        <strong>Admin Office:</strong> Veterinary Hospital Compound, PB Road, Haveri - 581110
+        &nbsp;·&nbsp;
+        <strong>Phone:</strong> 08375200650
       </p>
       <h2 className="report-letterhead-title">{title}</h2>
       {subtitle && <p className="report-letterhead-sub">{subtitle}</p>}

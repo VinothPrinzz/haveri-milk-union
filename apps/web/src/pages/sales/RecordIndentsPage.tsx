@@ -32,24 +32,44 @@ export default function RecordIndentsPage() {
   const navigate = useNavigate();
 
   const { data: customers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
-  const { data: products = [] }  = useQuery({ queryKey: ["products"],  queryFn: fetchProducts });
-  const { data: routes = [] }    = useQuery({ queryKey: ["routes"],    queryFn: fetchRoutes });
+  const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
+  const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
 
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [routeId, setRouteId] = useState<string | null>(null);
-  const [paymentMode, setPaymentMode] = useState<"upi" | "credit">("credit");   // ← Updated
+  const [paymentMode, setPaymentMode] = useState<"upi" | "credit">("credit");
+  const [paymentRef, setPaymentRef] = useState("");          // ← NEW
   const [notes, setNotes] = useState("");
+
   const [lines, setLines] = useState<Line[]>([{ id: rid(), productId: "", qty: 1 }]);
 
   const customer = customers.find((c: any) => c.id === customerId);
+
   const customerOpts: F9Option[] = useMemo(
     () => customers.map((c: any) => ({ value: c.id, label: c.name, sublabel: c.code })),
     [customers]
   );
-  const routeOpts: F9Option[] = useMemo(
-    () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
-    [routes]
-  );
+
+  const routeOpts: F9Option[] = useMemo(() => {
+    if (!customer) return []; // empty until customer picked
+    const assigned = (customer.routes ?? []) as Array<{
+      routeId: string; routeCode: string; routeName: string; isPrimary: boolean;
+    }>;
+    // Fallback to legacy single routeId if `routes[]` is empty
+    if (assigned.length === 0 && customer.routeId) {
+      return [{
+        value: customer.routeId,
+        label: customer.routeName || customer.routeCode || "Primary route",
+        sublabel: customer.routeCode || "",
+      }];
+    }
+    return assigned.map(r => ({
+      value: r.routeId,
+      label: `${r.routeName ?? ""}${r.isPrimary ? " ★" : ""}`.trim(),
+      sublabel: r.routeCode,
+    }));
+  }, [customer]);
+
   const productOpts: F9Option[] = useMemo(
     () => products.map((p: any) => ({ value: p.id, label: p.name, sublabel: p.code })),
     [products]
@@ -70,25 +90,46 @@ export default function RecordIndentsPage() {
     setPaymentMode(customer.payMode === "Credit" ? "credit" : "upi");
   }, [customer]);
 
-  // Per-line price = product.basePrice (server uses base_price; rate-category-aware
-  // pricing is server-side. Price shown here is indicative only.)
+  // Clear paymentRef when switching away from UPI
+  useEffect(() => {
+    if (paymentMode !== "upi") setPaymentRef("");
+  }, [paymentMode]);
+
+  // Reset route when customer changes (only keep valid routes)
+  useEffect(() => {
+    if (!customer) { 
+      setRouteId(null); 
+      return; 
+    }
+    const valid = new Set([
+      ...(customer.routes ?? []).map((r: any) => r.routeId),
+      customer.routeId,
+    ].filter(Boolean));
+
+    setRouteId(prev => (prev && valid.has(prev)) ? prev
+      : customer.routes?.find((r: any) => r.isPrimary)?.routeId
+        ?? customer.routeId
+        ?? null);
+  }, [customer]);
+
+  // Per-line price calculation
   const lineCalc = (line: Line) => {
     const p = products.find((x: any) => x.id === line.productId);
     if (!p) return { unit: 0, gstPct: 0, sub: 0, gst: 0, total: 0 };
-    // Prefer the rate matching the customer's rateCategory if surfaced.
+
     const rcKey = customer?.rateCategory as string | undefined;
     const rcPriceMap: Record<string, string> = {
-      "Retail-Dealer":      "retailDealerPrice",
-      "Credit Inst-MRP":    "creditInstMrpPrice",
+      "Retail-Dealer": "retailDealerPrice",
+      "Credit Inst-MRP": "creditInstMrpPrice",
       "Credit Inst-Dealer": "creditInstDealerPrice",
-      "Parlour-Dealer":     "parlourDealerPrice",
+      "Parlour-Dealer": "parlourDealerPrice",
     };
     const rcKeyApi = rcKey && rcPriceMap[rcKey];
-    const unitRaw  = (rcKeyApi && (p as any)[rcKeyApi]) ?? p.mrp;
-    const unit     = parseFloat(String(unitRaw)) || 0;
-    const gstPct   = parseFloat(String(p.gstPercent ?? 0)) || 0;
-    const sub      = unit * (line.qty || 0);
-    const gst      = sub * (gstPct / 100);
+    const unitRaw = (rcKeyApi && (p as any)[rcKeyApi]) ?? p.mrp;
+    const unit = parseFloat(String(unitRaw)) || 0;
+    const gstPct = parseFloat(String(p.gstPercent ?? 0)) || 0;
+    const sub = unit * (line.qty || 0);
+    const gst = sub * (gstPct / 100);
     return { unit, gstPct, sub, gst, total: sub + gst };
   };
 
@@ -96,9 +137,15 @@ export default function RecordIndentsPage() {
     let sub = 0, gst = 0;
     for (const l of lines) {
       const c = lineCalc(l);
-      sub += c.sub; gst += c.gst;
+      sub += c.sub; 
+      gst += c.gst;
     }
-    return { sub, gst, total: sub + gst, count: lines.filter(l => l.productId && l.qty > 0).length };
+    return { 
+      sub, 
+      gst, 
+      total: sub + gst, 
+      count: lines.filter(l => l.productId && l.qty > 0).length 
+    };
   }, [lines, products, customer]);
 
   const addLine = () => setLines(ls => [...ls, { id: rid(), productId: "", qty: 1 }]);
@@ -111,12 +158,19 @@ export default function RecordIndentsPage() {
   const submit = useMutation({
     mutationFn: async () => {
       if (!customer) throw new Error("Pick a customer");
+
       const items = lines
         .filter(l => l.productId && l.qty > 0)
         .map(l => ({ productId: l.productId, quantity: l.qty }));
+
       if (items.length === 0) throw new Error("Add at least one line");
 
-      // Credit-limit guard — only for credit mode
+      // UPI Reference validation
+      if (paymentMode === "upi" && !paymentRef.trim()) {
+        throw new Error("UPI reference is required");
+      }
+
+      // Credit-limit guard
       if (paymentMode === "credit") {
         const available = Number(
           (customer as any).creditAvailable
@@ -131,12 +185,13 @@ export default function RecordIndentsPage() {
         }
       }
 
-      return createIndent({ 
-        customerId: customer.id, 
-        routeId, 
-        paymentMode,     // now only "upi" | "credit"
-        notes, 
-        items 
+      return createIndent({
+        customerId: customer.id,
+        routeId,
+        paymentMode,
+        paymentReference: paymentMode === "upi" ? paymentRef.trim() : undefined,  // ← NEW
+        notes,
+        items
       });
     },
     onSuccess: () => {
@@ -148,7 +203,15 @@ export default function RecordIndentsPage() {
     onError: (e: any) => toast.error(e?.message || "Submit failed"),
   });
 
-  // ── Keyboard: F2 add line, Ctrl+S submit ──
+  const creditAvailable = customer && paymentMode === "credit"
+    ? (customer as any).creditAvailable != null
+        ? Number((customer as any).creditAvailable)
+        : customer.creditLimit != null
+          ? Number(customer.creditLimit) - Number((customer as any).outstanding ?? 0)
+          : null
+    : null;
+
+  // Keyboard shortcuts
   const formRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -164,25 +227,12 @@ export default function RecordIndentsPage() {
     return () => window.removeEventListener("keydown", handler);
   }, [submit]);
 
-  // Real credit-available comes from the backend now (ledger-derived).
-  // Falls back to (limit - outstanding) if only those are present, then
-  // to (limit - 0) if even outstanding is missing — same shape as
-  // before, but the first branch is the truthful one.
-  const creditAvailable = customer && paymentMode === "credit"
-    ? (customer as any).creditAvailable != null
-        ? Number((customer as any).creditAvailable)
-        : customer.creditLimit != null
-          ? Number(customer.creditLimit) - Number((customer as any).outstanding ?? 0)
-          : null
-    : null;
-
   return (
     <div className="flex flex-col h-full" ref={formRef}>
       <PageHeader
         title="Record Indent"
         subtitle={`Press ${(<Kbd>F2</Kbd> as any).type ? "F2" : "F2"} to add a line, Ctrl+S to submit.`}
       />
-
       <div className="flex-1 overflow-auto p-3 space-y-3 pb-24">
         <FormSection title="Customer" cols={4}>
           <Field label="Customer" hint="F9" required>
@@ -202,10 +252,22 @@ export default function RecordIndentsPage() {
               <SelectContent>
                 <SelectItem value="upi">UPI</SelectItem>
                 <SelectItem value="credit">Credit</SelectItem>
-                {/* Wallet removed */}
               </SelectContent>
             </Select>
           </Field>
+
+          {/* UPI Reference Field */}
+          {paymentMode === "upi" && (
+            <Field label="UPI Reference / Txn ID" required>
+              <Input
+                className="erp-input"
+                value={paymentRef}
+                onChange={e => setPaymentRef(e.target.value)}
+                placeholder="e.g. 406812345678"
+              />
+            </Field>
+          )}
+
           <Field label="Route" hint="F9">
             <F9SearchSelect value={routeId} onChange={setRouteId} options={routeOpts} className="w-full" />
           </Field>
