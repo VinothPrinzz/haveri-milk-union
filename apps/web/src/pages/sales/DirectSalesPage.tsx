@@ -524,37 +524,63 @@ function ModifyTab() {
   const qc = useQueryClient();
   const [params] = useSearchParams();
   const initialId = params.get("indentId") ?? "";
+  // "order" (default) for indents; "direct-sale" for gate-pass / cash / vip / employee
+  const sourceType = (params.get("type") === "direct-sale" ? "direct-sale" : "order") as
+    "order" | "direct-sale";
+
   const [indentId, setIndentId] = useState(initialId);
   const [loadedId, setLoadedId] = useState<string | null>(null);
   const [items, setItems] = useState<Array<{
     productId: string; productName: string; quantity: number;
-    unitPrice: number; gstPercent: number; lineTotal: number;
+    unitPrice: number; gstPercent: number;
   }>>([]);
-  const [meta, setMeta] = useState<{ dealerName?: string; status?: string; createdAt?: string } | null>(null);
+  const [meta, setMeta] = useState<{
+    dealerName?: string; status?: string; createdAt?: string;
+  } | null>(null);
 
-  const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
-  const productOpts: F9Option[] = useMemo(
-    () => products.map((p: any) => ({ value: p.id, label: p.name, sublabel: p.code })),
-    [products],
-  );
+  // ── Endpoint helpers ───────────────────────────────────────────────
+  const getPath   = (id: string) =>
+    sourceType === "direct-sale" ? `/direct-sales/${id}` : `/orders/${id}`;
+  const patchPath = (id: string) =>
+    sourceType === "direct-sale" ? `/direct-sales/${id}/items` : `/orders/${id}/items`;
 
   const fetchIndent = useMutation({
-    mutationFn: async (id: string) => get<{ order: any; items: any[] }>(`/orders/${id}`),
+    mutationFn: async (id: string) => get<any>(getPath(id)),
     onSuccess: (resp) => {
-      setLoadedId(resp.order.id);
-      setMeta({
-        dealerName: resp.order.dealer_name,
-        status: resp.order.status,
-        createdAt: resp.order.created_at,
-      });
-      setItems(resp.items.map((it: any) => ({
-        productId:  it.product_id,
-        productName: it.product_name,
-        quantity:   Number(it.quantity),
-        unitPrice:  parseFloat(String(it.unit_price))  || 0,
-        gstPercent: parseFloat(String(it.gst_percent)) || 0,
-        lineTotal:  parseFloat(String(it.line_total))  || 0,
-      })));
+      if (sourceType === "direct-sale") {
+        // GET /direct-sales/:id → { sale, items, customer, gatePassItems }
+        const sale = resp.sale ?? {};
+        setLoadedId(sale.id);
+        setMeta({
+          dealerName: resp.customer?.name ?? sale.customer_name ?? "—",
+          status:     "confirmed",                                     // direct sales are always posted
+          createdAt:  sale.sale_date ?? sale.created_at,
+        });
+        // direct_sale_items query uses raw pgClient → snake_case keys
+        setItems((resp.items ?? []).map((it: any) => ({
+          productId:   String(it.product_id),
+          productName: String(it.product_name ?? ""),
+          quantity:    Number(it.quantity),
+          unitPrice:   parseFloat(String(it.unit_price))  || 0,
+          gstPercent:  parseFloat(String(it.gst_percent)) || 0,
+        })));
+      } else {
+        // GET /orders/:id → { order, items }
+        // items come from Drizzle → CAMEL CASE keys (this was the bug)
+        setLoadedId(resp.order.id);
+        setMeta({
+          dealerName: resp.order.dealer_name,
+          status:     resp.order.status,
+          createdAt:  resp.order.created_at,
+        });
+        setItems((resp.items ?? []).map((it: any) => ({
+          productId:   String(it.productId),
+          productName: String(it.productName ?? ""),
+          quantity:    Number(it.quantity),
+          unitPrice:   parseFloat(String(it.unitPrice))   || 0,
+          gstPercent:  parseFloat(String(it.gstPercent))  || 0,
+        })));
+      }
     },
     onError: (e: any) => toast.error(e?.message || "Indent not found"),
   });
@@ -567,27 +593,28 @@ function ModifyTab() {
   const save = useMutation({
     mutationFn: async () => {
       if (!loadedId) throw new Error("Load an indent first");
+      // Only qty is editable, so we send the same productIds back with new qty.
       const payload = items
-        .filter(i => i.productId && i.quantity >= 0)
+        .filter(i => i.productId)            // safety
         .map(i => ({ productId: i.productId, quantity: i.quantity }));
-      return patch(`/orders/${loadedId}/items`, { items: payload });
+      if (payload.length === 0) throw new Error("Nothing to save");
+      return patch(patchPath(loadedId), { items: payload });
     },
     onSuccess: () => {
-      toast.success("Indent updated");
+      toast.success("Saved");
       qc.invalidateQueries({ queryKey: ["indents"] });
+      qc.invalidateQueries({ queryKey: ["recent-sales"] });
       qc.invalidateQueries({ queryKey: ["recent-direct-sales"] });
     },
     onError: (e: any) => toast.error(e?.message || "Save failed"),
   });
 
+  // Ctrl+S only; F2 (add-line) removed — only qty is editable now.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S") && loadedId) {
         e.preventDefault();
         if (!save.isPending) save.mutate();
-      } else if (e.key === "F2" && loadedId) {
-        e.preventDefault();
-        setItems(is => [...is, { productId: "", productName: "", quantity: 1, unitPrice: 0, gstPercent: 0, lineTotal: 0 }]);
       }
     };
     window.addEventListener("keydown", h);
@@ -600,25 +627,31 @@ function ModifyTab() {
     return { sub, gst, total: sub + gst };
   }, [items]);
 
+  const titleSubtitle = sourceType === "direct-sale"
+    ? "Modify a sale (gate-pass, cash, VIP, employee). Only quantities can be updated."
+    : "Modify an indent. Only quantities can be updated.";
+
   return (
     <div className="flex flex-col h-full">
-      <PageHeader
-        title="Indent Modify"
-        subtitle="Modify any indent (regular, gate-pass, cash). Enter an Indent ID and press Enter."
-      />
+      <PageHeader title="Indent Modify" subtitle={titleSubtitle} />
+
       <FilterBar>
-        <Field label="Indent ID">
+        <Field label={sourceType === "direct-sale" ? "Sale ID" : "Indent ID"}>
           <Input
             className="erp-input w-96 font-mono"
             value={indentId}
             onChange={e => setIndentId(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && indentId.trim()) fetchIndent.mutate(indentId.trim()); }}
-            placeholder="paste full UUID or last-4"
+            placeholder="paste full UUID"
             autoFocus
           />
         </Field>
         <div className="flex items-end">
-          <Button size="sm" className="h-8" disabled={!indentId.trim() || fetchIndent.isPending} onClick={() => fetchIndent.mutate(indentId.trim())}>
+          <Button
+            size="sm" className="h-8"
+            disabled={!indentId.trim() || fetchIndent.isPending}
+            onClick={() => fetchIndent.mutate(indentId.trim())}
+          >
             {fetchIndent.isPending ? "Loading…" : "Load"}
           </Button>
         </div>
@@ -636,9 +669,9 @@ function ModifyTab() {
       {!loadedId ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="erp-panel py-12 px-6 text-center text-muted-foreground text-[13px] max-w-md">
-            Enter an Indent ID above and press Enter to load its items.
+            Enter an ID above and press Enter to load its items.
             <div className="mt-2 text-[12px]">
-              <Kbd>F2</Kbd> add line · <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd> save
+              <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd> save
             </div>
           </div>
         </div>
@@ -650,53 +683,34 @@ function ModifyTab() {
                 <thead>
                   <tr>
                     <th style={{ width: 40 }}>#</th>
-                    <th style={{ width: "35%" }}>Product</th>
-                    <th className="num" style={{ width: 90  }}>Qty</th>
+                    <th>Product</th>
+                    <th className="num" style={{ width: 100 }}>Qty</th>
                     <th className="num" style={{ width: 100 }}>Rate</th>
-                    <th className="num" style={{ width: 70  }}>GST %</th>
-                    <th className="num" style={{ width: 130 }}>Line Total</th>
-                    <th style={{ width: 40 }}></th>
+                    <th className="num" style={{ width: 80  }}>GST %</th>
+                    <th className="num" style={{ width: 140 }}>Line Total</th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.map((it, i) => (
-                    <tr key={i}>
+                    <tr key={`${it.productId}-${i}`}>
                       <td className="num">{i + 1}</td>
-                      <td>
-                        <F9SearchSelect
-                          value={it.productId || null}
-                          onChange={v => {
-                            const p = products.find((x: any) => x.id === v);
-                            setItems(arr => arr.map((row, k) => k === i ? {
-                              ...row,
-                              productId: v ?? "",
-                              productName: p?.name ?? "",
-                              unitPrice:  parseFloat(String(p?.mrp ?? row.unitPrice))         || 0,
-                              gstPercent: parseFloat(String(p?.gstPercent ?? row.gstPercent)) || 0,
-                            } : row));
-                          }}
-                          options={productOpts}
-                          className="w-full"
-                        />
-                      </td>
+                      <td className="font-medium">{it.productName || "—"}</td>
                       <td>
                         <Input
                           className="erp-input num text-right"
-                          type="number" min="0"
+                          type="number" min="0" step="1"
                           value={it.quantity}
-                          onChange={e => setItems(arr => arr.map((row, k) => k === i ? { ...row, quantity: Math.max(0, parseInt(e.target.value) || 0) } : row))}
+                          onChange={e =>
+                            setItems(arr => arr.map((row, k) =>
+                              k === i ? { ...row, quantity: Math.max(0, parseInt(e.target.value) || 0) } : row
+                            ))
+                          }
                         />
                       </td>
                       <td className="num">{it.unitPrice.toFixed(2)}</td>
                       <td className="num">{it.gstPercent.toFixed(2)}</td>
-                      <td className="num font-semibold">{fmtINR(it.unitPrice * it.quantity * (1 + it.gstPercent / 100))}</td>
-                      <td>
-                        <Button
-                          variant="ghost" size="icon" className="h-7 w-7 text-destructive"
-                          onClick={() => setItems(arr => arr.filter((_, k) => k !== i))}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                      <td className="num font-semibold">
+                        {fmtINR(it.unitPrice * it.quantity * (1 + it.gstPercent / 100))}
                       </td>
                     </tr>
                   ))}
@@ -707,7 +721,6 @@ function ModifyTab() {
                     <td className="num">{fmtINR(totals.sub)}</td>
                     <td className="num">GST: {fmtINR(totals.gst)}</td>
                     <td className="num font-bold text-[14px]">{fmtINR(totals.total)}</td>
-                    <td></td>
                   </tr>
                 </tfoot>
               </table>
@@ -715,7 +728,12 @@ function ModifyTab() {
           </div>
 
           <FormFooter>
-            <Button variant="outline" size="sm" className="h-8" onClick={() => { setLoadedId(null); setItems([]); setMeta(null); setIndentId(""); }}>Reset</Button>
+            <Button
+              variant="outline" size="sm" className="h-8"
+              onClick={() => { setLoadedId(null); setItems([]); setMeta(null); setIndentId(""); }}
+            >
+              Reset
+            </Button>
             <Button size="sm" className="h-8" disabled={save.isPending} onClick={() => save.mutate()}>
               {save.isPending ? "Saving…" : <>Save Changes <Kbd className="ml-1">Ctrl</Kbd>+<Kbd>S</Kbd></>}
             </Button>

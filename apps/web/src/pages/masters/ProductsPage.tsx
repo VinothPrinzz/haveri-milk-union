@@ -25,15 +25,17 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Plus, Search } from "lucide-react";
 import {
-  fetchProducts, 
-  getRateCategories, 
-  createProduct, 
-  updateProduct, 
+  fetchProducts,
+  fetchProductCategories,
+  getRateCategories,
+  createProduct,
+  updateProduct,
   deleteProduct,
-  upsertProductRate, 
+  upsertProductRate,
   type Product,
 } from "@/services/api";
 
@@ -259,10 +261,10 @@ function ProductAddTab() {
 
 // ── Shared Product Form Body ─────────────────────────────────────
 function ProductFormBody({
-  initialData, 
-  onSubmit, 
-  onCancel, 
-  isSubmitting, 
+  initialData,
+  onSubmit,
+  onCancel,
+  isSubmitting,
   embedded,
 }: {
   initialData?: Product;
@@ -271,12 +273,19 @@ function ProductFormBody({
   isSubmitting?: boolean;
   embedded?: boolean;
 }) {
+  const { data: categoriesRaw = [] } = useQuery({
+    queryKey: ["product-categories"],
+    queryFn: fetchProductCategories,
+  });
+
+  const categoryOpts: F9Option[] = categoriesRaw.map(c => ({ value: c.id, label: c.name }));
+
   const form = useForm<ProductFormData>({
     resolver: zodResolver(productSchema),
     defaultValues: {
       name: initialData?.name ?? "",
       reportAlias: initialData?.reportAlias ?? "",
-      category: initialData?.category ?? "Milk",
+      category: initialData?.categoryId ?? "",
       packSize: initialData?.packSize ?? 1,
       unit: initialData?.unit ?? "L",
       mrp: initialData?.mrp ?? 0,
@@ -330,17 +339,14 @@ function ProductFormBody({
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Category</FormLabel>
               <FormControl>
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Milk">Milk</SelectItem>
-                    <SelectItem value="Curd">Curd</SelectItem>
-                    <SelectItem value="Ghee">Ghee</SelectItem>
-                    <SelectItem value="Butter">Butter</SelectItem>
-                    <SelectItem value="Sweets">Sweets</SelectItem>
-                    <SelectItem value="Other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
+                <F9SearchSelect
+                  value={field.value || null}
+                  onChange={v => field.onChange(v ?? "")}
+                  options={categoryOpts}
+                  placeholder="Select category…"
+                  modalTitle="Select Category"
+                  className="w-full"
+                />
               </FormControl>
               <FormMessage className="text-[11.5px]" />
             </FormItem>
