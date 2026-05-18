@@ -232,38 +232,27 @@ function RouteRowsPage({
 
       <table className="report-ledger compact rs-ledger">
         <colgroup>
-          <col style={{ width: "28px" }}   />                {/* Sl                  */}
-          <col className="col-dealer" />                     {/* Code – Dealer (capped via CSS) */}
-          {acrossProducts.map(p => <col key={p.id} style={{ width: "40px" }} />)}
-          <col style={{ width: "20%" }} />                   {/* Other Products      */}
-          <col style={{ width: "48px" }} />                  {/* Crates              */}
-          <col style={{ width: "82px" }} />                  {/* Net Amount          */}
+          <col style={{ width: "28px" }} />                                       {/* Sl                    */}
+          <col className="col-dealer" />                                           {/* Code – Dealer (capped) */}
+          {acrossProducts.map(p => <col key={p.id} style={{ width: "28px" }} />)}  {/* each vert-header col   */}
+          <col style={{ width: "22%" }} />                                         {/* Other Products         */}
+          <col style={{ width: "48px" }} />                                        {/* Crates                 */}
+          <col style={{ width: "82px" }} />                                        {/* Net Amount             */}
         </colgroup>
         <thead>
-          <tr>
-            <th>Sl</th>
-            <th>Dealer</th>
-            {acrossProducts.map(p => (
-              <th
-                key={p.id}
-                title={p.reportAlias}
-                style={{
-                  whiteSpace: "normal",
-                  wordBreak: "break-word",
-                  textAlign: "center",
-                  verticalAlign: "bottom",
-                  lineHeight: "1.2",
-                  fontSize: "10px",
-                }}
-              >
-                {p.reportAlias}
-              </th>
-            ))}
-            <th>Other Products</th>
-            <th className="num">Crates</th>
-            <th className="num">Net Amount</th>
-          </tr>
-        </thead>
+        <tr>
+          <th>Sl</th>
+          <th>Dealer</th>
+          {acrossProducts.map(p => (
+            <th key={p.id} className="vert-text" title={p.reportAlias}>
+              <span>{p.reportAlias}</span>
+            </th>
+          ))}
+          <th>Other Products</th>
+          <th className="num">Crates</th>
+          <th className="num">Net Amount</th>
+        </tr>
+      </thead>
         <tbody>
           {rows.map(c => (
             <tr key={c.id}>
