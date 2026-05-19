@@ -834,6 +834,152 @@ export async function salesReportRoutes(app: FastifyInstance) {
       return reply.send({ from: q.from, to: q.to, rows: mapped, totals });
     }
   );
+
+  // ════════════════════════════════════════════════════════════════
+  // B10. Employee Subsidy Statement
+  //      One endpoint, three reportable views on the client:
+  //        • HTM 1000ML
+  //        • GHEE 500ML
+  //        • Combined (both products per-employee)
+  // ════════════════════════════════════════════════════════════════
+  app.get(
+    "/api/v1/reports/sales-reports/employee-subsidy",
+    { preHandler: [adminAuth, requireRole("sales_reports.view")] },
+    async (request, reply) => {
+      const q = dateRangeSchema.parse(request.query);
+
+      // 1. Resolve eligible products from employee_subsidy_rules.
+      //    Even if a rule is inactive now, we still include it so
+      //    historical sales aren't omitted (active filter applies
+      //    only to NEW sales validation, not the report).
+      const products = await pgClient`
+        SELECT p.id, p.code, p.name, p.report_alias
+        FROM products p
+        WHERE p.id IN (SELECT product_id FROM employee_subsidy_rules)
+          AND p.deleted_at IS NULL
+        ORDER BY p.name
+      `;
+
+      const productsOut = (products as any[]).map(p => ({
+        id:    p.id,
+        code:  p.code,
+        name:  p.name,
+        label: p.report_alias ?? p.name,
+      }));
+      const eligibleIds = productsOut.map(p => p.id);
+
+      if (eligibleIds.length === 0) {
+        return reply.send({
+          from: q.from, to: q.to,
+          products: [], employees: [],
+          perProduct: {}, combined: [],
+          totals: { perProduct: {}, grandTotal: 0 },
+        });
+      }
+
+      // 2. Aggregate sales: one row per (employee, product) inside the
+      //    date range. Uses customer_type='employee_subsidy' to scope.
+      const rows = await pgClient`
+        SELECT ds.customer_id                  AS employee_id,
+               e.employee_code                 AS employee_code,
+               e.name                          AS employee_name,
+               dsi.product_id                  AS product_id,
+               SUM(dsi.quantity)::int          AS qty,
+               SUM(dsi.line_total)::numeric    AS total_amount
+        FROM direct_sales ds
+        JOIN direct_sale_items dsi ON dsi.direct_sale_id = ds.id
+        JOIN employees e ON e.id = ds.customer_id
+        WHERE ds.customer_type = 'employee_subsidy'
+          AND ds.sale_date >= ${q.from}::date
+          AND ds.sale_date <= ${q.to}::date
+          AND dsi.product_id = ANY(${eligibleIds}::uuid[])
+        GROUP BY ds.customer_id, e.employee_code, e.name, dsi.product_id
+        ORDER BY e.employee_code NULLS LAST, e.name
+      `;
+
+      // 3. Pivot into the response shapes.
+      type R = {
+        employeeId: string;
+        employeeCode: string | null;
+        employeeName: string;
+        qty: number;
+        totalAmount: number;
+      };
+
+      // productId → R[]
+      const perProduct: Record<string, R[]> = {};
+      for (const p of productsOut) perProduct[p.id] = [];
+
+      // employeeId → { row + perProduct totals }
+      const byEmployee = new Map<string, {
+        employeeId: string;
+        employeeCode: string | null;
+        employeeName: string;
+        perProduct: Record<string, { qty: number; amount: number }>;
+        totalAmount: number;
+      }>();
+
+      const perProductTotals: Record<string, number> = {};
+      for (const p of productsOut) perProductTotals[p.id] = 0;
+
+      for (const r of rows as any[]) {
+        const qty    = Number(r.qty)         || 0;
+        const amount = round2(parseFloat(r.total_amount) || 0);
+
+        perProduct[r.product_id]?.push({
+          employeeId:   r.employee_id,
+          employeeCode: r.employee_code,
+          employeeName: r.employee_name,
+          qty,
+          totalAmount:  amount,
+        });
+
+        perProductTotals[r.product_id] = round2(
+          (perProductTotals[r.product_id] ?? 0) + amount,
+        );
+
+        let emp = byEmployee.get(r.employee_id);
+        if (!emp) {
+          emp = {
+            employeeId:   r.employee_id,
+            employeeCode: r.employee_code,
+            employeeName: r.employee_name,
+            perProduct:   {},
+            totalAmount:  0,
+          };
+          byEmployee.set(r.employee_id, emp);
+        }
+        emp.perProduct[r.product_id] = { qty, amount };
+        emp.totalAmount = round2(emp.totalAmount + amount);
+      }
+
+      const combined = Array.from(byEmployee.values())
+        .sort((a, b) => {
+          const ac = a.employeeCode ?? "";
+          const bc = b.employeeCode ?? "";
+          if (ac !== bc) return ac.localeCompare(bc, undefined, { numeric: true });
+          return a.employeeName.localeCompare(b.employeeName);
+        });
+
+      const grandTotal = round2(
+        Object.values(perProductTotals).reduce((s, n) => s + n, 0),
+      );
+
+      return reply.send({
+        from: q.from,
+        to:   q.to,
+        products: productsOut,
+        employees: combined.map(e => ({
+          id:   e.employeeId,
+          code: e.employeeCode,
+          name: e.employeeName,
+        })),
+        perProduct,
+        combined,
+        totals: { perProduct: perProductTotals, grandTotal },
+      });
+    }
+  );
 }
 
 // ── Shared helper: B4 (cash) + B6 (register) produce the same shape ──

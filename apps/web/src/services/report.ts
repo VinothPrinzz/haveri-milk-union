@@ -408,3 +408,48 @@ export interface GstStatementResponse {
 
 export const fetchGstStatement = (params: { from: string; to: string }) =>
   get<GstStatementResponse>("/reports/sales-reports/gst-statement", params);
+
+// ═══════════════════════════════════════════════════════════════
+// B10. Employee Subsidy Statement
+// ═══════════════════════════════════════════════════════════════
+export interface EmployeeSubsidyProduct {
+  id: string;
+  code: string;
+  name: string;
+  label: string;
+}
+
+export interface EmployeeSubsidyProductRow {
+  employeeId: string;
+  employeeCode: string | null;
+  employeeName: string;
+  qty: number;
+  totalAmount: number;
+}
+
+export interface EmployeeSubsidyCombinedRow {
+  employeeId: string;
+  employeeCode: string | null;
+  employeeName: string;
+  perProduct: Record<string, { qty: number; amount: number }>;
+  totalAmount: number;
+}
+
+export interface EmployeeSubsidyReportResponse {
+  from: string;
+  to: string;
+  products: EmployeeSubsidyProduct[];
+  employees: Array<{ id: string; code: string | null; name: string }>;
+  perProduct: Record<string, EmployeeSubsidyProductRow[]>;
+  combined: EmployeeSubsidyCombinedRow[];
+  totals: {
+    perProduct: Record<string, number>;
+    grandTotal: number;
+  };
+}
+
+export const fetchEmployeeSubsidyReport = (params: { from: string; to: string }) =>
+  get<EmployeeSubsidyReportResponse>(
+    "/reports/sales-reports/employee-subsidy",
+    params,
+  );

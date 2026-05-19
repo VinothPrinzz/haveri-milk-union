@@ -312,16 +312,18 @@ export default function ReportShell({
             {/* The actual report paper */}
             <div className="report-canvas-wrap">
               <div className="report-canvas" data-orient={printOrientation}>
-                {printMeta && <div className="print-only print-letterhead">{printMeta}</div>}
-
                 <div className="print-document">
-                  {/* Screen view (single page) */}
-                  <div className="report-page-screen">{pages[currentPage]}</div>
+                  {/* Screen view (single page) — letterhead inline at top */}
+                  <div className="report-page-screen">
+                    {printMeta && <div className="report-inline-letterhead">{printMeta}</div>}
+                    {pages[currentPage]}
+                  </div>
 
-                  {/* Print view (all pages stacked with page-breaks) */}
+                  {/* Print view (all pages stacked, letterhead repeats per page) */}
                   <div className="report-pages-print">
                     {pages.map((p, i) => (
                       <div key={i} className="report-print-page">
+                        {printMeta && <div className="report-inline-letterhead">{printMeta}</div>}
                         {p}
                       </div>
                     ))}
@@ -440,15 +442,7 @@ function ExportMenu({ exporters }: { exporters: Exporter[] }) {
   );
 }
 
-export function ReportPrintMeta({
-  title,
-  subtitle,
-  rows,
-}: {
-  title: string;
-  subtitle?: string;
-  rows?: Array<{ label: string; value: ReactNode }>;
-}) {
+export function ReportPrintMeta() {
   return (
     <div className="report-letterhead">
       <h1 className="report-letterhead-co">
@@ -461,17 +455,6 @@ export function ReportPrintMeta({
         &nbsp;·&nbsp;
         <strong>Phone:</strong> 08375200650
       </p>
-      <h2 className="report-letterhead-title">{title}</h2>
-      {subtitle && <p className="report-letterhead-sub">{subtitle}</p>}
-      {rows && rows.length > 0 && (
-        <div className="report-letterhead-meta">
-          {rows.map((r, i) => (
-            <span key={i}>
-              <strong>{r.label}:</strong> {r.value}
-            </span>
-          ))}
-        </div>
-      )}
       <div className="report-letterhead-printdate">
         Print Date: {new Date().toLocaleString("en-IN")}
       </div>

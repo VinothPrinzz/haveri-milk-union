@@ -69,6 +69,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Taluka/Agent Wise",         path: "/sales-reports/taluka-agent",    icon: FileSpreadsheet },
     { label: "Adhoc Sales",               path: "/sales-reports/adhoc",           icon: FileSpreadsheet },
     { label: "GST Statement",             path: "/sales-reports/gst",             icon: FileBarChart2 },
+    { label: "Employee Subsidy",          path: "/sales-reports/employee-subsidy", icon: BadgePercent },
   ],
   system: [
     { label: "User Management",        path: "/system/users",                icon: UserCog },
