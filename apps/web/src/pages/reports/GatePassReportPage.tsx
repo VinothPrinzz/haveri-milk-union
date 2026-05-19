@@ -149,15 +149,7 @@ export default function GatePassReportPage() {
       onGenerate={handleGenerate}
       exporters={exporters}
       printMeta={
-        <ReportPrintMeta
-          title="Gate Pass Sales Report"
-          rows={[
-            { label: "From", value: fmtDate(fromDate) },
-            { label: "To", value: fmtDate(toDate) },
-            { label: "Rows", value: rows.length },
-            { label: "Total", value: fmtINR(totalAmount) },
-          ]}
-        />
+        <ReportPrintMeta/>
       }
       state={{
         generated,
