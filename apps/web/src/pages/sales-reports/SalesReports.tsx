@@ -13,7 +13,7 @@ import {
   fetchCashSales, fetchSalesRegister, fetchCreditSales,
   fetchTalukaAgent, fetchAdhocSales, fetchGstStatement,
   type DailyStatementResponse, type DayRouteCashResponse,
-  type OfficerWiseResponse, type SalesGridResponse,
+  type OfficerWiseResponse, type SalesGridResponse, type SalesGridRoute,
   type CreditSalesResponse, type TalukaAgentResponse,
   type AdhocResponse, type GstStatementResponse,
 } from "@/services/report";
@@ -85,11 +85,7 @@ function SalesReportShell<T>({
       onGenerate={handleGenerate}
       exporters={exporters}
       printMeta={
-        <ReportPrintMeta
-          title={title}
-          subtitle={description}
-          rows={[{ label: "From", value: from }, { label: "To", value: to }]}
-        />
+        <ReportPrintMeta/>
       }
       state={{ generated, loading: isLoading, pages }}
     />
@@ -323,49 +319,196 @@ export const OfficerWiseSales = () => (
   />
 );
 
-// ─── B4. Cash Sales ─────────────────────────────────────────────
+const ROUTES_PER_PAGE = 8; // adjust for A4 landscape fit
+ 
 export const CashSalesReport = () => (
   <SalesReportShell<SalesGridResponse>
     title="Cash Sales"
-    description="Cash-mode sales grid by route × product"
+    description="Cash-mode sales grid by product × route"
     fetcher={(from, to) => fetchCashSales({ from, to })}
     printOrientation="landscape"
     renderPages={(from, to, apiData) => {
       if (!apiData) return [];
-
-      const productPages = paginateColumns(apiData.products, 10);
-
-      return productPages.map((cols, i) => (
-        <ColumnPagedTable
-          key={i}
-          title={`Cash Sales • Columns ${i + 1}/${productPages.length}`}
-          fixedHead={[
-            { label: "Code", accessor: r => r.code },
-            { label: "Route", accessor: r => r.name },
-            { label: "Contractor", accessor: r => r.contractorName ?? "—" },
-          ]}
-          productCols={cols}
-          productCellRender={(row, p) => fmtQty(row.qty[p.id] ?? 0)}
-          trailingHead={[
-            { label: "Milk ₹", accessor: r => fmtINR(r.milkAmount), num: true },
-            { label: "Product ₹", accessor: r => fmtINR(r.productAmount), num: true },
-            { label: "Total ₹", accessor: r => fmtINR(r.total), num: true },
-          ]}
-          rows={apiData.routes}
-          rowKey={r => r.id}
-          totalRow={{
-            fixedCells: ["TOTAL", "", ""],
-            productCell: (p) => fmtQty(apiData.totals.qty[p.id] ?? 0),
-            trailingCells: [
-              fmtINR(apiData.totals.milkAmount),
-              fmtINR(apiData.totals.productAmount),
-              fmtINR(apiData.totals.total),
-            ],
-          }}
-        />
-      ));
+ 
+      // Paginate ROUTES into column chunks
+      const routePages = paginateColumns(apiData.routes, ROUTES_PER_PAGE);
+      const pageCount = routePages.length;
+ 
+      return routePages.map((routeChunk, pageIdx) => {
+        // Per-route qty grand total (across all products in the response)
+        const routeQtyTotal = (r: SalesGridRoute) =>
+          apiData.products.reduce((s, p) => s + (r.qty[p.id] ?? 0), 0);
+ 
+        // Grand qty total (bottom-right corner)
+        const grandQtyTotal = apiData.products.reduce(
+          (s, p) => s + (apiData.totals.qty[p.id] ?? 0),
+          0
+        );
+ 
+        return (
+          <div key={pageIdx} className="report-page">
+            <ReportHeader
+              title="Cash Sales"
+              subtitle={`Period: ${from} to ${to} · Columns ${pageIdx + 1}/${pageCount}`}
+            />
+ 
+            <table className="w-full text-[11px] border-collapse">
+              <thead>
+                {/* Row 1: route codes */}
+                <tr className="bg-muted/50">
+                  <th className="border border-border py-1.5 px-2 text-left font-bold">
+                    Product
+                  </th>
+                  {routeChunk.map(r => (
+                    <th
+                      key={r.id}
+                      className="border border-border py-1 px-2 text-center font-bold"
+                    >
+                      <div className="font-mono text-[10px] text-muted-foreground">{r.code}</div>
+                      <div>{r.name}</div>
+                      <div className="font-normal text-[9.5px] text-muted-foreground truncate max-w-[90px]">
+                        {r.contractorName ?? ""}
+                      </div>
+                    </th>
+                  ))}
+                  {/* Grand-total column only on the last page */}
+                  {pageIdx === pageCount - 1 && (
+                    <th className="border border-border py-1.5 px-2 text-right font-bold num">
+                      Total Qty
+                    </th>
+                  )}
+                </tr>
+              </thead>
+ 
+              <tbody>
+                {apiData.products.map(p => (
+                  <tr key={p.id}>
+                    <td className="border border-border py-1 px-2 font-medium">
+                      {p.reportAlias}
+                    </td>
+                    {routeChunk.map(r => (
+                      <td
+                        key={r.id}
+                        className="border border-border py-1 px-2 text-right num"
+                      >
+                        {fmtQty(r.qty[p.id] ?? 0)}
+                      </td>
+                    ))}
+                    {/* Row total (grand total across ALL routes, not just this chunk) */}
+                    {pageIdx === pageCount - 1 && (
+                      <td className="border border-border py-1 px-2 text-right font-bold num">
+                        {fmtQty(apiData.totals.qty[p.id] ?? 0)}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+ 
+                {/* ── TOTAL QTY row ── */}
+                <tr className="font-bold bg-muted/40">
+                  <td className="border border-border py-1.5 px-2">TOTAL</td>
+                  {routeChunk.map(r => (
+                    <td
+                      key={r.id}
+                      className="border border-border py-1.5 px-2 text-right num"
+                    >
+                      {fmtQty(routeQtyTotal(r))}
+                    </td>
+                  ))}
+                  {pageIdx === pageCount - 1 && (
+                    <td className="border border-border py-1.5 px-2 text-right num">
+                      {fmtQty(grandQtyTotal)}
+                    </td>
+                  )}
+                </tr>
+ 
+                {/* ── TOTAL AMOUNT row — only on last page ── */}
+                {pageIdx === pageCount - 1 && (
+                  <>
+                    <tr className="font-bold bg-muted/20">
+                      <td className="border border-border py-1 px-2">Milk ₹</td>
+                      {routeChunk.map(r => (
+                        <td
+                          key={r.id}
+                          className="border border-border py-1 px-2 text-right num"
+                        >
+                          {fmtINR(r.milkAmount)}
+                        </td>
+                      ))}
+                      <td className="border border-border py-1 px-2 text-right num">
+                        {fmtINR(apiData.totals.milkAmount)}
+                      </td>
+                    </tr>
+                    <tr className="font-bold bg-muted/20">
+                      <td className="border border-border py-1 px-2">Product ₹</td>
+                      {routeChunk.map(r => (
+                        <td
+                          key={r.id}
+                          className="border border-border py-1 px-2 text-right num"
+                        >
+                          {fmtINR(r.productAmount)}
+                        </td>
+                      ))}
+                      <td className="border border-border py-1 px-2 text-right num">
+                        {fmtINR(apiData.totals.productAmount)}
+                      </td>
+                    </tr>
+                    <tr className="font-bold bg-muted/40">
+                      <td className="border border-border py-1.5 px-2">Total ₹</td>
+                      {routeChunk.map(r => (
+                        <td
+                          key={r.id}
+                          className="border border-border py-1.5 px-2 text-right num"
+                        >
+                          {fmtINR(r.total)}
+                        </td>
+                      ))}
+                      <td className="border border-border py-1.5 px-2 text-right num">
+                        {fmtINR(apiData.totals.total)}
+                      </td>
+                    </tr>
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      });
     }}
-    buildCsv={buildSalesGridCsv}
+ 
+    buildCsv={(from, to, d) => {
+      // CSV: product rows × route columns (transposed)
+      const header = [
+        "Product",
+        ...d.routes.map(r => `${r.code} ${r.name}`),
+        "Total Qty",
+      ];
+      const rows: (string | number)[][] = [header];
+ 
+      d.products.forEach(p => {
+        rows.push([
+          p.reportAlias,
+          ...d.routes.map(r => r.qty[p.id] ?? 0),
+          d.totals.qty[p.id] ?? 0,
+        ]);
+      });
+ 
+      // Total qty row
+      rows.push([
+        "TOTAL QTY",
+        ...d.routes.map(r =>
+          d.products.reduce((s, p) => s + (r.qty[p.id] ?? 0), 0)
+        ),
+        d.products.reduce((s, p) => s + (d.totals.qty[p.id] ?? 0), 0),
+      ]);
+      // Milk ₹ row
+      rows.push(["Milk ₹",    ...d.routes.map(r => r.milkAmount),    d.totals.milkAmount]);
+      // Product ₹ row
+      rows.push(["Product ₹", ...d.routes.map(r => r.productAmount), d.totals.productAmount]);
+      // Total ₹ row
+      rows.push(["Total ₹",   ...d.routes.map(r => r.total),         d.totals.total]);
+ 
+      return rows;
+    }}
   />
 );
 

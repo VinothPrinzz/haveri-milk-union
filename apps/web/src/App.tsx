@@ -41,6 +41,7 @@ import {
   CashSalesReport, CreditSalesReport, SalesRegister,
   TalukaAgentSales, AdhocSalesReport, GSTStatement,
 } from "@/pages/sales-reports/SalesReports";
+import EmployeeSubsidyReportPage from "@/pages/sales-reports/EmployeeSubsidyReport";
 import {
   TimeWindowsPage, NotificationsPage, DealerNotificationsPage,
   BannerManagementPage, RolesPage, UserManagementPage,
@@ -135,6 +136,7 @@ function AppInner() {
           <Route path="/sales-reports/taluka-agent" element={<TalukaAgentSales />} />
           <Route path="/sales-reports/adhoc" element={<AdhocSalesReport />} />
           <Route path="/sales-reports/gst" element={<GSTStatement />} />
+          <Route path="/sales-reports/employee-subsidy" element={<EmployeeSubsidyReportPage />} />
           {/* System */}
           <Route path="/system/time-windows" element={<TimeWindowsPage />} />
           <Route path="/system/notifications" element={<NotificationsPage />} />

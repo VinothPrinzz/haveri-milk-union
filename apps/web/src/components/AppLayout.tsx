@@ -131,6 +131,7 @@ const COMMAND_ITEMS: { label: string; path: string }[] = [
   { label: "Route Sheet", path: "/reports/route-sheet" },
   { label: "Gate Pass Report", path: "/reports/gate-pass" },
   { label: "Daily Sales Statement", path: "/sales-reports/daily-statement" },
+  { label: "Employee Subsidy Report", path: "/sales-reports/employee-subsidy" },
   { label: "User Management", path: "/system/users" },
   { label: "Roles & Access", path: "/system/roles" },
   { label: "Banner Management", path: "/system/banners" },
