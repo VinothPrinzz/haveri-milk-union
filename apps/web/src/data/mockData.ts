@@ -91,9 +91,12 @@ export interface Product {
   name: string;
   reportAlias: string;
   category: string;
+  categoryId?: string;
   packSize: number;
   unit: string;
-  mrp: number;
+  basePrice: number;     // Basic Price (pre-GST, derived from dealerPrice)
+  dealerPrice: number;   // Dealer-Price (gross, inclusive of GST)
+  mrp: number;           // MRP (client-entered)
   gstPercent: number;
   hsnNo: string;
   stock: number;
@@ -260,14 +263,14 @@ export const customers: Customer[] = [
 ];
 
 export const products: Product[] = [
-  { id: "p1", code: "001", name: "Nandini Toned Milk 500ml", reportAlias: "TM 500", category: "Milk", packSize: 0.5, unit: "ltr", mrp: 24, gstPercent: 0, hsnNo: "0401", stock: 330, sortOrder: 1, printDirection: "Across", packetsCrate: 30, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 22.5, "Credit Inst-MRP": 24, "Credit Inst-Dealer": 22.5, "Parlour-Dealer": 22 } },
-  { id: "p2", code: "002", name: "Nandini Full Cream Milk 500ml", reportAlias: "FCM 500", category: "Milk", packSize: 0.5, unit: "ltr", mrp: 30, gstPercent: 0, hsnNo: "0401", stock: 210, sortOrder: 2, printDirection: "Across", packetsCrate: 30, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 28, "Credit Inst-MRP": 30, "Credit Inst-Dealer": 28, "Parlour-Dealer": 27.5 } },
-  { id: "p3", code: "003", name: "Nandini Curd 500ml", reportAlias: "Curd 500", category: "Curd", packSize: 0.5, unit: "kg", mrp: 30, gstPercent: 5, hsnNo: "0403", stock: 140, sortOrder: 3, printDirection: "Across", packetsCrate: 24, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 28, "Credit Inst-MRP": 30, "Credit Inst-Dealer": 28, "Parlour-Dealer": 27 } },
-  { id: "p4", code: "004", name: "Nandini Buttermilk 200ml", reportAlias: "BM 200", category: "Buttermilk", packSize: 0.2, unit: "ltr", mrp: 10, gstPercent: 12, hsnNo: "0403", stock: 400, sortOrder: 4, printDirection: "Across", packetsCrate: 48, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 9, "Credit Inst-MRP": 10, "Credit Inst-Dealer": 9, "Parlour-Dealer": 8.5 } },
-  { id: "p5", code: "005", name: "Nandini Lassi 200ml", reportAlias: "Lassi 200", category: "Lassi", packSize: 0.2, unit: "ltr", mrp: 15, gstPercent: 12, hsnNo: "0403", stock: 250, sortOrder: 5, printDirection: "Down", packetsCrate: 48, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 13.5, "Credit Inst-MRP": 15, "Credit Inst-Dealer": 13.5, "Parlour-Dealer": 13 } },
-  { id: "p6", code: "006", name: "Nandini Ghee 500ml", reportAlias: "Ghee 500", category: "Ghee", packSize: 0.5, unit: "ltr", mrp: 275, gstPercent: 12, hsnNo: "0405", stock: 45, sortOrder: 6, printDirection: "Down", packetsCrate: 12, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 260, "Credit Inst-MRP": 275, "Credit Inst-Dealer": 260, "Parlour-Dealer": 255 } },
-  { id: "p7", code: "007", name: "Nandini Peda 250g", reportAlias: "Peda 250", category: "Sweets", packSize: 0.25, unit: "kg", mrp: 120, gstPercent: 5, hsnNo: "1704", stock: 0, sortOrder: 7, printDirection: "Down", packetsCrate: 20, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 112, "Credit Inst-MRP": 120, "Credit Inst-Dealer": 112, "Parlour-Dealer": 110 } },
-  { id: "p8", code: "008", name: "Nandini Paneer 200g", reportAlias: "Paneer 200", category: "Paneer", packSize: 0.2, unit: "kg", mrp: 90, gstPercent: 5, hsnNo: "0406", stock: 30, sortOrder: 8, printDirection: "Down", packetsCrate: 24, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 84, "Credit Inst-MRP": 90, "Credit Inst-Dealer": 84, "Parlour-Dealer": 82 } },
+  { id: "p1", code: "001", name: "Nandini Toned Milk 500ml", reportAlias: "TM 500", category: "Milk", packSize: 0.5, unit: "ltr", basePrice: 22.5, dealerPrice: 22.5, mrp: 24, gstPercent: 0, hsnNo: "0401", stock: 330, sortOrder: 1, printDirection: "Across", packetsCrate: 30, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 22.5, "Credit Inst-MRP": 24, "Credit Inst-Dealer": 22.5, "Parlour-Dealer": 22 } },
+  { id: "p2", code: "002", name: "Nandini Full Cream Milk 500ml", reportAlias: "FCM 500", category: "Milk", packSize: 0.5, unit: "ltr", basePrice: 28, dealerPrice: 28, mrp: 30, gstPercent: 0, hsnNo: "0401", stock: 210, sortOrder: 2, printDirection: "Across", packetsCrate: 30, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 28, "Credit Inst-MRP": 30, "Credit Inst-Dealer": 28, "Parlour-Dealer": 27.5 } },
+  { id: "p3", code: "003", name: "Nandini Curd 500ml", reportAlias: "Curd 500", category: "Curd", packSize: 0.5, unit: "kg", basePrice: 26.67, dealerPrice: 28, mrp: 30, gstPercent: 5, hsnNo: "0403", stock: 140, sortOrder: 3, printDirection: "Across", packetsCrate: 24, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 28, "Credit Inst-MRP": 30, "Credit Inst-Dealer": 28, "Parlour-Dealer": 27 } },
+  { id: "p4", code: "004", name: "Nandini Buttermilk 200ml", reportAlias: "BM 200", category: "Buttermilk", packSize: 0.2, unit: "ltr", basePrice: 8.04, dealerPrice: 9, mrp: 10, gstPercent: 12, hsnNo: "0403", stock: 400, sortOrder: 4, printDirection: "Across", packetsCrate: 48, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 9, "Credit Inst-MRP": 10, "Credit Inst-Dealer": 9, "Parlour-Dealer": 8.5 } },
+  { id: "p5", code: "005", name: "Nandini Lassi 200ml", reportAlias: "Lassi 200", category: "Lassi", packSize: 0.2, unit: "ltr", basePrice: 12.05, dealerPrice: 13.5, mrp: 15, gstPercent: 12, hsnNo: "0403", stock: 250, sortOrder: 5, printDirection: "Down", packetsCrate: 48, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 13.5, "Credit Inst-MRP": 15, "Credit Inst-Dealer": 13.5, "Parlour-Dealer": 13 } },
+  { id: "p6", code: "006", name: "Nandini Ghee 500ml", reportAlias: "Ghee 500", category: "Ghee", packSize: 0.5, unit: "ltr", basePrice: 232.14, dealerPrice: 260, mrp: 275, gstPercent: 12, hsnNo: "0405", stock: 45, sortOrder: 6, printDirection: "Down", packetsCrate: 12, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 260, "Credit Inst-MRP": 275, "Credit Inst-Dealer": 260, "Parlour-Dealer": 255 } },
+  { id: "p7", code: "007", name: "Nandini Peda 250g", reportAlias: "Peda 250", category: "Sweets", packSize: 0.25, unit: "kg", basePrice: 106.67, dealerPrice: 112, mrp: 120, gstPercent: 5, hsnNo: "1704", stock: 0, sortOrder: 7, printDirection: "Down", packetsCrate: 20, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 112, "Credit Inst-MRP": 120, "Credit Inst-Dealer": 112, "Parlour-Dealer": 110 } },
+  { id: "p8", code: "008", name: "Nandini Paneer 200g", reportAlias: "Paneer 200", category: "Paneer", packSize: 0.2, unit: "kg", basePrice: 80, dealerPrice: 84, mrp: 90, gstPercent: 5, hsnNo: "0406", stock: 30, sortOrder: 8, printDirection: "Down", packetsCrate: 24, status: "Active", terminated: false, rateCategories: { "Retail-Dealer": 84, "Credit Inst-MRP": 90, "Credit Inst-Dealer": 84, "Parlour-Dealer": 82 } },
 ];
 
 export const priceChart: PriceChartEntry[] = products.map(p => ({
