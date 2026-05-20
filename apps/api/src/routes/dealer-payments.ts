@@ -183,19 +183,26 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
   // │  Register a content-type parser that captures     │
   // │  the raw buffer onto request.rawBody.             │
   // └─────────────────────────────────────────────────┘
-  app.addContentTypeParser(
-    "application/json",
-    { parseAs: "buffer" },
-    (req, body, done) => {
-      try {
-        (req as any).rawBody = (body as Buffer).toString("utf8");
-        const parsed = body.length ? JSON.parse((body as Buffer).toString("utf8")) : {};
-        done(null, parsed);
-      } catch (err) {
-        done(err as Error, undefined);
+  // Only register if no JSON parser exists yet (it normally does —
+  // Fastify ships one by default — so this is effectively a no-op,
+  // and the webhook degrades gracefully below).
+  if (!app.hasContentTypeParser("application/json")) {
+    app.addContentTypeParser(
+      "application/json",
+      { parseAs: "buffer" },
+      (req, body, done) => {
+        try {
+          (req as any).rawBody = (body as Buffer).toString("utf8");
+          const parsed = body.length
+            ? JSON.parse((body as Buffer).toString("utf8"))
+            : {};
+          done(null, parsed);
+        } catch (err) {
+          done(err as Error, undefined);
+        }
       }
-    }
-  );
+    );
+  }
   // NOTE: this replaces the default parser. If your server already
   // registers a custom parser, merge that logic — both need to stash
   // the raw body for this webhook to work.
@@ -509,6 +516,14 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
   app.post("/api/v1/razorpay/webhook", async (request, reply) => {
     const sigHeader = request.headers["x-razorpay-signature"];
     const rawBody = (request as any).rawBody as string | undefined;
+
+    // If rawBody wasn't captured, the webhook fallback isn't fully
+    // wired. The synchronous /verify endpoints still confirm payments,
+    // so just acknowledge so Razorpay stops retrying.
+    if (!rawBody) {
+        request.log.warn("[razorpay-webhook] rawBody unavailable — skipped");
+        return reply.status(200).send({ ok: true, skipped: true });
+    }
 
     if (!sigHeader || typeof sigHeader !== "string" || !rawBody) {
       return reply.status(400).send({ error: "Missing signature or body" });

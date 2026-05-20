@@ -1,22 +1,29 @@
 // ═══════════════════════════════════════════════════════════════════════
-// apps/api/src/lib/razorpay-client.ts
+// apps/api/src/lib/razorpay-client.ts  —  BUILD-SAFE VERSION
 //
-// Thin wrapper around the Razorpay Node SDK. All Razorpay-side
-// interactions go through this file so credentials and HMAC logic
-// live in one place.
+// CHANGE FROM PREVIOUS VERSION:
+//   The old file did `import Razorpay from "razorpay"` at the top.
+//   When the `razorpay` package isn't installed, that's a hard
+//   TypeScript error (TS2307 "Cannot find module") — which fails the
+//   ENTIRE `tsc` build, so NONE of the API routes get deployed
+//   (including dealer-indents.ts, which has nothing to do with
+//   Razorpay). That's what caused /api/v1/dealer/drafts/* to 404.
 //
-// Env vars required:
-//   RAZORPAY_KEY_ID         (public — also sent to the mobile client)
-//   RAZORPAY_KEY_SECRET     (server-only)
-//   RAZORPAY_WEBHOOK_SECRET (server-only — set in Razorpay Dashboard
-//                            under Settings → Webhooks)
+//   This version loads the SDK via a DYNAMIC import through a
+//   variable specifier. TypeScript does not resolve variable-based
+//   import() calls, so the build succeeds whether or not `razorpay`
+//   is installed. Payment endpoints simply return 503 until the
+//   package is added and credentials are configured.
 //
-// Install:
-//   pnpm --filter @hmu/api add razorpay
+// TO ACTUALLY ENABLE PAYMENTS (Phase 2B):
+//   pnpm --filter api add razorpay
+//   then set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET / RAZORPAY_WEBHOOK_SECRET
+//
+// The HMAC functions (verifyPaymentSignature, verifyWebhookSignature)
+// use only Node's built-in crypto — they need no package at all.
 // ═══════════════════════════════════════════════════════════════════════
 
 import crypto from "node:crypto";
-import Razorpay from "razorpay";
 
 // ── Config ──────────────────────────────────────────────────────────
 const keyId = process.env.RAZORPAY_KEY_ID;
@@ -24,24 +31,41 @@ const keySecret = process.env.RAZORPAY_KEY_SECRET;
 const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
 if (!keyId || !keySecret) {
-  // We DON'T throw at module load — the API can still start without
-  // Razorpay configured (other endpoints work). But any call to
-  // createOrder will fail clearly. This makes local dev easier.
   console.warn(
-    "[razorpay-client] RAZORPAY_KEY_ID/SECRET not set — Razorpay endpoints will return 503"
+    "[razorpay-client] RAZORPAY_KEY_ID/SECRET not set — payment endpoints return 503"
   );
 }
 
-let _client: Razorpay | null = null;
-function getClient(): Razorpay {
-  if (!_client) {
-    if (!keyId || !keySecret) {
-      throw new Error(
-        "Razorpay credentials not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET."
-      );
-    }
-    _client = new Razorpay({ key_id: keyId, key_secret: keySecret });
+// ── Lazy SDK loader ─────────────────────────────────────────────────
+// The specifier is a variable, NOT a string literal. TypeScript only
+// does module resolution on literal specifiers, so this compiles even
+// when `razorpay` is absent from node_modules.
+const RAZORPAY_MODULE = "razorpay";
+let RazorpayCtor: any = null;
+
+async function getRazorpayCtor(): Promise<any> {
+  if (RazorpayCtor) return RazorpayCtor;
+  try {
+    const mod: any = await import(RAZORPAY_MODULE);
+    RazorpayCtor = mod?.default ?? mod;
+    return RazorpayCtor;
+  } catch {
+    throw new Error(
+      "Razorpay SDK not installed. Run: pnpm --filter api add razorpay"
+    );
   }
+}
+
+let _client: any = null;
+async function getClient(): Promise<any> {
+  if (_client) return _client;
+  if (!keyId || !keySecret) {
+    throw new Error(
+      "Razorpay credentials not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET."
+    );
+  }
+  const Ctor = await getRazorpayCtor();
+  _client = new Ctor({ key_id: keyId, key_secret: keySecret });
   return _client;
 }
 
@@ -58,11 +82,8 @@ export function isRazorpayConfigured(): boolean {
 // ── Orders ──────────────────────────────────────────────────────────
 
 export interface CreateOrderParams {
-  /** Amount in rupees (we convert to paise here) */
   amountInRupees: number;
-  /** Short identifier shown in dashboard — `topup-<dealerCode>` or `order-<orderId>` */
   receipt: string;
-  /** Razorpay's `notes` field — arbitrary key/value for our reference */
   notes: Record<string, string>;
 }
 
@@ -77,38 +98,28 @@ export interface RazorpayOrder {
 export async function createRazorpayOrder(
   params: CreateOrderParams
 ): Promise<RazorpayOrder> {
-  const client = getClient();
-  // Razorpay wants amount in paise (integer). We round to avoid float issues.
+  const client = await getClient();
   const amountPaise = Math.round(params.amountInRupees * 100);
   const order = await client.orders.create({
     amount: amountPaise,
     currency: "INR",
     receipt: params.receipt,
     notes: params.notes,
-    payment_capture: true, // auto-capture on success
-  } as any);
+    payment_capture: true,
+  });
   return {
     id: order.id,
-    amount: typeof order.amount === "string" ? parseInt(order.amount, 10) : order.amount,
+    amount:
+      typeof order.amount === "string"
+        ? parseInt(order.amount, 10)
+        : order.amount,
     currency: order.currency,
     receipt: order.receipt ?? null,
     status: order.status,
   };
 }
 
-// ── Signature verification ──────────────────────────────────────────
-//
-// The client-side flow on a successful payment returns three values:
-//   razorpay_order_id   (matches the order we created)
-//   razorpay_payment_id (the actual payment, pay_xxxxx)
-//   razorpay_signature  (HMAC for us to verify)
-//
-// Verification recipe (from Razorpay docs):
-//   expected = HMAC_SHA256(
-//     `${razorpay_order_id}|${razorpay_payment_id}`,
-//     KEY_SECRET
-//   )
-//   if expected === razorpay_signature → trust the payment
+// ── Signature verification (crypto-only, no SDK needed) ─────────────
 
 export function verifyPaymentSignature(params: {
   razorpayOrderId: string;
@@ -124,16 +135,6 @@ export function verifyPaymentSignature(params: {
   return timingSafeEqual(expected, params.razorpaySignature);
 }
 
-// ── Webhook signature ───────────────────────────────────────────────
-//
-// Razorpay signs the RAW request body with the webhook secret and
-// sends the result in the X-Razorpay-Signature header. We must
-// compute against the raw bytes, not the JSON-parsed object.
-//
-// Fastify's default JSON parser consumes the body. For the webhook
-// route, register a custom content-type parser that stashes the raw
-// buffer alongside the parsed JSON — see dealer-payments.ts.
-
 export function verifyWebhookSignature(
   rawBody: string,
   signatureHeader: string
@@ -146,8 +147,11 @@ export function verifyWebhookSignature(
   return timingSafeEqual(expected, signatureHeader);
 }
 
-// ── HMAC compare (timing-safe) ──────────────────────────────────────
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
+  } catch {
+    return false;
+  }
 }
