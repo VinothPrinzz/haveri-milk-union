@@ -4,9 +4,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Edit, Plus, Trash2, Save, X } from "lucide-react";
+import { Plus, Trash2, Save, X } from "lucide-react";
 import PageHeader, {
-  FilterBar, FormSection, Field, FormFooter, StatusPill,
+  FormSection, Field, FormFooter, StatusPill,
 } from "@/components/PageHeader";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { Button } from "@/components/ui/button";
@@ -169,6 +169,14 @@ export default function RoutesPage({ tab = "list" }: Props) {
     return `R${max + 1}`;
   }, [routes]);
 
+  const sortedRoutes = useMemo(() =>
+    [...routes].sort((a, b) => {
+      const aNum = /^R\d+$/.test(a.code) ? parseInt(a.code.slice(1)) : Infinity;
+      const bNum = /^R\d+$/.test(b.code) ? parseInt(b.code.slice(1)) : Infinity;
+      return aNum !== bNum ? aNum - bNum : a.code.localeCompare(b.code);
+    }),
+  [routes]);
+
   const createMutation = useMutation({
     mutationFn: createRoute,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["routes"] }); toast.success("Route saved"); },
@@ -239,7 +247,7 @@ export default function RoutesPage({ tab = "list" }: Props) {
                     ))}
                   </tr>
                 ))}
-                {!isLoading && routes.map((r, i) => (
+                {!isLoading && sortedRoutes.map((r, i) => (
                   <tr key={r.id} className={i % 2 === 1 ? "zebra" : ""}>
                     <td className="font-mono text-[12px]">{r.code}</td>
                     <td className="font-medium">{r.name}</td>
@@ -268,6 +276,14 @@ export default function RoutesPage({ tab = "list" }: Props) {
                           onClick={() => setEditing(r as RouteType)}
                         >
                           Update
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="h-7 px-2.5 text-[12px]"
+                          onClick={() => setDeleting(r as RouteType)}
+                        >
+                          <Trash2 className="w-3 h-3" />
                         </Button>
                       </div>
                     </td>
@@ -375,8 +391,9 @@ export default function RoutesPage({ tab = "list" }: Props) {
             </DialogTitle>
           </DialogHeader>
           <p className="text-[13px] text-muted-foreground">
-            This will soft-delete <span className="font-medium text-foreground">{deleting?.name}</span>.
-            Dealers currently on this route will keep their records but their dropdown will no longer show it.
+            This will delete <span className="font-medium text-foreground">{deleting?.name}</span> and
+            renumber all higher-numbered routes down by one (e.g. R9 → R8, R10 → R9).
+            Dealers on this route will be unassigned.
           </p>
           <DialogFooter className="gap-2">
             <Button variant="outline" size="sm" className="h-8" onClick={() => setDeleting(null)}>Cancel</Button>

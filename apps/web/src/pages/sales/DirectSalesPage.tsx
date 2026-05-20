@@ -104,7 +104,7 @@ function ItemsCard({
       return {
         ...l,
         productId: productId ?? "",
-        rate:        p ? (parseFloat(String(p.mrp ?? 0))         || l.rate)        : l.rate,
+        rate: p ? (parseFloat(String(p.basePrice ?? 0)) || l.rate) : l.rate,
         gstPercent:  p ? (parseFloat(String(p.gstPercent ?? 0))  || l.gstPercent)  : l.gstPercent,
       };
     }));

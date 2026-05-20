@@ -12,3 +12,6 @@ export function formatTime(date: string): string {
   return new Date(date).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
 }
 
+export function formatPrice(price: number | undefined | null): string {
+  return (price ?? 0).toFixed(2);
+}

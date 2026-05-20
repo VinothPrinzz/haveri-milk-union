@@ -125,7 +125,7 @@ export default function RecordIndentsPage() {
       "Parlour-Dealer": "parlourDealerPrice",
     };
     const rcKeyApi = rcKey && rcPriceMap[rcKey];
-    const unitRaw = (rcKeyApi && (p as any)[rcKeyApi]) ?? p.mrp;
+    const unitRaw = (rcKeyApi && (p as any)[rcKeyApi]) ?? p.basePrice;
     const unit = parseFloat(String(unitRaw)) || 0;
     const gstPct = parseFloat(String(p.gstPercent ?? 0)) || 0;
     const sub = unit * (line.qty || 0);

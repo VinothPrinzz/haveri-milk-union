@@ -1,5 +1,11 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -10,35 +16,68 @@ import { useAppFonts } from "./src/lib/fonts";
 import SplashScreen from "./src/screens/SplashScreen";
 import LoginScreen from "./src/screens/LoginScreen";
 import HomeScreen from "./src/screens/HomeScreen";
+import IndentScreen from "./src/screens/IndentScreen";
+import CategoriesScreen from "./src/screens/CategoriesScreen";
+import OrdersScreen from "./src/screens/OrdersScreen";
 import CartScreen from "./src/screens/CartScreen";
 import OrderConfirmedScreen from "./src/screens/OrderConfirmedScreen";
-import OrdersScreen from "./src/screens/OrdersScreen";
 import InvoicesScreen from "./src/screens/InvoicesScreen";
 import ProfileScreen from "./src/screens/ProfileScreen";
 import NotificationsScreen from "./src/screens/NotificationsScreen";
+import ManageStandingIndentScreen from "./src/screens/ManageStandingIndentScreen";
+
+/**
+ * App.tsx — v2 navigation shell.
+ *
+ * Tabs (bottom): Home · Indent · Orders · Categories
+ *
+ * Pushed screens (full-screen, no tab bar):
+ *   • splash, login        — auth flow
+ *   • cart, confirmed      — checkout flow
+ *   • profile              — reachable via avatar in AppHeader
+ *   • invoices             — reachable from Orders or Profile
+ *   • notifications        — reachable via bell in AppHeader
+ *
+ * Why Profile is pushed not tabbed:
+ *   The Categories tab needs a slot in the bottom bar, and Profile
+ *   actions (credit top-up, settings, logout) are infrequent enough
+ *   that one extra tap from the avatar is fine. The avatar lives in
+ *   every tab's AppHeader, so Profile is always one tap away.
+ */
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30000 } },
 });
 
-type Screen = "splash" | "login" | "home" | "cart" | "confirmed" | "notifications";
-type Tab = "home" | "orders" | "invoices" | "profile";
+type Tab = "home" | "indent" | "orders" | "categories";
+type PushedScreen =
+  | "splash"
+  | "login"
+  | "tabs"
+  | "cart"
+  | "confirmed"
+  | "profile"
+  | "invoices"
+  | "notifications"
+  | "manage-standing";
 
 function AppContent() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
   const initialize = useAuthStore((s) => s.initialize);
 
-  const [screen, setScreen] = useState<Screen>("splash");
+  const [screen, setScreen] = useState<PushedScreen>("splash");
   const [activeTab, setActiveTab] = useState<Tab>("home");
   const [confirmedOrderId, setConfirmedOrderId] = useState("");
 
-  useEffect(() => { initialize(); }, []);
+  useEffect(() => {
+    initialize();
+  }, []);
 
   useEffect(() => {
     if (isLoading) return;
     if (isAuthenticated && (screen === "splash" || screen === "login")) {
-      setScreen("home");
+      setScreen("tabs");
       setActiveTab("home");
     } else if (!isAuthenticated && screen !== "splash" && screen !== "login") {
       setScreen("splash");
@@ -46,8 +85,18 @@ function AppContent() {
   }, [isAuthenticated, isLoading]);
 
   const handleLoginSuccess = useCallback(() => {
-    setScreen("home");
+    setScreen("tabs");
     setActiveTab("home");
+  }, []);
+
+  const goToTabs = useCallback(() => setScreen("tabs"), []);
+
+  // Common header handlers — every tab uses these via AppHeader.
+  const handleOpenNotifications = useCallback(() => {
+    setScreen("notifications");
+  }, []);
+  const handleOpenProfile = useCallback(() => {
+    setScreen("profile");
   }, []);
 
   // ── Loading (auth hydration) ──
@@ -60,20 +109,28 @@ function AppContent() {
     );
   }
 
-  // ── Auth screens ──
+  // ── Auth flow ──
   if (!isAuthenticated || screen === "splash") {
     if (screen === "login") {
-      return <LoginScreen onBack={() => setScreen("splash")} onSuccess={handleLoginSuccess} />;
+      return (
+        <LoginScreen
+          onBack={() => setScreen("splash")}
+          onSuccess={handleLoginSuccess}
+        />
+      );
     }
     return <SplashScreen onLogin={() => setScreen("login")} />;
   }
 
-  // ── Cart flow ──
+  // ── Pushed screens (full-screen, no tab bar) ──
   if (screen === "cart") {
     return (
       <CartScreen
-        onBack={() => setScreen("home")}
-        onOrderPlaced={(id) => { setConfirmedOrderId(id); setScreen("confirmed"); }}
+        onBack={goToTabs}
+        onOrderPlaced={(id) => {
+          setConfirmedOrderId(id);
+          setScreen("confirmed");
+        }}
       />
     );
   }
@@ -82,47 +139,98 @@ function AppContent() {
     return (
       <OrderConfirmedScreen
         orderId={confirmedOrderId}
-        onGoHome={() => { setScreen("home"); setActiveTab("home"); }}
+        onGoHome={() => {
+          setScreen("tabs");
+          setActiveTab("home");
+        }}
       />
     );
   }
 
-  // Notifications screen branch
   if (screen === "notifications") {
-    return <NotificationsScreen onBack={() => setScreen("home")} />;
+    return <NotificationsScreen onBack={goToTabs} />;
   }
 
-  // ── Main app with tabs ──
+  if (screen === "profile") {
+    return <ProfileScreen onBack={goToTabs} />;
+  }
+
+  if (screen === "invoices") {
+    return <InvoicesScreen onBack={goToTabs} />;
+  }
+
+  if (screen === "manage-standing") {
+    return <ManageStandingIndentScreen onBack={goToTabs} />;
+  }
+
+  // ── Tabbed shell ──
   return (
     <View style={styles.main}>
       <View style={styles.screenArea}>
-        {activeTab === "home" && 
-          <HomeScreen 
-            onOpenCart={() => setScreen("cart")} 
-            onOpenNotifications={() => setScreen("notifications")}
-          />}
-        {activeTab === "orders" && <OrdersScreen />}
-        {activeTab === "invoices" && <InvoicesScreen />}
-        {activeTab === "profile" && <ProfileScreen />}
+        {activeTab === "home" && (
+          <HomeScreen
+            onOpenIndent={() => setScreen("cart")}
+            onOpenIndentForDate={() => setActiveTab("indent")}
+            onOpenNotifications={handleOpenNotifications}
+            onOpenProfile={handleOpenProfile}
+          />
+        )}
+        {activeTab === "indent" && (
+          <IndentScreen
+            onOpenNotifications={handleOpenNotifications}
+            onOpenProfile={handleOpenProfile}
+            onOpenManageStanding={() => setScreen("manage-standing")}
+          />
+        )}
+        {activeTab === "orders" && (
+          <OrdersScreen
+            onOpenNotifications={handleOpenNotifications}
+            onOpenProfile={handleOpenProfile}
+            onOpenInvoices={() => setScreen("invoices")}
+          />
+        )}
+        {activeTab === "categories" && (
+          <CategoriesScreen
+            onOpenIndent={() => setScreen("cart")}
+            onOpenIndentForDate={() => setActiveTab("indent")}
+            onOpenNotifications={handleOpenNotifications}
+            onOpenProfile={handleOpenProfile}
+          />
+        )}
       </View>
 
       <View style={styles.tabBar}>
-        {([
-          { key: "home" as Tab,     icon: "🏠", label: "Home" },
-          { key: "orders" as Tab,   icon: "📋", label: "Orders" },
-          { key: "invoices" as Tab, icon: "🧾", label: "Invoices" },
-          { key: "profile" as Tab,  icon: "👤", label: "Profile" },
-        ]).map((tab) => (
+        {(
+          [
+            { key: "home" as Tab, icon: "🏠", label: "Home" },
+            { key: "indent" as Tab, icon: "📋", label: "Indent" },
+            { key: "orders" as Tab, icon: "🧾", label: "Orders" },
+            { key: "categories" as Tab, icon: "🗂️", label: "Categories" },
+          ]
+        ).map((tab) => (
           <TouchableOpacity
             key={tab.key}
             style={styles.tab}
-            onPress={() => { setActiveTab(tab.key); setScreen("home"); }}
+            onPress={() => {
+              setActiveTab(tab.key);
+              setScreen("tabs");
+            }}
             activeOpacity={0.7}
           >
-            <Text style={[styles.tabIcon, activeTab === tab.key && styles.tabIconActive]}>
+            <Text
+              style={[
+                styles.tabIcon,
+                activeTab === tab.key && styles.tabIconActive,
+              ]}
+            >
               {tab.icon}
             </Text>
-            <Text style={[styles.tabLabel, activeTab === tab.key && styles.tabLabelActive]}>
+            <Text
+              style={[
+                styles.tabLabel,
+                activeTab === tab.key && styles.tabLabelActive,
+              ]}
+            >
               {tab.label}
             </Text>
           </TouchableOpacity>
@@ -135,8 +243,6 @@ function AppContent() {
 export default function App() {
   const fontsReady = useAppFonts();
 
-  // Fonts must load before we render anything that uses `font-family`
-  // (which is nearly everything once Phase 2 components land).
   if (!fontsReady) {
     return (
       <View style={styles.loading}>
@@ -148,7 +254,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
-        <StatusBar style="light" />
+        <StatusBar style="dark" />
         <AppContent />
       </QueryClientProvider>
     </SafeAreaProvider>
@@ -169,13 +275,13 @@ const styles = StyleSheet.create({
     fontSize: fontSize.base,
   },
 
-  main:       { flex: 1, backgroundColor: colors.background },
+  main: { flex: 1, backgroundColor: colors.background },
   screenArea: { flex: 1 },
 
   tabBar: {
     flexDirection: "row",
     backgroundColor: colors.card,
-    borderTopWidth: 1,
+    borderTopWidth: 0.5,
     borderTopColor: colors.border,
     paddingTop: 7,
     paddingBottom: 14,
@@ -188,14 +294,13 @@ const styles = StyleSheet.create({
     gap: 3,
     minHeight: 44,
   },
-  tabIcon:       { fontSize: 22, opacity: 0.55 },
+  tabIcon: { fontSize: 22, opacity: 0.5 },
   tabIconActive: { opacity: 1 },
   tabLabel: {
-    fontSize: 9,
+    fontSize: 11,
     fontFamily: fonts.bold,
     color: colors.mutedForeground,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
   },
   tabLabelActive: { color: colors.primary },
 });

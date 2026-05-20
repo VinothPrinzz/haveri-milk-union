@@ -13,7 +13,9 @@ export const userRoleEnum = pgEnum("user_role", [
 
 // ── Order lifecycle ──
 export const orderStatusEnum = pgEnum("order_status", [
+  "draft",                 // pre-confirm, editable by dealer
   "pending",
+  "payment_required",      // close passed, credit insufficient
   "confirmed",
   "dispatched",
   "delivered",

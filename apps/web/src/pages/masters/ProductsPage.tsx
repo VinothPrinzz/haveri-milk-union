@@ -1,6 +1,13 @@
+// apps/web/src/pages/masters/ProductsPage.tsx
 // ════════════════════════════════════════════════════════════════════
 // Products: All Products / Add Product / Product Rates — ERP refactor
 // Routes preserved: /masters/products /add /rates
+//
+// Three-tier pricing:
+//   Basic Price  — pre-GST, auto-derived (read-only), shown for reference
+//   Dealer-Price — gross price, entered by the client
+//   MRP          — entered by the client
+//   Margin       — MRP − Dealer-Price, auto-calculated, never stored
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -43,6 +50,13 @@ const fetchRateCategories = () => getRateCategories().map((name, i) => ({ id: St
 
 import { productSchema, type ProductFormData } from "@/lib/validations";
 
+// Basic Price is derived from the (gross) Dealer-Price, excluding GST.
+function deriveBasicPrice(dealerPrice: number, gstPercent: number): number {
+  const safeGst = Math.max(0, gstPercent || 0);
+  if (!dealerPrice) return 0;
+  return Math.round((dealerPrice / (1 + safeGst / 100)) * 100) / 100;
+}
+
 interface Props { tab?: "list" | "add" | "rates"; }
 
 export default function ProductsPage({ tab = "list" }: Props) {
@@ -54,27 +68,27 @@ export default function ProductsPage({ tab = "list" }: Props) {
 function ProductListTab() {
   const qc = useQueryClient();
   const { data: products = [], isLoading } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
-  
+
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<Product | null>(null);
   const [deleting, setDeleting] = useState<Product | null>(null);
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: ProductFormData }) => updateProduct(id, data),
-    onSuccess: () => { 
-      qc.invalidateQueries({ queryKey: ["products"] }); 
-      toast.success("Product updated"); 
-      setEditing(null); 
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["products"] });
+      toast.success("Product updated");
+      setEditing(null);
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteProduct(id),
-    onSuccess: () => { 
-      qc.invalidateQueries({ queryKey: ["products"] }); 
-      toast.success("Product deleted"); 
-      setDeleting(null); 
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["products"] });
+      toast.success("Product deleted");
+      setDeleting(null);
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
@@ -130,12 +144,14 @@ function ProductListTab() {
                 <tr>
                   <th style={{ width: 80 }}>Code</th>
                   <th>Name</th>
-                  <th style={{ width: 140 }}>Category</th>
-                  <th style={{ width: 90 }}>Unit</th>
-                  <th className="num" style={{ width: 120, textAlign: "right" }}>Base Price</th>
-                  <th className="num" style={{ width: 80, textAlign: "right" }}>GST %</th>
-                  <th className="num" style={{ width: 90, textAlign: "right" }}>Stock</th>
-                  <th style={{ width: 100, textAlign: "right" }}>Actions</th>
+                  <th style={{ width: 130 }}>Category</th>
+                  <th style={{ width: 80 }}>Unit</th>
+                  <th className="num" style={{ width: 110, textAlign: "right" }}>Basic Price</th>
+                  <th className="num" style={{ width: 110, textAlign: "right" }}>Dealer Price</th>
+                  <th className="num" style={{ width: 100, textAlign: "right" }}>MRP</th>
+                  <th className="num" style={{ width: 70, textAlign: "right" }}>GST %</th>
+                  <th className="num" style={{ width: 80, textAlign: "right" }}>Stock</th>
+                  <th style={{ width: 90, textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -145,13 +161,15 @@ function ProductListTab() {
                     <td className="font-medium">{p.name}</td>
                     <td>{p.category ?? "—"}</td>
                     <td>{p.unit ?? "—"}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.basePrice ?? 0)}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.dealerPrice ?? 0)}</td>
                     <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
                     <td className="num" style={{ textAlign: "right" }}>{Number(p.gstPercent ?? 0).toFixed(2)}</td>
                     <td className="num" style={{ textAlign: "right" }}>{p.stock ?? 0}</td>
                     <td style={{ textAlign: "right" }}>
-                      <Button 
-                        size="sm" 
-                        className="h-7 px-2.5 text-[12px]" 
+                      <Button
+                        size="sm"
+                        className="h-7 px-2.5 text-[12px]"
                         onClick={() => setEditing(p)}
                       >
                         Update
@@ -160,7 +178,7 @@ function ProductListTab() {
                   </tr>
                 ))}
                 {filtered.length === 0 && (
-                  <tr><td colSpan={8} className="py-8 text-center text-muted-foreground">No products found.</td></tr>
+                  <tr><td colSpan={10} className="py-8 text-center text-muted-foreground">No products found.</td></tr>
                 )}
               </tbody>
             </table>
@@ -202,9 +220,9 @@ function ProductListTab() {
           </p>
           <DialogFooter className="gap-2">
             <Button variant="outline" size="sm" className="h-8" onClick={() => setDeleting(null)}>Cancel</Button>
-            <Button 
-              variant="destructive" 
-              size="sm" 
+            <Button
+              variant="destructive"
+              size="sm"
               className="h-8"
               onClick={() => deleting && deleteMutation.mutate(deleting.id)}
               disabled={deleteMutation.isPending}
@@ -229,6 +247,7 @@ function ProductAddTab() {
       category: d.category,
       packSize: d.packSize,
       unit: d.unit,
+      dealerPrice: d.dealerPrice,
       mrp: d.mrp,
       gstPercent: d.gstPercent,
       hsnNo: d.hsnNo,
@@ -239,9 +258,9 @@ function ProductAddTab() {
       makeZeroInIndents: d.makeZeroInIndents,
       terminated: d.terminated,
     }),
-    onSuccess: () => { 
-      qc.invalidateQueries({ queryKey: ["products"] }); 
-      toast.success("Product created"); 
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["products"] });
+      toast.success("Product created");
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
@@ -285,9 +304,10 @@ function ProductFormBody({
     defaultValues: {
       name: initialData?.name ?? "",
       reportAlias: initialData?.reportAlias ?? "",
-      category: (initialData as any)?.categoryId ?? "",
+      category: initialData?.categoryId ?? "",
       packSize: initialData?.packSize ?? 1,
       unit: initialData?.unit ?? "L",
+      dealerPrice: initialData?.dealerPrice ?? 0,
       mrp: initialData?.mrp ?? 0,
       gstPercent: initialData?.gstPercent ?? 0,
       hsnNo: initialData?.hsnNo ?? "",
@@ -302,6 +322,13 @@ function ProductFormBody({
 
   const printDirection = form.watch("printDirection") ?? "Across";
   const aliasMax       = printDirection === "Down" ? 22 : 14;
+
+  // ── Three-tier pricing — live derived values ──────────────────
+  const dealerPriceW = Number(form.watch("dealerPrice") ?? 0);
+  const mrpW         = Number(form.watch("mrp") ?? 0);
+  const gstW         = Number(form.watch("gstPercent") ?? 0);
+  const basicPrice   = deriveBasicPrice(dealerPriceW, gstW);
+  const margin       = mrpW - dealerPriceW;
 
   return (
     <Form {...form}>
@@ -354,7 +381,6 @@ function ProductFormBody({
         </FormSection>
 
         <FormSection title="Pack & Unit" cols={3}>
-          {/* Existing fields - unchanged */}
           <FormField control={form.control} name="packSize" render={({ field }) => (
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Pack Size</FormLabel>
@@ -389,8 +415,7 @@ function ProductFormBody({
           )}/>
         </FormSection>
 
-        <FormSection title="Tax & Rate" cols={3}>
-          {/* Existing fields - unchanged */}
+        <FormSection title="Tax" cols={3}>
           <FormField control={form.control} name="hsnNo" render={({ field }) => (
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">HSN</FormLabel>
@@ -407,30 +432,82 @@ function ProductFormBody({
               <FormMessage className="text-[11.5px]" />
             </FormItem>
           )}/>
-          <FormField control={form.control} name="mrp" render={({ field }) => (
+          <div /> {/* spacer */}
+        </FormSection>
+
+        {/* ── Pricing — three tiers ─────────────────────────────── */}
+        <FormSection title="Pricing" cols={3}>
+          <FormField control={form.control} name="dealerPrice" render={({ field }) => (
             <FormItem>
-              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">MRP ₹</FormLabel>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">
+                Dealer-Price ₹
+              </FormLabel>
               <FormControl>
-                <Input type="number" step="0.01" {...field} onChange={e => field.onChange(parseFloat(e.target.value))} />
+                <Input
+                  type="number"
+                  step="0.01"
+                  {...field}
+                  onChange={e => field.onChange(parseFloat(e.target.value))}
+                />
               </FormControl>
               <FormMessage className="text-[11.5px]" />
             </FormItem>
           )}/>
+          <FormField control={form.control} name="mrp" render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">
+                MRP ₹
+              </FormLabel>
+              <FormControl>
+                <Input
+                  type="number"
+                  step="0.01"
+                  {...field}
+                  onChange={e => field.onChange(parseFloat(e.target.value))}
+                />
+              </FormControl>
+              <FormMessage className="text-[11.5px]" />
+            </FormItem>
+          )}/>
+          <Field label="Basic Price ₹ (auto)">
+            <Input
+              className="erp-input num bg-muted/40"
+              value={basicPrice.toFixed(2)}
+              readOnly
+              tabIndex={-1}
+            />
+            <div className="text-[10.5px] text-muted-foreground mt-0.5">
+              Dealer-Price excluding {gstW || 0}% GST
+            </div>
+          </Field>
+
+          <Field label="Margin ₹ (auto)">
+            <Input
+              className="erp-input num bg-muted/40"
+              value={margin.toFixed(2)}
+              readOnly
+              tabIndex={-1}
+              style={{ color: margin < 0 ? "var(--destructive, #dc2626)" : undefined }}
+            />
+            <div className="text-[10.5px] text-muted-foreground mt-0.5">
+              MRP − Dealer-Price
+            </div>
+          </Field>
         </FormSection>
 
-        {/* New Behaviour Section */}
+        {/* Behaviour Section */}
         <FormSection title="Behaviour" cols={3}>
           <Field label="Sort Position">
-            <Input 
-              className="erp-input num" 
-              type="number" 
-              min="0" 
-              {...form.register("sortPosition", { valueAsNumber: true })} 
+            <Input
+              className="erp-input num"
+              type="number"
+              min="0"
+              {...form.register("sortPosition", { valueAsNumber: true })}
             />
           </Field>
           <Field label="Print Direction">
-            <Select 
-              value={form.watch("printDirection") || "Across"} 
+            <Select
+              value={form.watch("printDirection") || "Across"}
               onValueChange={v => form.setValue("printDirection", v as any)}
             >
               <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
@@ -444,18 +521,18 @@ function ProductFormBody({
 
           <Field label="Subsidy">
             <div className="flex items-center gap-2 h-10">
-              <Switch 
-                checked={!!form.watch("subsidy")} 
-                onCheckedChange={v => form.setValue("subsidy", v)} 
+              <Switch
+                checked={!!form.watch("subsidy")}
+                onCheckedChange={v => form.setValue("subsidy", v)}
               />
               <span className="text-[13px]">{form.watch("subsidy") ? "On" : "Off"}</span>
             </div>
           </Field>
           <Field label="Make Zero in Indents">
             <div className="flex items-center gap-2 h-10">
-              <Switch 
-                checked={!!form.watch("makeZeroInIndents")} 
-                onCheckedChange={v => form.setValue("makeZeroInIndents", v)} 
+              <Switch
+                checked={!!form.watch("makeZeroInIndents")}
+                onCheckedChange={v => form.setValue("makeZeroInIndents", v)}
               />
               <span className="text-[13px]">{form.watch("makeZeroInIndents") ? "On" : "Off"}</span>
             </div>
@@ -490,7 +567,7 @@ function ProductRatesTab() {
   const qc = useQueryClient();
   const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
   const { data: categories = [] } = useQuery({ queryKey: ["rate-categories"], queryFn: fetchRateCategories });
-  
+
   const [productId, setProductId] = useState<string>("");
   const [draft, setDraft] = useState<Record<string, number>>({});
 
@@ -528,22 +605,22 @@ function ProductRatesTab() {
               <thead>
                 <tr>
                   <th>Rate Category</th>
-                  <th className="num" style={{ width: 160, textAlign: "right" }}>Base Rate</th>
+                  <th className="num" style={{ width: 160, textAlign: "right" }}>Basic Price</th>
                   <th className="num" style={{ width: 200, textAlign: "right" }}>Effective Rate ₹</th>
                   <th style={{ width: 130, textAlign: "right" }}>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {categories.map((c: any) => {
-                  const existing = (product.rateCategories ?? {})[c.name] ?? product.mrp ?? 0;
+                  const existing = (product.rateCategories ?? {})[c.name] ?? product.basePrice ?? 0;
                   const value = draft[c.id] ?? existing;
                   return (
                     <tr key={c.id}>
                       <td className="font-medium">{c.name}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(product.mrp ?? 0)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(product.basePrice ?? 0)}</td>
                       <td style={{ textAlign: "right" }}>
                         <Input
-                          type="number" 
+                          type="number"
                           step="0.01"
                           className="erp-input ml-auto w-32 text-right tabular-nums"
                           value={value}
@@ -551,14 +628,14 @@ function ProductRatesTab() {
                         />
                       </td>
                       <td style={{ textAlign: "right" }}>
-                        <Button 
-                          size="sm" 
+                        <Button
+                          size="sm"
                           className="h-7"
                           disabled={upsert.isPending || draft[c.id] === undefined || draft[c.id] === existing}
-                          onClick={() => upsert.mutate({ 
-                            productId: product.id, 
-                            categoryId: c.id, 
-                            rate: draft[c.id] 
+                          onClick={() => upsert.mutate({
+                            productId: product.id,
+                            categoryId: c.id,
+                            rate: draft[c.id]
                           })}
                         >
                           Save

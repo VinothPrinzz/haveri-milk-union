@@ -31,7 +31,7 @@ interface MonthOption {
   label: string; // "Jan 2025"
 }
 
-export default function InvoicesScreen() {
+export default function InvoicesScreen({ onBack }: { onBack: () => void }) {
   const insets = useSafeAreaInsets();
   const dealer = useAuthStore((s) => s.dealer);
   const invQuery = useMyInvoices();
@@ -185,7 +185,12 @@ export default function InvoicesScreen() {
     <View style={styles.root}>
       {/* Header */}
       <View style={[styles.header, { paddingTop: Math.max(insets.top + 8, 42) }]}>
-        <Text style={styles.headerTitle}>GST Invoices</Text>
+        <View style={styles.headerRow}>
+          <TouchableOpacity onPress={onBack} hitSlop={8} style={styles.backBtn}>
+            <Text style={styles.backArrow}>←</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>GST Invoices</Text>
+        </View>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -488,6 +493,19 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  backBtn: {
+    marginRight: 8,
+    padding: 4,
+  },
+  backArrow: {
+    fontSize: 20,
+    color: colors.foreground,
   },
   headerTitle: {
     fontFamily: fonts.headingExtra,

@@ -5,6 +5,7 @@ import {
   timestamp,
   numeric,
   integer,
+  date,
   index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
@@ -43,11 +44,12 @@ export const orders = pgTable("orders", {
   confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
   deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  deliveryDate: date("delivery_date").notNull(),
   cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
   cancellationReason: text("cancellation_reason"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
+}, () => [
   // These indexes are created in migration SQL because Drizzle can't create
   // indexes on partitioned tables directly. Defined here for documentation.
   // index("idx_orders_dealer_created").on(table.dealerId, table.createdAt),

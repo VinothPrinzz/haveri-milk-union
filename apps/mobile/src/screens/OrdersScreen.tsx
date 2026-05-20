@@ -19,6 +19,7 @@ import {
   shadows,
 } from "../lib/theme";
 import LivePulseDot from "../components/LivePulseDot";
+import AppHeader from "../components/AppHeader";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { useMyOrders, useCancelOrder, useReorder } from "../hooks/useOrders";
@@ -89,7 +90,17 @@ const FILTERS: ReadonlyArray<FilterDef> = [
   { id: "cancelled",  label: "Cancelled", apiStatus: "cancelled" },
 ];
 
-export default function OrdersScreen() {
+interface OrdersScreenProps {
+  onOpenNotifications: () => void;
+  onOpenProfile: () => void;
+  onOpenInvoices: () => void;
+}
+
+export default function OrdersScreen({
+    onOpenNotifications,
+    onOpenProfile,
+    onOpenInvoices,
+  }: OrdersScreenProps) {
   const insets = useSafeAreaInsets();
   const dealer = useAuthStore((s) => s.dealer);
   const products = useProducts().data ?? [];
@@ -250,30 +261,11 @@ export default function OrdersScreen() {
   return (
     <View style={styles.root}>
       {/* Header with filter pills */}
-      <View style={[styles.header, { paddingTop: Math.max(insets.top + 8, 42) }]}>
-        <Text style={styles.headerTitle}>My Orders</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterScroll}
-        >
-          {FILTERS.map((f) => {
-            const active = f.id === activeFilter;
-            return (
-              <TouchableOpacity
-                key={f.id}
-                activeOpacity={0.75}
-                onPress={() => setActiveFilter(f.id)}
-                style={[styles.fTab, active && styles.fTabActive]}
-              >
-                <Text style={[styles.fTabText, active && styles.fTabTextActive]}>
-                  {f.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-      </View>
+      <AppHeader
+        title="My Orders"
+        onBellPress={onOpenNotifications}
+        onProfilePress={onOpenProfile}
+      />
 
       {/* Body */}
       <ScrollView

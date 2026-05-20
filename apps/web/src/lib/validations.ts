@@ -119,14 +119,15 @@ export const REPORT_ALIAS_MAX: Record<"Across" | "Down", number> = {
 
 // Fix #10w: productSchema — all fields get proper defaults
 export const productSchema = z.object({
-  name: z.string().min(2, "Product name required").default(""),        // Fix #10w
-  reportAlias: z.string().default(""),                                  // Fix #10w
-  category: z.string().min(1, "Category required").default(""),        // Fix #10w — this is category UUID
-  packSize: z.coerce.number().positive().default(1),                   // Fix #10: coerce
-  unit: z.string().min(1, "Unit required").default(""),                // Fix #10w
-  mrp: z.coerce.number().min(0).default(0),                           // Fix #10: coerce
-  gstPercent: z.coerce.number().min(0).max(100).default(0),           // Fix #10: coerce
-  hsnNo: z.string().default(""),                                       // Fix #10w
+  name: z.string().min(2, "Product name required").default(""),
+  reportAlias: z.string().default(""),                          
+  category: z.string().min(1, "Category required").default(""),
+  packSize: z.coerce.number().positive().default(1),                  
+  unit: z.string().min(1, "Unit required").default(""),        
+  dealerPrice: z.coerce.number().min(0).default(0),  // Dealer-Price (client-entered)
+  mrp:         z.coerce.number().min(0).default(0),  // MRP (client-entered)
+  gstPercent: z.coerce.number().min(0).max(100).default(0),          
+  hsnNo: z.string().default(""),                               
   subsidy: z.boolean().default(false),
   subRate: z.coerce.number().min(0).default(0),
   indentInBox: z.boolean().default(false),

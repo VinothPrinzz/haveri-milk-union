@@ -442,7 +442,13 @@ function ExportMenu({ exporters }: { exporters: Exporter[] }) {
   );
 }
 
-export function ReportPrintMeta() {
+export function ReportPrintMeta({
+  title,
+  rows,
+}: {
+  title?: string;
+  rows?: { label: string; value: string | number }[];
+} = {}) {
   return (
     <div className="report-letterhead">
       <h1 className="report-letterhead-co">
@@ -455,6 +461,17 @@ export function ReportPrintMeta() {
         &nbsp;·&nbsp;
         <strong>Phone:</strong> 08375200650
       </p>
+      {title && <h2 className="report-letterhead-title">{title}</h2>}
+      {rows && rows.length > 0 && (
+        <p className="report-letterhead-meta">
+          {rows.map((r, i) => (
+            <span key={i}>
+              {i > 0 && <>&nbsp;·&nbsp;</>}
+              <strong>{r.label}:</strong> {r.value}
+            </span>
+          ))}
+        </p>
+      )}
       <div className="report-letterhead-printdate">
         Print Date: {new Date().toLocaleString("en-IN")}
       </div>

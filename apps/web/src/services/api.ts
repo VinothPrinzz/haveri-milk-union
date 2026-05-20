@@ -146,65 +146,47 @@ function normalizeBatch(d: Record<string, unknown>) {
 function normalizeProduct(d: Record<string, unknown> | null | undefined) {
   if (!d) {
     return {
-      id: "",
-      code: "",
-      name: "",
-      reportAlias: "",
-      category: "",
-      packSize: 0,
-      unit: "pcs",
-      mrp: 0,
-      gstPercent: 0,
-      hsnNo: "",
-      stock: 0,
-      sortOrder: 0,
-      printDirection: "Across" as const,
-      packetsCrate: 0,
-      status: "Inactive" as const,
-      terminated: false,
+      id: "", code: "", name: "", reportAlias: "", category: "",
+      packSize: 0, unit: "pcs",
+      basePrice: 0, dealerPrice: 0, mrp: 0,   // ← three prices
+      gstPercent: 0, hsnNo: "", stock: 0, sortOrder: 0,
+      printDirection: "Across" as const, packetsCrate: 0,
+      status: "Inactive" as const, terminated: false,
       rateCategories: {} as Record<string, number>,
     };
   }
-  const mrp =
-    parseFloat(
-      String(
-        d.basePrice ?? d.base_price ?? d.mrp ?? 0, // ← reads camelCase first (Issue #4, #6)
-      ),
-    ) || 0;
 
-  // Issue #6: each rate category defaults to MRP if backend didn't send a per-category override.
-  const rd =
-    parseFloat(String(d.retailDealerPrice ?? d.retail_dealer_price ?? mrp)) ||
-    mrp;
-  const cm =
-    parseFloat(
-      String(d.creditInstMrpPrice ?? d.credit_inst_mrp_price ?? mrp),
-    ) || mrp;
-  const cd =
-    parseFloat(
-      String(d.creditInstDealerPrice ?? d.credit_inst_dealer_price ?? mrp),
-    ) || mrp;
-  const pd =
-    parseFloat(String(d.parlourDealerPrice ?? d.parlour_dealer_price ?? mrp)) ||
-    mrp;
+  // Three-tier pricing
+  const basePrice =
+    parseFloat(String(d.basePrice ?? d.base_price ?? 0)) || 0;
+  const dealerPrice =
+    parseFloat(String(d.dealerPrice ?? d.dealer_price ?? basePrice)) || basePrice;
+  const mrp =
+    parseFloat(String(d.mrp ?? dealerPrice)) || dealerPrice;
+
+  // Per-rate-category prices default to Basic Price when no override exists.
+  const rd = parseFloat(String(d.retailDealerPrice    ?? d.retail_dealer_price    ?? basePrice)) || basePrice;
+  const cm = parseFloat(String(d.creditInstMrpPrice   ?? d.credit_inst_mrp_price  ?? basePrice)) || basePrice;
+  const cd = parseFloat(String(d.creditInstDealerPrice?? d.credit_inst_dealer_price?? basePrice)) || basePrice;
+  const pd = parseFloat(String(d.parlourDealerPrice   ?? d.parlour_dealer_price   ?? basePrice)) || basePrice;
 
   return {
     id: (d.id ?? "") as string,
     code: (d.code ?? "") as string,
     name: (d.name ?? "") as string,
     reportAlias: (d.reportAlias ?? d.report_alias ?? d.name ?? "") as string,
-    category: (d.categoryName ?? d.category_name ?? d.category ?? "") as string, // ← Issue #4
+    category: (d.categoryName ?? d.category_name ?? d.category ?? "") as string,
     categoryId: (d.categoryId ?? d.category_id ?? "") as string,
     packSize: parseFloat(String(d.packSize ?? d.pack_size ?? 0)) || 0,
     unit: (d.unit ?? "pcs") as string,
-    mrp,
+    basePrice,            // ← NEW
+    dealerPrice,          // ← NEW
+    mrp,                  // real MRP
     gstPercent: parseFloat(String(d.gstPercent ?? d.gst_percent ?? 0)) || 0,
     hsnNo: (d.hsnNo ?? d.hsn_no ?? "") as string,
     stock: Number(d.stock ?? 0),
     sortOrder: Number(d.sortOrder ?? d.sort_order ?? 0),
-    printDirection: (d.printDirection ?? d.print_direction ?? "Across") as
-      | "Across"
-      | "Down",
+    printDirection: (d.printDirection ?? d.print_direction ?? "Across") as "Across" | "Down",
     packetsCrate: Number(d.packetsCrate ?? d.packets_crate ?? 0),
     status: d.available !== false ? ("Active" as const) : ("Inactive" as const),
     terminated: Boolean(d.terminated ?? false),
@@ -389,12 +371,6 @@ function normalizeCancellation(d: Record<string, unknown>) {
     status: statusMap[rawStatus] ?? "Pending",
     rejectionReason: (d.review_note ?? d.rejectionReason ?? "") as string,
   };
-}
-
-function mapCancellationStatus(s: string): "Pending" | "Approved" | "Rejected" {
-  if (s === "approved") return "Approved";
-  if (s === "rejected") return "Rejected";
-  return "Pending";
 }
 
 // ══════════════════════════════════════
@@ -727,18 +703,16 @@ export const createProduct = async (body: Record<string, unknown>) => {
     categoryId: body.categoryId || body.category,
     icon: body.icon,
     unit: body.unit,
-    basePrice: String(body.mrp ?? body.basePrice ?? 0),
-    gstPercent: String(body.gstPercent ?? 0),
+    dealerPrice: Number(body.dealerPrice ?? 0),                 // ← Dealer-Price
+    mrp:         Number(body.mrp ?? body.dealerPrice ?? 0),     // ← MRP
+    gstPercent: Number(body.gstPercent ?? 0),
     stock: 0,
     available: true,
-
-    // Issue #5 — pass through everything the form collects
     code: body.code || undefined,
     hsnNo: body.hsnNo || undefined,
     packSize: body.packSize !== undefined ? Number(body.packSize) : undefined,
-    printDirection: body.printDirection || undefined, // "Across" | "Down" — preserves Down
-    packetsCrate:
-      body.packetsCrate !== undefined ? Number(body.packetsCrate) : undefined,
+    printDirection: body.printDirection || undefined,
+    packetsCrate: body.packetsCrate !== undefined ? Number(body.packetsCrate) : undefined,
     reportAlias: body.reportAlias || body.name || undefined,
   });
   return normalizeProduct(data.product);

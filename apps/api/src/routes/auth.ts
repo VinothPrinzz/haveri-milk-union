@@ -1,12 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import cookie from "@fastify/cookie";
 import { z } from "zod";
-import { eq, and, sql, gt, desc, isNull } from "drizzle-orm";
-import { db, pgClient } from "../lib/db.js";
+import { eq, and, sql, gt, isNull } from "drizzle-orm";
+import { db } from "../lib/db.js";
 import {
   dealers,
-  dealerWallets,
-  dealerOtps,
   dealerRefreshTokens,
   users,
   adminSessions,
@@ -14,14 +11,9 @@ import {
 import {
   signDealerAccessToken,
   signDealerRefreshToken,
-  verifyDealerRefreshToken,
   comparePassword,
-  hashPassword,
   generateSessionToken,
-  generateOTP,
 } from "../lib/auth.js";
-import { env } from "../lib/env.js";
-import { nanoid } from "nanoid";
 
 export async function authRoutes(app: FastifyInstance) {
   // ─────────────────────────────────────────────────────────────
@@ -34,6 +26,9 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     const { username, password } = schema.parse(request.body);
+
+    console.log("=== LOGIN DEBUG ===");
+    console.log("Input username:", username);
     
     const [dealer] = await db
       .select({
@@ -53,20 +48,40 @@ export async function authRoutes(app: FastifyInstance) {
       )
       .limit(1);
 
-    if (!dealer || !dealer.active || dealer.deletedAt) {
-      return reply.status(401).send({
-        error: "Unauthorized",
-        message: "Invalid username or password",
-      });
+    console.log("Found dealer:", !!dealer);
+    if (dealer) {
+      console.log("Dealer ID:", dealer.id);
+      console.log("Active:", dealer.active);
+      console.log("DeletedAt:", dealer.deletedAt);
+      console.log("Has passwordHash:", !!dealer.passwordHash);
+      console.log("Hash length:", dealer.passwordHash?.length);
+    }
+
+    if (!dealer) {
+      return reply.status(401).send({ error: "Unauthorized", message: "Invalid username or password" });
+    }
+  
+    if (!dealer.active) {
+      console.log("❌ Dealer is NOT ACTIVE");
+      return reply.status(401).send({ error: "Unauthorized", message: "Account is inactive" });
+    }
+  
+    if (dealer.deletedAt) {
+      console.log("❌ Dealer is deleted");
+      return reply.status(401).send({ error: "Unauthorized", message: "Invalid username or password" });
     }
 
     const passwordMatch = await comparePassword(password, dealer.passwordHash || "");
+    console.log("Password match:", passwordMatch);
     if (!passwordMatch) {
       return reply.status(401).send({
         error: "Unauthorized",
         message: "Invalid username or password",
       });
     }
+
+    // === If we reach here → should succeed ===
+    console.log("✅ All checks passed, generating tokens...");
 
     // Generate tokens
     const payload = {
@@ -85,6 +100,8 @@ export async function authRoutes(app: FastifyInstance) {
       family: "dealer",
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
+
+    console.log("✅ Login successful for dealer:", dealer.id);
 
     return reply.send({
       accessToken,

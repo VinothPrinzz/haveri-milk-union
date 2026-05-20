@@ -33,6 +33,9 @@ import { reportsRoutes } from "./routes/reports.js";
 import { vipContactsRoutes } from "./routes/vip-contacts.js";
 import { employeesRoutes }    from "./routes/employees.js";
 
+import { dealerIndentsRoutes } from "./routes/dealer-indents.js";
+import { dealerPaymentsRoutes } from "./routes/dealer-payments.js";
+
 // // ▼▼▼ DUAL-DB (Temporarily Commented Out) ▼▼▼
 // import {
 //   dbStatusRoutes,
@@ -158,6 +161,9 @@ await app.register(zoneRoutes);
 await app.register(reportsRoutes);
 await app.register(vipContactsRoutes);
 await app.register(employeesRoutes);
+
+await app.register(dealerIndentsRoutes);
+await app.register(dealerPaymentsRoutes);
 
 // ── Start Server ─────────────────────────────────────
 try {

@@ -1,14 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, isNull, asc } from "drizzle-orm";
+import { isNull, asc } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
-import { routes, vehicles, routeAssignments } from "@hmu/db/schema";
+import { vehicles } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
-
-const stopSchema = z.object({
-  name: z.string().min(1),
-  distanceFromPrev: z.number().min(0).default(0),
-});
 
 export async function distributionRoutes(app: FastifyInstance) {
   // GET /api/v1/routes — all routes with stop details
@@ -29,7 +24,11 @@ export async function distributionRoutes(app: FastifyInstance) {
         LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
         LEFT JOIN batches b ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
         WHERE r.deleted_at IS NULL
-        ORDER BY r.code
+        ORDER BY
+          CASE WHEN r.code ~ '^R[0-9]+$'
+               THEN CAST(SUBSTRING(r.code FROM 2) AS integer)
+               ELSE 99999 END,
+          r.code
       `;
       return reply.send({ routes: allRoutes });
     }
@@ -163,19 +162,58 @@ export async function distributionRoutes(app: FastifyInstance) {
     }
   );
 
-  // DELETE /api/v1/routes/:id (soft delete)
+  // DELETE /api/v1/routes/:id — soft delete + renumber remaining R-codes
   app.delete(
     "/api/v1/routes/:id",
     { preHandler: [adminAuth, requireRole("distribution.manage")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      await pgClient`
-        UPDATE routes SET deleted_at = now() WHERE id = ${id} AND deleted_at IS NULL
-      `;
-      // Also detach dealers so they don't point to a deleted route
-      await pgClient`
-        UPDATE dealers SET route_id = NULL WHERE route_id = ${id}
-      `;
+
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+
+        // Fetch the route before deleting so we know its code
+        const [route] = await tx`
+          SELECT code FROM routes WHERE id = ${id} AND deleted_at IS NULL
+        `;
+        if (!route) return; // already gone
+
+        // Rename to a temp code first so the R<N> slot becomes available for
+        // renumbering without hitting the unique constraint
+        await tx`
+          UPDATE routes
+          SET code = ${"__DEL_" + id.slice(0, 8)}, deleted_at = now()
+          WHERE id = ${id}
+        `;
+
+        // Detach dealers pointing to this route
+        await tx`UPDATE dealers SET route_id = NULL WHERE route_id = ${id}`;
+
+        // Renumber only when the deleted code is a standard R<N> code
+        if (/^R\d+$/.test(route.code)) {
+          const deletedNum = parseInt(route.code.slice(1));
+
+          // Fetch all routes that need to shift down, in ascending order
+          const toRenumber = await tx`
+            SELECT id, code
+            FROM routes
+            WHERE deleted_at IS NULL
+              AND code ~ '^R[0-9]+$'
+              AND CAST(SUBSTRING(code FROM 2) AS integer) > ${deletedNum}
+            ORDER BY CAST(SUBSTRING(code FROM 2) AS integer) ASC
+          `;
+
+          // Process ascending: each step frees the slot below before the next
+          for (const r of toRenumber) {
+            const newCode = `R${parseInt(r.code.slice(1)) - 1}`;
+            await tx`
+              UPDATE routes SET code = ${newCode}, updated_at = now()
+              WHERE id = ${r.id}
+            `;
+          }
+        }
+      });
+
       return reply.send({ message: "Route deleted" });
     }
   );
