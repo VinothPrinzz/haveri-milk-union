@@ -154,15 +154,15 @@ export const spacing = {
  * Tailwind's rounded-2xl = 16px, rounded-3xl = 24px, rounded-[22px] used on splash logo tile.
  */
 export const radius = {
-  sm:  6,     // rounded-md
-  md:  10,    // rounded-lg
-  lg:  12,    // rounded-xl === --radius
-  xl:  14,
-  xxl: 16,    // rounded-2xl (the most common)
-  "3xl": 24,  // rounded-3xl — LocationPicker sheet, WindowClosed card
-  "22": 22,   // splash logo tile rounded-[22px]
-  "20": 20,   // WindowClosedContent countdown card rounded-[20px]
-  full: 999,
+  sm: 3,       // chip/tag corners, tiny badges
+  md: 4,       // buttons, inputs, small interactive surfaces
+  lg: 6,       // standard cards (ProductCard, etc.)
+  xl: 6,       // alias — kept so existing imports compile
+  xxl: 8,      // larger cards (cart line items, summary cards)
+  "3xl": 12,   // bottom sheets, large modal cards
+  "22": 10,    // splash logo tile (was 22px, now restrained)
+  "20": 10,    // WindowClosedContent countdown card
+  full: 999,   // pills (filter tabs, status chips, deliver-chip)
 } as const;
 
 /**

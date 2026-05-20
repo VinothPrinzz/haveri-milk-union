@@ -6,6 +6,12 @@ import { processPDFInvoice } from "./jobs/pdf-invoice.js";
 import { processPartitionCreation } from "./jobs/partition-creation.js";
 import { processPaymentReminders } from "./jobs/payment-reminders.js";
 import { processDispatchPregenerate } from "./jobs/dispatch-pregenerate.js";
+// import {
+//   startPollingReplicator,
+//   stopPollingReplicator,
+// } from "./polling-replication-bootstrap.js";
+import { processMaterializeDrafts } from "./jobs/materialize-drafts.js";
+import { processAutoConfirmDrafts } from "./jobs/auto-confirm-drafts.js";
 
 console.log("═══════════════════════════════════════");
 console.log("  🐄 Haveri Milk Union — BullMQ Worker");
@@ -21,6 +27,8 @@ const QUEUES = {
   partitionCreation: "partition-creation",
   paymentReminders: "payment-reminders",
   dispatchPregenerate: "dispatch-pregenerate",
+  materializeDrafts:   "materialize-drafts",
+  autoConfirmDrafts:   "auto-confirm-drafts",
 } as const;
 
 // ── Workers ──
@@ -43,10 +51,6 @@ const pdfWorker = new Worker(
   {
     connection,
     concurrency: 3,
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: { type: "exponential", delay: 5000 },
-    },
   }
 );
 
@@ -57,7 +61,6 @@ const partitionWorker = new Worker(
   {
     connection,
     concurrency: 1,
-    defaultJobOptions: { attempts: 3, backoff: { type: "fixed", delay: 60000 } },
   }
 );
 
@@ -81,8 +84,30 @@ const dispatchWorker = new Worker(
   }
 );
 
-// ── Scheduled / Repeatable Jobs (Cron) ──
+// 6
+const materializeWorker = new Worker(
+  QUEUES.materializeDrafts,
+  processMaterializeDrafts,
+  {
+    connection,
+    concurrency: 1, // one batch at a time; the job itself iterates all dealers
+  }
+);
 
+// 7
+const autoConfirmWorker = new Worker(
+  QUEUES.autoConfirmDrafts,
+  processAutoConfirmDrafts,
+  {
+    connection,
+    concurrency: 1,
+  }
+);
+
+// ── Start Polling Replicator (Dual-DB) ──
+// await startPollingReplicator();
+
+// ── Scheduled / Repeatable Jobs (Cron) ──
 async function setupSchedules() {
   // Monthly partition creation — 25th of every month at 2:00 AM IST
   const partitionQueue = new Queue(QUEUES.partitionCreation, { connection });
@@ -133,12 +158,47 @@ async function setupSchedules() {
     }
   );
   console.log("📅 Scheduled: Window closing reminder (7:45 AM IST)");
+
+  // Nightly draft materialization — every day at 04:00 IST
+  // 04:00 IST = 22:30 UTC (previous day). Pattern is in UTC.
+  const materializeQueue = new Queue(QUEUES.materializeDrafts, { connection });
+  await materializeQueue.upsertJobScheduler(
+    "nightly-materialize-drafts",
+    { pattern: "30 22 * * *" }, // 22:30 UTC = 04:00 IST
+    { name: "build-tomorrow-drafts" }
+  );
+  console.log("📅 Scheduled: Nightly draft materialization (04:00 AM IST)");
+  
+  // Auto-confirm drafts at zone close-time — every 5 minutes
+  const autoConfirmQueue = new Queue(QUEUES.autoConfirmDrafts, { connection });
+  await autoConfirmQueue.upsertJobScheduler(
+    "auto-confirm-drafts",
+    { pattern: "*/5 * * * *" }, // every 5 min, the job filters internally
+    { name: "auto-confirm-on-close" }
+  );
+  console.log("📅 Scheduled: Auto-confirm at window close (every 5 min)");
 }
 
 // ── Event Logging ──
 
-const workers = [pushWorker, pdfWorker, partitionWorker, paymentWorker, dispatchWorker];
-const names = ["Push", "PDF", "Partition", "Payment", "Dispatch"];
+const workers = [
+  pushWorker,
+  pdfWorker,
+  partitionWorker,
+  paymentWorker,
+  dispatchWorker,
+  materializeWorker,
+  autoConfirmWorker,
+];
+const names = [
+  "Push",
+  "PDF",
+  "Partition",
+  "Payment",
+  "Dispatch",
+  "Materialize",
+  "AutoConfirm",
+];
 
 workers.forEach((w, i) => {
   w.on("completed", (job) => {
@@ -156,6 +216,9 @@ workers.forEach((w, i) => {
 
 async function shutdown() {
   console.log("\n🛑 Shutting down workers...");
+
+  // await stopPollingReplicator();
+  
   await Promise.all(workers.map((w) => w.close()));
   await redis.quit();
   console.log("👋 Worker stopped");
@@ -176,6 +239,8 @@ setupSchedules()
     console.log("   • partition-creation   (concurrency: 1, 3 retries)");
     console.log("   • payment-reminders   (concurrency: 1)");
     console.log("   • dispatch-pregenerate (concurrency: 1)");
+    console.log("   • materialize-drafts   (concurrency: 1)");
+    console.log("   • auto-confirm-drafts  (concurrency: 1)");
     console.log("");
     console.log("Waiting for jobs...");
   })

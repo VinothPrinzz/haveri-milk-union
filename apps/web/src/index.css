@@ -405,6 +405,16 @@
     padding-top: 6px;
   }
   
+  /* Explicit ledger tables — Gate Pass Report + Route Sheet. */
+  .report-ledger tbody td {
+    border-bottom: 1px solid #000 !important;
+  }
+  
+  /* Auto-ledger tables — the 10 sales-report pages. */
+  .report-canvas table:not(.no-ledger):not(.report-ledger) tbody td {
+    border-bottom: 1px solid #000 !important;
+  }
+
   /* When the user has a dark theme on, force the canvas to look
      like a real page (black on white). */
   .dark .report-canvas { background: #fff; color: #000; }
@@ -614,6 +624,12 @@
       border-bottom: 1px solid #000 !important;
     }
     .print-document .report-ledger tbody {
+      border-bottom: 1px solid #000 !important;
+    }
+    .print-document .report-ledger tbody td {
+      border-bottom: 1px solid #000 !important;
+    }
+    .print-document .report-canvas table:not(.no-ledger):not(.report-ledger) tbody td {
       border-bottom: 1px solid #000 !important;
     }
     .print-document .report-ledger tr.total-row {

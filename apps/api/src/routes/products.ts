@@ -1,15 +1,17 @@
+// apps/api/src/routes/products.ts
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, isNull, asc, sql, and } from "drizzle-orm";
+import { eq, isNull, asc, and } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
-import { products, categories } from "@hmu/db/schema";
+import { categories } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 
-// Helper to derive base_price (excluding GST) from MRP (inclusive of GST)
-function deriveBasePriceFromMrp(mrp: number, gstPercent: number): number {
+// Helper to derive base_price ("Basic Price", excluding GST) from the
+// Dealer-Price (gross, inclusive of GST).
+function deriveBasePriceFromDealerPrice(dealerPrice: number, gstPercent: number): number {
   const safeGst = Math.max(0, gstPercent || 0);
-  return Math.round((mrp / (1 + safeGst / 100)) * 100) / 100;
+  return Math.round((dealerPrice / (1 + safeGst / 100)) * 100) / 100;
 }
 
 // Constants — single source of truth referenced by both API and web.
@@ -18,12 +20,16 @@ export const REPORT_ALIAS_MAX: Record<"Across" | "Down", number> = {
   Down:   22,
 };
 
-// Updated schema for writing products — now accepts MRP
+// Schema for writing products — three-tier pricing.
+//   dealerPrice → Dealer-Price (gross, client-entered)
+//   mrp         → MRP          (client-entered; defaults to dealerPrice)
+//   base_price  → Basic Price  (derived server-side, never sent by client)
 const productBaseSchema = z.object({
   code: z.string().min(1).optional(),
   name: z.string().min(1),
-  mrp: z.number().nonnegative(),
-  gstPercent: z.number().min(0).max(50).default(0),
+  dealerPrice: z.coerce.number().nonnegative(),
+  mrp: z.coerce.number().nonnegative().optional(),
+  gstPercent: z.coerce.number().min(0).max(50).default(0),
   categoryId: z.string().uuid(),
   icon: z.string().optional(),
   unit: z.string().min(1),
@@ -79,11 +85,13 @@ const productUpdateSchema = productBaseSchema.partial().superRefine((data, ctx) 
 });
 
 export async function productRoutes(app: FastifyInstance) {
-  // GET /api/v1/products — now includes mrp
+  // GET /api/v1/products — includes basePrice, dealerPrice, mrp
   app.get("/api/v1/products", async (request, reply) => {
     const productsList = await pgClient`
-      SELECT p.id, p.name, p.icon, p.unit, p.base_price AS "basePrice",
-             p.mrp,                                      -- ← ADDED
+      SELECT p.id, p.name, p.icon, p.unit,
+             p.base_price   AS "basePrice",     -- Basic Price (pre-GST)
+             p.dealer_price AS "dealerPrice",   -- Dealer-Price (gross)
+             p.mrp,                             -- MRP
              p.gst_percent AS "gstPercent", p.stock, p.available,
              p.category_id AS "categoryId", c.name AS "categoryName",
              p.sort_order AS "sortOrder",
@@ -102,7 +110,7 @@ export async function productRoutes(app: FastifyInstance) {
     return reply.status(200).send({ products: productsList });
   });
 
-  // GET /api/v1/products/all — now includes mrp
+  // GET /api/v1/products/all — includes basePrice, dealerPrice, mrp
   app.get(
     "/api/v1/products/all",
     { preHandler: [adminAuth, requireRole("products.view")] },
@@ -110,8 +118,10 @@ export async function productRoutes(app: FastifyInstance) {
       const query = paginationSchema.parse(request.query);
       const offset = offsetFromPage(query.page, query.limit);
       const data = await pgClient`
-        SELECT p.id, p.name, p.icon, p.unit, p.base_price AS "basePrice",
-               p.mrp,                                      -- ← ADDED
+        SELECT p.id, p.name, p.icon, p.unit,
+               p.base_price   AS "basePrice",     -- Basic Price (pre-GST)
+               p.dealer_price AS "dealerPrice",   -- Dealer-Price (gross)
+               p.mrp,                             -- MRP
                p.gst_percent AS "gstPercent", p.stock, p.available,
                p.category_id AS "categoryId", c.name AS "categoryName",
                p.sort_order AS "sortOrder",
@@ -151,13 +161,17 @@ export async function productRoutes(app: FastifyInstance) {
     return reply.status(200).send({ categories: cats });
   });
 
-  // POST /api/v1/products — Updated to accept MRP
+  // POST /api/v1/products — three-tier pricing
   app.post(
     "/api/v1/products",
     { preHandler: [adminAuth, requireRole("products.manage")] },
     async (request, reply) => {
       const body = productWriteSchema.parse(request.body);
-      const basePrice = deriveBasePriceFromMrp(body.mrp, body.gstPercent);
+
+      // Basic Price is derived from the (gross) Dealer-Price.
+      const basePrice = deriveBasePriceFromDealerPrice(body.dealerPrice, body.gstPercent);
+      // MRP defaults to Dealer-Price if the client did not supply one.
+      const mrp = body.mrp ?? body.dealerPrice;
 
       // Auto-generate code if not provided
       let code = body.code;
@@ -174,14 +188,16 @@ export async function productRoutes(app: FastifyInstance) {
       const [product] = await pgClient`
         INSERT INTO products (
           name, category_id, icon, unit, base_price, gst_percent, stock, available,
-          code, hsn_no, pack_size, print_direction, packets_crate, report_alias, mrp,
+          code, hsn_no, pack_size, print_direction, packets_crate, report_alias,
+          dealer_price, mrp,
           retail_dealer_price, credit_inst_mrp_price, credit_inst_dealer_price, parlour_dealer_price
         ) VALUES (
           ${body.name}, ${body.categoryId}, ${body.icon ?? null}, ${body.unit},
           ${basePrice}::numeric, ${body.gstPercent}::numeric, ${body.stock}, ${body.available},
           ${code}, ${body.hsnNo ?? null}, ${body.packSize ?? null}::numeric,
           ${body.printDirection ?? "Across"}, ${body.packetsCrate ?? 0},
-          ${body.reportAlias ?? body.name}, ${body.mrp}::numeric,
+          ${body.reportAlias ?? body.name},
+          ${body.dealerPrice}::numeric, ${mrp}::numeric,
           ${body.retailDealerPrice ?? basePrice}::numeric,
           ${body.creditInstMrpPrice ?? basePrice}::numeric,
           ${body.creditInstDealerPrice ?? basePrice}::numeric,
@@ -194,7 +210,7 @@ export async function productRoutes(app: FastifyInstance) {
     }
   );
 
-  // PATCH /api/v1/products/:id — Updated with MRP logic
+  // PATCH /api/v1/products/:id — three-tier pricing
   app.patch(
     "/api/v1/products/:id",
     { preHandler: [adminAuth, requireRole("products.manage")] },
@@ -202,15 +218,22 @@ export async function productRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const body = productUpdateSchema.parse(request.body);
 
-      // Fetch current MRP & GST to recompute base_price if needed
+      // Fetch current values to recompute base_price when dealer_price / gst change.
       const [current] = await pgClient`
-        SELECT mrp, gst_percent FROM products WHERE id = ${id} AND deleted_at IS NULL
+        SELECT dealer_price, mrp, gst_percent
+        FROM products WHERE id = ${id} AND deleted_at IS NULL
       `;
       if (!current) return reply.status(404).send({ error: "Product not found" });
 
-      const newMrp = body.mrp !== undefined ? body.mrp : Number(current.mrp);
-      const newGst = body.gstPercent !== undefined ? body.gstPercent : Number(current.gst_percent);
-      const basePrice = deriveBasePriceFromMrp(newMrp, newGst);
+      const newDealerPrice =
+        body.dealerPrice !== undefined ? body.dealerPrice : Number(current.dealer_price);
+      const newMrp =
+        body.mrp !== undefined ? body.mrp : Number(current.mrp);
+      const newGst =
+        body.gstPercent !== undefined ? body.gstPercent : Number(current.gst_percent);
+
+      // Basic Price is always derived from the (gross) Dealer-Price.
+      const basePrice = deriveBasePriceFromDealerPrice(newDealerPrice, newGst);
 
       const [updated] = await pgClient`
         UPDATE products SET
@@ -219,6 +242,8 @@ export async function productRoutes(app: FastifyInstance) {
           icon = CASE WHEN ${body.icon !== undefined} THEN ${body.icon ?? null} ELSE icon END,
           unit = COALESCE(${body.unit ?? null}, unit),
           base_price = ${basePrice}::numeric,
+          dealer_price = ${newDealerPrice}::numeric,
+          mrp = ${newMrp}::numeric,
           gst_percent = ${newGst}::numeric,
           stock = COALESCE(${body.stock ?? null}::int, stock),
           available = COALESCE(${body.available ?? null}::boolean, available),
@@ -228,7 +253,6 @@ export async function productRoutes(app: FastifyInstance) {
           print_direction = COALESCE(${body.printDirection ?? null}, print_direction),
           packets_crate = COALESCE(${body.packetsCrate ?? null}::int, packets_crate),
           report_alias = COALESCE(${body.reportAlias ?? null}, report_alias),
-          mrp = ${newMrp}::numeric,                                   -- ← UPDATED
           retail_dealer_price = COALESCE(${body.retailDealerPrice ?? null}::numeric, retail_dealer_price),
           credit_inst_mrp_price = COALESCE(${body.creditInstMrpPrice ?? null}::numeric, credit_inst_mrp_price),
           credit_inst_dealer_price = COALESCE(${body.creditInstDealerPrice ?? null}::numeric, credit_inst_dealer_price),

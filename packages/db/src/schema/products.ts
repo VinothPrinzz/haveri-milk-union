@@ -21,8 +21,10 @@ export const products = pgTable("products", {
     .references(() => categories.id, { onDelete: "restrict" }),
   icon: text("icon"), // emoji for product display
   unit: text("unit").notNull(), // e.g. "500ml Pouch", "200g Block", "400ml", "100g Cup"
-  basePrice: numeric("base_price", { precision: 10, scale: 2 }).notNull(), // price before GST
-  gstPercent: numeric("gst_percent", { precision: 5, scale: 2 }).notNull(), // e.g. 5.00, 12.00
+  basePrice: numeric("base_price", { precision: 10, scale: 2 }).notNull(), // Basic Price (pre-GST)
+  dealerPrice: numeric("dealer_price", { precision: 10, scale: 2 }),       // Dealer-Price (gross, client-entered)
+  mrp:         numeric("mrp",          { precision: 10, scale: 2 }),       // MRP (client-entered)
+  gstPercent: numeric("gst_percent", { precision: 5, scale: 2 }).notNull(),
   stock: integer("stock").notNull().default(0), // current FGS count
   lowStockThreshold: integer("low_stock_threshold").notNull().default(50),
   criticalStockThreshold: integer("critical_stock_threshold").notNull().default(10),
@@ -32,7 +34,6 @@ export const products = pgTable("products", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }), // soft delete
 
-  // === ADD THESE MISSING COLUMNS ===
   code:                    text("code"),
   hsnNo:                   text("hsn_no"),
   packSize:                numeric("pack_size", { precision: 8, scale: 2 }),
@@ -43,6 +44,8 @@ export const products = pgTable("products", {
   creditInstMrpPrice:      numeric("credit_inst_mrp_price",    { precision: 10, scale: 2 }),
   creditInstDealerPrice:   numeric("credit_inst_dealer_price", { precision: 10, scale: 2 }),
   parlourDealerPrice:      numeric("parlour_dealer_price",     { precision: 10, scale: 2 }),
+  imageUrl:           text("image_url"),
+  makeZeroInIndents:  boolean("make_zero_in_indents").notNull().default(false),
 
 });
 

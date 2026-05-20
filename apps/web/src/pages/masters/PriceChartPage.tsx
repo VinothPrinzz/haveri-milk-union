@@ -1,11 +1,12 @@
+// apps/web/src/pages/masters/PriceChartPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// FULL REPLACEMENT for: apps/web/src/pages/masters/PriceChartPage.tsx
+// Price Chart — three-tier pricing
+// Columns: Basic Price · Dealer Price · Margin (MRP − Dealer, auto) · MRP
 //
 // Fix B9: Print produced a blank page because the global print CSS
 // (apps/web/src/index.css) hides everything by default and only shows
-// elements inside `.print-document`. Wrap the table in that class and
-// add a `print-only` letterhead so the printed page actually has
-// content.
+// elements inside `.print-document`. The table stays wrapped in that
+// class with a `print-only` letterhead.
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -13,17 +14,10 @@ import PageHeader, { FilterBar, Field, EmptyState, fmtINR } from "@/components/P
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Printer, Search } from "lucide-react";
-import { fetchProducts, getRateCategories, type Product } from "@/services/api";
-
-const fetchRateCategories = () =>
-  getRateCategories().map((name, i) => ({ id: String(i), name }));
+import { fetchProducts, type Product } from "@/services/api";
 
 export default function PriceChartPage() {
   const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
-  const { data: categories = [] } = useQuery({
-    queryKey: ["rate-categories"],
-    queryFn: fetchRateCategories,
-  });
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
@@ -35,14 +29,14 @@ export default function PriceChartPage() {
     );
   }, [products, q]);
 
-  const rateOf = (p: Product, catName: string) =>
-    (p.rateCategories ?? {})[catName] ?? p.mrp ?? 0;
+  // Margin is auto-calculated: MRP − Dealer-Price. Never stored.
+  const marginOf = (p: Product) => (p.mrp ?? 0) - (p.dealerPrice ?? 0);
 
   return (
     <div className="flex flex-col h-full">
       <PageHeader
         title="Price Chart"
-        subtitle="Effective prices per rate-category"
+        subtitle="Basic Price · Dealer Price · Margin · MRP"
         actions={
           <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
             <Printer className="h-3.5 w-3.5 mr-1" /> Print (Ctrl+P)
@@ -83,27 +77,36 @@ export default function PriceChartPage() {
                 <tr>
                   <th style={{ width: 90 }}>Code</th>
                   <th>Product</th>
-                  <th style={{ width: 110 }}>Pack</th>
-                  <th className="num" style={{ width: 110, textAlign: "right" }}>Base ₹</th>
-                  {categories.map((c: any) => (
-                    <th key={c.id} className="num" style={{ textAlign: "right" }}>{c.name} ₹</th>
-                  ))}
+                  <th style={{ width: 100 }}>Pack</th>
+                  <th className="num" style={{ width: 120, textAlign: "right" }}>Basic Price ₹</th>
+                  <th className="num" style={{ width: 120, textAlign: "right" }}>Dealer Price ₹</th>
+                  <th className="num" style={{ width: 110, textAlign: "right" }}>Margin ₹</th>
+                  <th className="num" style={{ width: 110, textAlign: "right" }}>MRP ₹</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((p: Product) => (
-                  <tr key={p.id}>
-                    <td className="font-mono">{p.code}</td>
-                    <td className="font-medium">{p.name}</td>
-                    <td className="text-[12.5px]">{p.packSize ?? "—"}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
-                    {categories.map((c: any) => (
-                      <td key={c.id} className="num" style={{ textAlign: "right" }}>
-                        {fmtINR(rateOf(p, c.name))}
+                {filtered.map((p: Product) => {
+                  const margin = marginOf(p);
+                  return (
+                    <tr key={p.id}>
+                      <td className="font-mono">{p.code}</td>
+                      <td className="font-medium">{p.name}</td>
+                      <td className="text-[12.5px]">{p.packSize ?? "—"}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.basePrice ?? 0)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.dealerPrice ?? 0)}</td>
+                      <td
+                        className="num"
+                        style={{
+                          textAlign: "right",
+                          color: margin < 0 ? "var(--destructive, #dc2626)" : undefined,
+                        }}
+                      >
+                        {fmtINR(margin)}
                       </td>
-                    ))}
-                  </tr>
-                ))}
+                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

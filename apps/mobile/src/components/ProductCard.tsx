@@ -6,52 +6,65 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { colors, fonts, shadows } from "../lib/theme";
+import { colors, fonts } from "../lib/theme";
 import type { Product } from "../lib/types";
 
 /**
- * ProductCard — the core 2-col-grid product tile (spec §6.7).
+ * ProductCard — Blinkit-style 2-col grid tile.
  *
- * Mockup CSS (dealer-app.html lines 178-198):
- *   .product-card { bg:#FFFFFF; border-radius:14px; padding:11px; shadow-sm;
- *                   border:1.5px solid transparent; position:relative }
- *   .pc-badge     { top:8px left:8px; font-size:7px; weight:800; padding:2px 6px;
- *                   border-radius:3px; uppercase; letter-spacing:0.4px }
- *       .new   { bg #FEF3C7; color amber }
- *       .offer { bg #DCFCE7; color green }
- *       .low   { bg #FEE2E2; color red }
- *   .pc-stock     { top:8px right:8px; 6×6 circle }
- *       .in  green | .low amber | .out red
- *   .pc-img       { font-size:36px; text-align:center; margin:18px 0 7px }
- *   .pc-name      { font-size:11px; weight:700; line-height:1.3 }
- *   .pc-size      { font-size:9px; color ink3; weight:500; margin-top:2px }
- *   .pc-price-row { align-items:baseline; gap:3px; margin-top:5px }
- *   .pc-price     { font-size:14px; weight:800; font-family:Unbounded }
- *   .pc-unit      { font-size:8px; color ink3; weight:600 }
- *   .pc-gst       { font-size:8px; color ink3; weight:500; margin-top:1px }
- *   .pc-add       { bg brand; color white; border-radius:7px; padding:7px; font-size:10px;
- *                   weight:800; margin-top:7px }
- *   .pc-qty       { bg brand-l; border:1.5px solid brand-l2; border-radius:7px; margin-top:7px }
- *       .pc-q-btn  { w:27 h:29; color brand; font-size:16px; weight:900 }
- *       .pc-q-val  { flex:1; text-align:center; font-size:13px; weight:800; color brand }
+ * Redesign brief (matches the dealer-app-v2 spec):
+ *   • Minimal rounded corners — 6px on the card, 4px on buttons.
+ *   • Image-led layout — image sits in a tinted block at the top of
+ *     the card (Blinkit's signature). Falls back to the legacy emoji
+ *     icon when product.imageUrl is absent.
+ *   • Flat surfaces — single 0.5px border, no shadow. The whole grid
+ *     feels denser and less "card-shaped".
+ *   • Compact text block — name (2 lines), unit, then a single row at
+ *     the bottom with price (left) and ADD button (right). The ADD
+ *     button is OUTLINED, not solid, so it doesn't dominate the tile.
+ *   • Quantity stepper replaces the ADD button in-place (same width)
+ *     when quantity > 0, with a solid primary fill — classic Blinkit
+ *     "added to cart" state.
  *
- * Backend note:
- *   The /products endpoint returns an `icon` (emoji) field but no `imageUrl` yet.
- *   This card accepts both — prefers imageUrl when present with a lazy-load skeleton,
- *   falls back to the emoji (or 📦 if neither is provided) on error or absence.
+ * Props are IDENTICAL to the previous ProductCard — this is a
+ * drop-in replacement. HomeScreen does not need to change.
+ *
+ * Notes:
+ *   • `product.imageUrl` is now populated from the DB (migration 0029
+ *     added the column). When the admin uploads an image, the next
+ *     /products fetch returns it; this card lazy-loads with the emoji
+ *     fallback until the URL is available.
+ *   • Out-of-stock state: the ADD button is replaced by a muted
+ *     "Out of stock" label; image is dimmed.
+ *   • Low-stock badge is opt-in via the `badge` prop (the grid no
+ *     longer renders it automatically — moved that logic up to
+ *     HomeScreen where it can be controlled per-merchandising-block).
  */
 
 interface ProductCardProps {
   product: Product;
-  /** Current quantity in cart — drives add-button vs stepper rendering */
+  /** Current quantity in cart — drives ADD button vs stepper rendering */
   quantity: number;
-  /** "Out of Stock" is shown when !product.available || product.stock === 0 */
-  lowStockThreshold?: number;   // default 10 — matches backend typical
+  /** Threshold below which low_stock visual treatment kicks in */
+  lowStockThreshold?: number;
   onAdd: () => void;
   onRemove: () => void;
-  /** Explicit badge override; otherwise derived from stock + availability */
+  /** Optional badge override (e.g. "New", "Offer"). Defaults to none. */
   badge?: { kind: "new" | "offer" | "low"; label: string };
 }
+
+const TINT_BY_CATEGORY: Record<string, string> = {
+  // Soft pastel backings for the image block, keyed by category name.
+  // Categories not in this map fall back to colors.background.
+  Milk: "#E6F1FB",
+  Curd: "#FAEEDA",
+  Buttermilk: "#EAF3DE",
+  Lassi: "#FBEAF0",
+  Ghee: "#FAEEDA",
+  Paneer: "#F1EFE8",
+  Sweets: "#FBEAF0",
+  Beverages: "#E6F1FB",
+};
 
 export default function ProductCard({
   product,
@@ -64,45 +77,24 @@ export default function ProductCard({
   const [imageError, setImageError] = useState(false);
 
   const outOfStock = !product.available || product.stock === 0;
-  const lowStock   = !outOfStock && product.stock <= lowStockThreshold;
-
-  const stockColor =
-    outOfStock ? colors.destructive :
-    lowStock   ? colors.warning :
-                 colors.success;
-
-  const resolvedBadge =
-    badge ??
-    (lowStock ? { kind: "low" as const, label: "Low Stock" } : undefined);
+  const lowStock = !outOfStock && product.stock <= lowStockThreshold;
 
   const hasImage = !!product.imageUrl && !imageError;
   const fallbackEmoji = product.icon ?? "📦";
 
-  // ── C.3: Show MRP instead of basePrice ─────────────────────────────
-  const displayedPrice = Number.isInteger(product.mrp ?? product.basePrice)
-    ? String(product.mrp ?? product.basePrice)
-    : (product.mrp ?? product.basePrice).toFixed(2);
+  // Price display: prefer MRP, fall back to basePrice. Whole rupees
+  // get no decimals; fractional show 2dp.
+  const rawPrice = Number(product.mrp ?? product.basePrice ?? 0) || 0;
+  const displayedPrice = Number.isInteger(rawPrice)
+    ? String(rawPrice)
+    : rawPrice.toFixed(2);
 
-  const gstStr = Number.isInteger(product.gstPercent)
-    ? String(product.gstPercent)
-    : product.gstPercent.toFixed(1);
+  const imageTint = TINT_BY_CATEGORY[product.categoryName] ?? colors.background;
 
   return (
-    <View style={styles.card}>
-      {/* Top-left badge */}
-      {resolvedBadge && (
-        <View style={[styles.badge, BADGE_STYLES[resolvedBadge.kind]]}>
-          <Text style={[styles.badgeText, BADGE_TEXT_STYLES[resolvedBadge.kind]]}>
-            {resolvedBadge.label}
-          </Text>
-        </View>
-      )}
-
-      {/* Top-right stock dot */}
-      <View style={[styles.stockDot, { backgroundColor: stockColor }]} />
-
-      {/* Image / emoji */}
-      <View style={styles.imageWrap}>
+    <View style={[styles.card, outOfStock && styles.cardDimmed]}>
+      {/* Image block — full-width, tinted, takes the top of the card */}
+      <View style={[styles.imageBlock, { backgroundColor: imageTint }]}>
         {hasImage ? (
           <Image
             source={{ uri: product.imageUrl! }}
@@ -114,209 +106,254 @@ export default function ProductCard({
         ) : (
           <Text style={styles.emoji}>{fallbackEmoji}</Text>
         )}
+
+        {/* Optional badge — top-left of image block */}
+        {badge && (
+          <View style={[styles.badge, BADGE_STYLES[badge.kind]]}>
+            <Text style={[styles.badgeText, BADGE_TEXT_STYLES[badge.kind]]}>
+              {badge.label}
+            </Text>
+          </View>
+        )}
+
+        {/* Low-stock subtle indicator — bottom-right of image, only when not OOS */}
+        {lowStock && !badge && (
+          <View style={styles.lowStockPill}>
+            <Text style={styles.lowStockText}>Low stock</Text>
+          </View>
+        )}
       </View>
 
-      {/* Name + unit */}
-      <Text style={styles.name} numberOfLines={2}>{product.name}</Text>
-      <Text style={styles.unit}>{product.unit}</Text>
+      {/* Text block */}
+      <View style={styles.body}>
+        <Text style={styles.name} numberOfLines={2}>
+          {product.name}
+        </Text>
+        <Text style={styles.unit} numberOfLines={1}>
+          {product.unit}
+        </Text>
 
-      {/* Price row — now shows MRP */}
-      <View style={styles.priceRow}>
-        <Text style={styles.price}>₹{displayedPrice}</Text>
-        <Text style={styles.priceUnit}>/pc</Text>
-      </View>
-      <Text style={styles.gst}>Incl. GST {gstStr}%</Text>
+        {/* Price + ADD/stepper row */}
+        <View style={styles.bottomRow}>
+          <View style={styles.priceCol}>
+            <Text style={styles.price}>₹{displayedPrice}</Text>
+          </View>
 
-      {/* Add button OR quantity stepper — unchanged */}
-      {quantity === 0 ? (
-        <TouchableOpacity
-          onPress={onAdd}
-          disabled={outOfStock}
-          activeOpacity={0.8}
-          style={[styles.addBtn, outOfStock && styles.addBtnDisabled]}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: outOfStock }}
-        >
-          <Text style={styles.addBtnText}>
-            {outOfStock ? "Out of Stock" : "+ Add to Indent"}
-          </Text>
-        </TouchableOpacity>
-      ) : (
-        <View style={styles.stepper}>
-          <TouchableOpacity
-            onPress={onRemove}
-            activeOpacity={0.7}
-            style={styles.stepBtn}
-            accessibilityLabel="Decrease quantity"
-          >
-            <Text style={styles.stepIcon}>−</Text>
-          </TouchableOpacity>
-          <Text style={styles.stepVal}>{quantity}</Text>
-          <TouchableOpacity
-            onPress={onAdd}
-            activeOpacity={0.7}
-            style={styles.stepBtn}
-            accessibilityLabel="Increase quantity"
-          >
-            <Text style={styles.stepIcon}>+</Text>
-          </TouchableOpacity>
+          {quantity === 0 ? (
+            <TouchableOpacity
+              onPress={onAdd}
+              disabled={outOfStock}
+              activeOpacity={0.7}
+              style={[styles.addBtn, outOfStock && styles.addBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: outOfStock }}
+            >
+              <Text
+                style={[
+                  styles.addBtnText,
+                  outOfStock && styles.addBtnTextDisabled,
+                ]}
+              >
+                {outOfStock ? "Out" : "ADD"}
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.stepper}>
+              <TouchableOpacity
+                onPress={onRemove}
+                activeOpacity={0.7}
+                style={styles.stepBtn}
+                accessibilityLabel="Decrease quantity"
+              >
+                <Text style={styles.stepIcon}>−</Text>
+              </TouchableOpacity>
+              <Text style={styles.stepVal}>{quantity}</Text>
+              <TouchableOpacity
+                onPress={onAdd}
+                activeOpacity={0.7}
+                style={styles.stepBtn}
+                accessibilityLabel="Increase quantity"
+              >
+                <Text style={styles.stepIcon}>+</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
-      )}
+      </View>
     </View>
   );
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// Styles
+// Styles — minimal radius, no shadow, flat surfaces
 // ════════════════════════════════════════════════════════════════════════
+
+const RADIUS = 6;
+const BTN_RADIUS = 4;
+const CARD_BORDER = colors.border ?? "#E5E7EB";
 
 const styles = StyleSheet.create({
   card: {
     flex: 1,
     backgroundColor: colors.card,
-    borderRadius: 14,              // mockup
-    padding: 11,                   // mockup
-    borderWidth: 1.5,
-    borderColor: "transparent",
-    position: "relative",
-    ...shadows.sm,
+    borderRadius: RADIUS,
+    borderWidth: 0.5,
+    borderColor: CARD_BORDER,
+    overflow: "hidden",
+  },
+  cardDimmed: {
+    opacity: 0.55,
   },
 
+  // ── Image block ──
+  imageBlock: {
+    width: "100%",
+    height: 112,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  image: {
+    width: "78%",
+    height: "78%",
+  },
+  emoji: {
+    fontSize: 40,
+    textAlign: "center",
+  },
+
+  // ── Badges ──
   badge: {
     position: "absolute",
-    top: 8,                        // mockup
-    left: 8,
-    paddingVertical: 2,            // mockup
+    top: 6,
+    left: 6,
+    paddingVertical: 2,
     paddingHorizontal: 6,
-    borderRadius: 3,
-    zIndex: 2,
+    borderRadius: 2,
   },
   badgeText: {
-    fontSize: 7,                   // mockup
+    fontSize: 9,
     fontFamily: fonts.extrabold,
     textTransform: "uppercase",
     letterSpacing: 0.4,
   },
-
-  stockDot: {
+  lowStockPill: {
     position: "absolute",
-    top: 8,                        // mockup
-    right: 8,
-    width: 6,                      // mockup: 6×6
-    height: 6,
-    borderRadius: 3,
-    zIndex: 2,
+    bottom: 6,
+    right: 6,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 2,
+    backgroundColor: "rgba(217,119,6,0.12)",
   },
-
-  imageWrap: {
-    marginTop: 18,                 // mockup: margin: 18px 0 7px
-    marginBottom: 7,
-    alignItems: "center",
-    justifyContent: "center",
-    height: 60,
-  },
-  emoji: {
-    fontSize: 36,                  // mockup
-    textAlign: "center",
-  },
-  image: {
-    width: "100%",
-    height: 60,
-  },
-
-  name: {
-    fontSize: 11,                  // mockup
+  lowStockText: {
+    fontSize: 9,
     fontFamily: fonts.bold,
+    color: "#92400E",
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+  },
+
+  // ── Body (text + bottom row) ──
+  body: {
+    padding: 10,
+  },
+  name: {
+    fontSize: 12,
+    fontFamily: fonts.semibold,
     color: colors.foreground,
-    lineHeight: 14.3,              // 11 × 1.3
+    lineHeight: 16,
+    minHeight: 32,
   },
   unit: {
-    fontSize: 9,                   // mockup
+    fontSize: 11,
     fontFamily: fonts.medium,
     color: colors.mutedForeground,
-    marginTop: 2,
+    marginTop: 3,
   },
 
-  priceRow: {
+  // ── Bottom row: price + ADD/stepper ──
+  bottomRow: {
     flexDirection: "row",
-    alignItems: "baseline",
-    gap: 3,                        // mockup
-    marginTop: 5,
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 8,
+  },
+  priceCol: {
+    flexShrink: 1,
+    paddingRight: 6,
   },
   price: {
-    fontSize: 14,                  // mockup
-    fontFamily: fonts.headingExtra,
+    fontSize: 14,
+    fontFamily: fonts.bold,
     color: colors.foreground,
   },
-  priceUnit: {
-    fontSize: 8,                   // mockup
-    fontFamily: fonts.semibold,
-    color: colors.mutedForeground,
-  },
-  gst: {
-    fontSize: 8,
-    fontFamily: fonts.medium,
-    color: colors.mutedForeground,
-    marginTop: 1,
-  },
 
+  // ── ADD button (outlined) ──
   addBtn: {
-    backgroundColor: colors.primary,
-    borderRadius: 7,               // mockup
+    minWidth: 60,
+    paddingHorizontal: 10,
     paddingVertical: 7,
+    borderRadius: BTN_RADIUS,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.card,
     alignItems: "center",
-    marginTop: 7,
+    justifyContent: "center",
   },
   addBtnDisabled: {
-    backgroundColor: colors.ink5,  // muted gray when out of stock
+    borderColor: colors.border ?? "#E5E7EB",
+    backgroundColor: colors.card,
   },
   addBtnText: {
-    fontSize: 10,                  // mockup
+    fontSize: 12,
     fontFamily: fonts.extrabold,
-    color: colors.primaryForeground,
+    color: colors.primary,
+    letterSpacing: 0.4,
+  },
+  addBtnTextDisabled: {
+    color: colors.mutedForeground,
   },
 
+  // ── Stepper (solid primary, replaces ADD when qty > 0) ──
   stepper: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: colors.primaryLight,
-    borderRadius: 7,
-    borderWidth: 1.5,
-    borderColor: colors.primaryLight2,
-    marginTop: 7,
+    backgroundColor: colors.primary,
+    borderRadius: BTN_RADIUS,
     overflow: "hidden",
+    minWidth: 76,
   },
   stepBtn: {
-    width: 27,                     // mockup
-    height: 29,
+    width: 24,
+    height: 30,
     alignItems: "center",
     justifyContent: "center",
   },
   stepIcon: {
-    fontSize: 16,                  // mockup
-    fontFamily: fonts.headingBlack,
-    color: colors.primary,
-    lineHeight: 18,
+    fontSize: 18,
+    fontFamily: fonts.bold,
+    color: colors.primaryForeground,
+    lineHeight: 20,
   },
   stepVal: {
     flex: 1,
     textAlign: "center",
-    fontSize: 13,                  // mockup
+    fontSize: 13,
     fontFamily: fonts.extrabold,
-    color: colors.primary,
+    color: colors.primaryForeground,
   },
 });
 
-// ── Badge kind → background/text styling ──────────────────────────────
-
+// ── Badge color variants ──
 const BADGE_STYLES = {
-  new:   { backgroundColor: colors.warningLight },
-  offer: { backgroundColor: colors.successLight },
-  low:   { backgroundColor: colors.destructiveLight },
+  new: { backgroundColor: "#FEF3C7" },
+  offer: { backgroundColor: "#DCFCE7" },
+  low: { backgroundColor: "#FEE2E2" },
 } as const;
 
 const BADGE_TEXT_STYLES = {
-  new:   { color: colors.warning },
-  offer: { color: colors.success },
-  low:   { color: colors.destructive },
+  new: { color: "#92400E" },
+  offer: { color: "#166534" },
+  low: { color: "#991B1B" },
 } as const;

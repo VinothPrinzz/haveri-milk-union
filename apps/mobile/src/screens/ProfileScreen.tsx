@@ -21,10 +21,16 @@ import {
 import { useAuthStore } from "../store/auth";
 import { useMyOrders } from "../hooks/useOrders";
 import { useMyInvoices } from "../hooks/useInvoices";
+import ProfileFinanceCard from "../components/ProfileFinanceCard";
+import PaymentHistoryList from "../components/PaymentHistoryList";
 
 type Lang = "en" | "kn";
 
-export default function ProfileScreen() {
+interface ProfileScreenProps {
+  onBack: () => void;
+}
+
+export default function ProfileScreen({ onBack }: ProfileScreenProps) {
   const insets = useSafeAreaInsets();
   const dealer = useAuthStore((s) => s.dealer);
   const patchDealer = useAuthStore((s) => s.patchDealer);
@@ -158,6 +164,27 @@ export default function ProfileScreen() {
             { paddingTop: Math.max(insets.top + 8, 42) },
           ]}
         >
+          {/* Back Button */}
+          <TouchableOpacity
+            onPress={onBack}
+            activeOpacity={0.6}
+            hitSlop={10}
+            style={{
+              position: "absolute",
+              top: Math.max(insets.top + 6, 38),
+              left: 12,
+              width: 36,
+              height: 36,
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 10,
+            }}
+          >
+            <Text style={{ fontSize: 26, color: "#fff", fontFamily: fonts.medium, lineHeight: 28 }}>
+              ‹
+            </Text>
+          </TouchableOpacity>
+
           <View style={styles.agencyCard}>
             <View style={styles.agencyAvatar}>
               <Text style={styles.agencyAvatarText}>🏪</Text>
@@ -193,6 +220,11 @@ export default function ProfileScreen() {
             />
           </View>
         </LinearGradient>
+
+        {/* Phase 4 — finance section */}
+        <View style={{ marginTop: 14 }}>
+          <ProfileFinanceCard />
+        </View>
 
         {/* Body groups */}
         <View style={styles.body}>
@@ -309,6 +341,21 @@ export default function ProfileScreen() {
               isLast
             />
           </View>
+
+          {/* Phase 4 — payment history */}
+          <Text style={{
+            fontSize: 12,
+            fontFamily: fonts.bold,
+            color: colors.mutedForeground,
+            textTransform: "uppercase",
+            letterSpacing: 0.5,
+            paddingHorizontal: 14,
+            paddingTop: 24,
+            paddingBottom: 8,
+          }}>
+            Payment history
+          </Text>
+          <PaymentHistoryList />
 
           {/* Logout row */}
           <TouchableOpacity

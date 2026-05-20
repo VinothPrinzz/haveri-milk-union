@@ -31,6 +31,7 @@ export interface Dealer {
   id: string;
   name: string;
   phone: string;
+  username?: string;
   code?: string;              // agency ID (e.g. HMU-AG-2024-XXXX)
   zoneId: string;
   zoneName: string;
@@ -38,6 +39,7 @@ export interface Dealer {
   creditLimit: number;          // <- ADD
   creditOutstanding?: number;
   locationLabel?: string;
+  email?: string;
   gstNumber?: string;
   address?: string;
   languagePref?: "en" | "kn";
@@ -46,6 +48,14 @@ export interface Dealer {
   verified?: boolean;
   memberSince?: string;       // ISO
   
+}
+
+// ── Login Response (new username/password flow) ────────────────────────
+
+export interface LoginResponse {
+  accessToken: string;
+  refreshToken: string;
+  dealer: Dealer;              // Full dealer object from backend
 }
 
 export interface VerifyOtpResponse {
@@ -70,6 +80,7 @@ export interface Product {
   imageUrl?: string | null;     // real CDN image (backend doesn't serve this yet; ProductCard handles absence)
   unit: string;                 // "1 L", "500 ml", "200 g", etc.
   basePrice: number;
+  dealerPrice?: number;  // Dealer-Price (gross, client-entered)
   mrp: number;
   gstPercent: number;
   stock: number;
@@ -189,4 +200,115 @@ export interface Paginated<T> {
   page: number;
   limit: number;
   totalPages: number;
+}
+
+// ── Standing indent ─────────────────────────────────────────────────
+ 
+/** A row in the dealer's standing indent template */
+export interface StandingIndentItem {
+  productId: string;
+  defaultQty: number;
+  active: boolean;
+  productName: string;
+  unit: string;
+  icon: string | null;
+  imageUrl: string | null;
+  basePrice: number;
+  gstPercent: number;
+  productAvailable: boolean;
+}
+ 
+/** A product the dealer COULD add to their standing indent */
+export interface EligibleProduct {
+  productId: string;
+  productName: string;
+  unit: string;
+  icon: string | null;
+  imageUrl: string | null;
+  basePrice: number;
+  gstPercent: number;
+  /** What's currently in the dealer's standing indent for this product (0 = not in) */
+  currentDefaultQty: number;
+  currentActive: boolean;
+}
+ 
+// ── Daily draft ─────────────────────────────────────────────────────
+ 
+/** A line item in a draft / confirmed order */
+export interface DraftItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  gstPercent: number;
+  lineTotal: number;
+  icon: string | null;
+  imageUrl: string | null;
+  unit: string;
+}
+ 
+export interface DraftTotals {
+  subtotal: number;
+  totalGst: number;
+  grandTotal: number;
+}
+ 
+/**
+ * Result of GET /api/v1/dealer/drafts/:date.
+ *
+ * `exists` distinguishes a server-side persisted draft from a
+ * synthesized "what would the draft look like" preview. Clients
+ * shouldn't care for display purposes, but the difference matters
+ * for the first PATCH (which creates the row vs. updates it — the
+ * server handles that transparently).
+ *
+ * `paused` is true when the requested delivery date falls inside an
+ * active pause window. UI should disable +/- and show a "shop is
+ * paused for this date" message.
+ */
+export interface DailyDraft {
+  deliveryDate: string;
+  exists: boolean;
+  paused: boolean;
+  pausedReason?: string | null;
+  orderId?: string;
+  status: "draft" | "pending" | "payment_required";
+  items: DraftItem[];
+  totals: DraftTotals;
+}
+ 
+// ── Confirm response ────────────────────────────────────────────────
+ 
+export interface CreditCheckSnapshot {
+  creditLimit: number;
+  outstanding: number;
+  available: number;
+  orderTotal: number;
+  sufficient: boolean;
+  shortfall: number;
+}
+ 
+export interface ConfirmDraftSuccess {
+  orderId: string;
+  status: "pending";
+  deliveryDate: string;
+  credit: CreditCheckSnapshot;
+}
+ 
+/** 402 response shape — same as success minus the status flip */
+export interface ConfirmDraftCreditExceeded {
+  error: "Credit limit exceeded";
+  message: string;
+  orderId: string;
+  credit: CreditCheckSnapshot;
+}
+ 
+// ── Pause windows ───────────────────────────────────────────────────
+ 
+export interface IndentPause {
+  id: string;
+  fromDate: string;
+  toDate: string;
+  reason: string | null;
+  createdAt: string;
 }
