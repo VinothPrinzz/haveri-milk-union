@@ -24,7 +24,7 @@
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { pgClient, db } from "../lib/db.js";
+import { pgClient } from "../lib/db.js";
 import { dealerAuth } from "../middleware/dealer-auth.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
 
@@ -42,18 +42,6 @@ function getDealerZoneId(request: FastifyRequest): string {
   const d = (request as unknown as { dealer?: { zoneId: string } }).dealer;
   if (!d?.zoneId) throw new Error("dealerAuth middleware not set");
   return d.zoneId;
-}
-
-/** Check whether a given delivery date falls in any active pause window. */
-async function isPaused(dealerId: string, deliveryDate: string): Promise<boolean> {
-  const [row] = await pgClient`
-    SELECT 1
-      FROM dealer_indent_pauses
-     WHERE dealer_id = ${dealerId}
-       AND ${deliveryDate}::date BETWEEN from_date AND to_date
-     LIMIT 1
-  `;
-  return !!row;
 }
 
 /**
