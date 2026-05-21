@@ -1,8 +1,9 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
+  Animated,
+  Keyboard,
   Modal,
   Platform,
   StyleSheet,
@@ -20,24 +21,23 @@ import {
 } from "../hooks/useCreditTopUp";
 
 /**
- * TopUpSheet — quick amount entry → Razorpay top-up.
+ * TopUpSheet — keyboard-aware bottom sheet for credit top-up.
  *
- * Modal slides up from the bottom. Pre-fills the shortfall amount
- * when launched from a credit-exceeded flow, otherwise blank.
+ * FIX FROM PREVIOUS VERSION:
+ *   The old sheet used KeyboardAvoidingView, which is unreliable
+ *   inside a Modal on Android — the keyboard covered the amount
+ *   field and Pay button (see uploaded screenshot 1).
  *
- *   <TopUpSheet
- *     visible={showSheet}
- *     suggestedAmount={2800}
- *     onClose={() => setShowSheet(false)}
- *     onSuccess={() => { setShowSheet(false); ... }}
- *   />
+ *   This version listens to the Keyboard events directly and
+ *   translates the whole sheet up by the keyboard height with an
+ *   Animated value. Works identically on iOS and Android, inside
+ *   a Modal, regardless of windowSoftInputMode.
  */
+
 interface TopUpSheetProps {
   visible: boolean;
-  /** Pre-fills the amount field. Common values: shortfall, last top-up. */
   suggestedAmount?: number;
   onClose: () => void;
-  /** Called after a successful top-up (verify returned ok). */
   onSuccess?: (paidAmount: number) => void;
 }
 
@@ -54,27 +54,58 @@ export default function TopUpSheet({
   );
   const topUp = useCreditTopUp();
 
-  // Reset amount field when sheet opens with a new suggested amount
-  React.useEffect(() => {
+  // Animated lift for the sheet when the keyboard shows
+  const lift = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
     if (visible) {
       setAmount(suggestedAmount ? String(Math.ceil(suggestedAmount)) : "");
     }
   }, [visible, suggestedAmount]);
 
+  // ── Keyboard tracking ──────────────────────────────────────────
+  useEffect(() => {
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const onShow = (e: any) => {
+      const height = e?.endCoordinates?.height ?? 0;
+      Animated.timing(lift, {
+        toValue: height,
+        duration: Platform.OS === "ios" ? 250 : 150,
+        useNativeDriver: false,
+      }).start();
+    };
+    const onHide = () => {
+      Animated.timing(lift, {
+        toValue: 0,
+        duration: Platform.OS === "ios" ? 250 : 150,
+        useNativeDriver: false,
+      }).start();
+    };
+
+    const showSub = Keyboard.addListener(showEvt, onShow);
+    const hideSub = Keyboard.addListener(hideEvt, onHide);
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [lift]);
+
   const numericAmount = parseInt(amount, 10);
-  const isValid = !Number.isNaN(numericAmount) && numericAmount >= 1 && numericAmount <= 500_000;
+  const isValid =
+    !Number.isNaN(numericAmount) &&
+    numericAmount >= 1 &&
+    numericAmount <= 500_000;
 
   const handleSubmit = async () => {
     if (!isValid || topUp.isPending) return;
+    Keyboard.dismiss();
     try {
       const result = await topUp.mutateAsync({ amount: numericAmount });
       if (onSuccess) onSuccess(result.paidAmount);
-      // Don't onClose here — let caller decide (they may show a confirmation)
     } catch (err) {
-      if (err instanceof RazorpayCancelled) {
-        // User cancelled the sheet — no message, just leave dialog open
-        return;
-      }
+      if (err instanceof RazorpayCancelled) return;
       if (err instanceof RazorpayFailed) {
         Alert.alert("Payment failed", err.description || "Please try again.");
         return;
@@ -86,29 +117,32 @@ export default function TopUpSheet({
     }
   };
 
+  const handleClose = () => {
+    Keyboard.dismiss();
+    onClose();
+  };
+
   return (
     <Modal
       visible={visible}
       transparent
       animationType="slide"
-      onRequestClose={onClose}
+      onRequestClose={handleClose}
       statusBarTranslucent
     >
-      <TouchableWithoutFeedback onPress={onClose}>
+      {/* Tap-outside-to-close backdrop */}
+      <TouchableWithoutFeedback onPress={handleClose}>
         <View style={styles.backdrop} />
       </TouchableWithoutFeedback>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        style={styles.kbWrap}
-        pointerEvents="box-none"
-      >
-        <View style={styles.sheet}>
+      {/* The sheet itself, lifted by the keyboard height */}
+      <View style={styles.anchor} pointerEvents="box-none">
+        <Animated.View style={[styles.sheet, { marginBottom: lift }]}>
           <View style={styles.grabber} />
 
           <View style={styles.header}>
             <Text style={styles.title}>Top up credit</Text>
-            <TouchableOpacity onPress={onClose} hitSlop={10}>
+            <TouchableOpacity onPress={handleClose} hitSlop={10}>
               <Text style={styles.closeX}>✕</Text>
             </TouchableOpacity>
           </View>
@@ -118,13 +152,14 @@ export default function TopUpSheet({
             outstanding balance, freeing up credit immediately.
           </Text>
 
-          {suggestedAmount && suggestedAmount > 0 && (
+          {suggestedAmount && suggestedAmount > 0 ? (
             <View style={styles.hint}>
               <Text style={styles.hintText}>
-                Shortfall on your current order: ₹{suggestedAmount.toFixed(2)}
+                Shortfall on your current order: ₹
+                {suggestedAmount.toFixed(2)}
               </Text>
             </View>
-          )}
+          ) : null}
 
           <Text style={styles.label}>Amount (₹)</Text>
           <View style={styles.amountRow}>
@@ -137,7 +172,6 @@ export default function TopUpSheet({
               placeholderTextColor={colors.mutedForeground}
               keyboardType="number-pad"
               maxLength={6}
-              autoFocus
               editable={!topUp.isPending}
             />
           </View>
@@ -150,7 +184,9 @@ export default function TopUpSheet({
                 onPress={() => setAmount(String(amt))}
                 style={styles.quickChip}
               >
-                <Text style={styles.quickChipText}>₹{amt.toLocaleString("en-IN")}</Text>
+                <Text style={styles.quickChipText}>
+                  ₹{amt.toLocaleString("en-IN")}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -174,10 +210,11 @@ export default function TopUpSheet({
           </TouchableOpacity>
 
           <Text style={styles.footnote}>
-            Secured by Razorpay. Money posts to your account within seconds.
+            Secured by Razorpay. Money posts to your account within
+            seconds.
           </Text>
-        </View>
-      </KeyboardAvoidingView>
+        </Animated.View>
+      </View>
     </Modal>
   );
 }
@@ -187,7 +224,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.45)",
   },
-  kbWrap: {
+  anchor: {
     flex: 1,
     justifyContent: "flex-end",
   },
@@ -302,9 +339,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: "center",
   },
-  payBtnDisabled: {
-    opacity: 0.5,
-  },
+  payBtnDisabled: { opacity: 0.5 },
   payBtnText: {
     fontSize: 14,
     fontFamily: fonts.extrabold,

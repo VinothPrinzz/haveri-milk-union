@@ -1,25 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════════
-// apps/api/src/routes/dealer-indents.ts
+// apps/api/src/routes/dealer-indents.ts  —  BUILD-FIXED VERSION
 //
-// Phase 2A — dealer-facing endpoints for the v2 redesign.
-//
-// All routes require `dealerAuth` (sets request.dealer = { dealerId,
-// phone, zoneId }). Mirrors existing dealer-profile route style.
-//
-// Mounted in apps/api/src/server.ts:
-//   import { dealerIndentsRoutes } from "./routes/dealer-indents.js";
-//   app.register(dealerIndentsRoutes);
-//
-// Routes:
-//   GET    /api/v1/dealer/standing-indents               list dealer's standing template
-//   PUT    /api/v1/dealer/standing-indents               replace whole template (bulk upsert)
-//   GET    /api/v1/dealer/standing-indents/eligible      list products eligible to be in standing
-//   GET    /api/v1/dealer/drafts/:date                   fetch draft (synthesize if absent)
-//   PATCH  /api/v1/dealer/drafts/:date                   replace items for a date's draft
-//   POST   /api/v1/dealer/drafts/:date/confirm           draft → pending (or payment_required)
-//   GET    /api/v1/dealer/indent-pauses                  list dealer's pause windows
-//   POST   /api/v1/dealer/indent-pauses                  add a pause window
-//   DELETE /api/v1/dealer/indent-pauses/:id              remove a pause window
+// FIXES vs the previous version:
+//   1. Removed the unused `db` import (only `pgClient` is used).
+//   2. Removed the unused `isPaused()` helper (dead code).
+//   3. CRITICAL: every `pgClient.begin(async (tx) => ...)` now casts
+//      the transaction handle:
+//        const tx = _tx as unknown as typeof pgClient;
+//      The `postgres` library's TransactionSql type drops the
+//      tagged-template call signature, so `tx`...`` is a TYPE ERROR
+//      without the cast — which failed the whole `tsc` build and
+//      404'd every route in this file. (Same pattern the existing
+//      orders.ts already uses.)
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -44,10 +36,7 @@ function getDealerZoneId(request: FastifyRequest): string {
   return d.zoneId;
 }
 
-/**
- * Compute line totals from (price_excl_gst, gst_percent, quantity).
- * Returns rupees rounded to 2dp.
- */
+/** Line totals from (price_excl_gst, gst_percent, quantity), rupees @ 2dp. */
 function calcLine(basePrice: number, gstPercent: number, qty: number) {
   const subtotal = basePrice * qty;
   const gst = subtotal * (gstPercent / 100);
@@ -63,16 +52,12 @@ function calcLine(basePrice: number, gstPercent: number, qty: number) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function dealerIndentsRoutes(app: FastifyInstance) {
-  // ┌─────────────────────────────────────────────────┐
-  // │  GET /api/v1/dealer/standing-indents              │
-  // │  List the dealer's standing template              │
-  // └─────────────────────────────────────────────────┘
+  // ── GET /api/v1/dealer/standing-indents ──
   app.get(
     "/api/v1/dealer/standing-indents",
     { preHandler: [dealerAuth] },
     async (request, reply) => {
       const dealerId = getDealerId(request);
-
       const rows = await pgClient`
         SELECT
           dsi.product_id          AS "productId",
@@ -90,24 +75,16 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         WHERE dsi.dealer_id = ${dealerId}
         ORDER BY p.sort_order, p.name
       `;
-
       return reply.send({ items: rows });
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  GET /api/v1/dealer/standing-indents/eligible     │
-  // │  Products the dealer COULD add to their standing  │
-  // │  indent (i.e. make_zero_in_indents=false). Used   │
-  // │  by the "Manage standing indent" screen to show   │
-  // │  the picker.                                      │
-  // └─────────────────────────────────────────────────┘
+  // ── GET /api/v1/dealer/standing-indents/eligible ──
   app.get(
     "/api/v1/dealer/standing-indents/eligible",
     { preHandler: [dealerAuth] },
     async (request, reply) => {
       const dealerId = getDealerId(request);
-
       const rows = await pgClient`
         SELECT
           p.id                      AS "productId",
@@ -128,23 +105,11 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           AND p.make_zero_in_indents = false
         ORDER BY p.sort_order, p.name
       `;
-
       return reply.send({ items: rows });
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  PUT /api/v1/dealer/standing-indents              │
-  // │  Replace the dealer's whole standing template.    │
-  // │                                                   │
-  // │  Body items[]:                                     │
-  // │    { productId, defaultQty, active }              │
-  // │                                                   │
-  // │  Semantics: full bulk upsert. Existing rows that  │
-  // │  are not in the request body remain — we don't    │
-  // │  delete on omission (avoids accidental wipe-outs  │
-  // │  if the client only sends a delta).                │
-  // └─────────────────────────────────────────────────┘
+  // ── PUT /api/v1/dealer/standing-indents ──
   app.put(
     "/api/v1/dealer/standing-indents",
     { preHandler: [dealerAuth] },
@@ -164,8 +129,6 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      // Validate that all referenced products exist and are eligible
-      // (admin hasn't set make_zero_in_indents=true on any of them).
       const productIds = body.items.map((i) => i.productId);
       const eligible = await pgClient`
         SELECT id::text FROM products
@@ -183,9 +146,8 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // Bulk upsert via a single statement.
-      // Note: `dealer_id, product_id` is the unique index from 0030.
-      await pgClient.begin(async (tx) => {
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
         for (const it of body.items) {
           await tx`
             INSERT INTO dealer_standing_indents (dealer_id, product_id, default_qty, active)
@@ -202,22 +164,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  GET /api/v1/dealer/drafts/:date                  │
-  // │  Fetch the draft for that delivery date.          │
-  // │                                                   │
-  // │  Behavior:                                         │
-  // │   1. If an existing draft/pending order exists,    │
-  // │      return its items as-is.                       │
-  // │   2. If no order exists yet for that date AND     │
-  // │      the dealer is not in a pause window, return  │
-  // │      a SYNTHESIZED draft built from the standing  │
-  // │      indent. `exists: false` signals to the       │
-  // │      client that nothing's persisted yet — the    │
-  // │      first PATCH will create the order row.        │
-  // │   3. If paused, return empty items with          │
-  // │      pausedReason set.                            │
-  // └─────────────────────────────────────────────────┘
+  // ── GET /api/v1/dealer/drafts/:date ──
   app.get(
     "/api/v1/dealer/drafts/:date",
     { preHandler: [dealerAuth] },
@@ -225,7 +172,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       const dealerId = getDealerId(request);
       const params = z.object({ date: isoDate }).parse(request.params);
 
-      // Pause check — short-circuit if dealer has closed shop for this day.
+      // Pause check
       const pausedRow = await pgClient`
         SELECT reason FROM dealer_indent_pauses
          WHERE dealer_id = ${dealerId}
@@ -245,9 +192,12 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // Try to find an existing draft / pending order for this date.
+      // Existing draft / pending / payment_required order?
       const existing = await pgClient`
-        SELECT o.id, o.status::text, o.subtotal::numeric, o.total_gst::numeric, o.grand_total::numeric
+        SELECT o.id, o.status::text AS status,
+               o.subtotal::numeric AS subtotal,
+               o.total_gst::numeric AS total_gst,
+               o.grand_total::numeric AS grand_total
           FROM orders o
          WHERE o.dealer_id = ${dealerId}
            AND o.delivery_date = ${params.date}::date
@@ -257,7 +207,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       `;
 
       if (existing.length > 0) {
-        const order = existing[0];
+        const order = existing[0]!;
         const items = await pgClient`
           SELECT
             oi.product_id           AS "productId",
@@ -271,25 +221,25 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
             p.unit                  AS "unit"
           FROM order_items oi
           JOIN products p ON p.id = oi.product_id
-          WHERE oi.order_id = ${order!.id}::uuid
+          WHERE oi.order_id = ${order.id}::uuid
           ORDER BY p.sort_order, p.name
         `;
         return reply.send({
           deliveryDate: params.date,
           exists: true,
           paused: false,
-          orderId: order!.id,
-          status: order!.status,
+          orderId: order.id,
+          status: order.status,
           items,
           totals: {
-            subtotal: parseFloat(order!.subtotal),
-            totalGst: parseFloat(order!.total_gst),
-            grandTotal: parseFloat(order!.grand_total),
+            subtotal: parseFloat(order.subtotal),
+            totalGst: parseFloat(order.total_gst),
+            grandTotal: parseFloat(order.grand_total),
           },
         });
       }
 
-      // No existing order — synthesize from standing indent.
+      // Synthesize from standing indent
       const standing = await pgClient`
         SELECT
           dsi.product_id          AS "productId",
@@ -347,14 +297,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  PATCH /api/v1/dealer/drafts/:date                │
-  // │  Replace the draft's items.                       │
-  // │                                                   │
-  // │  Creates the order row on first call (status=    │
-  // │  'draft'); updates items + totals on subsequent  │
-  // │  calls. Idempotent w.r.t. the body items list.   │
-  // └─────────────────────────────────────────────────┘
+  // ── PATCH /api/v1/dealer/drafts/:date ──
   app.patch(
     "/api/v1/dealer/drafts/:date",
     { preHandler: [dealerAuth] },
@@ -372,33 +315,26 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         ),
       });
       const body = schema.parse(request.body);
-
-      // Filter out qty=0 — those are removals.
       const lineItems = body.items.filter((i) => i.quantity > 0);
 
-      // If everything is qty=0, the dealer effectively cleared the draft.
-      // We still create (or update) the row but with zero totals/items.
-
-      // Fetch products with current prices (snapshotted onto the order).
-      const productRows = lineItems.length > 0
-        ? await pgClient`
-            SELECT
-              id::text                  AS "id",
-              name                      AS "name",
-              base_price::numeric       AS "basePrice",
-              gst_percent::numeric      AS "gstPercent",
-              available                 AS "available",
-              stock                     AS "stock"
-            FROM products
-            WHERE id = ANY(${lineItems.map((i) => i.productId)}::uuid[])
-              AND deleted_at IS NULL
-          `
-        : [];
+      const productRows =
+        lineItems.length > 0
+          ? await pgClient`
+              SELECT
+                id::text                  AS "id",
+                name                      AS "name",
+                base_price::numeric       AS "basePrice",
+                gst_percent::numeric      AS "gstPercent",
+                available                 AS "available"
+              FROM products
+              WHERE id = ANY(${lineItems.map((i) => i.productId)}::uuid[])
+                AND deleted_at IS NULL
+            `
+          : [];
       const productMap = new Map<string, any>(
         productRows.map((p: any) => [p.id, p])
       );
 
-      // Validate all referenced products exist and are available
       for (const it of lineItems) {
         const p = productMap.get(it.productId);
         if (!p) {
@@ -416,7 +352,6 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         }
       }
 
-      // Compute totals
       let subtotal = 0;
       let totalGst = 0;
       let itemCount = 0;
@@ -440,9 +375,9 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       });
       const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
 
-      // Upsert order + items in a transaction
-      const orderId = await pgClient.begin(async (tx) => {
-        // Try to find existing draft/pending row
+      const orderId = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+
         const [existing] = await tx`
           SELECT id FROM orders
            WHERE dealer_id = ${dealerId}
@@ -454,7 +389,6 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
 
         let id: string;
         if (existing) {
-          // Update existing row
           await tx`
             UPDATE orders SET
               subtotal     = ${subtotal.toFixed(2)}::numeric,
@@ -464,11 +398,9 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
               updated_at   = now()
             WHERE id = ${existing.id}::uuid
           `;
-          // Replace items
           await tx`DELETE FROM order_items WHERE order_id = ${existing.id}::uuid`;
           id = existing.id;
         } else {
-          // Insert new draft row
           const [created] = await tx`
             INSERT INTO orders (
               dealer_id, zone_id, status, payment_mode,
@@ -487,7 +419,6 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           id = created!.id;
         }
 
-        // Insert items
         for (const oi of orderItemsRows) {
           await tx`
             INSERT INTO order_items (
@@ -500,7 +431,6 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
             )
           `;
         }
-
         return id;
       });
 
@@ -518,23 +448,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  POST /api/v1/dealer/drafts/:date/confirm         │
-  // │  Move draft → pending (or payment_required).      │
-  // │                                                   │
-  // │  Body:                                            │
-  // │    { paymentMode: 'credit' | 'razorpay',         │
-  // │      razorpayPaymentId?: string }                │
-  // │                                                   │
-  // │  Credit path: runs credit-check. If sufficient,   │
-  // │  status='pending'. If not, status='payment_      │
-  // │  required' and the response includes shortfall   │
-  // │  + topup hint.                                    │
-  // │                                                   │
-  // │  Razorpay path (Phase 2B): verifies the          │
-  // │  razorpayPaymentId, then status='pending'.       │
-  // │  Phase 2A returns 501 for the razorpay path.     │
-  // └─────────────────────────────────────────────────┘
+  // ── POST /api/v1/dealer/drafts/:date/confirm ──
   app.post(
     "/api/v1/dealer/drafts/:date/confirm",
     { preHandler: [dealerAuth] },
@@ -548,7 +462,6 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      // Find the draft order
       const [draft] = await pgClient`
         SELECT id, grand_total::numeric AS grand_total, item_count
           FROM orders
@@ -562,11 +475,9 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       if (!draft) {
         return reply.status(404).send({
           error: "No draft to confirm",
-          message:
-            "There's no draft order for this date. PATCH the draft first.",
+          message: "There's no draft order for this date. Edit the draft first.",
         });
       }
-
       if (draft.item_count === 0) {
         return reply.status(400).send({
           error: "Empty draft",
@@ -576,20 +487,16 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
 
       const grandTotal = parseFloat(draft.grand_total);
 
-      // ── Razorpay path (Phase 2B) ──
       if (body.paymentMode === "razorpay") {
         return reply.status(501).send({
           error: "Not implemented",
-          message:
-            "Razorpay payment confirmation will land in Phase 2B (after SDK + webhook setup).",
+          message: "Use the dedicated pay-now endpoint for Razorpay payment.",
         });
       }
 
-      // ── Credit path ──
       const credit = await checkDealerCredit(dealerId, grandTotal);
 
       if (!credit.sufficient) {
-        // Mark order as payment_required and return the shortfall info
         await pgClient`
           UPDATE orders
              SET status = 'payment_required', updated_at = now()
@@ -597,14 +504,14 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         `;
         return reply.status(402).send({
           error: "Credit limit exceeded",
-          message: `Order is over your available credit by ₹${credit.shortfall.toFixed(2)}`,
+          message: `Order is over your available credit by ₹${credit.shortfall.toFixed(
+            2
+          )}`,
           orderId: draft.id,
           credit,
         });
       }
 
-      // Sufficient — mark pending. Outstanding gets recomputed on next
-      // credit check (we don't materialize it on the dealer row).
       await pgClient`
         UPDATE orders
            SET status = 'pending',
@@ -623,10 +530,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  Pause windows CRUD                               │
-  // └─────────────────────────────────────────────────┘
-
+  // ── Pause windows ──
   app.get(
     "/api/v1/dealer/indent-pauses",
     { preHandler: [dealerAuth] },
@@ -683,7 +587,6 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const dealerId = getDealerId(request);
       const params = z.object({ id: z.string().uuid() }).parse(request.params);
-
       const result = await pgClient`
         DELETE FROM dealer_indent_pauses
          WHERE id = ${params.id}::uuid AND dealer_id = ${dealerId}

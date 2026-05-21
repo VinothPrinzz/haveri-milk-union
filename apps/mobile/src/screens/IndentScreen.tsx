@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -10,10 +10,11 @@ import {
 } from "react-native";
 import { colors, fonts } from "../lib/theme";
 import AppHeader from "../components/AppHeader";
+import DatePickerModal from "../components/DatePickerModal";
+import TopUpSheet from "../components/TopUpSheet";
 import { useAuthStore } from "../store/auth";
 import { useNotifications } from "../hooks/useNotifications";
 import { useWindowStatus } from "../hooks/useWindow";
-import { useOrderPayment } from "../hooks/useOrderPayment";
 import {
   addDaysIst,
   istTodayIso,
@@ -26,24 +27,33 @@ import {
   usePatchDraft,
   isCreditExceededError,
 } from "../hooks/useDailyDraft";
-import type { ConfirmDraftCreditExceeded, DraftItem } from "../lib/types";
-import TopUpSheet from "../components/TopUpSheet";
-import { RazorpayCancelled } from "../hooks/useOrderPayment";
+import { useOrderPayment } from "../hooks/useOrderPayment";
+import { RazorpayCancelled } from "../lib/razorpay";
+import type { DraftItem } from "../lib/types";
 
 /**
- * IndentScreen v2 — wired to the real per-date draft API.
- * Phase 2B: Top-up sheet + Pay-now Razorpay flow added.
+ * IndentScreen — FIXED.
+ *
+ * Changes from the broken version:
+ *   1. DATE STRIP — was a horizontal ScrollView with no height
+ *      constraint, so the chips stretched into giant vertical pills
+ *      (see uploaded screenshot 3). Now it's a fixed flex-row of
+ *      exactly three quick chips (Today / Tomorrow / day-after) plus
+ *      a calendar button — all visible without scrolling, normal pill
+ *      height.
+ *   2. CALENDAR — the calendar button opens DatePickerModal for any
+ *      other date within 30 days.
+ *   3. ERROR HANDLING — if the draft request fails (e.g. API down,
+ *      404), the screen shows a retry state instead of an infinite
+ *      spinner.
+ *   4. TOP-UP / PAY-NOW — credit-exceeded flow wired with TopUpSheet
+ *      inline + a Rules-of-Hooks-safe pay-now path.
  */
 
 interface IndentScreenProps {
   onOpenNotifications: () => void;
   onOpenProfile: () => void;
   onOpenManageStanding: () => void;
-}
-
-function buildDateChips(): string[] {
-  const today = istTodayIso();
-  return [today, ...Array.from({ length: 5 }, (_, i) => addDaysIst(today, i + 1))];
 }
 
 export default function IndentScreen({
@@ -54,33 +64,32 @@ export default function IndentScreen({
   const dealer = useAuthStore((s) => s.dealer);
   const { data: notifs } = useNotifications();
   const windowQuery = useWindowStatus(dealer?.zoneId);
+
   const selectedDate = useTargetDateStore((s) => s.selectedDate);
   const setSelectedDate = useTargetDateStore((s) => s.setSelectedDate);
+
   const draftQuery = useDailyDraft(selectedDate);
   const patchDraft = usePatchDraft(selectedDate);
   const confirmDraft = useConfirmDraft(selectedDate);
 
-  // Phase 2B additions
+  // ── Date strip data — three fixed quick dates ──
+  const quickDates = useMemo(() => {
+    const t = istTodayIso();
+    return [t, addDaysIst(t, 1), addDaysIst(t, 2)];
+  }, []);
+  const isCustomDate = !quickDates.includes(selectedDate);
+
+  const [showCalendar, setShowCalendar] = useState(false);
+
+  // ── Top-up / pay-now state ──
   const [showTopUp, setShowTopUp] = useState(false);
   const [shortfall, setShortfall] = useState<number | undefined>(undefined);
   const [payNowOrderId, setPayNowOrderId] = useState<string | null>(null);
   const orderPayment = useOrderPayment(payNowOrderId ?? "");
 
-  const dateChips = useMemo(buildDateChips, []);
-  const isToday = selectedDate === istTodayIso();
-  const windowState = windowQuery.data?.state ?? "closed";
-  const unreadNotifications = (notifs ?? []).some((n) => n.unread);
-  const draft = draftQuery.data;
-  const isPaused = draft?.paused ?? false;
-  const isLoading = draftQuery.isLoading || !draft;
-  const items = draft?.items ?? [];
-  const totals = draft?.totals ?? { subtotal: 0, totalGst: 0, grandTotal: 0 };
-  const isPaymentRequired = draft?.status === "payment_required";
-
-  // Pay-now effect
+  // Fire the pay-now flow when an orderId is set
   useEffect(() => {
     if (!payNowOrderId) return;
-
     let cancelled = false;
     (async () => {
       try {
@@ -92,8 +101,7 @@ export default function IndentScreen({
           );
         }
       } catch (err) {
-        if (cancelled) return;
-        if (err instanceof RazorpayCancelled) return;
+        if (cancelled || err instanceof RazorpayCancelled) return;
         Alert.alert(
           "Payment failed",
           err instanceof Error ? err.message : "Please try again."
@@ -102,11 +110,20 @@ export default function IndentScreen({
         if (!cancelled) setPayNowOrderId(null);
       }
     })();
-
     return () => {
       cancelled = true;
     };
-  }, [payNowOrderId, orderPayment, selectedDate]);
+  }, [payNowOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isToday = selectedDate === istTodayIso();
+  const windowState = windowQuery.data?.state ?? "closed";
+  const unreadNotifications = (notifs ?? []).some((n) => !n.unread);
+
+  const draft = draftQuery.data;
+  const isPaused = draft?.paused ?? false;
+  const items = draft?.items ?? [];
+  const totals = draft?.totals ?? { subtotal: 0, totalGst: 0, grandTotal: 0 };
+  const isPaymentRequired = draft?.status === "payment_required";
 
   // ── Status banner ──
   const statusBanner = useMemo(() => {
@@ -135,7 +152,8 @@ export default function IndentScreen({
     }
     const min = Math.ceil((windowQuery.data?.remainingSeconds ?? 0) / 60);
     return {
-      kind: windowState === "warning" ? ("warning" as const) : ("open" as const),
+      kind:
+        windowState === "warning" ? ("warning" as const) : ("open" as const),
       text: `Closes in ${min} minute${min === 1 ? "" : "s"}`,
     };
   }, [
@@ -147,7 +165,7 @@ export default function IndentScreen({
     draft?.pausedReason,
   ]);
 
-  // ── Item +/- handlers ──
+  // ── Item +/- ──
   const updateItemQty = (productId: string, delta: number) => {
     if (isPaused) return;
     const current = items.find((i) => i.productId === productId);
@@ -158,14 +176,13 @@ export default function IndentScreen({
         quantity: i.productId === productId ? newQty : i.quantity,
       }))
       .filter((i) => i.quantity > 0);
-
     if (!current && newQty > 0) {
       nextItems.push({ productId, quantity: newQty });
     }
     patchDraft.mutate(nextItems);
   };
 
-  // ── Updated Confirm handler (Phase 2B) ──
+  // ── Confirm ──
   const handleConfirm = async () => {
     try {
       const result = await confirmDraft.mutateAsync({ paymentMode: "credit" });
@@ -175,10 +192,12 @@ export default function IndentScreen({
       );
     } catch (err) {
       if (isCreditExceededError(err)) {
-        const body = err.body as ConfirmDraftCreditExceeded;
+        const body = err.body;
         Alert.alert(
           "Credit limit exceeded",
-          `Short by ₹${body.credit.shortfall.toFixed(2)}. Choose how to proceed:`,
+          `Short by ₹${body.credit.shortfall.toFixed(
+            2
+          )}. Choose how to proceed:`,
           [
             { text: "Cancel", style: "cancel" },
             {
@@ -215,13 +234,9 @@ export default function IndentScreen({
         onProfilePress={onOpenProfile}
       />
 
-      {/* Date strip */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.dateStrip}
-      >
-        {dateChips.map((d) => {
+      {/* ── Date strip — fixed row, no scroll ── */}
+      <View style={styles.dateRow}>
+        {quickDates.map((d) => {
           const active = d === selectedDate;
           return (
             <TouchableOpacity
@@ -235,13 +250,31 @@ export default function IndentScreen({
                   styles.dateChipText,
                   active && styles.dateChipTextActive,
                 ]}
+                numberOfLines={1}
               >
                 {relativeLabel(d)}
               </Text>
             </TouchableOpacity>
           );
         })}
-      </ScrollView>
+        {/* Calendar chip — shows the picked date when a custom date is active */}
+        <TouchableOpacity
+          activeOpacity={0.75}
+          onPress={() => setShowCalendar(true)}
+          style={[
+            styles.calChip,
+            isCustomDate && styles.dateChipActive,
+          ]}
+        >
+          {isCustomDate ? (
+            <Text style={[styles.dateChipText, styles.dateChipTextActive]}>
+              {relativeLabel(selectedDate)}
+            </Text>
+          ) : (
+            <Text style={styles.calIcon}>📅</Text>
+          )}
+        </TouchableOpacity>
+      </View>
 
       <ScrollView
         style={styles.body}
@@ -250,27 +283,52 @@ export default function IndentScreen({
       >
         {/* Status banner */}
         <View style={[styles.banner, BANNER_STYLES[statusBanner.kind].wrap]}>
-          <Text style={[styles.bannerText, BANNER_STYLES[statusBanner.kind].text]}>
+          <Text
+            style={[styles.bannerText, BANNER_STYLES[statusBanner.kind].text]}
+          >
             {statusBanner.text}
           </Text>
         </View>
 
-        {/* Loading */}
-        {isLoading && !draft && (
+        {/* ── Error state ── */}
+        {draftQuery.isError && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorEmoji}>⚠️</Text>
+            <Text style={styles.errorTitle}>Couldn't load your indent</Text>
+            <Text style={styles.errorSub}>
+              {draftQuery.error instanceof Error
+                ? draftQuery.error.message
+                : "Something went wrong."}
+            </Text>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => draftQuery.refetch()}
+              style={styles.retryBtn}
+            >
+              <Text style={styles.retryBtnText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ── Loading ── */}
+        {draftQuery.isLoading && (
           <View style={styles.loading}>
             <ActivityIndicator color={colors.primary} />
           </View>
         )}
 
-        {/* Items section */}
-        {!isLoading && (
+        {/* ── Loaded ── */}
+        {!draftQuery.isLoading && !draftQuery.isError && draft && (
           <>
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>
                 Items for {relativeLabel(selectedDate)}
               </Text>
               {!isPaused && (
-                <TouchableOpacity activeOpacity={0.6} onPress={onOpenManageStanding}>
+                <TouchableOpacity
+                  activeOpacity={0.6}
+                  onPress={onOpenManageStanding}
+                >
                   <Text style={styles.manageLink}>Manage standing indent</Text>
                 </TouchableOpacity>
               )}
@@ -303,7 +361,6 @@ export default function IndentScreen({
               </View>
             )}
 
-            {/* Summary + payment + confirm */}
             {items.length > 0 && !isPaused && (
               <>
                 <View style={styles.summary}>
@@ -320,7 +377,6 @@ export default function IndentScreen({
                   />
                 </View>
 
-                {/* Payment selector */}
                 <View style={styles.payCard}>
                   <View style={styles.payHeader}>
                     <View style={styles.radioOn} />
@@ -354,7 +410,18 @@ export default function IndentScreen({
         )}
       </ScrollView>
 
-      {/* Phase 2B: TopUpSheet */}
+      {/* Calendar modal */}
+      <DatePickerModal
+        visible={showCalendar}
+        selectedDate={selectedDate}
+        onSelect={(iso) => {
+          setSelectedDate(iso);
+          setShowCalendar(false);
+        }}
+        onClose={() => setShowCalendar(false)}
+      />
+
+      {/* Top-up sheet */}
       <TopUpSheet
         visible={showTopUp}
         suggestedAmount={shortfall}
@@ -363,7 +430,9 @@ export default function IndentScreen({
           setShowTopUp(false);
           Alert.alert(
             "Top-up successful",
-            `₹${paid.toLocaleString("en-IN")} credited to your account. You can retry confirming the order now.`
+            `₹${paid.toLocaleString(
+              "en-IN"
+            )} credited. Tap Confirm again to place your indent.`
           );
         }}
       />
@@ -371,7 +440,7 @@ export default function IndentScreen({
   );
 }
 
-// ── Sub-components ────────────────────────────────────────────────
+// ── Sub-components ──────────────────────────────────────────────────
 
 function DraftRow({
   item,
@@ -422,7 +491,15 @@ function DraftRow({
   );
 }
 
-function Row({ label, value, emphasis }: any) {
+function Row({
+  label,
+  value,
+  emphasis,
+}: {
+  label: string;
+  value: string;
+  emphasis?: boolean;
+}) {
   return (
     <View style={styles.summaryRow}>
       <Text style={emphasis ? styles.summaryTotalLabel : styles.summaryLabel}>
@@ -442,31 +519,45 @@ function Row({ label, value, emphasis }: any) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
 
-  // Date strip
-  dateStrip: {
+  // ── Date strip — fixed row ──
+  dateRow: {
+    flexDirection: "row",
+    gap: 6,
     paddingHorizontal: 12,
     paddingTop: 10,
-    paddingBottom: 4,
-    gap: 6,
+    paddingBottom: 2,
   },
   dateChip: {
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 999,
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 8,
     borderWidth: 0.5,
     borderColor: colors.border,
     backgroundColor: colors.card,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  calChip: {
+    width: 46,
+    paddingVertical: 9,
+    borderRadius: 8,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    alignItems: "center",
+    justifyContent: "center",
   },
   dateChipActive: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
   },
   dateChipText: {
-    fontSize: 11,
+    fontSize: 12,
     fontFamily: fonts.semibold,
     color: colors.foreground,
   },
   dateChipTextActive: { color: colors.primaryForeground },
+  calIcon: { fontSize: 15 },
 
   body: { flex: 1 },
   bodyContent: { paddingBottom: 32 },
@@ -481,8 +572,44 @@ const styles = StyleSheet.create({
   },
   bannerText: { fontSize: 11, fontFamily: fonts.semibold },
 
-  // Loading
+  // Loading / error
   loading: { paddingVertical: 60 },
+  errorBox: {
+    marginHorizontal: 12,
+    marginTop: 14,
+    padding: 20,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    borderColor: "#F7C1C1",
+    backgroundColor: "#FEE2E2",
+    alignItems: "center",
+  },
+  errorEmoji: { fontSize: 30 },
+  errorTitle: {
+    fontSize: 13,
+    fontFamily: fonts.bold,
+    color: "#A32D2D",
+    marginTop: 8,
+  },
+  errorSub: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    color: "#A32D2D",
+    marginTop: 4,
+    textAlign: "center",
+  },
+  retryBtn: {
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 22,
+    borderRadius: 4,
+    backgroundColor: "#A32D2D",
+  },
+  retryBtnText: {
+    fontSize: 12,
+    fontFamily: fonts.bold,
+    color: "#fff",
+  },
 
   // Section header
   sectionHeaderRow: {
@@ -675,7 +802,7 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
 
-  // Confirm button
+  // Confirm
   confirmBtn: {
     marginHorizontal: 12,
     marginTop: 12,
@@ -694,7 +821,10 @@ const styles = StyleSheet.create({
 
 const BANNER_STYLES = {
   open: {
-    wrap: { backgroundColor: colors.primaryLight, borderColor: colors.primaryLight2 },
+    wrap: {
+      backgroundColor: colors.primaryLight,
+      borderColor: colors.primaryLight2,
+    },
     text: { color: colors.primary },
   },
   warning: {
