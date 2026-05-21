@@ -15,6 +15,14 @@
     "./client": {
       "import": "./dist/client.js",
       "types": "./dist/client.d.ts"
+    },
+    "./reconciliation": {
+      "import": "./dist/reconciliation/index.js",
+      "types": "./dist/reconciliation/index.d.ts"
+    },
+    "./polling-replication": {
+      "import": "./dist/polling-replication/index.js",
+      "types": "./dist/polling-replication/index.d.ts"
     }
   },
   "scripts": {
