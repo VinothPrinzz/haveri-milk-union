@@ -17,6 +17,5 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true
-  },
-  "extends": "expo/tsconfig.base"
+  }
 }
