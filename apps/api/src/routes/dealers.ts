@@ -71,6 +71,7 @@ export async function dealerRoutes(app: FastifyInstance) {
           d.route_id,
           d.bank, d.officer_name,
           d.account_no, d.address_type, d.state, d.area, d.house_no, d.street,
+          d.zone_id,
           d.last_indent_at,
           z.name AS zone_name, z.slug AS zone_slug,
           r.name AS route_name,
@@ -170,8 +171,9 @@ export async function dealerRoutes(app: FastifyInstance) {
         SELECT
           d.*,
           d.account_no, d.address_type, d.state, d.area, d.house_no, d.street,
+          d.zone_id,
           d.last_indent_at,
-          z.name AS zone_name,
+          z.name AS zone_name, z.slug AS zone_slug,
           r.name AS route_name,
           r.code AS route_code,
  
