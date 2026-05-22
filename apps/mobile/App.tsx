@@ -65,6 +65,8 @@ function AppContent() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
   const initialize = useAuthStore((s) => s.initialize);
+  const dealer = useAuthStore((s) => s.dealer);
+  const refreshProfile = useAuthStore((s) => s.refreshProfile);
 
   const [screen, setScreen] = useState<PushedScreen>("splash");
   const [activeTab, setActiveTab] = useState<Tab>("home");
@@ -73,6 +75,13 @@ function AppContent() {
   useEffect(() => {
     initialize();
   }, []);
+
+  // If initialize() swallowed a transient error (timeout / network blip),
+  // isAuthenticated can be true (from persisted state) but dealer is null.
+  // Re-fetch the profile silently so AppHeader doesn't stay blank.
+  useEffect(() => {
+    if (isAuthenticated && !dealer) refreshProfile();
+  }, [isAuthenticated, dealer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (isLoading) return;

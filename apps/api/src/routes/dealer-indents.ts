@@ -146,19 +146,21 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      await pgClient.begin(async (_tx) => {
-        const tx = _tx as unknown as typeof pgClient;
-        for (const it of body.items) {
-          await tx`
-            INSERT INTO dealer_standing_indents (dealer_id, product_id, default_qty, active)
-            VALUES (${dealerId}, ${it.productId}, ${it.defaultQty}, ${it.active})
-            ON CONFLICT (dealer_id, product_id) DO UPDATE
-              SET default_qty = EXCLUDED.default_qty,
-                  active      = EXCLUDED.active,
-                  updated_at  = now()
-          `;
-        }
-      });
+      const rows = body.items.map((it) => ({
+        dealer_id:   dealerId,
+        product_id:  it.productId,
+        default_qty: it.defaultQty,
+        active:      it.active,
+      }));
+
+      await pgClient`
+        INSERT INTO dealer_standing_indents
+          ${pgClient(rows, "dealer_id", "product_id", "default_qty", "active")}
+        ON CONFLICT (dealer_id, product_id) DO UPDATE
+          SET default_qty = EXCLUDED.default_qty,
+              active      = EXCLUDED.active,
+              updated_at  = now()
+      `;
 
       return reply.send({ updated: body.items.length });
     }
