@@ -188,20 +188,24 @@ function ProductListTab() {
 
       {/* Edit dialog */}
       <Dialog open={!!editing} onOpenChange={open => !open && setEditing(null)}>
-        <DialogContent className="max-w-3xl rounded-sm">
-          <DialogHeader>
+        <DialogContent className="max-w-3xl rounded-sm flex flex-col max-h-[90vh] overflow-hidden p-0">
+          <DialogHeader className="px-6 pt-5 pb-3 border-b border-border shrink-0">
             <DialogTitle className="text-[15px] font-semibold">
               Edit Product — <span className="font-mono">{editing?.code}</span>
             </DialogTitle>
           </DialogHeader>
           {editing && (
-            <ProductFormBody
-              embedded
-              initialData={editing}
-              onCancel={() => setEditing(null)}
-              isSubmitting={updateMutation.isPending}
-              onSubmit={async data => updateMutation.mutateAsync({ id: editing.id, data })}
-            />
+            <div className="flex-1 overflow-y-auto min-h-0">
+              <div className="p-4">
+                <ProductFormBody
+                  embedded
+                  initialData={editing}
+                  onCancel={() => setEditing(null)}
+                  isSubmitting={updateMutation.isPending}
+                  onSubmit={async data => updateMutation.mutateAsync({ id: editing.id, data })}
+                />
+              </div>
+            </div>
           )}
         </DialogContent>
       </Dialog>

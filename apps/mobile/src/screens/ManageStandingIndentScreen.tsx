@@ -134,12 +134,20 @@ export default function ManageStandingIndentScreen({
   // ── Save ─────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (changedCount === 0) return;
-    // Send everything — server upserts and silently no-ops unchanged rows.
-    const items = Array.from(edits.values()).map((e) => ({
-      productId: e.productId,
-      defaultQty: e.defaultQty,
-      active: e.active,
-    }));
+    // Send only rows that actually changed — avoids shipping the whole
+    // catalog on every save, which was causing timeout on slow connections.
+    const items = products
+      .filter((p) => {
+        const e = edits.get(p.productId);
+        return (
+          e !== undefined &&
+          (e.defaultQty !== p.currentDefaultQty || e.active !== p.currentActive)
+        );
+      })
+      .map((p) => {
+        const e = edits.get(p.productId)!;
+        return { productId: p.productId, defaultQty: e.defaultQty, active: e.active };
+      });
     try {
       await updateMutation.mutateAsync(items);
       Alert.alert(

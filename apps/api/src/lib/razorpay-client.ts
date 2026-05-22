@@ -1,31 +1,20 @@
 // ═══════════════════════════════════════════════════════════════════════
-// apps/api/src/lib/razorpay-client.ts  —  BUILD-SAFE VERSION
+// apps/api/src/lib/razorpay-client.ts  —  TRULY BUILD-SAFE VERSION
 //
-// CHANGE FROM PREVIOUS VERSION:
-//   The old file did `import Razorpay from "razorpay"` at the top.
-//   When the `razorpay` package isn't installed, that's a hard
-//   TypeScript error (TS2307 "Cannot find module") — which fails the
-//   ENTIRE `tsc` build, so NONE of the API routes get deployed
-//   (including dealer-indents.ts, which has nothing to do with
-//   Razorpay). That's what caused /api/v1/dealer/drafts/* to 404.
+// PREVIOUS FIX WAS INCOMPLETE:
+//   `const RAZORPAY_MODULE = "razorpay"` keeps the LITERAL type
+//   "razorpay", and TypeScript STILL resolves `import(literalType)`
+//   at build time → "Cannot find module 'razorpay'" → build fails.
 //
-//   This version loads the SDK via a DYNAMIC import through a
-//   variable specifier. TypeScript does not resolve variable-based
-//   import() calls, so the build succeeds whether or not `razorpay`
-//   is installed. Payment endpoints simply return 503 until the
-//   package is added and credentials are configured.
+//   The fix: annotate the specifier as plain `string`. TypeScript
+//   does NOT do module resolution on `import(x)` when `x` is typed
+//   as a general `string`. Plus a @ts-ignore for belt-and-suspenders.
 //
-// TO ACTUALLY ENABLE PAYMENTS (Phase 2B):
-//   pnpm --filter api add razorpay
-//   then set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET / RAZORPAY_WEBHOOK_SECRET
-//
-// The HMAC functions (verifyPaymentSignature, verifyWebhookSignature)
-// use only Node's built-in crypto — they need no package at all.
+// TO ENABLE PAYMENTS: pnpm --filter api add razorpay  (+ env vars)
 // ═══════════════════════════════════════════════════════════════════════
 
 import crypto from "node:crypto";
 
-// ── Config ──────────────────────────────────────────────────────────
 const keyId = process.env.RAZORPAY_KEY_ID;
 const keySecret = process.env.RAZORPAY_KEY_SECRET;
 const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
@@ -37,16 +26,16 @@ if (!keyId || !keySecret) {
 }
 
 // ── Lazy SDK loader ─────────────────────────────────────────────────
-// The specifier is a variable, NOT a string literal. TypeScript only
-// does module resolution on literal specifiers, so this compiles even
-// when `razorpay` is absent from node_modules.
-const RAZORPAY_MODULE = "razorpay";
+// `: string` annotation widens the type away from the literal
+// "razorpay", so TS will not attempt to resolve the module.
+const RAZORPAY_PKG: string = "razorpay";
 let RazorpayCtor: any = null;
 
 async function getRazorpayCtor(): Promise<any> {
   if (RazorpayCtor) return RazorpayCtor;
   try {
-    const mod: any = await import(RAZORPAY_MODULE);
+    // @ts-ignore - optional dependency; may be absent at build time
+    const mod: any = await import(RAZORPAY_PKG);
     RazorpayCtor = mod?.default ?? mod;
     return RazorpayCtor;
   } catch {
@@ -69,7 +58,6 @@ async function getClient(): Promise<any> {
   return _client;
 }
 
-/** Public key id — safe to send to the mobile client. */
 export function getRazorpayKeyId(): string {
   if (!keyId) throw new Error("Razorpay not configured");
   return keyId;
@@ -78,8 +66,6 @@ export function getRazorpayKeyId(): string {
 export function isRazorpayConfigured(): boolean {
   return !!keyId && !!keySecret;
 }
-
-// ── Orders ──────────────────────────────────────────────────────────
 
 export interface CreateOrderParams {
   amountInRupees: number;
@@ -119,7 +105,7 @@ export async function createRazorpayOrder(
   };
 }
 
-// ── Signature verification (crypto-only, no SDK needed) ─────────────
+// ── Signature verification (crypto-only) ────────────────────────────
 
 export function verifyPaymentSignature(params: {
   razorpayOrderId: string;

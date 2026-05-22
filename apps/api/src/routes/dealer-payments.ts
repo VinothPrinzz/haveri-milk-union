@@ -1,25 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════════
-// apps/api/src/routes/dealer-payments.ts
+// apps/api/src/routes/dealer-payments.ts  —  BUILD-FIXED VERSION
 //
-// Phase 2B — Razorpay-backed dealer payment flows.
-//
-// Routes added:
-//   POST /api/v1/dealer/credit-topup/order             create RZP order for top-up
-//   POST /api/v1/dealer/credit-topup/verify            verify signature + credit ledger
-//   POST /api/v1/dealer/orders/:id/pay-now             create RZP order for stuck order
-//   POST /api/v1/dealer/orders/:id/pay-now/verify      verify + mark order confirmed
-//   GET  /api/v1/dealer/razorpay-payments              dealer's recent RZP txns
-//   POST /api/v1/razorpay/webhook                      async confirmation (NOT auth'd;
-//                                                       uses HMAC signature)
-//
-// Mounted in apps/api/src/server.ts:
-//   import { dealerPaymentsRoutes } from "./routes/dealer-payments.js";
-//   app.register(dealerPaymentsRoutes);
-//
-// Idempotency:
-//   The webhook can fire multiple times for the same event. Each
-//   handler checks `razorpay_payments.status` and the existence of
-//   the matching `payments` row before doing any side-effect.
+// FIXES vs the previous version:
+//   1. CRITICAL: `pgClient.begin` callback now casts the transaction
+//      handle (`const tx = _tx as unknown as typeof pgClient`) — the
+//      postgres lib's TransactionSql type drops the tagged-template
+//      call signature, so `tx`...`` was a TYPE ERROR that failed the
+//      whole `tsc` build.
+//   2. The `addContentTypeParser("application/json", ...)` call is
+//      now guarded with `hasContentTypeParser` so it can never throw
+//      FST_ERR_CTP_ALREADY_PRESENT and crash the server on boot.
+//   3. The webhook degrades gracefully when rawBody is unavailable
+//      (the synchronous /verify endpoints are the primary path).
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -54,12 +46,8 @@ function require503IfUnconfigured(reply: any): boolean {
 }
 
 /**
- * Ledger insert + (for order_payment) order status transition.
- * Called from both /verify and the webhook — must be idempotent.
- *
- * Idempotency strategy: row uniqueness on razorpay_payments.razorpay_order_id
- * is the gate. We check status='paid' BEFORE inserting into payments /
- * dealer_ledger. If already paid, no-op.
+ * Apply a verified Razorpay payment to internal tables. Idempotent —
+ * checks the payments table before inserting.
  */
 async function applyPaidPayment(rzpRowId: string): Promise<{
   alreadyApplied: boolean;
@@ -68,8 +56,9 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
   amount: number;
   orderId: string | null;
 }> {
-  return await pgClient.begin(async (tx) => {
-    // 1. Lock the row + check status
+  return await pgClient.begin(async (_tx) => {
+    const tx = _tx as unknown as typeof pgClient;
+
     const [row] = await tx`
       SELECT id, dealer_id::text AS "dealerId", kind::text AS kind,
              amount::numeric AS amount, order_id::text AS "orderId",
@@ -79,15 +68,12 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
        FOR UPDATE
     `;
     if (!row) throw new Error(`razorpay_payments row ${rzpRowId} not found`);
-
     if (row.status !== "paid") {
-      // Caller should have set status='paid' before invoking us
       throw new Error(
         `razorpay_payments row ${rzpRowId} is ${row.status}, expected 'paid'`
       );
     }
 
-    // 2. Did we already insert the payments row for this RZP payment?
     const [existing] = await tx`
       SELECT id FROM payments
        WHERE reference = ${row.rzpPaymentId}
@@ -106,7 +92,6 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
 
     const amount = parseFloat(row.amount);
 
-    // 3. Insert into payments — same shape the admin receipt flow uses
     const [paymentRow] = await tx`
       INSERT INTO payments (
         dealer_id, mode, amount, reference, status, received_at
@@ -119,14 +104,10 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
       RETURNING id
     `;
 
-    if (!paymentRow) throw new Error("payments INSERT returned no row");
-
-    // 4. Insert ledger entry (type='credit' = money coming TO the dealer's account)
     const description =
       row.kind === "credit_topup"
         ? `Razorpay top-up via app (${row.rzpPaymentId})`
         : `Razorpay payment for order (${row.rzpPaymentId})`;
-
     const refType: string =
       row.kind === "credit_topup" ? "wallet_topup" : "order";
 
@@ -139,17 +120,16 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
       ) VALUES (
         ${row.dealerId}::uuid, 'credit',
         ${amount.toFixed(2)}::numeric,
-        ${paymentRow.id}::uuid,
+        ${paymentRow!.id}::uuid,
         ${refType}::ledger_ref_type,
         ${description},
-        0::numeric,                          -- balance_after recomputed on read
-        ${`RP-${row.rzpPaymentId.slice(-8).toUpperCase()}`},
+        0::numeric,
+        ${`RP-${String(row.rzpPaymentId).slice(-8).toUpperCase()}`},
         'Receipt', ${description},
         (now() AT TIME ZONE 'Asia/Kolkata')::date
       )
     `;
 
-    // 5. For order_payment, transition the order
     if (row.kind === "order_payment" && row.orderId) {
       await tx`
         UPDATE orders
@@ -178,21 +158,18 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function dealerPaymentsRoutes(app: FastifyInstance) {
-  // ┌─────────────────────────────────────────────────┐
-  // │  Webhook needs the raw body to verify HMAC.       │
-  // │  Register a content-type parser that captures     │
-  // │  the raw buffer onto request.rawBody.             │
-  // └─────────────────────────────────────────────────┘
-  // Only register if no JSON parser exists yet (it normally does —
-  // Fastify ships one by default — so this is effectively a no-op,
-  // and the webhook degrades gracefully below).
+  // Webhook raw-body capture — GUARDED so it never throws
+  // FST_ERR_CTP_ALREADY_PRESENT. In practice Fastify already has a
+  // JSON parser, so this is usually a no-op and the webhook degrades
+  // gracefully (see the handler below). To fully enable the webhook,
+  // register a raw-body JSON parser at the server level instead.
   if (!app.hasContentTypeParser("application/json")) {
     app.addContentTypeParser(
       "application/json",
       { parseAs: "buffer" },
-      (req, body, done) => {
+      (_req, body, done) => {
         try {
-          (req as any).rawBody = (body as Buffer).toString("utf8");
+          (_req as any).rawBody = (body as Buffer).toString("utf8");
           const parsed = body.length
             ? JSON.parse((body as Buffer).toString("utf8"))
             : {};
@@ -203,17 +180,8 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       }
     );
   }
-  // NOTE: this replaces the default parser. If your server already
-  // registers a custom parser, merge that logic — both need to stash
-  // the raw body for this webhook to work.
 
-
-  // ┌─────────────────────────────────────────────────┐
-  // │  POST /api/v1/dealer/credit-topup/order           │
-  // │  Create a Razorpay order for credit top-up.       │
-  // │  Body: { amount: number }   (rupees, min 1)       │
-  // │  Returns: { razorpayOrderId, amount, keyId }      │
-  // └─────────────────────────────────────────────────┘
+  // ── POST /api/v1/dealer/credit-topup/order ──
   app.post(
     "/api/v1/dealer/credit-topup/order",
     { preHandler: [dealerAuth] },
@@ -221,9 +189,9 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       if (require503IfUnconfigured(reply)) return;
       const dealerId = getDealerId(request);
 
-      const body = z.object({
-        amount: z.number().int().min(1).max(500_000),
-      }).parse(request.body);
+      const body = z
+        .object({ amount: z.number().int().min(1).max(500_000) })
+        .parse(request.body);
 
       const [dealer] = await pgClient`
         SELECT code FROM dealers WHERE id = ${dealerId}::uuid
@@ -254,21 +222,15 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
 
       return reply.status(201).send({
         razorpayOrderId: rzpOrder.id,
-        amount: body.amount,           // rupees (mobile SDK takes paise)
-        amountPaise: rzpOrder.amount,  // paise (what SDK actually wants)
+        amount: body.amount,
+        amountPaise: rzpOrder.amount,
         currency: rzpOrder.currency,
         keyId: getRazorpayKeyId(),
       });
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  POST /api/v1/dealer/credit-topup/verify          │
-  // │  Verify the payment signature returned by the     │
-  // │  RZP SDK, then apply the ledger credit.           │
-  // │  Body: { razorpayOrderId, razorpayPaymentId,      │
-  // │          razorpaySignature }                      │
-  // └─────────────────────────────────────────────────┘
+  // ── POST /api/v1/dealer/credit-topup/verify ──
   app.post(
     "/api/v1/dealer/credit-topup/verify",
     { preHandler: [dealerAuth] },
@@ -276,13 +238,14 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       if (require503IfUnconfigured(reply)) return;
       const dealerId = getDealerId(request);
 
-      const body = z.object({
-        razorpayOrderId: z.string().min(1),
-        razorpayPaymentId: z.string().min(1),
-        razorpaySignature: z.string().min(1),
-      }).parse(request.body);
+      const body = z
+        .object({
+          razorpayOrderId: z.string().min(1),
+          razorpayPaymentId: z.string().min(1),
+          razorpaySignature: z.string().min(1),
+        })
+        .parse(request.body);
 
-      // 1. Verify signature
       if (!verifyPaymentSignature(body)) {
         return reply.status(400).send({
           error: "Invalid signature",
@@ -290,19 +253,15 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // 2. Find the row + verify dealer ownership
       const [row] = await pgClient`
         SELECT id::text, kind::text, dealer_id::text AS "dealerId", status::text
           FROM razorpay_payments
          WHERE razorpay_order_id = ${body.razorpayOrderId}
          LIMIT 1
       `;
-      if (!row) {
-        return reply.status(404).send({ error: "Payment not found" });
-      }
-      if (row.dealerId !== dealerId) {
+      if (!row) return reply.status(404).send({ error: "Payment not found" });
+      if (row.dealerId !== dealerId)
         return reply.status(403).send({ error: "Forbidden" });
-      }
       if (row.kind !== "credit_topup") {
         return reply.status(400).send({
           error: "Wrong endpoint",
@@ -310,7 +269,6 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // 3. Mark as paid (idempotent — webhook may have done this already)
       await pgClient`
         UPDATE razorpay_payments
            SET status = 'paid',
@@ -322,9 +280,7 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
            AND status IN ('created', 'attempted')
       `;
 
-      // 4. Apply the ledger (no-op if webhook already did)
       const applied = await applyPaidPayment(row.id);
-
       return reply.send({
         ok: true,
         alreadyApplied: applied.alreadyApplied,
@@ -333,11 +289,7 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  POST /api/v1/dealer/orders/:id/pay-now           │
-  // │  Create RZP order to pay for a specific order.    │
-  // │  Order must be in 'draft' or 'payment_required'.  │
-  // └─────────────────────────────────────────────────┘
+  // ── POST /api/v1/dealer/orders/:id/pay-now ──
   app.post(
     "/api/v1/dealer/orders/:id/pay-now",
     { preHandler: [dealerAuth] },
@@ -348,7 +300,7 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
 
       const [order] = await pgClient`
         SELECT id::text, dealer_id::text AS "dealerId",
-               status::text, grand_total::numeric AS "grandTotal",
+               status::text AS status, grand_total::numeric AS "grandTotal",
                delivery_date::text AS "deliveryDate"
           FROM orders
          WHERE id = ${params.id}::uuid
@@ -405,9 +357,7 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  POST /api/v1/dealer/orders/:id/pay-now/verify    │
-  // └─────────────────────────────────────────────────┘
+  // ── POST /api/v1/dealer/orders/:id/pay-now/verify ──
   app.post(
     "/api/v1/dealer/orders/:id/pay-now/verify",
     { preHandler: [dealerAuth] },
@@ -416,11 +366,13 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       const dealerId = getDealerId(request);
       const params = z.object({ id: z.string().uuid() }).parse(request.params);
 
-      const body = z.object({
-        razorpayOrderId: z.string().min(1),
-        razorpayPaymentId: z.string().min(1),
-        razorpaySignature: z.string().min(1),
-      }).parse(request.body);
+      const body = z
+        .object({
+          razorpayOrderId: z.string().min(1),
+          razorpayPaymentId: z.string().min(1),
+          razorpaySignature: z.string().min(1),
+        })
+        .parse(request.body);
 
       if (!verifyPaymentSignature(body)) {
         return reply.status(400).send({
@@ -458,7 +410,6 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       `;
 
       const applied = await applyPaidPayment(row.id);
-
       return reply.send({
         ok: true,
         alreadyApplied: applied.alreadyApplied,
@@ -467,11 +418,7 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  GET /api/v1/dealer/razorpay-payments             │
-  // │  Last 50 RZP transactions for the dealer. Used    │
-  // │  by the Profile screen's "Payment history" list.  │
-  // └─────────────────────────────────────────────────┘
+  // ── GET /api/v1/dealer/razorpay-payments ──
   app.get(
     "/api/v1/dealer/razorpay-payments",
     { preHandler: [dealerAuth] },
@@ -499,34 +446,20 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ┌─────────────────────────────────────────────────┐
-  // │  POST /api/v1/razorpay/webhook                    │
-  // │                                                   │
-  // │  Async confirmation from Razorpay. Used as a      │
-  // │  fallback when the mobile client closes before    │
-  // │  calling /verify. Events:                         │
-  // │   • payment.captured  — success                   │
-  // │   • payment.failed    — declined / cancelled      │
-  // │                                                   │
-  // │  Signature verified against the RAW request body  │
-  // │  using RAZORPAY_WEBHOOK_SECRET (set in dashboard).│
-  // │                                                   │
-  // │  Idempotent — re-fires are safe.                  │
-  // └─────────────────────────────────────────────────┘
+  // ── POST /api/v1/razorpay/webhook ──
   app.post("/api/v1/razorpay/webhook", async (request, reply) => {
     const sigHeader = request.headers["x-razorpay-signature"];
     const rawBody = (request as any).rawBody as string | undefined;
 
-    // If rawBody wasn't captured, the webhook fallback isn't fully
-    // wired. The synchronous /verify endpoints still confirm payments,
-    // so just acknowledge so Razorpay stops retrying.
+    // Graceful degradation — if rawBody wasn't captured, the webhook
+    // fallback isn't wired. The synchronous /verify endpoints still
+    // confirm payments. Acknowledge so Razorpay stops retrying.
     if (!rawBody) {
-        request.log.warn("[razorpay-webhook] rawBody unavailable — skipped");
-        return reply.status(200).send({ ok: true, skipped: true });
+      request.log.warn("[razorpay-webhook] rawBody unavailable — skipped");
+      return reply.status(200).send({ ok: true, skipped: true });
     }
-
-    if (!sigHeader || typeof sigHeader !== "string" || !rawBody) {
-      return reply.status(400).send({ error: "Missing signature or body" });
+    if (!sigHeader || typeof sigHeader !== "string") {
+      return reply.status(400).send({ error: "Missing signature" });
     }
     if (!verifyWebhookSignature(rawBody, sigHeader)) {
       return reply.status(400).send({ error: "Invalid signature" });
@@ -539,9 +472,6 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
     const paymentId = paymentEntity?.id;
 
     if (!event || !orderId) {
-      // Some webhook events (e.g. settlements) don't carry an order_id
-      // — those aren't relevant to dealer payments. Acknowledge OK so
-      // Razorpay stops retrying.
       return reply.status(200).send({ ok: true, ignored: true });
     }
 
@@ -551,15 +481,11 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
        WHERE razorpay_order_id = ${orderId}
        LIMIT 1
     `;
-
     if (!row) {
-      // Webhook fired for a Razorpay order we don't know about — could
-      // be from a different env or a stale test. Ack and ignore.
       return reply.status(200).send({ ok: true, unknownOrder: true });
     }
 
     if (event === "payment.captured") {
-      // Promote to paid only if not already terminal
       if (row.status === "created" || row.status === "attempted") {
         await pgClient`
           UPDATE razorpay_payments
@@ -577,7 +503,6 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
            WHERE id = ${row.id}::uuid
         `;
       }
-      // Apply (idempotent — checks payments table first)
       await applyPaidPayment(row.id);
       return reply.status(200).send({ ok: true });
     }
@@ -597,7 +522,6 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       return reply.status(200).send({ ok: true });
     }
 
-    // Unknown event — log + ack
     return reply.status(200).send({ ok: true, ignored: true, event });
   });
 }
