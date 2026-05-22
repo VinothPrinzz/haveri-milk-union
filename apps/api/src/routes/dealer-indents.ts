@@ -212,7 +212,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
    
       if (existing.length > 0) {
         const order = existing[0]!;
-        const items = await pgClient`
+        const rawItems = await pgClient`
           SELECT
             oi.product_id           AS "productId",
             oi.product_name         AS "productName",
@@ -228,6 +228,27 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           WHERE oi.order_id = ${order.id}::uuid
           ORDER BY p.sort_order, p.name
         `;
+        // ── CRITICAL FIX (app crash) ──────────────────────────────────
+        // The `postgres` driver returns numeric/decimal columns as JS
+        // STRINGS, not numbers. The synthesized-preview branch below
+        // already parseFloat()s them, but this branch was sending the
+        // raw query rows straight through — so `unitPrice`/`gstPercent`/
+        // `lineTotal` reached the mobile app as strings. The Indent
+        // screen then called `.toFixed()` on a string, which throws and
+        // crashes (closes) the app the moment you open the Indent tab on
+        // a date whose order is already placed. Coerce every numeric
+        // here so the existing-order shape matches the preview shape.
+        const items = rawItems.map((r: any) => ({
+          productId: r.productId,
+          productName: r.productName,
+          quantity: Number(r.quantity),
+          unitPrice: parseFloat(r.unitPrice),
+          gstPercent: parseFloat(r.gstPercent),
+          lineTotal: parseFloat(r.lineTotal),
+          icon: r.icon,
+          imageUrl: r.imageUrl,
+          unit: r.unit,
+        }));
         return reply.send({
           deliveryDate: params.date,
           exists: true,
