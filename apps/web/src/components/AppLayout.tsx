@@ -26,7 +26,7 @@ export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType
   { key: "sales",          label: "Sales",          icon: ShoppingCart,    path: "/sales/record-indents" },
   { key: "fgs",            label: "Stock & Dispatch", icon: Truck,         path: "/fgs/dashboard" },
   { key: "finance",        label: "Finance",        icon: Wallet,          path: "/finance/payments" },
-  { key: "reports",        label: "Reports",        icon: FileBarChart2,   path: "/reports/route-sheet" },
+  { key: "reports",        label: "Route Sheets",        icon: FileBarChart2,   path: "/reports/route-sheet" },
   { key: "sales-reports",  label: "Sales Reports", icon: FileBarChart2,   path: "/sales-reports/daily-statement" },
   { key: "system",         label: "Admin",          icon: ShieldCheck,     path: "/system/users" },
 ];

@@ -643,7 +643,7 @@ function CustomerViewDialog({
           <Row label="Address Type" value={(customer as any).addressType} />
           <Row label="State" value={(customer as any).state} />
           <Row label="Taluka" value={(customer as any).zoneName} />
-          <Row label="City" value={(customer as any).city} />
+          <Row label="District" value={(customer as any).city} />
           <Row label="Area" value={(customer as any).area} />
           <Row label="House No." value={(customer as any).houseNo} />
           <Row label="Street" value={(customer as any).street} />
@@ -870,7 +870,7 @@ function CustomerFormBody({
             className="w-full"
           />
         </Field>
-        <Field label="City" hint="F9">
+        <Field label="District" hint="F9">
           <F9SearchSelect
             value={form.watch("city") || null}
             onChange={v => form.setValue("city", v ?? "")}

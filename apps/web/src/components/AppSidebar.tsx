@@ -88,7 +88,7 @@ const MODULE_LABEL: Record<ModuleKey, string> = {
   sales: "Sales Operations",
   fgs: "FGS — Stock & Dispatch",
   finance: "Finance",
-  reports: "Reports",
+  reports: "Route Sheets",
   "sales-reports": "Sales Reports",
   system: "Admin",
 };

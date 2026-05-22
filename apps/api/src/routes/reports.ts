@@ -24,9 +24,11 @@ export async function reportsRoutes(app: FastifyInstance) {
       const qs = z.object({
         date: z.string(),
         batchId: z.string().uuid().optional(),
+        routeId: z.string().uuid().optional(),
       });
       const q = qs.parse(request.query);
       const batchId = q.batchId ?? null;
+      const routeId = q.routeId ?? null;
    
       // ── 1. All active products ──
       const prodRows = await pgClient`
@@ -125,6 +127,8 @@ export async function reportsRoutes(app: FastifyInstance) {
                 OR EXISTS (SELECT 1 FROM batch_routes br
                             WHERE br.route_id = r.id
                               AND br.batch_id = ${batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
+            AND (${routeId}::uuid IS NULL
+                OR r.id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
            AND EXISTS (
              SELECT 1
                FROM orders o
