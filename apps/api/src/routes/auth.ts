@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, and, sql, gt, isNull } from "drizzle-orm";
-import { db } from "../lib/db.js";
+import { db, pgClient } from "../lib/db.js";
 import {
   dealers,
   dealerRefreshTokens,
@@ -21,15 +21,12 @@ export async function authRoutes(app: FastifyInstance) {
   // ─────────────────────────────────────────────────────────────
   app.post("/api/v1/auth/dealer/login", async (request, reply) => {
     const schema = z.object({
-      username: z.string().min(1),   // can be phone or custom username
+      username: z.string().min(1), // can be phone or custom username
       password: z.string().min(1),
     });
-
+   
     const { username, password } = schema.parse(request.body);
-
-    console.log("=== LOGIN DEBUG ===");
-    console.log("Input username:", username);
-    
+   
     const [dealer] = await db
       .select({
         id: dealers.id,
@@ -40,76 +37,78 @@ export async function authRoutes(app: FastifyInstance) {
         deletedAt: dealers.deletedAt,
       })
       .from(dealers)
-      .where(
-        and(
-          eq(dealers.username, username),
-          isNull(dealers.deletedAt)
-        )
-      )
+      .where(and(eq(dealers.username, username), isNull(dealers.deletedAt)))
       .limit(1);
-
-    console.log("Found dealer:", !!dealer);
-    if (dealer) {
-      console.log("Dealer ID:", dealer.id);
-      console.log("Active:", dealer.active);
-      console.log("DeletedAt:", dealer.deletedAt);
-      console.log("Has passwordHash:", !!dealer.passwordHash);
-      console.log("Hash length:", dealer.passwordHash?.length);
-    }
-
+   
     if (!dealer) {
-      return reply.status(401).send({ error: "Unauthorized", message: "Invalid username or password" });
+      return reply
+        .status(401)
+        .send({ error: "Unauthorized", message: "Invalid username or password" });
     }
-  
     if (!dealer.active) {
-      console.log("❌ Dealer is NOT ACTIVE");
-      return reply.status(401).send({ error: "Unauthorized", message: "Account is inactive" });
+      return reply
+        .status(401)
+        .send({ error: "Unauthorized", message: "Account is inactive" });
     }
-  
     if (dealer.deletedAt) {
-      console.log("❌ Dealer is deleted");
-      return reply.status(401).send({ error: "Unauthorized", message: "Invalid username or password" });
+      return reply
+        .status(401)
+        .send({ error: "Unauthorized", message: "Invalid username or password" });
     }
-
-    const passwordMatch = await comparePassword(password, dealer.passwordHash || "");
-    console.log("Password match:", passwordMatch);
+   
+    const passwordMatch = await comparePassword(
+      password,
+      dealer.passwordHash || ""
+    );
     if (!passwordMatch) {
-      return reply.status(401).send({
-        error: "Unauthorized",
-        message: "Invalid username or password",
-      });
+      return reply
+        .status(401)
+        .send({ error: "Unauthorized", message: "Invalid username or password" });
     }
-
-    // === If we reach here → should succeed ===
-    console.log("✅ All checks passed, generating tokens...");
-
-    // Generate tokens
+   
+    // ── Issue tokens ──
     const payload = {
       dealerId: dealer.id,
       phone: dealer.phone,
       zoneId: dealer.zoneId,
     };
-
     const accessToken = signDealerAccessToken(payload);
     const refreshToken = signDealerRefreshToken({ ...payload, family: "dealer" });
-
-    // Store refresh token
+   
     await db.insert(dealerRefreshTokens).values({
       dealerId: dealer.id,
       token: refreshToken,
       family: "dealer",
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
-
-    console.log("✅ Login successful for dealer:", dealer.id);
-
+   
+    // ── FIX: return the FULL dealer profile, not just { id, phone } ──
+    // Same query as GET /api/v1/dealer/profile, but with LEFT JOIN zones
+    // so a dealer whose zone_id is still NULL can log in (the inner JOIN
+    // version 404s such dealers).
+    const [profile] = await pgClient`
+      SELECT d.*,
+             z.name AS zone_name,
+             COALESCE(w.balance, 0) AS wallet_balance,
+             COALESCE((
+               SELECT SUM(o.grand_total) FROM orders o
+                WHERE o.dealer_id = d.id
+                  AND o.payment_mode = 'credit'
+                  AND o.status NOT IN ('cancelled', 'delivered')
+             ), 0) AS credit_outstanding
+        FROM dealers d
+        LEFT JOIN zones z          ON z.id = d.zone_id
+        LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
+       WHERE d.id = ${dealer.id} AND d.deleted_at IS NULL
+       LIMIT 1
+    `;
+   
     return reply.send({
       accessToken,
       refreshToken,
-      dealer: {
-        id: dealer.id,
-        phone: dealer.phone,
-      },
+      // profile should always exist here (we just authenticated this row),
+      // but fall back defensively.
+      dealer: profile ?? { id: dealer.id, phone: dealer.phone },
     });
   });
 
