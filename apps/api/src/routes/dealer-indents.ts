@@ -166,14 +166,13 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     }
   );
 
-  // ── GET /api/v1/dealer/drafts/:date ──
   app.get(
     "/api/v1/dealer/drafts/:date",
     { preHandler: [dealerAuth] },
     async (request, reply) => {
       const dealerId = getDealerId(request);
       const params = z.object({ date: isoDate }).parse(request.params);
-
+   
       // Pause check
       const pausedRow = await pgClient`
         SELECT reason FROM dealer_indent_pauses
@@ -193,21 +192,24 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           totals: { subtotal: 0, totalGst: 0, grandTotal: 0 },
         });
       }
-
-      // Existing draft / pending / payment_required order?
+   
+      // ── FIX: surface the order in ANY non-cancelled status, not just
+      // draft/pending/payment_required. This is what lets the app show a
+      // read-only "Indent placed" view for confirmed/dispatched/delivered
+      // orders instead of (wrongly) re-synthesizing an editable preview.
       const existing = await pgClient`
         SELECT o.id, o.status::text AS status,
-               o.subtotal::numeric AS subtotal,
-               o.total_gst::numeric AS total_gst,
+               o.subtotal::numeric    AS subtotal,
+               o.total_gst::numeric   AS total_gst,
                o.grand_total::numeric AS grand_total
           FROM orders o
          WHERE o.dealer_id = ${dealerId}
            AND o.delivery_date = ${params.date}::date
-           AND o.status IN ('draft', 'pending', 'payment_required')
+           AND o.status <> 'cancelled'
          ORDER BY o.created_at DESC
          LIMIT 1
       `;
-
+   
       if (existing.length > 0) {
         const order = existing[0]!;
         const items = await pgClient`
@@ -231,7 +233,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           exists: true,
           paused: false,
           orderId: order.id,
-          status: order.status,
+          status: order.status, // draft | pending | payment_required | confirmed | dispatched | delivered
           items,
           totals: {
             subtotal: parseFloat(order.subtotal),
@@ -240,8 +242,9 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           },
         });
       }
-
-      // Synthesize from standing indent
+   
+      // No order at all (or only a cancelled one) → synthesize a preview
+      // from the standing indent.
       const standing = await pgClient`
         SELECT
           dsi.product_id          AS "productId",
@@ -261,7 +264,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           AND dsi.default_qty > 0
         ORDER BY p.sort_order, p.name
       `;
-
+   
       let subtotal = 0;
       let totalGst = 0;
       const items = standing.map((r: any) => {
@@ -283,7 +286,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           unit: r.unit,
         };
       });
-
+   
       return reply.send({
         deliveryDate: params.date,
         exists: false,
@@ -298,7 +301,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       });
     }
   );
-
+   
   // ── PATCH /api/v1/dealer/drafts/:date ──
   app.patch(
     "/api/v1/dealer/drafts/:date",
@@ -307,7 +310,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       const dealerId = getDealerId(request);
       const zoneId = getDealerZoneId(request);
       const params = z.object({ date: isoDate }).parse(request.params);
-
+   
       const schema = z.object({
         items: z.array(
           z.object({
@@ -318,16 +321,36 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
       const lineItems = body.items.filter((i) => i.quantity > 0);
-
+   
+      // ── FIX: if an order for this date already exists and is no longer a
+      // draft, it has been placed — reject the edit instead of mutating a
+      // placed order or inserting a duplicate.
+      const [active] = await pgClient`
+        SELECT id, status::text AS status FROM orders
+         WHERE dealer_id = ${dealerId}
+           AND delivery_date = ${params.date}::date
+           AND status <> 'cancelled'
+         ORDER BY created_at DESC
+         LIMIT 1
+      `;
+      if (active && active.status !== "draft") {
+        return reply.status(409).send({
+          error: "Order already placed",
+          message:
+            "This date's indent is already confirmed and can no longer be edited.",
+          status: active.status,
+        });
+      }
+   
       const productRows =
         lineItems.length > 0
           ? await pgClient`
               SELECT
-                id::text                  AS "id",
-                name                      AS "name",
-                base_price::numeric       AS "basePrice",
-                gst_percent::numeric      AS "gstPercent",
-                available                 AS "available"
+                id::text             AS "id",
+                name                 AS "name",
+                base_price::numeric  AS "basePrice",
+                gst_percent::numeric AS "gstPercent",
+                available            AS "available"
               FROM products
               WHERE id = ANY(${lineItems.map((i) => i.productId)}::uuid[])
                 AND deleted_at IS NULL
@@ -336,14 +359,13 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       const productMap = new Map<string, any>(
         productRows.map((p: any) => [p.id, p])
       );
-
+   
       for (const it of lineItems) {
         const p = productMap.get(it.productId);
         if (!p) {
-          return reply.status(400).send({
-            error: "Product not found",
-            productId: it.productId,
-          });
+          return reply
+            .status(400)
+            .send({ error: "Product not found", productId: it.productId });
         }
         if (!p.available) {
           return reply.status(400).send({
@@ -353,7 +375,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           });
         }
       }
-
+   
       let subtotal = 0;
       let totalGst = 0;
       let itemCount = 0;
@@ -376,28 +398,30 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         };
       });
       const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
-
+   
       const orderId = await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
-
+   
+        // Only ever update an existing DRAFT. (A placed order was already
+        // rejected above; this guard keeps the transaction consistent.)
         const [existing] = await tx`
           SELECT id FROM orders
            WHERE dealer_id = ${dealerId}
              AND delivery_date = ${params.date}::date
-             AND status IN ('draft', 'pending', 'payment_required')
+             AND status = 'draft'
            ORDER BY created_at DESC
            LIMIT 1
         `;
-
+   
         let id: string;
         if (existing) {
           await tx`
             UPDATE orders SET
-              subtotal     = ${subtotal.toFixed(2)}::numeric,
-              total_gst    = ${totalGst.toFixed(2)}::numeric,
-              grand_total  = ${grandTotal.toFixed(2)}::numeric,
-              item_count   = ${itemCount},
-              updated_at   = now()
+              subtotal    = ${subtotal.toFixed(2)}::numeric,
+              total_gst   = ${totalGst.toFixed(2)}::numeric,
+              grand_total = ${grandTotal.toFixed(2)}::numeric,
+              item_count  = ${itemCount},
+              updated_at  = now()
             WHERE id = ${existing.id}::uuid
           `;
           await tx`DELETE FROM order_items WHERE order_id = ${existing.id}::uuid`;
@@ -420,7 +444,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           `;
           id = created!.id;
         }
-
+   
         for (const oi of orderItemsRows) {
           await tx`
             INSERT INTO order_items (
@@ -435,7 +459,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         }
         return id;
       });
-
+   
       return reply.send({
         orderId,
         deliveryDate: params.date,
@@ -449,7 +473,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       });
     }
   );
-
+   
   // ── POST /api/v1/dealer/drafts/:date/confirm ──
   app.post(
     "/api/v1/dealer/drafts/:date/confirm",
@@ -457,74 +481,88 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const dealerId = getDealerId(request);
       const params = z.object({ date: isoDate }).parse(request.params);
-
+   
       const schema = z.object({
         paymentMode: z.enum(["credit", "razorpay"]),
         razorpayPaymentId: z.string().optional(),
       });
       const body = schema.parse(request.body);
-
-      const [draft] = await pgClient`
-        SELECT id, grand_total::numeric AS grand_total, item_count
+   
+      // Look at ANY non-cancelled order for this date (not just 'draft').
+      const [order] = await pgClient`
+        SELECT id, status::text AS status,
+               grand_total::numeric AS grand_total, item_count
           FROM orders
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${params.date}::date
-           AND status = 'draft'
+           AND status <> 'cancelled'
          ORDER BY created_at DESC
          LIMIT 1
       `;
-
-      if (!draft) {
+   
+      if (!order) {
         return reply.status(404).send({
-          error: "No draft to confirm",
-          message: "There's no draft order for this date. Edit the draft first.",
+          error: "No indent to confirm",
+          message: "There's no indent for this date yet. Add items first.",
         });
       }
-      if (draft.item_count === 0) {
+   
+      // ── FIX: already placed → return it idempotently (200) instead of a
+      // confusing 404. A double-tap / retry now just succeeds.
+      if (order.status !== "draft" && order.status !== "payment_required") {
+        return reply.send({
+          orderId: order.id,
+          status: order.status,
+          deliveryDate: params.date,
+          alreadyConfirmed: true,
+        });
+      }
+   
+      if (order.item_count === 0) {
         return reply.status(400).send({
-          error: "Empty draft",
-          message: "Cannot confirm an empty draft. Add items first.",
+          error: "Empty indent",
+          message: "Cannot confirm an empty indent. Add items first.",
         });
       }
-
-      const grandTotal = parseFloat(draft.grand_total);
-
+   
+      const grandTotal = parseFloat(order.grand_total);
+   
       if (body.paymentMode === "razorpay") {
         return reply.status(501).send({
           error: "Not implemented",
           message: "Use the dedicated pay-now endpoint for Razorpay payment.",
         });
       }
-
+   
       const credit = await checkDealerCredit(dealerId, grandTotal);
-
+   
       if (!credit.sufficient) {
         await pgClient`
           UPDATE orders
              SET status = 'payment_required', updated_at = now()
-           WHERE id = ${draft.id}::uuid
+           WHERE id = ${order.id}::uuid
         `;
         return reply.status(402).send({
           error: "Credit limit exceeded",
           message: `Order is over your available credit by ₹${credit.shortfall.toFixed(
             2
           )}`,
-          orderId: draft.id,
+          orderId: order.id,
           credit,
         });
       }
-
+   
       await pgClient`
         UPDATE orders
            SET status = 'pending',
                payment_mode = 'credit',
                confirmed_at = now(),
                updated_at = now()
-         WHERE id = ${draft.id}::uuid
+         WHERE id = ${order.id}::uuid
       `;
-
+   
       return reply.send({
-        orderId: draft.id,
+        orderId: order.id,
         status: "pending",
         deliveryDate: params.date,
         credit,
