@@ -437,7 +437,7 @@ export function CustomerForm({
               />
             </Field>
 
-            <Field label="City" error={form.formState.errors.city?.message}>
+            <Field label="District" error={form.formState.errors.city?.message}>
               <FormField
                 control={form.control}
                 name="city"

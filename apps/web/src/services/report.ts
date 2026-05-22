@@ -112,8 +112,11 @@ export interface RouteSheetResponse {
   routes: RouteSheetRoute[];
 }
  
-export const fetchRouteSheet = (params: { date: string; batchId?: string }) =>
-  get<RouteSheetResponse>("/reports/route-sheet", params);
+export const fetchRouteSheet = (params: {
+  date: string;
+  batchId?: string;
+  routeId?: string;   // all routes
+}) => get<RouteSheetResponse>("/reports/route-sheet", params);
 
 // ═══════════════════════════════════════════════════════════════
 // A2. Gate Pass Report

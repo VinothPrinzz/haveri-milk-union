@@ -26,7 +26,7 @@
 //        number from the unit text — "500ml Pouch" → 500 (ml), "5KG" → 5 (Kg).
 //   4. Security page: Crates Out (prefilled) and Crates In (blank).
 // ════════════════════════════════════════════════════════════════════
-import { useState, type ReactNode } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import {
@@ -35,6 +35,8 @@ import {
 import { fmtNum, fmtINR, fmtDate } from "@/components/PageHeader";
 import ReportShell, { type Exporter } from "@/components/ReportShell";
 import { fetchBatches } from "@/services/api";
+import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
+import { fetchRoutes } from "@/services/api";
 import {
   fetchRouteSheet,
   type RouteSheetResponse,
@@ -111,13 +113,25 @@ export default function RouteSheetPage() {
   const today = new Date().toISOString().split("T")[0];
   const [batch, setBatch] = useState<string>("");
   const [date, setDate] = useState<string>(today);
+  const [routeId, setRouteId]   = useState<string | null>(null);
   const [generated, setGenerated] = useState(false);
 
   const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
+  const { data: routes  = [] } = useQuery({ queryKey: ["routes"],  queryFn: fetchRoutes  });
+
+  // ── F9 option list for routes ──────────────────────────────────
+  const routeOptions: F9Option[] = useMemo(
+    () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
+    [routes]
+  );
 
   const { data, isLoading, refetch } = useQuery<RouteSheetResponse>({
-    queryKey: ["route-sheet", date, batch],
-    queryFn: () => fetchRouteSheet({ date, batchId: batch || undefined }),
+    queryKey: ["route-sheet", date, batch, routeId],   // ← routeId added
+    queryFn: () => fetchRouteSheet({
+      date,
+      batchId:  batch   || undefined,
+      routeId:  routeId || undefined,                  // ← NEW
+    }),
     enabled: false,
   });
 
@@ -230,14 +244,20 @@ export default function RouteSheetPage() {
       printOrientation="landscape"
       filters={
         <>
+          {/* Date */}
           <div>
             <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
               Date
             </label>
-            <Input type="date" value={date}
-                   onChange={e => setDate(e.target.value)}
-                   className="erp-input w-40" />
+            <Input
+              type="date"
+              value={date}
+              onChange={e => setDate(e.target.value)}
+              className="erp-input w-40"
+            />
           </div>
+ 
+          {/* Batch */}
           <div>
             <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
               Batch
@@ -254,11 +274,27 @@ export default function RouteSheetPage() {
               </SelectContent>
             </Select>
           </div>
+ 
+          {/* Routes — NEW F9SearchSelect */}
+          <div>
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
+              Route
+            </label>
+            <F9SearchSelect
+              value={routeId}
+              onChange={v => setRouteId(v)}
+              options={routeOptions}
+              allowAll
+              allLabel="All Routes"
+              placeholder="All Routes (F9)"
+              modalTitle="Select Route"
+              className="w-52"
+            />
+          </div>
         </>
       }
       onGenerate={handleGenerate}
       exporters={exporters}
-      /* No global printMeta — each page renders its own letterhead. */
       state={{
         generated,
         loading: isLoading,
