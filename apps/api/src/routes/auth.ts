@@ -13,6 +13,7 @@ import {
   signDealerRefreshToken,
   comparePassword,
   generateSessionToken,
+  verifyDealerRefreshToken,
 } from "../lib/auth.js";
 
 export async function authRoutes(app: FastifyInstance) {
@@ -110,6 +111,61 @@ export async function authRoutes(app: FastifyInstance) {
       // but fall back defensively.
       dealer: profile ?? { id: dealer.id, phone: dealer.phone },
     });
+  });
+
+  // POST /api/v1/auth/dealer/refresh
+  app.post("/api/v1/auth/dealer/refresh", async (request, reply) => {
+    const { refreshToken } = z
+      .object({ refreshToken: z.string().min(1) })
+      .parse(request.body);
+
+    let payload: ReturnType<typeof verifyDealerRefreshToken>;
+    try {
+      payload = verifyDealerRefreshToken(refreshToken);
+    } catch {
+      return reply.status(401).send({ error: "Unauthorized", message: "Invalid or expired refresh token" });
+    }
+
+    // Check it exists and isn't revoked
+    const [row] = await db
+      .select()
+      .from(dealerRefreshTokens)
+      .where(
+        and(
+          eq(dealerRefreshTokens.token, refreshToken),
+          isNull(dealerRefreshTokens.revokedAt),
+          gt(dealerRefreshTokens.expiresAt, new Date())
+        )
+      )
+      .limit(1);
+
+    if (!row) {
+      return reply.status(401).send({ error: "Unauthorized", message: "Refresh token revoked or not found" });
+    }
+
+    // Rotate — revoke old, issue new
+    const tokenPayload = {
+      dealerId: payload.dealerId,
+      phone: payload.phone,
+      zoneId: payload.zoneId,
+    };
+
+    const newAccessToken = signDealerAccessToken(tokenPayload);
+    const newRefreshToken = signDealerRefreshToken({ ...tokenPayload, family: row.family });
+
+    await db
+      .update(dealerRefreshTokens)
+      .set({ revokedAt: new Date() })
+      .where(eq(dealerRefreshTokens.id, row.id));
+
+    await db.insert(dealerRefreshTokens).values({
+      dealerId: payload.dealerId,
+      token: newRefreshToken,
+      family: row.family,
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+
+    return reply.send({ accessToken: newAccessToken, refreshToken: newRefreshToken });
   });
 
   // ════════════════════════════════════════════
