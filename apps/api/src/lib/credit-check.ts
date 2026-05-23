@@ -74,9 +74,8 @@ export async function checkDealerCredit(
 
   const creditLimit = parseFloat(row.credit_limit);
   const closing     = parseFloat(row.closing_balance);
-  // Negative closing balance = dealer owes us → that is the outstanding.
   const outstanding = closing < 0 ? -closing : 0;
-  const available   = Math.max(0, creditLimit - outstanding);
+  const available   = Math.max(0, creditLimit + closing);   // was: creditLimit - outstanding
   const sufficient = orderTotal <= available;
   const shortfall = sufficient ? 0 : Math.round((orderTotal - available) * 100) / 100;
 

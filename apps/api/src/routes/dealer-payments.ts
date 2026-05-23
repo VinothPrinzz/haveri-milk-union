@@ -94,23 +94,23 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
 
     const amount = parseFloat(row.amount);
 
-    // === FIX 3c: Calculate correct balance_after ===
-    const [bal] = await tx`
-      SELECT COALESCE(d.opening_balance, 0)
-           + COALESCE((
-               SELECT SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
-                               WHEN dl.type = 'debit'  THEN -dl.amount END)
-                 FROM dealer_ledger dl
-                WHERE dl.dealer_id = d.id
-                  AND COALESCE(dl.voucher_type, '') <> 'Opening'
-             ), 0) AS bal
-        FROM dealers d
-       WHERE d.id = ${row.dealerId}::uuid
-    `;
+    // === FIX C: Decide whether to write ledger credit ===
+    let writeLedgerCredit = row.kind === "credit_topup";
 
-    const balanceAfter = parseFloat(bal!.bal) + amount;   // credit increases balance
+    if (row.kind === "order_payment" && row.orderId) {
+      // Only post credit if this order was previously placed on credit
+      // (i.e., has a matching debit entry)
+      const [debit] = await tx`
+        SELECT 1 FROM dealer_ledger
+         WHERE reference_type = 'order' 
+           AND reference_id = ${row.orderId}::uuid
+           AND type = 'debit' 
+         LIMIT 1
+      `;
+      writeLedgerCredit = !!debit;
+    }
 
-    // === Insert Payment ===
+    // === Insert Payment (always done) ===
     const [paymentRow] = await tx`
       INSERT INTO payments (
         dealer_id, received_date, amount, mode, reference
@@ -124,33 +124,53 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
       RETURNING id
     `;
 
-    const description =
-      row.kind === "credit_topup"
-        ? `Razorpay top-up via app (${row.rzpPaymentId})`
-        : `Razorpay payment for order (${row.rzpPaymentId})`;
+    // === Insert Ledger Credit (only when appropriate) ===
+    if (writeLedgerCredit) {
+      // Calculate correct balance_after
+      const [bal] = await tx`
+        SELECT COALESCE(d.opening_balance, 0)
+             + COALESCE((
+                 SELECT SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
+                                 WHEN dl.type = 'debit'  THEN -dl.amount END)
+                   FROM dealer_ledger dl
+                  WHERE dl.dealer_id = d.id
+                    AND COALESCE(dl.voucher_type, '') <> 'Opening'
+               ), 0) AS bal
+          FROM dealers d
+         WHERE d.id = ${row.dealerId}::uuid
+      `;
 
-    const refType: string =
-      row.kind === "credit_topup" ? "wallet_topup" : "order";
+      const balanceAfter = parseFloat(bal!.bal) + amount;
 
-    await tx`
-      INSERT INTO dealer_ledger (
-        dealer_id, type, amount,
-        reference_id, reference_type,
-        description, balance_after,
-        voucher_no, voucher_type, particulars, voucher_date
-      ) VALUES (
-        ${row.dealerId}::uuid, 'credit',
-        ${amount.toFixed(2)}::numeric,
-        ${paymentRow!.id}::uuid,
-        ${refType}::ledger_ref_type,
-        ${description},
-        ${balanceAfter.toFixed(2)}::numeric,           -- ← Fixed here
-        ${`RP-${String(row.rzpPaymentId).slice(-8).toUpperCase()}`},
-        'Receipt', ${description},
-        (now() AT TIME ZONE 'Asia/Kolkata')::date
-      )
-    `;
+      const description =
+        row.kind === "credit_topup"
+          ? `Razorpay top-up via app (${row.rzpPaymentId})`
+          : `Razorpay payment for order (${row.rzpPaymentId})`;
 
+      const refType: string =
+        row.kind === "credit_topup" ? "wallet_topup" : "order";
+
+      await tx`
+        INSERT INTO dealer_ledger (
+          dealer_id, type, amount,
+          reference_id, reference_type,
+          description, balance_after,
+          voucher_no, voucher_type, particulars, voucher_date
+        ) VALUES (
+          ${row.dealerId}::uuid, 'credit',
+          ${amount.toFixed(2)}::numeric,
+          ${paymentRow!.id}::uuid,
+          ${refType}::ledger_ref_type,
+          ${description},
+          ${balanceAfter.toFixed(2)}::numeric,
+          ${`RP-${String(row.rzpPaymentId).slice(-8).toUpperCase()}`},
+          'Receipt', ${description},
+          (now() AT TIME ZONE 'Asia/Kolkata')::date
+        )
+      `;
+    }
+
+    // === Update Order Status (always done for order_payment) ===
     if (row.kind === "order_payment" && row.orderId) {
       await tx`
         UPDATE orders
