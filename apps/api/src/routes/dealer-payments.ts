@@ -94,12 +94,13 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
 
     const [paymentRow] = await tx`
       INSERT INTO payments (
-        dealer_id, mode, amount, reference, status, received_at
+        dealer_id, received_date, amount, mode, reference
       ) VALUES (
-        ${row.dealerId}::uuid, 'upi',
+        ${row.dealerId}::uuid,
+        (now() AT TIME ZONE 'Asia/Kolkata')::date,
         ${amount.toFixed(2)}::numeric,
-        ${row.rzpPaymentId}, 'received',
-        now()
+        'upi',
+        ${row.rzpPaymentId}
       )
       RETURNING id
     `;
