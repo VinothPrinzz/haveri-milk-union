@@ -56,6 +56,28 @@ const app = Fastify({
   },
 });
 
+// ── Raw-body capture ──────────────────────────────────
+// Razorpay webhook signature is an HMAC over the exact request
+// bytes, so we need the raw body. Replace Fastify's default JSON
+// parser with one that stashes the raw string on the request.
+app.removeContentTypeParser("application/json");
+app.addContentTypeParser(
+  "application/json",
+  { parseAs: "buffer" },
+  (req, body, done) => {
+    (req as any).rawBody = (body as Buffer).toString("utf8");
+    try {
+      const json = (body as Buffer).length
+        ? JSON.parse((body as Buffer).toString("utf8"))
+        : {};
+      done(null, json);
+    } catch (err) {
+      (err as Error & { statusCode?: number }).statusCode = 400;
+      done(err as Error, undefined);
+    }
+  }
+);
+
 // ── Plugins ───────────────────────────────────────────
 await app.register(cors, {
   origin: env.NODE_ENV === "production"

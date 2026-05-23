@@ -54,16 +54,18 @@ export async function checkDealerCredit(
   const [row] = await pgClient`
     SELECT
       COALESCE(d.credit_limit, 0)::numeric AS credit_limit,
-      COALESCE((
-        SELECT SUM(o.grand_total) FROM orders o
-         WHERE o.dealer_id = d.id
-           AND o.payment_mode = 'credit'
-           AND o.status NOT IN ('cancelled', 'delivered',
-                                 'draft', 'payment_required')
-      ), 0)::numeric AS outstanding
+      (
+        COALESCE(d.opening_balance, 0)
+        + COALESCE((
+            SELECT SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
+                            WHEN dl.type = 'debit'  THEN -dl.amount END)
+              FROM dealer_ledger dl
+            WHERE dl.dealer_id = d.id
+              AND COALESCE(dl.voucher_type, '') <> 'Opening'
+          ), 0)
+      )::numeric AS closing_balance
     FROM dealers d
-    WHERE d.id = ${dealerId}
-      AND d.deleted_at IS NULL
+    WHERE d.id = ${dealerId} AND d.deleted_at IS NULL
   `;
 
   if (!row) {
@@ -71,8 +73,10 @@ export async function checkDealerCredit(
   }
 
   const creditLimit = parseFloat(row.credit_limit);
-  const outstanding = parseFloat(row.outstanding);
-  const available = Math.max(0, creditLimit - outstanding);
+  const closing     = parseFloat(row.closing_balance);
+  // Negative closing balance = dealer owes us → that is the outstanding.
+  const outstanding = closing < 0 ? -closing : 0;
+  const available   = Math.max(0, creditLimit - outstanding);
   const sufficient = orderTotal <= available;
   const shortfall = sufficient ? 0 : Math.round((orderTotal - available) * 100) / 100;
 

@@ -744,20 +744,28 @@ export async function dealerRoutes(app: FastifyInstance) {
       const dealerId = (request as unknown as { dealer: { dealerId: string } })
         .dealer.dealerId;
         const [dealer] = await pgClient`
-        SELECT d.*,
-               z.name AS zone_name,
-               COALESCE(w.balance, 0) AS wallet_balance,
-               COALESCE((
-                 SELECT SUM(o.grand_total) FROM orders o
-                  WHERE o.dealer_id = d.id
-                    AND o.payment_mode = 'credit'
-                    AND o.status NOT IN ('cancelled','delivered')
-               ), 0) AS credit_outstanding
-        FROM dealers d
-        JOIN zones z ON z.id = d.zone_id
-        LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
-        WHERE d.id = ${dealerId} AND d.deleted_at IS NULL LIMIT 1
-      `;
+          SELECT d.*,
+                z.name AS zone_name,
+                COALESCE(w.balance, 0) AS wallet_balance,
+                GREATEST(0, -led.closing_balance)::numeric AS credit_outstanding,
+                GREATEST(0, COALESCE(d.credit_limit, 0)
+                            - GREATEST(0, -led.closing_balance))::numeric AS credit_available
+          FROM dealers d
+          JOIN zones z ON z.id = d.zone_id
+          LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
+          CROSS JOIN LATERAL (
+            SELECT COALESCE(d.opening_balance, 0)
+                + COALESCE((
+                    SELECT SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
+                                    WHEN dl.type = 'debit'  THEN -dl.amount END)
+                      FROM dealer_ledger dl
+                      WHERE dl.dealer_id = d.id
+                        AND COALESCE(dl.voucher_type, '') <> 'Opening'
+                  ), 0) AS closing_balance
+          ) led
+          WHERE d.id = ${dealerId} AND d.deleted_at IS NULL
+          LIMIT 1
+        `;
       if (!dealer) return reply.status(404).send({ error: "Not found" });
       return reply.send({ dealer });
     },

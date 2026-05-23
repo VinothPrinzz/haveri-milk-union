@@ -67,6 +67,7 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
        WHERE id = ${rzpRowId}::uuid
        FOR UPDATE
     `;
+
     if (!row) throw new Error(`razorpay_payments row ${rzpRowId} not found`);
     if (row.status !== "paid") {
       throw new Error(
@@ -80,6 +81,7 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
          AND mode = 'upi'
        LIMIT 1
     `;
+
     if (existing) {
       return {
         alreadyApplied: true,
@@ -92,6 +94,23 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
 
     const amount = parseFloat(row.amount);
 
+    // === FIX 3c: Calculate correct balance_after ===
+    const [bal] = await tx`
+      SELECT COALESCE(d.opening_balance, 0)
+           + COALESCE((
+               SELECT SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
+                               WHEN dl.type = 'debit'  THEN -dl.amount END)
+                 FROM dealer_ledger dl
+                WHERE dl.dealer_id = d.id
+                  AND COALESCE(dl.voucher_type, '') <> 'Opening'
+             ), 0) AS bal
+        FROM dealers d
+       WHERE d.id = ${row.dealerId}::uuid
+    `;
+
+    const balanceAfter = parseFloat(bal!.bal) + amount;   // credit increases balance
+
+    // === Insert Payment ===
     const [paymentRow] = await tx`
       INSERT INTO payments (
         dealer_id, received_date, amount, mode, reference
@@ -109,6 +128,7 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
       row.kind === "credit_topup"
         ? `Razorpay top-up via app (${row.rzpPaymentId})`
         : `Razorpay payment for order (${row.rzpPaymentId})`;
+
     const refType: string =
       row.kind === "credit_topup" ? "wallet_topup" : "order";
 
@@ -124,7 +144,7 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
         ${paymentRow!.id}::uuid,
         ${refType}::ledger_ref_type,
         ${description},
-        0::numeric,
+        ${balanceAfter.toFixed(2)}::numeric,           -- ← Fixed here
         ${`RP-${String(row.rzpPaymentId).slice(-8).toUpperCase()}`},
         'Receipt', ${description},
         (now() AT TIME ZONE 'Asia/Kolkata')::date
@@ -164,21 +184,12 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
   // JSON parser, so this is usually a no-op and the webhook degrades
   // gracefully (see the handler below). To fully enable the webhook,
   // register a raw-body JSON parser at the server level instead.
+  // DELETE this whole block — the server-level parser handles it now:
   if (!app.hasContentTypeParser("application/json")) {
     app.addContentTypeParser(
       "application/json",
       { parseAs: "buffer" },
-      (_req, body, done) => {
-        try {
-          (_req as any).rawBody = (body as Buffer).toString("utf8");
-          const parsed = body.length
-            ? JSON.parse((body as Buffer).toString("utf8"))
-            : {};
-          done(null, parsed);
-        } catch (err) {
-          done(err as Error, undefined);
-        }
-      }
+      (_req, body, done) => { /* ... */ }
     );
   }
 
@@ -430,13 +441,13 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
           id::text,
           razorpay_order_id   AS "razorpayOrderId",
           razorpay_payment_id AS "razorpayPaymentId",
-          amount::numeric     AS amount,
+          amount::float8      AS amount,
           currency,
           kind::text          AS kind,
           status::text        AS status,
           order_id::text      AS "orderId",
-          paid_at             AS "paidAt",
-          created_at          AS "createdAt",
+          to_char(paid_at    AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "paidAt",
+          to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "createdAt",
           error_description   AS "errorDescription"
         FROM razorpay_payments
         WHERE dealer_id = ${dealerId}::uuid
