@@ -747,9 +747,9 @@ export async function dealerRoutes(app: FastifyInstance) {
           SELECT d.*,
                 z.name AS zone_name,
                 COALESCE(w.balance, 0) AS wallet_balance,
-                GREATEST(0, -led.closing_balance)::numeric AS credit_outstanding,
-                GREATEST(0, COALESCE(d.credit_limit, 0)
-                            - GREATEST(0, -led.closing_balance))::numeric AS credit_available
+                GREATEST(0, -led.closing_balance)::numeric                          AS credit_outstanding,
+                led.closing_balance::numeric                                        AS ledger_balance,
+                GREATEST(0, COALESCE(d.credit_limit, 0) + led.closing_balance)::numeric AS credit_available
           FROM dealers d
           JOIN zones z ON z.id = d.zone_id
           LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
