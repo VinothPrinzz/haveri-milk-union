@@ -502,13 +502,13 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const dealerId = getDealerId(request);
       const params = z.object({ date: isoDate }).parse(request.params);
-   
+ 
       const schema = z.object({
         paymentMode: z.enum(["credit", "razorpay"]),
         razorpayPaymentId: z.string().optional(),
       });
       const body = schema.parse(request.body);
-   
+ 
       // Look at ANY non-cancelled order for this date (not just 'draft').
       const [order] = await pgClient`
         SELECT id, status::text AS status,
@@ -520,16 +520,15 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
          ORDER BY created_at DESC
          LIMIT 1
       `;
-   
+ 
       if (!order) {
         return reply.status(404).send({
           error: "No indent to confirm",
           message: "There's no indent for this date yet. Add items first.",
         });
       }
-   
-      // ── FIX: already placed → return it idempotently (200) instead of a
-      // confusing 404. A double-tap / retry now just succeeds.
+ 
+      // Already placed → idempotent success (200) on a double-tap / retry.
       if (order.status !== "draft" && order.status !== "payment_required") {
         return reply.send({
           orderId: order.id,
@@ -538,25 +537,25 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           alreadyConfirmed: true,
         });
       }
-   
+ 
       if (order.item_count === 0) {
         return reply.status(400).send({
           error: "Empty indent",
           message: "Cannot confirm an empty indent. Add items first.",
         });
       }
-   
+ 
       const grandTotal = parseFloat(order.grand_total);
-   
+ 
       if (body.paymentMode === "razorpay") {
         return reply.status(501).send({
           error: "Not implemented",
           message: "Use the dedicated pay-now endpoint for Razorpay payment.",
         });
       }
-   
+ 
       const credit = await checkDealerCredit(dealerId, grandTotal);
-   
+ 
       if (!credit.sufficient) {
         await pgClient`
           UPDATE orders
@@ -572,16 +571,53 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           credit,
         });
       }
-   
-      await pgClient`
-        UPDATE orders
-           SET status = 'pending',
-               payment_mode = 'credit',
-               confirmed_at = now(),
-               updated_at = now()
-         WHERE id = ${order.id}::uuid
-      `;
-   
+ 
+      // ── Place the order AND post the finance ledger debit atomically.
+      //    (This INSERT is the fix — without it the order never reaches
+      //    the books.)
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+ 
+        await tx`
+          UPDATE orders
+             SET status       = 'pending',
+                 payment_mode = 'credit',
+                 confirmed_at = now(),
+                 updated_at   = now()
+           WHERE id = ${order.id}::uuid
+        `;
+ 
+        const [bal] = await tx`
+          SELECT
+            COALESCE(d.opening_balance, 0)
+            + COALESCE((SELECT SUM(CASE WHEN dl.type = 'credit'
+                                         AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                        THEN dl.amount ELSE 0 END)
+                          FROM dealer_ledger dl WHERE dl.dealer_id = d.id), 0)
+            - COALESCE((SELECT SUM(CASE WHEN dl.type = 'debit'
+                                         AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                        THEN dl.amount ELSE 0 END)
+                          FROM dealer_ledger dl WHERE dl.dealer_id = d.id), 0)
+            AS bal
+          FROM dealers d WHERE d.id = ${dealerId}
+        `;
+        const balanceAfter = parseFloat(bal!.bal) - grandTotal;
+ 
+        await tx`
+          INSERT INTO dealer_ledger
+            (dealer_id, type, amount,
+             reference_id, reference_type,
+             voucher_type, voucher_date,
+             description, balance_after)
+          VALUES
+            (${dealerId}, 'debit', ${grandTotal.toFixed(2)}::numeric,
+             ${order.id}, 'order',
+             'Invoice', now()::date,
+             ${"Standing-indent order " + order.id},
+             ${balanceAfter.toFixed(2)}::numeric)
+        `;
+      });
+ 
       return reply.send({
         orderId: order.id,
         status: "pending",
