@@ -32,6 +32,7 @@ const productBaseSchema = z.object({
   gstPercent: z.coerce.number().min(0).max(50).default(0),
   categoryId: z.string().uuid(),
   icon: z.string().optional(),
+  imageUrl: z.string().url().optional().nullable(),
   unit: z.string().min(1),
   stock: z.number().int().min(0).optional().default(0),
   available: z.boolean().optional().default(true),
@@ -89,6 +90,7 @@ export async function productRoutes(app: FastifyInstance) {
   app.get("/api/v1/products", async (request, reply) => {
     const productsList = await pgClient`
       SELECT p.id, p.name, p.icon, p.unit,
+             p.image_url        AS "imageUrl",
              p.base_price   AS "basePrice",     -- Basic Price (pre-GST)
              p.dealer_price AS "dealerPrice",   -- Dealer-Price (gross)
              p.mrp,                             -- MRP
@@ -119,6 +121,7 @@ export async function productRoutes(app: FastifyInstance) {
       const offset = offsetFromPage(query.page, query.limit);
       const data = await pgClient`
         SELECT p.id, p.name, p.icon, p.unit,
+               p.image_url        AS "imageUrl",
                p.base_price   AS "basePrice",     -- Basic Price (pre-GST)
                p.dealer_price AS "dealerPrice",   -- Dealer-Price (gross)
                p.mrp,                             -- MRP
@@ -240,6 +243,7 @@ export async function productRoutes(app: FastifyInstance) {
           name = COALESCE(${body.name ?? null}, name),
           category_id = COALESCE(${body.categoryId ?? null}::uuid, category_id),
           icon = CASE WHEN ${body.icon !== undefined} THEN ${body.icon ?? null} ELSE icon END,
+          image_url = CASE WHEN ${body.imageUrl !== undefined} THEN ${body.imageUrl ?? null} ELSE image_url END,
           unit = COALESCE(${body.unit ?? null}, unit),
           base_price = ${basePrice}::numeric,
           dealer_price = ${newDealerPrice}::numeric,
