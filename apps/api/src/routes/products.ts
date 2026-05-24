@@ -246,7 +246,9 @@ export async function productRoutes(app: FastifyInstance) {
           name = COALESCE(${body.name ?? null}, name),
           category_id = COALESCE(${body.categoryId ?? null}::uuid, category_id),
           icon = CASE WHEN ${body.icon !== undefined} THEN ${body.icon ?? null} ELSE icon END,
-          image_url = CASE WHEN ${body.imageUrl !== undefined} THEN ${body.imageUrl ?? null} ELSE image_url END,
+          image_url = CASE WHEN ${body.imageUrl !== undefined}
+                          THEN ${body.imageUrl ?? null}
+                          ELSE image_url END,
           unit = COALESCE(${body.unit ?? null}, unit),
           base_price = ${basePrice}::numeric,
           dealer_price = ${newDealerPrice}::numeric,
@@ -264,9 +266,6 @@ export async function productRoutes(app: FastifyInstance) {
           credit_inst_mrp_price = COALESCE(${body.creditInstMrpPrice ?? null}::numeric, credit_inst_mrp_price),
           credit_inst_dealer_price = COALESCE(${body.creditInstDealerPrice ?? null}::numeric, credit_inst_dealer_price),
           parlour_dealer_price = COALESCE(${body.parlourDealerPrice ?? null}::numeric, parlour_dealer_price),
-          image_url = CASE WHEN ${body.imageUrl !== undefined}
-                          THEN ${body.imageUrl ?? null}
-                          ELSE image_url END,
           updated_at = now()
         WHERE id = ${id} AND deleted_at IS NULL
         RETURNING *
