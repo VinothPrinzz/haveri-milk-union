@@ -35,6 +35,7 @@ import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
 import InvoicesListPage from "@/pages/sales/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
 import PaymentsOverviewPage from "@/pages/finance/PaymentsOverviewPage";
+import DealerIndentsPage from "@/pages/sales/DealerIndentsPage";
 // import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
 import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
@@ -103,6 +104,7 @@ function AppInner() {
           <Route path="/sales/record-indents" element={<RecordIndentsPage />} />
           <Route path="/sales/post-indent" element={<PostIndentPage />} />
           <Route path="/sales/all-indents" element={<AllIndentsPage />} />
+          <Route path="/sales/dealer-indents" element={<DealerIndentsPage />} />
           <Route path="/sales/direct-sales/gate-pass" element={<DirectSalesPage tab="gate-pass" />} />
           <Route path="/sales/direct-sales/cash-customer" element={<DirectSalesPage tab="cash-customer" />} />
           <Route path="/sales/direct-sales/modify" element={<DirectSalesPage tab="modify" />} />

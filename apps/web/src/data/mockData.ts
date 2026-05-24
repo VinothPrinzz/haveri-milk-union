@@ -105,6 +105,7 @@ export interface Product {
   packetsCrate: number;
   status: "Active" | "Inactive";
   terminated?: boolean;
+  imageUrl?: string | null;
   rateCategories: Record<string, number>;
 }
 

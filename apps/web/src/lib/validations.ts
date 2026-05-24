@@ -137,6 +137,7 @@ export const productSchema = z.object({
   printDirection: z.enum(["Across", "Down"]).default("Across"),
   makeZeroInIndents: z.boolean().default(false),
   terminated: z.boolean().default(false),
+  imageUrl: z.string().optional().default(""),
 }).superRefine((data, ctx) => {
   if (!data.reportAlias) return;
   const direction = (data.printDirection ?? "Across") as "Across" | "Down";

@@ -43,6 +43,7 @@ import {
   updateProduct,
   deleteProduct,
   upsertProductRate,
+  getProductImagePresignUrl,
   type Product,
 } from "@/services/api";
 
@@ -261,6 +262,7 @@ function ProductAddTab() {
       subsidy: d.subsidy,
       makeZeroInIndents: d.makeZeroInIndents,
       terminated: d.terminated,
+      imageUrl: d.imageUrl || null,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["products"] });
@@ -303,6 +305,51 @@ function ProductFormBody({
 
   const categoryOpts: F9Option[] = categoriesRaw.map(c => ({ value: c.id, label: c.name }));
 
+  // ── Image upload state ──────────────────────────────────────────
+  const [uploading, setUploading]   = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string>(
+    (initialData as any)?.imageUrl ?? "",
+  );
+
+  async function handleImageFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const allowed = ["image/jpeg", "image/png", "image/webp"] as const;
+    if (!allowed.includes(file.type as any)) {
+      toast.error("Only JPEG, PNG, or WebP images are supported");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Image must be under 2 MB");
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const { uploadUrl, publicUrl } = await getProductImagePresignUrl(
+        file.name,
+        file.type as "image/jpeg" | "image/png" | "image/webp",
+      );
+      // Upload directly to R2 — no API server bandwidth used
+      const r2Res = await fetch(uploadUrl, {
+        method: "PUT",
+        body: file,
+        headers: { "Content-Type": file.type },
+      });
+      if (!r2Res.ok) throw new Error("Upload to storage failed");
+      setPreviewUrl(publicUrl);
+      form.setValue("imageUrl", publicUrl);
+      toast.success("Image uploaded");
+    } catch (err: any) {
+      toast.error(err?.message ?? "Image upload failed");
+    } finally {
+      setUploading(false);
+      // Reset input so the same file can be re-selected after removal
+      e.target.value = "";
+    }
+  }
+
   const form = useForm<ProductFormData>({
     resolver: zodResolver(productSchema),
     defaultValues: {
@@ -321,6 +368,7 @@ function ProductFormBody({
       subsidy: (initialData as any)?.subsidy ?? false,
       makeZeroInIndents: (initialData as any)?.makeZeroInIndents ?? false,
       terminated: initialData?.terminated ?? false,
+      imageUrl: (initialData as any)?.imageUrl ?? "",
     },
   });
 
@@ -495,6 +543,68 @@ function ProductFormBody({
             />
             <div className="text-[10.5px] text-muted-foreground mt-0.5">
               MRP − Dealer-Price
+            </div>
+          </Field>
+        </FormSection>
+
+        {/* ── Product Image ──────────────────────────────────────── */}
+        <FormSection title="App Image" cols={1}>
+          <Field label="Product image" hint="PNG / JPEG / WebP · max 2 MB · shown in dealer app">
+            <div className="flex items-center gap-4">
+              {/* Preview thumbnail */}
+              {previewUrl ? (
+                <div className="relative shrink-0">
+                  <img
+                    src={previewUrl}
+                    alt="Product preview"
+                    className="h-20 w-20 rounded border object-contain bg-muted/40"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { setPreviewUrl(""); form.setValue("imageUrl", ""); }}
+                    className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-destructive text-white text-[11px] font-bold leading-none flex items-center justify-center hover:bg-destructive/80"
+                    title="Remove image"
+                  >
+                    ×
+                  </button>
+                </div>
+              ) : (
+                <div className="h-20 w-20 rounded border border-dashed bg-muted/40 flex items-center justify-center text-muted-foreground text-2xl shrink-0">
+                  📦
+                </div>
+              )}
+
+              {/* Upload button + hidden file input */}
+              <div className="flex flex-col gap-1.5">
+                <label className="cursor-pointer">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 pointer-events-none"
+                    disabled={uploading}
+                    asChild
+                  >
+                    <span>
+                      {uploading
+                        ? "Uploading…"
+                        : previewUrl
+                        ? "Change image"
+                        : "Upload image"}
+                    </span>
+                  </Button>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="sr-only"
+                    onChange={handleImageFile}
+                    disabled={uploading}
+                  />
+                </label>
+                <p className="text-[11px] text-muted-foreground">
+                  Displays at the top of the product tile in the dealer app.
+                </p>
+              </div>
             </div>
           </Field>
         </FormSection>
