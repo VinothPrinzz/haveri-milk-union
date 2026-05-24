@@ -25,6 +25,7 @@ import {
   verifyPaymentSignature,
   verifyWebhookSignature,
 } from "../lib/razorpay-client.js";
+import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -455,16 +456,17 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
     "/api/v1/dealer/razorpay-payments",
     { preHandler: [dealerAuth] },
     async (request, reply) => {
+      const q = paginationSchema.parse(request.query);
+      const offset = offsetFromPage(q.page, q.limit);
       const dealerId = getDealerId(request);
+  
       const rows = await pgClient`
         SELECT
           id::text,
           razorpay_order_id   AS "razorpayOrderId",
           razorpay_payment_id AS "razorpayPaymentId",
           amount::float8      AS amount,
-          currency,
-          kind::text          AS kind,
-          status::text        AS status,
+          currency, kind::text AS kind, status::text AS status,
           order_id::text      AS "orderId",
           to_char(paid_at    AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "paidAt",
           to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "createdAt",
@@ -472,9 +474,16 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         FROM razorpay_payments
         WHERE dealer_id = ${dealerId}::uuid
         ORDER BY created_at DESC
-        LIMIT 50
+        LIMIT ${q.limit} OFFSET ${offset}
       `;
-      return reply.send({ payments: rows });
+      const [countRow] = await pgClient`
+        SELECT count(*)::int AS count
+        FROM razorpay_payments WHERE dealer_id = ${dealerId}::uuid
+      `;
+      return reply.send({
+        payments: rows,
+        ...paginationMeta(countRow?.count ?? 0, q.page, q.limit),
+      });
     }
   );
 

@@ -425,59 +425,68 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /api/v1/orders/my — dealer's own orders
+  // GET /api/v1/orders/my — dealer's own orders (paginated, date-filterable)
   app.get(
     "/api/v1/orders/my",
     { preHandler: [dealerAuth] },
     async (request, reply) => {
-      const query = paginationSchema.parse(request.query);
-      const offset = offsetFromPage(query.page, query.limit);
+      const querySchema = paginationSchema.extend({
+        status: z.enum(["pending","confirmed","dispatched","delivered","cancelled"]).optional(),
+        from:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      });
+      const q = querySchema.parse(request.query);
+      const offset = offsetFromPage(q.page, q.limit);
       const dealerId = request.dealer!.dealerId;
 
-      // alias o.created_at as well, so the postgres driver doesn't
-      // clobber it with cr.created_at from the LATERAL.
+      // Items aggregated with json_agg — ONE query for the whole page,
+      // not one query per order like the old code.
       const ordersList = await pgClient`
-      SELECT
-        o.id,
-        o.status,
-        o.payment_mode,
-        o.subtotal,
-        o.total_gst,
-        o.grand_total,
-        o.item_count,
-        o.created_at AS created_at,            -- ← explicit alias
-        cr.status     AS cancellation_status,
-        cr.req_at     AS cancellation_requested_at
-      FROM orders o
-      LEFT JOIN LATERAL (
         SELECT
-          status,
-          created_at AS req_at                 -- ← rename inside the LATERAL
-        FROM cancellation_requests
-        WHERE order_id = o.id
-        ORDER BY created_at DESC
-        LIMIT 1
-      ) cr ON true
-      WHERE o.dealer_id = ${dealerId}
-      ORDER BY o.created_at DESC
-      LIMIT ${query.limit} OFFSET ${offset}
+          o.id, o.status, o.payment_mode,
+          o.subtotal, o.total_gst, o.grand_total, o.item_count,
+          o.created_at AS created_at,
+          cr.status  AS cancellation_status,
+          cr.req_at  AS cancellation_requested_at,
+          COALESCE(
+            (SELECT json_agg(json_build_object(
+                'product_id',   oi.product_id,
+                'product_name', oi.product_name,
+                'quantity',     oi.quantity,
+                'unit_price',   oi.unit_price,
+                'gst_percent',  oi.gst_percent,
+                'gst_amount',   oi.gst_amount,
+                'line_total',   oi.line_total
+              ) ORDER BY oi.product_name)
+            FROM order_items oi WHERE oi.order_id = o.id),
+            '[]'::json
+          ) AS items
+        FROM orders o
+        LEFT JOIN LATERAL (
+          SELECT status, created_at AS req_at
+          FROM cancellation_requests
+          WHERE order_id = o.id
+          ORDER BY created_at DESC LIMIT 1
+        ) cr ON true
+        WHERE o.dealer_id = ${dealerId}
+          AND (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
+          AND (${q.from ?? null}::date IS NULL OR o.created_at::date >= ${q.from ?? '1970-01-01'}::date)
+          AND (${q.to   ?? null}::date IS NULL OR o.created_at::date <= ${q.to   ?? '9999-12-31'}::date)
+        ORDER BY o.created_at DESC
+        LIMIT ${q.limit} OFFSET ${offset}
       `;
 
-      for (const order of ordersList) {
-        const items = await pgClient`
-          SELECT product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total
-          FROM order_items WHERE order_id = ${order.id} ORDER BY product_name
-        `;
-        (order as any).items = items;
-      }
-
       const [countRow] = await pgClient`
-        SELECT count(*)::int AS count FROM orders WHERE dealer_id = ${dealerId}
+        SELECT count(*)::int AS count FROM orders o
+        WHERE o.dealer_id = ${dealerId}
+          AND (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
+          AND (${q.from ?? null}::date IS NULL OR o.created_at::date >= ${q.from ?? '1970-01-01'}::date)
+          AND (${q.to   ?? null}::date IS NULL OR o.created_at::date <= ${q.to   ?? '9999-12-31'}::date)
       `;
 
       return reply.status(200).send({
         data: ordersList,
-        ...paginationMeta(countRow?.count ?? 0, query.page, query.limit),
+        ...paginationMeta(countRow?.count ?? 0, q.page, q.limit),
       });
     }
   );
