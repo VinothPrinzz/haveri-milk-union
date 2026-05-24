@@ -2,7 +2,7 @@
 // API Service — Phase 3: Real fetch calls to Fastify backend.
 // Same function signatures as the mock version — pages need NO changes.
 // ══════════════════════════════════════════════════════════════════
-import { get, post, patch, del } from "@/lib/apiClient";
+import { get, post, patch, del, put } from "@/lib/apiClient";
 // ── Re-export types so pages don't need to change imports ──
 export type {
   Customer,
@@ -179,9 +179,9 @@ function normalizeProduct(d: Record<string, unknown> | null | undefined) {
     categoryId: (d.categoryId ?? d.category_id ?? "") as string,
     packSize: parseFloat(String(d.packSize ?? d.pack_size ?? 0)) || 0,
     unit: (d.unit ?? "pcs") as string,
-    basePrice,            // ← NEW
-    dealerPrice,          // ← NEW
-    mrp,                  // real MRP
+    basePrice,
+    dealerPrice,
+    mrp,
     gstPercent: parseFloat(String(d.gstPercent ?? d.gst_percent ?? 0)) || 0,
     hsnNo: (d.hsnNo ?? d.hsn_no ?? "") as string,
     stock: Number(d.stock ?? 0),
@@ -190,6 +190,7 @@ function normalizeProduct(d: Record<string, unknown> | null | undefined) {
     packetsCrate: Number(d.packetsCrate ?? d.packets_crate ?? 0),
     status: d.available !== false ? ("Active" as const) : ("Inactive" as const),
     terminated: Boolean(d.terminated ?? false),
+    imageUrl: (d.imageUrl ?? d.image_url ?? null) as string | null,
     rateCategories: {
       "Retail-Dealer": rd,
       "Credit Inst-MRP": cm,
@@ -703,8 +704,8 @@ export const createProduct = async (body: Record<string, unknown>) => {
     categoryId: body.categoryId || body.category,
     icon: body.icon,
     unit: body.unit,
-    dealerPrice: Number(body.dealerPrice ?? 0),                 // ← Dealer-Price
-    mrp:         Number(body.mrp ?? body.dealerPrice ?? 0),     // ← MRP
+    dealerPrice: Number(body.dealerPrice ?? 0),
+    mrp:         Number(body.mrp ?? body.dealerPrice ?? 0),
     gstPercent: Number(body.gstPercent ?? 0),
     stock: 0,
     available: true,
@@ -714,8 +715,20 @@ export const createProduct = async (body: Record<string, unknown>) => {
     printDirection: body.printDirection || undefined,
     packetsCrate: body.packetsCrate !== undefined ? Number(body.packetsCrate) : undefined,
     reportAlias: body.reportAlias || body.name || undefined,
+    imageUrl: body.imageUrl || null,
   });
   return normalizeProduct(data.product);
+};
+
+/** Get a short-lived presigned PUT URL to upload a product image directly to R2. */
+export const getProductImagePresignUrl = async (
+  filename: string,
+  contentType: "image/jpeg" | "image/png" | "image/webp",
+): Promise<{ uploadUrl: string; publicUrl: string }> => {
+  return post<{ uploadUrl: string; publicUrl: string }>(
+    "/admin/products/image-presign",
+    { filename, contentType },
+  );
 };
 
 // ══════════════════════════════════════
@@ -1869,6 +1882,91 @@ export const fetchDealerLedgerSummary = async (
     params
   );
 };
+
+// ── Admin: dealer standing indents & drafts ──────────────────────────
+
+export interface AdminStandingIndentItem {
+  productId: string;
+  productName: string;
+  unit: string;
+  icon: string | null;
+  imageUrl: string | null;
+  basePrice: number;
+  gstPercent: number;
+  productAvailable: boolean;
+  defaultQty: number;
+  active: boolean;
+  inTemplate: boolean;
+}
+
+export interface AdminDraftItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  gstPercent: number;
+  lineTotal: number;
+  unit: string;
+  icon: string | null;
+  imageUrl: string | null;
+}
+
+export interface CreditSnapshot {
+  creditLimit: number;
+  outstanding: number;
+  available: number;
+  orderTotal: number;
+  sufficient: boolean;
+  shortfall: number;
+}
+
+export const fetchDealerStandingIndents = (dealerId: string) =>
+  get<{ dealer: { id: string; name: string; code: string | null };
+        items: AdminStandingIndentItem[] }>(
+    `/admin/dealers/${dealerId}/standing-indents`,
+  );
+
+export const saveDealerStandingIndents = (
+  dealerId: string,
+  body: { items: { productId: string; defaultQty: number; active: boolean }[] },
+) => put<{ updated: number }>(
+  `/admin/dealers/${dealerId}/standing-indents`, body,
+);
+
+export const fetchDealerDraft = (dealerId: string, date: string) =>
+  get<{
+    dealer: { id: string; name: string; code: string | null };
+    deliveryDate: string;
+    exists: boolean;
+    paused: boolean;
+    pausedReason?: string | null;
+    orderId?: string;
+    status: string;
+    editable: boolean;
+    items: AdminDraftItem[];
+    totals: { subtotal: number; totalGst: number; grandTotal: number };
+    credit: CreditSnapshot;
+  }>(`/admin/dealers/${dealerId}/drafts/${date}`);
+
+export const patchDealerDraft = (
+  dealerId: string,
+  date: string,
+  body: { items: { productId: string; quantity: number }[] },
+) => patch<{ orderId: string; status: string;
+             totals: { subtotal: number; totalGst: number; grandTotal: number };
+             itemCount: number }>(
+  `/admin/dealers/${dealerId}/drafts/${date}`, body,
+);
+
+export const confirmDealerDraft = (
+  dealerId: string,
+  date: string,
+  body: { force?: boolean } = {},
+) => post<{ orderId: string; status: string; deliveryDate: string;
+            credit?: CreditSnapshot; forced?: boolean;
+            alreadyConfirmed?: boolean }>(
+  `/admin/dealers/${dealerId}/drafts/${date}/confirm`, body,
+);
 
 // ══════════════════════════════════════
 // STATIC HELPERS

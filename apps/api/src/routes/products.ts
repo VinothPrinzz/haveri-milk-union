@@ -32,7 +32,6 @@ const productBaseSchema = z.object({
   gstPercent: z.coerce.number().min(0).max(50).default(0),
   categoryId: z.string().uuid(),
   icon: z.string().optional(),
-  imageUrl: z.string().url().optional().nullable(),
   unit: z.string().min(1),
   stock: z.number().int().min(0).optional().default(0),
   available: z.boolean().optional().default(true),
@@ -45,6 +44,7 @@ const productBaseSchema = z.object({
   creditInstMrpPrice: z.union([z.string(), z.number()]).optional(),
   creditInstDealerPrice: z.union([z.string(), z.number()]).optional(),
   parlourDealerPrice: z.union([z.string(), z.number()]).optional(),
+  imageUrl: z.string().url().nullable().optional(),
 });
 
 const productWriteSchema = productBaseSchema
@@ -90,7 +90,6 @@ export async function productRoutes(app: FastifyInstance) {
   app.get("/api/v1/products", async (request, reply) => {
     const productsList = await pgClient`
       SELECT p.id, p.name, p.icon, p.unit,
-             p.image_url        AS "imageUrl",
              p.base_price   AS "basePrice",     -- Basic Price (pre-GST)
              p.dealer_price AS "dealerPrice",   -- Dealer-Price (gross)
              p.mrp,                             -- MRP
@@ -100,6 +99,7 @@ export async function productRoutes(app: FastifyInstance) {
              p.code, p.hsn_no AS "hsnNo", p.pack_size AS "packSize",
              p.print_direction AS "printDirection",
              p.packets_crate AS "packetsCrate", p.report_alias AS "reportAlias",
+             p.image_url AS "imageUrl",
              COALESCE(p.retail_dealer_price, p.base_price) AS "retailDealerPrice",
              COALESCE(p.credit_inst_mrp_price, p.base_price) AS "creditInstMrpPrice",
              COALESCE(p.credit_inst_dealer_price, p.base_price) AS "creditInstDealerPrice",
@@ -133,6 +133,7 @@ export async function productRoutes(app: FastifyInstance) {
                p.created_at AS "createdAt",
                p.code, p.hsn_no AS "hsnNo", p.pack_size AS "packSize",
                p.print_direction AS "printDirection",
+               p.image_url AS "imageUrl",
                p.packets_crate AS "packetsCrate", p.report_alias AS "reportAlias",
                COALESCE(p.retail_dealer_price, p.base_price) AS "retailDealerPrice",
                COALESCE(p.credit_inst_mrp_price, p.base_price) AS "creditInstMrpPrice",
@@ -193,7 +194,8 @@ export async function productRoutes(app: FastifyInstance) {
           name, category_id, icon, unit, base_price, gst_percent, stock, available,
           code, hsn_no, pack_size, print_direction, packets_crate, report_alias,
           dealer_price, mrp,
-          retail_dealer_price, credit_inst_mrp_price, credit_inst_dealer_price, parlour_dealer_price
+          retail_dealer_price, credit_inst_mrp_price, credit_inst_dealer_price, parlour_dealer_price,
+          image_url
         ) VALUES (
           ${body.name}, ${body.categoryId}, ${body.icon ?? null}, ${body.unit},
           ${basePrice}::numeric, ${body.gstPercent}::numeric, ${body.stock}, ${body.available},
@@ -204,7 +206,8 @@ export async function productRoutes(app: FastifyInstance) {
           ${body.retailDealerPrice ?? basePrice}::numeric,
           ${body.creditInstMrpPrice ?? basePrice}::numeric,
           ${body.creditInstDealerPrice ?? basePrice}::numeric,
-          ${body.parlourDealerPrice ?? basePrice}::numeric
+          ${body.parlourDealerPrice ?? basePrice}::numeric,
+          ${body.imageUrl ?? null}
         )
         RETURNING *
       `;
@@ -261,12 +264,69 @@ export async function productRoutes(app: FastifyInstance) {
           credit_inst_mrp_price = COALESCE(${body.creditInstMrpPrice ?? null}::numeric, credit_inst_mrp_price),
           credit_inst_dealer_price = COALESCE(${body.creditInstDealerPrice ?? null}::numeric, credit_inst_dealer_price),
           parlour_dealer_price = COALESCE(${body.parlourDealerPrice ?? null}::numeric, parlour_dealer_price),
+          image_url = CASE WHEN ${body.imageUrl !== undefined}
+                          THEN ${body.imageUrl ?? null}
+                          ELSE image_url END,
           updated_at = now()
         WHERE id = ${id} AND deleted_at IS NULL
         RETURNING *
       `;
 
       return reply.status(200).send({ product: updated });
+    }
+  );
+
+  // ── POST /api/v1/admin/products/image-presign ─────────────────────────
+  // Returns a short-lived presigned PUT URL so the browser can upload
+  // directly to R2 without routing the bytes through the API server.
+  // After the PUT succeeds, publicUrl is stored in the product form and
+  // submitted with the normal create/update call.
+  app.post(
+    "/api/v1/admin/products/image-presign",
+    { preHandler: [adminAuth, requireRole("products.manage")] },
+    async (request, reply) => {
+      const { filename, contentType } = z
+        .object({
+          filename: z.string().min(1),
+          contentType: z.enum(["image/jpeg", "image/png", "image/webp"]),
+        })
+        .parse(request.body);
+
+      const accountId  = process.env.R2_ACCOUNT_ID;
+      const accessKey  = process.env.R2_ACCESS_KEY_ID;
+      const secret     = process.env.R2_SECRET_ACCESS_KEY;
+      const bucket     = process.env.R2_BUCKET_NAME;
+      const publicBase = process.env.R2_PUBLIC_URL;
+
+      if (!accountId || !accessKey || !secret || !bucket) {
+        return reply.status(503).send({ error: "Image storage (R2) is not configured on this server" });
+      }
+
+      const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl }               = await import("@aws-sdk/s3-request-presigner");
+
+      const ext = filename.split(".").pop()?.toLowerCase() ?? "jpg";
+      const key = `products/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+
+      const s3 = new S3Client({
+        region: "auto",
+        endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+        credentials: { accessKeyId: accessKey, secretAccessKey: secret },
+      });
+
+      const uploadUrl = await getSignedUrl(
+        s3,
+        new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType }),
+        { expiresIn: 300 }, // 5 minutes
+      );
+
+      // If a public CDN is configured (recommended), return the permanent URL.
+      // Otherwise fall back to a signed GET URL (fine for private buckets).
+      const publicUrl = publicBase
+        ? `${publicBase}/${key}`
+        : uploadUrl.split("?")[0];
+
+      return reply.send({ uploadUrl, publicUrl });
     }
   );
 }

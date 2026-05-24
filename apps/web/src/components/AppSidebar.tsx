@@ -5,7 +5,7 @@ import {
   Receipt, XCircle, Warehouse, BarChart3, FileSpreadsheet, Plus, Truck,
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
   ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
-  Star, Briefcase, Gift, BadgePercent
+  Star, Briefcase, Gift, BadgePercent, CalendarClock
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ModuleKey } from "@/components/AppLayout";
@@ -34,6 +34,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
   sales: [
     { label: "Record Indents",   path: "/sales/record-indents",                  icon: FileText },
     { label: "Post Indent",      path: "/sales/post-indent",                     icon: Send },
+    { label: "Dealer Indents", path: "/sales/dealer-indents", icon: CalendarClock },
     { label: "All Indents",      path: "/sales/all-indents",                     icon: ClipboardCheck },
     { label: "Direct - Gate Pass", path: "/sales/direct-sales/gate-pass",        icon: ScrollText },
     { label: "Direct - Cash",    path: "/sales/direct-sales/cash-customer",      icon: CreditCard },
