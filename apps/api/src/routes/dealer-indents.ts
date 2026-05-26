@@ -580,7 +580,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
  
         await tx`
           UPDATE orders
-             SET status       = 'pending',
+             SET status       = 'confirmed',
                  payment_mode = 'credit',
                  confirmed_at = now(),
                  updated_at   = now()
@@ -620,7 +620,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
  
       return reply.send({
         orderId: order.id,
-        status: "pending",
+        status: "confirmed",
         deliveryDate: params.date,
         credit,
       });

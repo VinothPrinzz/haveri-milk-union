@@ -123,7 +123,6 @@ const COMMAND_ITEMS: { label: string; path: string }[] = [
   { label: "All Products", path: "/masters/products" },
   { label: "Price Chart", path: "/masters/price-chart" },
   { label: "Record Indents", path: "/sales/record-indents" },
-  { label: "Post Indent", path: "/sales/post-indent" },
   { label: "All Indents", path: "/sales/all-indents" },
   { label: "Invoices", path: "/sales/invoices" },
   { label: "Cancellation Requests", path: "/sales/cancellations" },

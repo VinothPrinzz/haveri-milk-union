@@ -83,7 +83,6 @@ export default function IndentCheckoutScreen({
   };
   const draftStatus = (draft?.status ?? "draft") as OrderStatus;
   const isPlaced =
-    draftStatus === "pending" ||
     draftStatus === "confirmed" ||
     draftStatus === "dispatched" ||
     draftStatus === "delivered";

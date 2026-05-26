@@ -19,7 +19,7 @@ import { ArrowLeft, Send } from "lucide-react";
 import {
   fetchRoutes,
   fetchBatches,
-  fetchPendingIndents,
+  fetchIndents,
   createDispatch,
 } from "@/services/api";
 
@@ -61,10 +61,10 @@ export default function CreateDispatchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeId, routes]);
 
-  // Pending indents for the chosen filter
+  // Confirmed indents for the chosen filter — these are ready for dispatch
   const { data: pending = [], isLoading: pLoading } = useQuery({
-    queryKey: ["pending-indents", date, routeId, batchId],
-    queryFn: () => fetchPendingIndents({ date, routeId: routeId!, batchId: batchId ?? undefined }),
+    queryKey: ["confirmed-indents", date, routeId, batchId],
+    queryFn: () => fetchIndents({ status: "confirmed", date, routeId: routeId!, batchId: batchId ?? undefined }),
     enabled: !!routeId,
   });
 
@@ -92,7 +92,7 @@ export default function CreateDispatchPage() {
     onSuccess: () => {
       toast.success("Dispatch created");
       qc.invalidateQueries({ queryKey: ["dispatch-sheet"] });
-      qc.invalidateQueries({ queryKey: ["pending-indents"] });
+      qc.invalidateQueries({ queryKey: ["confirmed-indents"] });
       navigate("/fgs/dispatch-sheet");
     },
     onError: (err: any) => toast.error(err?.message || "Failed to create dispatch"),
@@ -109,7 +109,7 @@ export default function CreateDispatchPage() {
     <div className="flex flex-col h-full">
       <PageHeader
         title="Create Dispatch"
-        subtitle="Post pending indents to a route and prepare the dispatch"
+        subtitle="Assign confirmed indents to a route and prepare the dispatch"
         actions={
           <Button size="sm" variant="outline" className="h-8" onClick={() => navigate("/fgs/dispatch-sheet")}>
             <ArrowLeft className="h-3.5 w-3.5 mr-1.5" /> Back to Sheet
@@ -163,22 +163,22 @@ export default function CreateDispatchPage() {
 
         <div className="erp-panel">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-muted/40">
-            <h3 className="erp-section-title">Pending Indents</h3>
+            <h3 className="erp-section-title">Confirmed Indents</h3>
             <div className="text-[12px] text-muted-foreground">
               {selectedIds.size > 0
                 ? <>Selected <span className="num font-semibold text-foreground">{totals.indents}</span> · Items <span className="num font-semibold text-foreground">{totals.items}</span> · {fmtINR(totals.amount)}</>
-                : <>{(pending as any[]).length} indent{(pending as any[]).length !== 1 ? "s" : ""} pending</>}
+                : <>{(pending as any[]).length} indent{(pending as any[]).length !== 1 ? "s" : ""} confirmed</>}
             </div>
           </div>
 
           {!routeId ? (
-            <EmptyState title="Select a route to load pending indents" />
+            <EmptyState title="Select a route to load confirmed indents" />
           ) : pLoading ? (
             <div className="p-4 space-y-2">
               {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
             </div>
           ) : (pending as any[]).length === 0 ? (
-            <EmptyState title="No pending indents for this filter" />
+            <EmptyState title="No confirmed indents for this filter" />
           ) : (
             <table className="erp-table">
               <thead>

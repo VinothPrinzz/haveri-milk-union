@@ -118,7 +118,6 @@ export interface Banner {
 
 export type OrderStatus =
   | "draft"
-  | "pending"
   | "payment_required"
   | "confirmed"
   | "dispatched"
@@ -301,7 +300,7 @@ export interface CreditCheckSnapshot {
  
 export interface ConfirmDraftSuccess {
   orderId: string;
-  status: "pending";
+  status: "confirmed";
   deliveryDate: string;
   credit: CreditCheckSnapshot;
 }

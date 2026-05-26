@@ -34,10 +34,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
             AND status != 'cancelled'
         `.then(r => r[0]),
 
-        // Pending indents count
+        // Confirmed (awaiting dispatch) indents count
         pgClient`
           SELECT count(*)::int AS count FROM orders
-          WHERE status = 'pending'
+          WHERE status = 'confirmed'
         `.then(r => r[0]),
 
         // Active dealers count

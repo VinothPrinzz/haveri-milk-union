@@ -59,8 +59,8 @@ const RANGES: { id: RangeId; label: string }[] = [
   { id: "month", label: "This month" },
 ];
 
-// ── Status Filters (cleaned up) ───────────────────────────────────
-type FilterId = "all" | "paid" | "pending" | "cancelled";
+// ── Status Filters ────────────────────────────────────────────────
+type FilterId = "all" | "paid" | "confirmed" | "cancelled";
 
 interface FilterDef {
   id: FilterId;
@@ -69,9 +69,9 @@ interface FilterDef {
 }
 
 const FILTERS: ReadonlyArray<FilterDef> = [
-  { id: "all", label: "All" },
-  { id: "paid", label: "Paid" },
-  { id: "pending", label: "Pending", apiStatus: "pending" },
+  { id: "all",       label: "All" },
+  { id: "paid",      label: "Paid" },
+  { id: "confirmed", label: "Confirmed", apiStatus: "confirmed" },
   { id: "cancelled", label: "Cancelled", apiStatus: "cancelled" },
 ];
 
@@ -412,12 +412,12 @@ function OrderCard({
   onCancel,
 }: OrderCardProps) {
   const chip = chipForStatus(order);   // ← Updated: now passes full order
-  const showCancel = 
-    order.status === "pending" &&
+  const showCancel =
+    order.status === "confirmed" &&
     order.cancellationStatus !== "pending" &&
     order.cancellationStatus !== "approved";
 
-  const showInvoice = order.status !== "cancelled" && order.status !== "pending";
+  const showInvoice = order.status !== "cancelled";
   const isCancelled = order.status === "cancelled";
 
   return (
@@ -544,13 +544,6 @@ function chipForStatus(order: Order) {   // ← Updated: now takes full Order
       label: "✕ Cancelled",
       style: cardStyles.chipCancelled,
       textStyle: cardStyles.chipTextCancelled,
-    };
-  }
-  if (order.status === "pending") {
-    return {
-      label: "⏳ Pending",
-      style: cardStyles.chipPending,
-      textStyle: cardStyles.chipTextPending,
     };
   }
   // confirmed, dispatched, delivered all show as Paid

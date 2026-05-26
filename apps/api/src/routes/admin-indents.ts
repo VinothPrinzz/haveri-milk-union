@@ -587,7 +587,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
         await tx`
           UPDATE orders
-             SET status       = 'pending',
+             SET status       = 'confirmed',
                  payment_mode = 'credit',
                  confirmed_at = now(),
                  updated_at   = now()
@@ -631,7 +631,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
       return reply.send({
         orderId: order.id,
-        status: "pending",
+        status: "confirmed",
         deliveryDate: date,
         credit,
         forced: !credit.sufficient && body.force,

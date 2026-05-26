@@ -14,9 +14,9 @@ export const userRoleEnum = pgEnum("user_role", [
 // ── Order lifecycle ──
 export const orderStatusEnum = pgEnum("order_status", [
   "draft",                 // pre-confirm, editable by dealer
-  "pending",
+  "pending",               // DEPRECATED — kept in enum for DB compat; all new confirms go to 'confirmed' directly
   "payment_required",      // close passed, credit insufficient
-  "confirmed",
+  "confirmed",             // dealer confirmed (credit OK) or window auto-closed → ready for dispatch
   "dispatched",
   "delivered",
   "cancelled",

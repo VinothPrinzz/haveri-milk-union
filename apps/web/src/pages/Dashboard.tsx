@@ -155,7 +155,7 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
             {[
               { l: "Record Indent",   p: "/sales/record-indents",     i: ShoppingCart },
-              { l: "Post Indent",     p: "/sales/post-indent",        i: ClipboardCheck },
+              { l: "Dealer Indents",  p: "/sales/dealer-indents",     i: ClipboardCheck },
               { l: "Create Dispatch", p: "/fgs/dispatch/create",      i: Truck },
               { l: "Stock Entry",     p: "/fgs/stock-entry",          i: Boxes },
               { l: "New Customer",    p: "/masters/customers/new",    i: Users },

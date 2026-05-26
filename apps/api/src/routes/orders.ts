@@ -353,7 +353,7 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("orders.view")] },
     async (request, reply) => {
       const querySchema = paginationSchema.extend({
-        status:   z.enum(["pending","confirmed","dispatched","delivered","cancelled"]).optional(),
+        status:   z.enum(["confirmed","dispatched","delivered","cancelled"]).optional(),
         dealerId: z.string().uuid().optional(),
         zoneId:   z.string().uuid().optional(),
         routeId:  z.string().uuid().optional(),
@@ -431,7 +431,7 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [dealerAuth] },
     async (request, reply) => {
       const querySchema = paginationSchema.extend({
-        status: z.enum(["pending","confirmed","dispatched","delivered","cancelled"]).optional(),
+        status: z.enum(["confirmed","dispatched","delivered","cancelled"]).optional(),
         from:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         to:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       });
@@ -558,7 +558,10 @@ export async function orderRoutes(app: FastifyInstance) {
   );
 
   // POST /api/v1/orders/bulk-confirm
-  // Bulk-transition pending → confirmed for the All-Indents page.
+  // DEPRECATED — PostIndentPage has been removed. Orders now go directly
+  // to 'confirmed' on dealer/auto-confirm. This endpoint is kept for any
+  // legacy 'pending' orders that existed before migration 0023 and were
+  // not caught by the UPDATE in that migration.
   app.post(
     "/api/v1/orders/bulk-confirm",
     { preHandler: [adminAuth, requireRole("orders.update")] },
@@ -567,28 +570,27 @@ export async function orderRoutes(app: FastifyInstance) {
         ids: z.array(z.string().uuid()).min(1).max(500),
       });
       const { ids } = schema.parse(request.body);
-  
-      // 1. Look up the orders we'll touch (only those still pending)
-      const pending = await pgClient`
+
+      // Look up only legacy 'pending' orders (should be 0 after migration 0023)
+      const legacyPending = await pgClient`
         SELECT id, dealer_id
         FROM orders
         WHERE id = ANY(${ids}::uuid[])
           AND status = 'pending'
         FOR UPDATE
       ` as Array<{ id: string; dealer_id: string }>;
-  
-      if (pending.length === 0) {
+
+      if (legacyPending.length === 0) {
         return reply.status(200).send({
-          message: "No pending orders to confirm",
+          message: "No legacy pending orders found — all orders already confirmed",
           requested: ids.length,
           confirmed: 0,
           skipped: ids.length,
         });
       }
-  
-      const confirmIds = pending.map((o) => o.id);
-  
-      // 2. Flip them to confirmed in a single statement
+
+      const confirmIds = legacyPending.map((o) => o.id);
+
       const updated = await pgClient`
         UPDATE orders
         SET status       = 'confirmed'::order_status,
@@ -598,8 +600,7 @@ export async function orderRoutes(app: FastifyInstance) {
           AND status = 'pending'
         RETURNING id, dealer_id
       ` as Array<{ id: string; dealer_id: string }>;
-  
-      // 3. Best-effort side effects (don't fail the request if these throw)
+
       for (const o of updated) {
         try { await enqueuePDFInvoice(o.id); } catch { /* logged in helper */ }
         try {
@@ -608,13 +609,13 @@ export async function orderRoutes(app: FastifyInstance) {
             dealerId: o.dealer_id,
             orderId:  o.id,
             title:    "Indent confirmed",
-            body:     `Your indent #${String(o.id).slice(-4).toUpperCase()} has been posted for dispatch.`,
+            body:     `Your indent #${String(o.id).slice(-4).toUpperCase()} has been confirmed.`,
           });
         } catch { /* logged in helper */ }
       }
-  
+
       return reply.status(200).send({
-        message:   `Confirmed ${updated.length} of ${ids.length} order(s)`,
+        message:   `Confirmed ${updated.length} legacy order(s)`,
         requested: ids.length,
         confirmed: updated.length,
         skipped:   ids.length - updated.length,
@@ -642,7 +643,7 @@ export async function orderRoutes(app: FastifyInstance) {
       if (order.dealer_id !== request.dealer!.dealerId) {
         return reply.status(403).send({ error: "Not your order" });
       }
-      if (order.status !== "pending") {
+      if (order.status !== "confirmed") {
         return reply.status(400).send({
           error: "Cannot cancel",
           message: `Order is already ${order.status}`,
@@ -684,7 +685,7 @@ export async function orderRoutes(app: FastifyInstance) {
         FROM orders WHERE id = ${id} FOR UPDATE
       `;
       if (!existing) return reply.status(404).send({ error: "Order not found" });
-      if (!["pending", "confirmed"].includes(existing.status)) {
+      if (existing.status !== "confirmed") {
         return reply.status(409).send({ error: `Cannot modify ${existing.status} order` });
       }
 

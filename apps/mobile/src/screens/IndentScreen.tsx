@@ -15,19 +15,15 @@
 //    row changing status. So the page renders by status:
 //      • draft / preview      → editable: +/- steppers + "Confirm" button
 //      • payment_required     → locked items + "Pay for this indent"
-//      • pending / confirmed /
-//        dispatched / delivered → locked, read-only "Indent placed" card
+//      • confirmed / dispatched / delivered → locked, read-only "Indent placed" card
 //      • paused               → "shop paused" notice
-//    Previously a confirmed (pending) order still showed editable steppers
-//    and a Confirm button — tapping it re-hit /confirm and 404'd.
+//    Previously a confirmed order still showed editable steppers and a
+//    Confirm button — tapping it re-hit /confirm and 404'd.
 //
-// NOTE: requires DailyDraft.status in src/lib/types.ts to allow the full
-// order lifecycle. Change:
-//     status: "draft" | "pending" | "payment_required";
-// to:
-//     status: "draft" | "pending" | "payment_required"
-//           | "confirmed" | "dispatched" | "delivered" | "cancelled";
-// (This screen casts defensively, but widening the type is the clean fix.)
+// NOTE: OrderStatus in src/lib/types.ts covers the full lifecycle:
+//     "draft" | "payment_required" | "confirmed" | "dispatched"
+//           | "delivered" | "cancelled"
+// ("pending" has been removed — dealer confirm goes directly to "confirmed")
 
 import React, { useMemo, useState, useEffect } from "react";
 import {
@@ -147,7 +143,6 @@ export default function IndentScreen({
   const draftStatus = (draft?.status ?? "draft") as OrderStatus;
   const isPaymentRequired = draftStatus === "payment_required";
   const isPlaced =
-    draftStatus === "pending" ||
     draftStatus === "confirmed" ||
     draftStatus === "dispatched" ||
     draftStatus === "delivered";

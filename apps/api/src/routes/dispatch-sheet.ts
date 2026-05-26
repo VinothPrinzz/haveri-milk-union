@@ -300,21 +300,17 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
             SELECT * FROM inserted
           `;
 
-          // ── B. Move selected indents pending → confirmed.
-          // Guard with status='pending' so we don't accidentally
-          // re-confirm an already-dispatched order.
+          // ── B. Verify selected indents are confirmed and belong to this route.
+          // Orders now go directly to 'confirmed' on dealer/auto-confirm — no
+          // pending→confirmed transition needed here.
           const confirmed = await tx`
-            UPDATE orders o SET
-              status       = 'confirmed',
-              confirmed_at = now(),
-              updated_at   = now()
-            FROM dealers d
-            WHERE o.dealer_id = d.id
-              AND o.id       = ANY(${body.indentIds}::uuid[])
-              AND o.status   = 'pending'
-              AND o.created_at::date = ${body.date}::date
+            SELECT o.id, o.item_count, o.grand_total
+            FROM orders o
+            JOIN dealers d ON o.dealer_id = d.id
+            WHERE o.id       = ANY(${body.indentIds}::uuid[])
+              AND o.status   = 'confirmed'
+              AND o.delivery_date = ${body.date}::date
               AND d.route_id = ${body.routeId}::uuid
-            RETURNING o.id, o.item_count, o.grand_total
           `;
 
           // ── C. Recompute aggregate counters from authoritative source
