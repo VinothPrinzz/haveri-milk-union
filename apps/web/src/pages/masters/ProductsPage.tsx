@@ -285,6 +285,45 @@ function ProductAddTab() {
   );
 }
 
+// ── NumericInput — text-based numeric field that keeps a local string
+//    so the user can type freely, treats 0 as blank, and never reverts
+//    mid-edit. type="text" + inputMode removes the native-number quirk
+//    where deleting the last digit silently reverts to 0. ────────────
+function NumericInput({
+  value, onChange, integer = false, ...props
+}: {
+  value: number | null | undefined;
+  onChange: (v: number | null) => void;
+  integer?: boolean;
+} & Omit<React.ComponentProps<typeof Input>, "value" | "onChange" | "type">) {
+  const display = (v: number | null | undefined) =>
+    v == null || v === 0 ? "" : String(v);           // 0 shown as blank
+
+  const [text, setText] = useState(display(value));
+
+  // Re-sync only on a genuine external change (e.g. switching to another product)
+  useEffect(() => {
+    const parsed = text.trim() === "" || text.trim() === "." ? null : Number(text);
+    if (parsed !== value) setText(display(value));
+  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <Input
+      type="text"
+      inputMode={integer ? "numeric" : "decimal"}
+      value={text}
+      onChange={e => {
+        const raw = e.target.value.replace(integer ? /[^\d]/g : /[^\d.]/g, "");
+        setText(raw);
+        if (raw === "" || raw === ".") { onChange(null); return; }
+        const n = Number(raw);
+        if (!Number.isNaN(n)) onChange(n);
+      }}
+      {...props}
+    />
+  );
+}
+
 // ── Shared Product Form Body ─────────────────────────────────────
 function ProductFormBody({
   initialData,
@@ -357,13 +396,13 @@ function ProductFormBody({
       name: initialData?.name ?? "",
       reportAlias: initialData?.reportAlias ?? "",
       category: initialData?.categoryId ?? "",
-      packSize:      initialData?.packSize      ?? undefined,
+      packSize:      initialData?.packSize      ?? null,
       unit: initialData?.unit ?? "L",
       dealerPrice:   initialData?.dealerPrice   ?? undefined,
       mrp:           initialData?.mrp           ?? undefined,
       gstPercent:    initialData?.gstPercent    ?? undefined,
       hsnNo: initialData?.hsnNo ?? "",
-      packetsCrate:  initialData?.packetsCrate  ?? undefined,
+      packetsCrate:  initialData?.packetsCrate  ?? null,
       printDirection: (initialData?.printDirection as "Across" | "Down") ?? "Across",
       sortPosition:  (initialData as any)?.sortPosition ?? initialData?.sortOrder ?? undefined,
       subsidy: (initialData as any)?.subsidy ?? false,
@@ -383,7 +422,15 @@ function ProductFormBody({
   const basicPrice   = deriveBasicPrice(dealerPriceW, gstW);
   const margin       = mrpW - dealerPriceW;
 
-  const submitProduct = form.handleSubmit(async d => { await onSubmit(d); if (!embedded) form.reset(); });
+  // NEW (added)
+  const submitProduct = form.handleSubmit(async d => { 
+    // Ensure imageUrl is sent as null/undefined if empty
+    if (!d.imageUrl?.trim()) {
+      delete (d as any).imageUrl; 
+    }
+    await onSubmit(d); 
+    if (!embedded) form.reset(); 
+  });
   useSaveShortcut(() => submitProduct(), !isSubmitting);
 
   return (
@@ -441,11 +488,12 @@ function ProductFormBody({
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Pack Size</FormLabel>
               <FormControl>
-                <Input 
-                  type="number" 
-                  step="0.01" 
-                  {...field} 
-                  onChange={e => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))} 
+                <NumericInput
+                  value={field.value}
+                  onChange={field.onChange}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  ref={field.ref}
                 />
               </FormControl>
               <FormMessage className="text-[11.5px]" />
@@ -473,11 +521,13 @@ function ProductFormBody({
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Packets/Crate</FormLabel>
               <FormControl>
-                <Input 
-                  type="number" 
-                  step="1" 
-                  {...field} 
-                  onChange={e => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))} 
+                <NumericInput
+                  integer
+                  value={field.value}
+                  onChange={field.onChange}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  ref={field.ref}
                 />
               </FormControl>
               <FormMessage className="text-[11.5px]" />
