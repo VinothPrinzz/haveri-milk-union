@@ -118,6 +118,18 @@
   }
   /* Tabular numbers — required for every numeric td/th */
   .num, td.num, th.num { font-variant-numeric: tabular-nums; }
+
+  /* Remove number-input spinner arrows app-wide.
+  Prevents accidental value changes / mis-clicks during data entry. */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;   /* Firefox */
+    appearance: textfield;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -170,6 +182,18 @@
   .status-pass { @apply bg-success/15 text-success; }
   .status-draft,
   .status-active { @apply bg-muted text-muted-foreground; }
+
+  /* Keyboard navigation — visible highlight while arrowing the nav regions */
+  [data-kbd-region="sidebar"] a:focus,
+  [data-kbd-region="topbar"] a:focus {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: -2px;
+  }
+  /* Make the advancing field obvious in dense forms */
+  [data-kbd-region="content"] input:focus {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: -1px;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════

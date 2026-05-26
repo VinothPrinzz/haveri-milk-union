@@ -4,6 +4,7 @@
 // All mutations (create/update/delete/removeRouteFromBatch) preserved.
 // ════════════════════════════════════════════════════════════════════
 import { useState } from "react";
+import { useSaveShortcut } from "@/lib/useKeyboardNav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -83,15 +84,18 @@ export default function BatchesPage({ tab = "list" }: Props) {
     defaultValues: { batchCode: "", whichBatch: "Morning", timing: "" },
   });
 
+  const submitNewBatch = createForm.handleSubmit(data => {
+    createMutation.mutate(data, { onSuccess: () => createForm.reset() });
+  });
+  useSaveShortcut(() => submitNewBatch(), tab === "new" && !createMutation.isPending);
+
   if (tab === "new") {
     return (
       <div>
         <PageHeader title="New Batch" subtitle="Add a new distribution batch" />
         <div className="p-4">
           <Form {...createForm}>
-            <form onSubmit={createForm.handleSubmit(data => {
-              createMutation.mutate(data, { onSuccess: () => createForm.reset() });
-            })}>
+            <form onSubmit={submitNewBatch}>
               <FormSection title="Batch Details" cols={2}>
                 <BatchFormFields control={createForm.control} />
               </FormSection>
@@ -298,9 +302,12 @@ function BatchEditForm({
     },
   });
 
+  const submitBatch = form.handleSubmit(data => onSubmit(data));
+  useSaveShortcut(() => submitBatch(), !isSubmitting);
+
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(data => onSubmit(data))}>
+      <form onSubmit={submitBatch}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <BatchFormFields control={form.control} isEdit />
         </div>

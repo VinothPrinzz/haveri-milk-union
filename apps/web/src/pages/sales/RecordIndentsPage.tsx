@@ -22,7 +22,7 @@ import {
 interface Line {
   id: string;
   productId: string;
-  qty: number;
+  qty?: number;
 }
 
 const rid = () => Math.random().toString(36).slice(2, 9);
@@ -41,7 +41,7 @@ export default function RecordIndentsPage() {
   const [paymentRef, setPaymentRef] = useState("");          // ← NEW
   const [notes, setNotes] = useState("");
 
-  const [lines, setLines] = useState<Line[]>([{ id: rid(), productId: "", qty: 1 }]);
+  const [lines, setLines] = useState<Line[]>([{ id: rid(), productId: "", qty: undefined }]);
 
   const customer = customers.find((c: any) => c.id === customerId);
 
@@ -144,24 +144,24 @@ export default function RecordIndentsPage() {
       sub, 
       gst, 
       total: sub + gst, 
-      count: lines.filter(l => l.productId && l.qty > 0).length 
+      count: lines.filter(l => l.productId && (l.qty ?? 0) > 0).length
     };
   }, [lines, products, customer]);
 
-  const addLine = () => setLines(ls => [...ls, { id: rid(), productId: "", qty: 1 }]);
+  const addLine = () => setLines(ls => [...ls, { id: rid(), productId: "", qty: undefined }]);
   const removeLine = (id: string) => setLines(ls => ls.length === 1 ? ls : ls.filter(l => l.id !== id));
   const setLineProduct = (id: string, productId: string | null) =>
     setLines(ls => ls.map(l => l.id === id ? { ...l, productId: productId ?? "" } : l));
-  const setLineQty = (id: string, qty: number) =>
-    setLines(ls => ls.map(l => l.id === id ? { ...l, qty: Math.max(0, qty || 0) } : l));
+  const setLineQty = (id: string, qty: number | undefined) =>
+    setLines(ls => ls.map(l => l.id === id ? { ...l, qty } : l));
 
   const submit = useMutation({
     mutationFn: async () => {
       if (!customer) throw new Error("Pick a customer");
 
       const items = lines
-        .filter(l => l.productId && l.qty > 0)
-        .map(l => ({ productId: l.productId, quantity: l.qty }));
+        .filter(l => l.productId && (l.qty ?? 0) > 0)
+        .map(l => ({ productId: l.productId, quantity: l.qty ?? 0 }));
 
       if (items.length === 0) throw new Error("Add at least one line");
 
@@ -341,8 +341,9 @@ export default function RecordIndentsPage() {
                         <Input
                           className="erp-input num text-right"
                           type="number" min="0" step="1"
-                          value={l.qty}
-                          onChange={e => setLineQty(l.id, parseFloat(e.target.value))}
+                          value={l.qty ?? ""}
+                          onChange={e => setLineQty(l.id, e.target.value === "" ? 
+                            undefined : Math.max(0, parseInt(e.target.value) || 0))}
                         />
                       </td>
                       <td className="num">{c.unit ? c.unit.toFixed(2) : "—"}</td>

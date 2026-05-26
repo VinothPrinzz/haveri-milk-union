@@ -27,6 +27,7 @@ import {
   type Route as RouteType,
 } from "@/services/api";
 import { routeSchema, type RouteFormData } from "@/lib/validations";
+import { useSaveShortcut } from "@/lib/useKeyboardNav";
 
 interface Props { tab?: "list" | "new"; }
 
@@ -83,6 +84,8 @@ function RouteFormBody({
       if (first?.message) toast.error(first.message);
     },
   );
+
+  useSaveShortcut(() => submit(), !isSubmitting);
 
   const Wrap = embedded
     ? ({ children }: { children: React.ReactNode }) => <div>{children}</div>
