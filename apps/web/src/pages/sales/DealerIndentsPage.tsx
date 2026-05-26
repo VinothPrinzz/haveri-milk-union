@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Minus, Plus, Save, CheckCircle2, CalendarClock } from "lucide-react";
+import { Save, CheckCircle2, CalendarClock } from "lucide-react";
 import PageHeader, {
   FilterBar,
   StatCard,
@@ -35,46 +35,28 @@ import {
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
-// ── Quantity stepper ────────────────────────────────────────────────────
+// ── Quantity field (no steppers — manual entry only) ────────────────────
 function QtyStepper({
   value,
   onChange,
   disabled,
 }: {
-  value: number;
-  onChange: (n: number) => void;
+  value: number | undefined;
+  onChange: (n: number | undefined) => void;
   disabled?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-1">
-      <Button
-        type="button"
-        size="icon"
-        variant="outline"
-        className="h-6 w-6"
-        disabled={disabled || value <= 0}
-        onClick={() => onChange(Math.max(0, value - 1))}
-      >
-        <Minus className="h-3 w-3" />
-      </Button>
-      <Input
-        type="number"
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(Math.max(0, parseInt(e.target.value) || 0))}
-        className="erp-input h-6 w-14 text-center px-1"
-      />
-      <Button
-        type="button"
-        size="icon"
-        variant="outline"
-        className="h-6 w-6"
-        disabled={disabled}
-        onClick={() => onChange(value + 1)}
-      >
-        <Plus className="h-3 w-3" />
-      </Button>
-    </div>
+    <Input
+      type="number"
+      min={0}
+      value={value ?? ""}
+      disabled={disabled}
+      onChange={(e) =>
+        onChange(e.target.value === "" ? undefined : Math.max(0, parseInt(e.target.value) || 0))
+      }
+      className="erp-input num h-6 w-16 text-center px-1"
+      placeholder="—"
+    />
   );
 }
 

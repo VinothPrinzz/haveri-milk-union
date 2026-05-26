@@ -9,7 +9,7 @@
 //   MRP          — entered by the client
 //   Margin       — MRP − Dealer-Price, auto-calculated, never stored
 // ════════════════════════════════════════════════════════════════════
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -50,6 +50,7 @@ import {
 const fetchRateCategories = () => getRateCategories().map((name, i) => ({ id: String(i), name }));
 
 import { productSchema, type ProductFormData } from "@/lib/validations";
+import { useSaveShortcut } from "@/lib/useKeyboardNav";
 
 // Basic Price is derived from the (gross) Dealer-Price, excluding GST.
 function deriveBasicPrice(dealerPrice: number, gstPercent: number): number {
@@ -356,15 +357,15 @@ function ProductFormBody({
       name: initialData?.name ?? "",
       reportAlias: initialData?.reportAlias ?? "",
       category: initialData?.categoryId ?? "",
-      packSize: initialData?.packSize ?? 1,
+      packSize:      initialData?.packSize      ?? undefined,
       unit: initialData?.unit ?? "L",
-      dealerPrice: initialData?.dealerPrice ?? 0,
-      mrp: initialData?.mrp ?? 0,
-      gstPercent: initialData?.gstPercent ?? 0,
+      dealerPrice:   initialData?.dealerPrice   ?? undefined,
+      mrp:           initialData?.mrp           ?? undefined,
+      gstPercent:    initialData?.gstPercent    ?? undefined,
       hsnNo: initialData?.hsnNo ?? "",
-      packetsCrate: initialData?.packetsCrate ?? 0,
+      packetsCrate:  initialData?.packetsCrate  ?? undefined,
       printDirection: (initialData?.printDirection as "Across" | "Down") ?? "Across",
-      sortPosition: (initialData as any)?.sortPosition ?? initialData?.sortOrder ?? 0,
+      sortPosition:  (initialData as any)?.sortPosition ?? initialData?.sortOrder ?? undefined,
       subsidy: (initialData as any)?.subsidy ?? false,
       makeZeroInIndents: (initialData as any)?.makeZeroInIndents ?? false,
       terminated: initialData?.terminated ?? false,
@@ -382,9 +383,12 @@ function ProductFormBody({
   const basicPrice   = deriveBasicPrice(dealerPriceW, gstW);
   const margin       = mrpW - dealerPriceW;
 
+  const submitProduct = form.handleSubmit(async d => { await onSubmit(d); if (!embedded) form.reset(); });
+  useSaveShortcut(() => submitProduct(), !isSubmitting);
+
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(async d => { await onSubmit(d); if (!embedded) form.reset(); })}>
+      <form onSubmit={submitProduct}>
         <FormSection title="Identification" cols={3}>
           <FormField control={form.control} name="name" render={({ field }) => (
             <FormItem>
@@ -436,7 +440,14 @@ function ProductFormBody({
           <FormField control={form.control} name="packSize" render={({ field }) => (
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Pack Size</FormLabel>
-              <FormControl><Input type="number" step="0.01" {...field} onChange={e => field.onChange(parseFloat(e.target.value))} /></FormControl>
+              <FormControl>
+                <Input 
+                  type="number" 
+                  step="0.01" 
+                  {...field} 
+                  onChange={e => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))} 
+                />
+              </FormControl>
               <FormMessage className="text-[11.5px]" />
             </FormItem>
           )}/>
@@ -461,7 +472,14 @@ function ProductFormBody({
           <FormField control={form.control} name="packetsCrate" render={({ field }) => (
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">Packets/Crate</FormLabel>
-              <FormControl><Input type="number" step="1" {...field} onChange={e => field.onChange(parseInt(e.target.value))} /></FormControl>
+              <FormControl>
+                <Input 
+                  type="number" 
+                  step="1" 
+                  {...field} 
+                  onChange={e => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))} 
+                />
+              </FormControl>
               <FormMessage className="text-[11.5px]" />
             </FormItem>
           )}/>
@@ -471,7 +489,14 @@ function ProductFormBody({
           <FormField control={form.control} name="hsnNo" render={({ field }) => (
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">HSN</FormLabel>
-              <FormControl><Input placeholder="0401" {...field} /></FormControl>
+              <FormControl>
+                <Input 
+                  type="number" 
+                  step="0.01" 
+                  {...field} 
+                  onChange={e => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))} 
+                />
+              </FormControl>
               <FormMessage className="text-[11.5px]" />
             </FormItem>
           )}/>
@@ -499,7 +524,7 @@ function ProductFormBody({
                   type="number"
                   step="0.01"
                   {...field}
-                  onChange={e => field.onChange(parseFloat(e.target.value))}
+                  onChange={e => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
                 />
               </FormControl>
               <FormMessage className="text-[11.5px]" />
@@ -515,7 +540,7 @@ function ProductFormBody({
                   type="number"
                   step="0.01"
                   {...field}
-                  onChange={e => field.onChange(parseFloat(e.target.value))}
+                  onChange={e => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))}
                 />
               </FormControl>
               <FormMessage className="text-[11.5px]" />
@@ -611,14 +636,16 @@ function ProductFormBody({
 
         {/* Behaviour Section */}
         <FormSection title="Behaviour" cols={3}>
-          <Field label="Sort Position">
-            <Input
-              className="erp-input num"
-              type="number"
-              min="0"
-              {...form.register("sortPosition", { valueAsNumber: true })}
-            />
-          </Field>
+        <Field label="Sort Position">
+          <Input
+            className="erp-input num"
+            type="number"
+            min="0"
+            {...form.register("sortPosition", {
+              setValueAs: v => v === "" || v == null ? undefined : Number(v),
+            })}
+          />
+        </Field>
           <Field label="Print Direction">
             <Select
               value={form.watch("printDirection") || "Across"}

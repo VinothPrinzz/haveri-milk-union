@@ -45,13 +45,13 @@ interface Props { tab?: "gate-pass" | "cash-customer" | "modify"| "vip-sample" |
 type Line = {
   id: string;
   productId: string;
-  qty: number;
-  rate: number;
-  gstPercent: number;
+  qty?: number;
+  rate?: number;
+  gstPercent?: number;
 };
 
 const rid = () => Math.random().toString(36).slice(2, 9);
-const newLine = (): Line => ({ id: rid(), productId: "", qty: 1, rate: 0, gstPercent: 0 });
+const newLine = (): Line => ({ id: rid(), productId: "", qty: undefined, rate: undefined, gstPercent: undefined });
 
 export default function DirectSalesPage({ tab = "gate-pass" }: Props) {
   if (tab === "cash-customer") return <CashCustomerTab />;
@@ -109,12 +109,12 @@ function ItemsCard({
       };
     }));
 
-  const setQty = (id: string, qty: number) =>
-    setLines(prev => prev.map(l => l.id === id ? { ...l, qty: Math.max(0, qty || 0) } : l));
-  const setRate = (id: string, rate: number) =>
-    setLines(prev => prev.map(l => l.id === id ? { ...l, rate: Math.max(0, rate || 0) } : l));
-  const setGstPct = (id: string, pct: number) =>
-    setLines(prev => prev.map(l => l.id === id ? { ...l, gstPercent: Math.max(0, pct || 0) } : l));
+  const setQty = (id: string, qty: number | undefined) =>
+    setLines(prev => prev.map(l => l.id === id ? { ...l, qty } : l));
+  const setRate = (id: string, rate: number | undefined) =>
+    setLines(prev => prev.map(l => l.id === id ? { ...l, rate } : l));
+  const setGstPct = (id: string, pct: number | undefined) =>
+    setLines(prev => prev.map(l => l.id === id ? { ...l, gstPercent: pct } : l));
 
   return (
     <div className="erp-panel">
@@ -157,16 +157,16 @@ function ItemsCard({
                     <Input
                       className="erp-input num text-right"
                       type="number" min="0" step="1"
-                      value={l.qty}
-                      onChange={e => setQty(l.id, parseFloat(e.target.value))}
+                      value={l.qty ?? ""}
+                      onChange={e => setQty(l.id, e.target.value === "" ? undefined : parseFloat(e.target.value))}
                     />
                   </td>
                   <td>
                     <Input
                       className="erp-input num text-right"
                       type="number" min="0" step="0.01"
-                      value={l.rate}
-                      onChange={e => setRate(l.id, parseFloat(e.target.value))}
+                      value={l.rate ?? ""}
+                      onChange={e => setRate(l.id, e.target.value === "" ? undefined : parseFloat(e.target.value))}
                     />
                   </td>
                   <td className="num">{c.sub ? fmtINR(c.sub) : "—"}</td>
@@ -174,8 +174,8 @@ function ItemsCard({
                     <Input
                       className="erp-input num text-right"
                       type="number" min="0" max="100" step="0.01"
-                      value={l.gstPercent}
-                      onChange={e => setGstPct(l.id, parseFloat(e.target.value))}
+                      value={l.gstPercent ?? ""}
+                      onChange={e => setGstPct(l.id, e.target.value === "" ? undefined : parseFloat(e.target.value))}
                     />
                   </td>
                   <td className="num">{c.gstRs ? fmtINR(c.gstRs) : "—"}</td>
@@ -264,10 +264,10 @@ function GatePassTab() {
       paymentRef: paymentRef.trim() || undefined,   // ← ADD
       notes,
       items: lines
-        .filter(l => l.productId && l.qty > 0)
+        .filter(l => l.productId && (l.qty ?? 0) > 0)
         .map(l => ({
           productId:  l.productId,
-          quantity:   l.qty,
+          quantity:   l.qty ?? 0,
           unitPrice:  l.rate,
           gstPercent: l.gstPercent,
         })),
@@ -290,7 +290,7 @@ function GatePassTab() {
         setLines(prev => [...prev, newLine()]);
       } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
         e.preventDefault();
-        if (!submit.isPending && customer && lines.some(l => l.productId && l.qty > 0)) {
+        if (!submit.isPending && customer && lines.some(l => l.productId && (l.qty ?? 0) > 0)) {
           submit.mutate();
         }
       }
@@ -372,7 +372,7 @@ function GatePassTab() {
           disabled={
             submit.isPending ||
             !customer ||
-            !lines.some(l => l.productId && l.qty > 0) ||
+            !lines.some(l => l.productId && (l.qty ?? 0) > 0) ||
             (paymentMode === "upi" && !paymentRef.trim())
           }
           onClick={() => submit.mutate()}
@@ -415,10 +415,10 @@ function CashCustomerTab() {
       paymentRef: paymentRef.trim() || undefined,
       notes,
       items: lines
-        .filter(l => l.productId && l.qty > 0)
+        .filter(l => l.productId && (l.qty ?? 0) > 0)
         .map(l => ({
           productId:  l.productId,
-          quantity:   l.qty,
+          quantity:   l.qty ?? 0,
           unitPrice:  l.rate,
           gstPercent: l.gstPercent,
         })),
@@ -437,7 +437,7 @@ function CashCustomerTab() {
       if (e.key === "F2") { e.preventDefault(); setLines(prev => [...prev, newLine()]); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (!submit.isPending && name && lines.some(l => l.productId && l.qty > 0)) {
+        if (!submit.isPending && name && lines.some(l => l.productId && (l.qty ?? 0) > 0)) {
           submit.mutate();
         }
       }
@@ -497,8 +497,8 @@ function CashCustomerTab() {
           disabled={
             submit.isPending ||
             !name.trim() ||
-            !lines.some(l => l.productId && l.qty > 0) ||
-            (paymentMode === "upi" && !paymentRef.trim()) 
+            !lines.some(l => l.productId && (l.qty ?? 0) > 0) ||
+            (paymentMode === "upi" && !paymentRef.trim())
           }
           onClick={() => submit.mutate()}
         >
@@ -641,7 +641,6 @@ function ModifyTab() {
             className="erp-input w-96 font-mono"
             value={indentId}
             onChange={e => setIndentId(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && indentId.trim()) fetchIndent.mutate(indentId.trim()); }}
             placeholder="paste full UUID"
             autoFocus
           />
@@ -699,7 +698,7 @@ function ModifyTab() {
                         <Input
                           className="erp-input num text-right"
                           type="number" min="0" step="1"
-                          value={it.quantity}
+                          value={it.quantity ?? ""}
                           onChange={e =>
                             setItems(arr => arr.map((row, k) =>
                               k === i ? { ...row, quantity: Math.max(0, parseInt(e.target.value) || 0) } : row
@@ -798,8 +797,8 @@ function VipSampleTab() {
       customerId: vipId!,
       notes,
       items: lines
-        .filter(l => l.productId && l.qty > 0)
-        .map(l => ({ productId: l.productId, quantity: l.qty })),
+        .filter(l => l.productId && (l.qty ?? 0) > 0)
+        .map(l => ({ productId: l.productId, quantity: l.qty ?? 0 })),
     }),
     onSuccess: () => {
       toast.success("VIP sample issued");
@@ -810,7 +809,7 @@ function VipSampleTab() {
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
 
-  const canSubmit = !!vipId && lines.some(l => l.productId && l.qty > 0) && !submit.isPending;
+  const canSubmit = !!vipId && lines.some(l => l.productId && (l.qty ?? 0) > 0) && !submit.isPending;
 
   return (
     <div className="flex flex-col h-full">
@@ -921,7 +920,7 @@ function EmployeeSubsidyTab() {
   const today = new Date().toISOString().slice(0, 10);
   const [empId, setEmpId]             = useState<string | null>(null);
   const [productId, setProductId]     = useState<string | null>(null);
-  const [qty, setQty]                 = useState(1);
+  const [qty, setQty] = useState<number | undefined>(undefined);
   const [paymentMode, setPaymentMode] = useState<"cash" | "upi">("cash");
   const [paymentRef, setPaymentRef]   = useState("");
   const [notes, setNotes]             = useState("");
@@ -952,7 +951,7 @@ function EmployeeSubsidyTab() {
   const rule = rules.find(r => r.productId === productId);
 
   const pricing = useMemo(() => {
-    if (!rule) return null;
+    if (!rule || !qty) return null;
     const mrp        = rule.basePrice;
     const unitPrice  = +(mrp * (1 - rule.subsidyPercent / 100)).toFixed(2);
     const lineSub    = +(unitPrice * qty).toFixed(2);
@@ -969,7 +968,7 @@ function EmployeeSubsidyTab() {
       paymentMode,
       paymentRef: paymentRef.trim() || undefined,
       notes,
-      items: [{ productId: productId!, quantity: qty }],
+      items: [{ productId: productId!, quantity: qty ?? 0 }],
     }),
     onSuccess: () => {
       toast.success("Employee subsidy sale recorded");
@@ -982,7 +981,7 @@ function EmployeeSubsidyTab() {
   });
 
   const canSubmit =
-    !!empId && !!productId && qty > 0 && !submit.isPending &&
+    !!empId && !!productId && (qty ?? 0) > 0 && !submit.isPending &&
     (paymentMode === "cash" || paymentRef.trim().length > 0);
 
   // Keyboard: Ctrl+S to submit
@@ -1059,12 +1058,13 @@ function EmployeeSubsidyTab() {
                 />
               </Field>
               <Field label="Quantity" required>
-                <Input
-                  className="erp-input num"
-                  type="number" min={1}
-                  value={qty}
-                  onChange={e => setQty(Math.max(1, parseInt(e.target.value || "1", 10)))}
-                />
+              <Input
+                className="erp-input num"
+                type="number" min={1}
+                value={qty ?? ""}
+                onChange={e => setQty(e.target.value === "" ? 
+                  undefined : Math.max(1, parseInt(e.target.value, 10)))}
+              />
               </Field>
             </>
           )}

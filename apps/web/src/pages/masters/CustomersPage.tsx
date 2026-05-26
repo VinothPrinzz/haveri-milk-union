@@ -17,6 +17,7 @@ import {
   getRateCategories, getOfficers
 } from "@/services/api";
 import { customerSchema, type CustomerFormData } from "@/lib/validations";
+import { useSaveShortcut } from "@/lib/useKeyboardNav";
 import type { Customer } from "@/data/mockData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
@@ -718,7 +719,7 @@ function CustomerFormBody({
       officerName: initial?.officerName ?? "",
       bank: initial?.bank ?? "",
       accountNo: initial?.accountNo ?? "",
-      creditLimit: initial?.creditLimit ?? 0,
+      creditLimit: initial?.creditLimit ?? undefined,
       addressType: initial?.addressType ?? "",
       state: initial?.state ?? "Karnataka",
       zoneId: initial?.zoneId ?? "",
@@ -765,8 +766,11 @@ function CustomerFormBody({
     return Array.from(set).sort().map(c => ({ value: c, label: c }));
   }, [existingCustomers]);
 
+  const submit = form.handleSubmit(d => save.mutate(d));
+  useSaveShortcut(() => submit(), !save.isPending);
+
   return (
-    <form onSubmit={form.handleSubmit(d => save.mutate(d))} className="space-y-3 pb-20">
+    <form onSubmit={submit} className="space-y-3 pb-20">
       <FormSection title="Identity" cols={3}>
         <Field label="Code" hint="auto">
           <Input className="erp-input bg-muted" value={initial?.code ?? ""} readOnly />
@@ -833,11 +837,17 @@ function CustomerFormBody({
           <Input className="erp-input" {...form.register("accountNo")} />
         </Field>
         <Field label="Credit Limit">
-          <Input
-            className="erp-input num"
-            type="number" step="0.01" min="0"
-            {...form.register("creditLimit", { valueAsNumber: true })}
-          />
+        <Input
+          className="erp-input num"
+          type="number"
+          step="0.01"
+          min="0"
+          value={form.watch("creditLimit") ?? ""}
+          onChange={e => {
+            const val = e.target.value;
+            form.setValue("creditLimit", val === "" ? 0 : parseFloat(val));
+          }}
+        />
         </Field>
         <Field label="Primary Route" hint="F9">
           <F9SearchSelect
