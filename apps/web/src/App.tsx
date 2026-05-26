@@ -35,6 +35,8 @@ import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
 import InvoicesListPage from "@/pages/sales/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
 import PaymentsOverviewPage from "@/pages/finance/PaymentsOverviewPage";
+import OnlinePaymentsPage        from "@/pages/finance/OnlinePaymentsPage";
+import RazorpayReconciliationPage from "@/pages/finance/RazorpayReconciliationPage";
 import DealerIndentsPage from "@/pages/sales/DealerIndentsPage";
 // import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
 import {
@@ -125,6 +127,8 @@ function AppInner() {
           <Route path="/fgs/dispatch/create" element={<CreateDispatchPage />} />
           {/* Finance */}
           <Route path="/finance/payments" element={<PaymentsOverviewPage />} />
+          <Route path="/finance/online-payments" element={<OnlinePaymentsPage />} />
+          <Route path="/finance/reconciliation"  element={<RazorpayReconciliationPage />} />
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />

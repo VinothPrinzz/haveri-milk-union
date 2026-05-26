@@ -63,6 +63,26 @@ export function getRazorpayKeyId(): string {
   return keyId;
 }
 
+export async function createRazorpayOrder(
+  params: CreateOrderParams
+): Promise<RazorpayOrder> {
+  const client = await getClient();
+  const amountPaise = Math.round(params.amountInRupees * 100);
+  const order = await client.orders.create({
+    amount: amountPaise,
+    currency: "INR",
+    receipt: params.receipt,
+    notes: params.notes,
+  });
+  return {
+    id: order.id,
+    amount: typeof order.amount === "string" ? parseInt(order.amount, 10) : order.amount,
+    currency: order.currency,
+    receipt: order.receipt ?? null,
+    status: order.status,
+  };
+}
+
 export function isRazorpayConfigured(): boolean {
   return !!keyId && !!keySecret;
 }
@@ -81,28 +101,36 @@ export interface RazorpayOrder {
   status: string;
 }
 
-export async function createRazorpayOrder(
-  params: CreateOrderParams
-): Promise<RazorpayOrder> {
+export async function createRazorpayRefund(
+  params: CreateRefundParams
+): Promise<RazorpayRefund> {
   const client = await getClient();
   const amountPaise = Math.round(params.amountInRupees * 100);
-  const order = await client.orders.create({
+  const refund = await client.payments.refund(params.paymentId, {
     amount: amountPaise,
-    currency: "INR",
-    receipt: params.receipt,
+    speed: "normal",
     notes: params.notes,
-    payment_capture: true,
   });
   return {
-    id: order.id,
+    id: refund.id,
+    status: refund.status,
     amount:
-      typeof order.amount === "string"
-        ? parseInt(order.amount, 10)
-        : order.amount,
-    currency: order.currency,
-    receipt: order.receipt ?? null,
-    status: order.status,
+      typeof refund.amount === "string"
+        ? parseInt(refund.amount, 10)
+        : refund.amount,
   };
+}
+
+export interface CreateRefundParams {
+  paymentId: string;            // pay_xxxxxx
+  amountInRupees: number;       // partial or full
+  notes: Record<string, string>;
+}
+ 
+export interface RazorpayRefund {
+  id: string;                   // rfnd_xxxxxx
+  status: string;               // 'pending' | 'processed' | 'failed'
+  amount: number;               // paise
 }
 
 // ── Signature verification (crypto-only) ────────────────────────────

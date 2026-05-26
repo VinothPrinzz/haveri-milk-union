@@ -1814,6 +1814,179 @@ export const recordPayment = async (body: {
     voucherNo: string;
   }>("/payments", body);
 };
+
+
+// ══════════════════════════════════════
+// FINANCE — RAZORPAY ONLINE PAYMENTS
+// ══════════════════════════════════════
+ 
+export type RazorpayStatus =
+  | "created" | "attempted" | "paid" | "failed" | "refunded";
+export type RazorpayKind = "credit_topup" | "order_payment";
+ 
+export interface OnlinePaymentRow {
+  id:                string;
+  razorpayOrderId:   string;
+  razorpayPaymentId: string | null;
+  amount:            number;
+  amountRefunded:    number;
+  currency:          string;
+  kind:              RazorpayKind;
+  status:            RazorpayStatus;
+  orderId:           string | null;
+  reconciledAt:      string | null;
+  settlementId:      string | null;
+  errorDescription:  string | null;
+  webhookReceived:   boolean;
+  paidAt:            string | null;
+  createdAt:         string;
+  dealerId:          string;
+  dealerName:        string;
+  dealerCode:        string | null;
+  postedToBooks:     boolean;
+}
+ 
+export interface OnlinePaymentsResponse {
+  data:  OnlinePaymentRow[];
+  total: number; page: number; limit: number; totalPages: number;
+}
+ 
+export const fetchOnlinePayments = async (filters?: {
+  status?:   RazorpayStatus;
+  kind?:     RazorpayKind;
+  dealerId?: string;
+  dateFrom?: string;
+  dateTo?:   string;
+  recon?:    "all" | "reconciled" | "unreconciled";
+  search?:   string;
+  page?:     number;
+  limit?:    number;
+}) => {
+  const params: Record<string, string | number | undefined> = {
+    page:  filters?.page  ?? 1,
+    limit: filters?.limit ?? 50,
+  };
+  if (filters?.status)   params.status   = filters.status;
+  if (filters?.kind)     params.kind     = filters.kind;
+  if (filters?.dealerId) params.dealerId = filters.dealerId;
+  if (filters?.dateFrom) params.dateFrom = filters.dateFrom;
+  if (filters?.dateTo)   params.dateTo   = filters.dateTo;
+  if (filters?.recon)    params.recon    = filters.recon;
+  if (filters?.search)   params.search   = filters.search;
+  return await get<OnlinePaymentsResponse>("/finance/online-payments", params);
+};
+ 
+export interface OnlinePaymentsSummary {
+  netCollected:        number;
+  grossCollected:      number;
+  totalRefunded:       number;
+  paidCount:           number;
+  failedCount:         number;
+  pendingCount:        number;
+  unreconciledCount:   number;
+  unreconciledAmount:  number;
+  collectedToday:      number;
+  successRate:         number | null;
+}
+ 
+export const fetchOnlinePaymentsSummary = async (filters?: {
+  dateFrom?: string; dateTo?: string;
+}) => {
+  const params: Record<string, string | undefined> = {};
+  if (filters?.dateFrom) params.dateFrom = filters.dateFrom;
+  if (filters?.dateTo)   params.dateTo   = filters.dateTo;
+  return (await get<{ summary: OnlinePaymentsSummary }>(
+    "/finance/online-payments/summary", params
+  )).summary;
+};
+ 
+export interface OnlinePaymentDetail {
+  payment: OnlinePaymentRow & {
+    razorpaySignature: string | null;
+    notes:             Record<string, unknown> | null;
+    errorCode:         string | null;
+    dealerPhone:       string | null;
+  };
+  refunds: Array<{
+    id:               string;
+    razorpayRefundId: string | null;
+    amount:           number;
+    status:           "pending" | "processed" | "failed";
+    reason:           string;
+    errorDescription: string | null;
+    createdAt:        string;
+    processedAt:      string | null;
+    initiatedByName:  string | null;
+  }>;
+  ledger: Array<{
+    id:          string;
+    type:        "credit" | "debit";
+    amount:      number;
+    voucherNo:   string | null;
+    voucherType: string | null;
+    particulars: string | null;
+    createdAt:   string;
+  }>;
+}
+ 
+export const fetchOnlinePayment = async (id: string) =>
+  await get<OnlinePaymentDetail>(`/finance/online-payments/${id}`);
+ 
+export const refundOnlinePayment = async (
+  id: string,
+  body: { amount?: number; reason: string }
+) =>
+  await post<{
+    message: string;
+    razorpayRefundId: string;
+    refundId: string;
+    fullyRefunded: boolean;
+  }>(`/finance/online-payments/${id}/refund`, body);
+ 
+export const reconcileOnlinePayment = async (
+  id: string,
+  reconciled = true
+) =>
+  await post<{ message: string; id: string; reconciledAt: string | null }>(
+    `/finance/online-payments/${id}/reconcile`, { reconciled }
+  );
+ 
+// ── Reconciliation report ────────────────────────────────────────────
+ 
+export type ReconBucket = "matched" | "needs_review" | "not_posted" | "stale";
+ 
+export interface ReconRow {
+  id:                string;
+  razorpayOrderId:   string;
+  razorpayPaymentId: string | null;
+  amount:            number;
+  kind:              RazorpayKind;
+  status:            RazorpayStatus;
+  reconciledAt:      string | null;
+  paidAt:            string | null;
+  createdAt:         string;
+  dealerName:        string;
+  dealerCode:        string | null;
+  internalPaymentId: string | null;
+  bucket:            ReconBucket;
+}
+ 
+export interface ReconResponse {
+  data: ReconRow[];
+  summary: Record<ReconBucket, { count: number; amount: number }>;
+}
+ 
+export const fetchRazorpayReconciliation = async (filters?: {
+  dateFrom?: string;
+  dateTo?:   string;
+  bucket?:   "all" | ReconBucket;
+}) => {
+  const params: Record<string, string | undefined> = {};
+  if (filters?.dateFrom) params.dateFrom = filters.dateFrom;
+  if (filters?.dateTo)   params.dateTo   = filters.dateTo;
+  if (filters?.bucket)   params.bucket   = filters.bucket;
+  return await get<ReconResponse>("/finance/reconciliation", params);
+};
  
  
 // ══════════════════════════════════════
