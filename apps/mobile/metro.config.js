@@ -15,8 +15,10 @@ config.resolver.nodeModulesPaths = [
   path.resolve(monorepoRoot, "node_modules"),
 ];
 
-// Required for pnpm: all packages in node_modules are symlinks pointing into
-// .pnpm/; without this Metro refuses to resolve them (EISDIR / not-found).
+// With node-linker=hoisted in .npmrc, pnpm installs packages as real
+// directories (no .pnpm virtual-store symlinks). This flag is a no-op in
+// that mode but is kept for safety in case any workspace-internal symlinks
+// remain (e.g. local package links).
 config.resolver.unstable_enableSymlinks = true;
 
 module.exports = config;

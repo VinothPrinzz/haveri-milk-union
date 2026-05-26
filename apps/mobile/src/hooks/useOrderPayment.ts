@@ -1,11 +1,13 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import {
   openRazorpayCheckout,
   prefillFromDealer,
   RazorpayCancelled,
   RazorpayFailed,
 } from "../lib/razorpay";
+import { useAuthStore } from "../store/auth";
 
 /**
  * useOrderPayment — pay for a specific order via Razorpay.
@@ -62,13 +64,16 @@ export function useOrderPayment(orderId: string) {
     },
 
     onSuccess: () => {
-      // The drafts query for this date now shows the order as confirmed
-      qc.invalidateQueries({ queryKey: ["dealer-draft"] });
-      // Orders list
-      qc.invalidateQueries({ queryKey: ["my-orders"] });
-      // Profile screen (no outstanding changes from this — order was
-      // paid outside credit — but the payment history changes)
-      qc.invalidateQueries({ queryKey: ["razorpay-payments"] });
+      // The drafts query for this date now shows the order as confirmed.
+      qc.invalidateQueries({ queryKey: qk.draft.all });
+      // Orders list. MUST be qk.orders.all — the old ["my-orders"] key
+      // did not match the ["orders","my",...] key useMyOrders uses, so
+      // the Orders tab silently failed to refresh after a pay-now.
+      qc.invalidateQueries({ queryKey: qk.orders.all });
+      // Payment history list on the Profile screen.
+      qc.invalidateQueries({ queryKey: qk.payments });
+      // Refresh the Zustand profile (credit / outstanding may change).
+      useAuthStore.getState().refreshProfile();
     },
   });
 }

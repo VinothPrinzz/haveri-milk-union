@@ -140,7 +140,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
         JOIN dealers d ON d.id = o.dealer_id
         WHERE d.route_id = ${body.routeId}
           AND o.created_at::date = ${body.date}::date
-          AND o.status IN ('pending', 'confirmed')
+          AND o.status = 'confirmed'
       `;
 
       // Estimate crates: ~20 items per crate
@@ -157,13 +157,8 @@ export async function routeSheetRoutes(app: FastifyInstance) {
         RETURNING *
       `;
 
-      // Update pending orders to confirmed for this zone+date
-      await pgClient`
-        UPDATE orders SET status = 'confirmed', confirmed_at = now(), updated_at = now()
-        WHERE dealer_id IN (SELECT id FROM dealers WHERE route_id = ${body.routeId}::uuid AND deleted_at IS NULL)
-          AND created_at::date = ${body.date}::date
-          AND status = 'pending'
-      `;
+      // NOTE: orders now go directly to 'confirmed' on dealer/auto-confirm.
+      // No pending→confirmed transition needed here.
 
       return reply.status(201).send({ sheet, orderStats });
     }

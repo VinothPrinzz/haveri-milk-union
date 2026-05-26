@@ -8,7 +8,7 @@
 //
 // Confirm logic (mirrors POST /drafts/:date/confirm in dealer-indents.ts):
 //   • Run a credit check against the dealer's outstanding balance.
-//   • Sufficient → orders.status = 'pending' (confirmed_at = now())
+//   • Sufficient → orders.status = 'confirmed' (confirmed_at = now())
 //   • Insufficient → orders.status = 'payment_required'
 //                    + push notification with shortfall + top-up link
 //
@@ -191,7 +191,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
         if (credit.sufficient) {
           await sql`
             UPDATE orders
-               SET status = 'pending',
+               SET status = 'confirmed',
                    confirmed_at = COALESCE(confirmed_at, now()),
                    updated_at = now()
              WHERE id = ${draft.id}::uuid AND status = 'draft'

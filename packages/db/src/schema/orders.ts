@@ -31,7 +31,7 @@ export const orders = pgTable("orders", {
   id: uuid("id").defaultRandom().notNull(),
   dealerId: uuid("dealer_id").notNull(), // FK enforced via migration SQL (partitioned tables need manual FK)
   zoneId: uuid("zone_id").notNull(),
-  status: orderStatusEnum("status").notNull().default("pending"),
+  status: orderStatusEnum("status").notNull().default("draft"),
   paymentMode: paymentModeEnum("payment_mode").notNull().default("wallet"),
   paymentReference: text("payment_reference"), // UPI transaction ID if paid via UPI
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).notNull(), // before GST

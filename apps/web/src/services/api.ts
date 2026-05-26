@@ -220,13 +220,12 @@ function normalizeIndent(d: Record<string, unknown>) {
       })()
     : "";
 
-  const rawStatus = String(d.status ?? "pending").toLowerCase();
+  const rawStatus = String(d.status ?? "confirmed").toLowerCase();
   const statusMap: Record<
     string,
-    "Pending" | "Posted" | "Dispatched" | "Cancelled"
+    "Confirmed" | "Dispatched" | "Cancelled"
   > = {
-    pending: "Pending",
-    confirmed: "Posted",
+    confirmed: "Confirmed",
     dispatched: "Dispatched",
     delivered: "Dispatched",
     cancelled: "Cancelled",
@@ -247,7 +246,7 @@ function normalizeIndent(d: Record<string, unknown>) {
     date: formattedDate,
     rawDate: String(rawDate).split("T")[0],
     agentCode: (d.agent_code ?? d.agentCode ?? "") as string,
-    status: statusMap[rawStatus] ?? "Pending",
+    status: statusMap[rawStatus] ?? "Confirmed",
     items,
     total: parseFloat(String(d.grand_total ?? d.total ?? 0)) || 0,
     totalAmount: parseFloat(String(d.grand_total ?? d.total ?? 0)) || 0,
@@ -2165,19 +2164,6 @@ export const deleteProduct = async (id: string) => {
 
 export const upsertProductRate = async (productId: string, categoryId: string, rate: number) => {
   return await post<{ message: string }>(`/products/${productId}/rates`, { categoryId, rate });
-};
-
-export const fetchPendingIndents = async (filters?: { date?: string; routeId?: string; batchId?: string }) => {
-  const params: Record<string, string | number | undefined> = { status: "pending", limit: 100 };
-  if (filters?.date) params.date = filters.date;
-  if (filters?.routeId) params.routeId = filters.routeId;
-  if (filters?.batchId) params.batchId = filters.batchId;
-  const data = await get<{ data: Record<string, unknown>[] }>("/orders", params);
-  return (data.data ?? []).map(normalizeIndent);
-};
-
-export const postIndents = async (ids: string[]) => {
-  return await post<{ message: string; count: number }>("/orders/bulk-confirm", { ids });
 };
 
 export const sendInvoice = async (id: string) => {

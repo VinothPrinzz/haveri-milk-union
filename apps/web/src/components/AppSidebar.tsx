@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Users, UserPlus, MapPin, Map, ClipboardList, Package, PackagePlus, Tags,
-  TrendingUp, History, FileText, Send, ClipboardCheck, ScrollText, CreditCard,
+  TrendingUp, History, FileText, ClipboardCheck, ScrollText, CreditCard,
   Receipt, XCircle, Warehouse, BarChart3, FileSpreadsheet, Plus, Truck,
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
   ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
@@ -33,7 +33,6 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
   ],
   sales: [
     { label: "Record Indents",   path: "/sales/record-indents",                  icon: FileText },
-    { label: "Post Indent",      path: "/sales/post-indent",                     icon: Send },
     { label: "Dealer Indents", path: "/sales/dealer-indents", icon: CalendarClock },
     { label: "All Indents",      path: "/sales/all-indents",                     icon: ClipboardCheck },
     { label: "Direct - Gate Pass", path: "/sales/direct-sales/gate-pass",        icon: ScrollText },

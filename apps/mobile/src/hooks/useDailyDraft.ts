@@ -1,11 +1,59 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import type {
   ConfirmDraftCreditExceeded,
   ConfirmDraftSuccess,
   DailyDraft,
   DraftItem,
+  OrderStatus,
 } from "../lib/types";
+import { useAuthStore } from "../store/auth";
+
+/**
+ * Coerce anything (number | numeric-string | null | undefined) into a
+ * finite number. The backend's `postgres` driver returns numeric/decimal
+ * columns as STRINGS — if one of those reaches a screen that calls
+ * `.toFixed()` on it, the app throws and crashes. Normalising here, at
+ * the single point every screen reads the draft through, makes that
+ * class of bug impossible regardless of what the server sends.
+ */
+function toNum(v: unknown): number {
+  const n = typeof v === "number" ? v : parseFloat(String(v ?? ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Normalise a raw GET /drafts/:date payload into a safe DailyDraft. */
+function normalizeDailyDraft(raw: any): DailyDraft {
+  const items: DraftItem[] = Array.isArray(raw?.items)
+    ? raw.items.map((it: any) => ({
+        productId: String(it?.productId ?? ""),
+        productName: String(it?.productName ?? ""),
+        quantity: toNum(it?.quantity),
+        unitPrice: toNum(it?.unitPrice),
+        gstPercent: toNum(it?.gstPercent),
+        lineTotal: toNum(it?.lineTotal),
+        icon: it?.icon ?? null,
+        imageUrl: it?.imageUrl ?? null,
+        unit: String(it?.unit ?? ""),
+      }))
+    : [];
+  const t = raw?.totals ?? {};
+  return {
+    deliveryDate: String(raw?.deliveryDate ?? ""),
+    exists: Boolean(raw?.exists),
+    paused: Boolean(raw?.paused),
+    pausedReason: raw?.pausedReason ?? null,
+    orderId: raw?.orderId ?? undefined,
+    status: (raw?.status ?? "draft") as OrderStatus,
+    items,
+    totals: {
+      subtotal: toNum(t.subtotal),
+      totalGst: toNum(t.totalGst),
+      grandTotal: toNum(t.grandTotal),
+    },
+  };
+}
 
 /**
  * useDailyDraft(date) — read the draft for a given delivery date.
@@ -14,15 +62,20 @@ import type {
  * synthesized preview from the standing indent (exists=false). The
  * UI treats them the same — the first PATCH materializes the row.
  *
+ * The response is normalised (numeric coercion) so screens can safely
+ * call `.toFixed()` on item prices / totals no matter what the backend
+ * sends.
+ *
  * Cached per-date for 30s. PATCH and confirm invalidate the same
  * key, so changes propagate immediately.
  */
 export function useDailyDraft(date: string | null | undefined) {
   return useQuery({
-    queryKey: ["dealer-draft", date],
+    queryKey: qk.draft.byDate(date),
     enabled: !!date,
     queryFn: async () => {
-      return api.get<DailyDraft>(`/api/v1/dealer/drafts/${date}`);
+      const raw = await api.get<unknown>(`/api/v1/dealer/drafts/${date}`);
+      return normalizeDailyDraft(raw);
     },
     staleTime: 30 * 1000,
   });
@@ -40,7 +93,7 @@ export function useDailyDraft(date: string | null | undefined) {
  */
 export function usePatchDraft(date: string) {
   const qc = useQueryClient();
-  const queryKey = ["dealer-draft", date];
+  const queryKey = qk.draft.byDate(date);
 
   return useMutation({
     mutationFn: async (items: { productId: string; quantity: number }[]) => {
@@ -160,12 +213,16 @@ export function useConfirmDraft(date: string) {
       );
     },
     onSuccess: () => {
-      // Invalidate the draft so it refetches as "pending"
-      qc.invalidateQueries({ queryKey: ["dealer-draft", date] });
-      // Profile screen reads outstanding/credit — refresh that too
-      qc.invalidateQueries({ queryKey: ["dealer-profile"] });
-      // Orders list now has a new pending order
-      qc.invalidateQueries({ queryKey: ["my-orders"] });
+      // Invalidate the draft so it refetches as "pending".
+      qc.invalidateQueries({ queryKey: qk.draft.byDate(date) });
+      // Orders list now has a new pending order. This MUST use
+      // qk.orders.all — the old ["my-orders"] key did not match the
+      // ["orders","my",...] key useMyOrders registers under, which is
+      // exactly why the Orders tab didn't refresh after a confirm.
+      qc.invalidateQueries({ queryKey: qk.orders.all });
+      // Credit / outstanding changed — refresh the Zustand profile so
+      // the Profile tab's credit limit updates without a manual reload.
+      useAuthStore.getState().refreshProfile();
     },
   });
 }

@@ -6,6 +6,7 @@ import {
   RazorpayCancelled,
   RazorpayFailed,
 } from "../lib/razorpay";
+import { useAuthStore } from "../store/auth";
 
 /**
  * useCreditTopUp — one-shot mutation that does the entire top-up flow:
@@ -67,6 +68,7 @@ export function useCreditTopUp() {
       qc.invalidateQueries({ queryKey: ["dealer-draft"] });
       // Payment history list
       qc.invalidateQueries({ queryKey: ["razorpay-payments"] });
+      useAuthStore.getState().refreshProfile();
     },
   });
 }

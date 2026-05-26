@@ -33,15 +33,15 @@ export async function processDispatchPregenerate(job: Job) {
   let created = 0;
 
   for (const route of routes) {
-    // Count pending/confirmed orders for this zone
+    // Count confirmed orders for this route
     const [orderStats] = await sql`
       SELECT count(*)::int AS order_count,
              COALESCE(SUM(item_count), 0)::int AS total_items
-      FROM orders
+      FROM orders o
       JOIN dealers d ON d.id = o.dealer_id
       WHERE d.route_id = ${route.id}
-        AND o.created_at::date = ${today}::date
-        AND o.status IN ('pending', 'confirmed')
+        AND o.delivery_date = ${today}::date
+        AND o.status = 'confirmed'
     `;
 
     // Count active dealers in this zone

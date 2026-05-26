@@ -1,7 +1,22 @@
-import React, { useMemo, useState } from "react";
+// src/screens/HomeScreen.tsx  —  FULL FILE (drop-in replacement)
+//
+// WHAT CHANGED & WHY
+//   The product grid was a plain <ScrollView> with filteredProducts.map().
+//   With ~238 products — each ProductCard mounting a remote <Image> — every
+//   card and bitmap was decoded into native memory at once. On low-end
+//   Android devices that blows the per-app memory limit and the OS Low
+//   Memory Killer terminates the app ("loading… then closes").
+//
+//   Fix: render the grid with <FlatList numColumns={2}>, which virtualizes
+//   rows — only ~10–20 cards are ever mounted. The non-scrolling search bar
+//   is kept ABOVE the FlatList (a TextInput inside a virtualized header can
+//   lose focus on re-render); DatePill / banners / category pills / the
+//   section header go in ListHeaderComponent and scroll with the grid.
+
+import React, { useMemo, useState, useCallback } from "react";
 import {
+  FlatList,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -27,42 +42,10 @@ import { useBanners } from "../hooks/useBanners";
 import { useNotifications } from "../hooks/useNotifications";
 import type { Product, Banner } from "../lib/types";
 
-/**
- * HomeScreen v2 — the Blinkit-style product showcase.
- *
- * Changes from v1:
- *   • No more 3-way window-state branching. Home is ALWAYS browseable
- *     — the date pill at the top tells the dealer what date their
- *     adds are flowing into. When today's window closes, the
- *     targetDate store auto-advances to tomorrow so + still works.
- *   • Reorder strip, repeat-yesterday card, WindowClosedContent and
- *     ClosingSoonBanner all moved to the Indent tab. Home is now
- *     pure product discovery.
- *   • AppHeader replaces DealerHeader — gives every tab the
- *     bell + profile-avatar pattern.
- *   • Products grid uses the new Blinkit-style ProductCard. Existing
- *     `CategoryBar` (horizontal pill scroll) stays as a quick filter
- *     for in-place browsing; the Categories tab handles deep
- *     navigation.
- *
- * Layout (top-to-bottom):
- *   1. AppHeader (dealer name + zone, bell, avatar)
- *   2. DatePill ("Adding to: Today · 1h 23m left")
- *   3. Search bar
- *   4. PromoBanner strip (only when banners exist)
- *   5. CategoryBar (horizontal pills, "All" first)
- *   6. Products grid (2 col)
- *   7. Sticky "View indent" bar (when items in draft)
- */
-
 interface HomeScreenProps {
-  /** Called when the user taps the sticky View Indent bar */
   onOpenIndent: () => void;
-  /** Called when the user taps the date pill — usually switches to Indent tab */
   onOpenIndentForDate: () => void;
-  /** Called when the user taps the bell icon */
   onOpenNotifications: () => void;
-  /** Called when the user taps the profile avatar */
   onOpenProfile: () => void;
 }
 
@@ -85,7 +68,7 @@ export default function HomeScreen({
   const addItem = useCartStore((s) => s.addItem);
   const removeItem = useCartStore((s) => s.removeItem);
 
-  // ── Target date store (so + adds to the right day's draft) ──────
+  // ── Target date store ───────────────────────────────────────────
   const advanceIfWindowClosed = useTargetDateStore((s) => s.advanceIfWindowClosed);
 
   // ── API ─────────────────────────────────────────────────────────
@@ -101,8 +84,6 @@ export default function HomeScreen({
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(ALL_CATEGORY_ID);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Auto-advance to tomorrow when today's window closes
-  // (no-op if dealer has manually picked a future date).
   React.useEffect(() => {
     const closed = windowQuery.data?.state === "closed";
     if (closed) advanceIfWindowClosed(true);
@@ -116,7 +97,10 @@ export default function HomeScreen({
   const filteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
     return products.filter((p) => {
-      if (selectedCategoryId !== ALL_CATEGORY_ID && p.categoryId !== selectedCategoryId) {
+      if (
+        selectedCategoryId !== ALL_CATEGORY_ID &&
+        p.categoryId !== selectedCategoryId
+      ) {
         return false;
       }
       if (q && !p.name.toLowerCase().includes(q)) return false;
@@ -149,6 +133,11 @@ export default function HomeScreen({
 
   const unreadNotifications = (notifs ?? []).some((n) => !!n.unread);
 
+  const selectedCategoryName =
+    selectedCategoryId === ALL_CATEGORY_ID
+      ? "All products"
+      : categoryItems.find((c) => c.id === selectedCategoryId)?.name ?? "Products";
+
   // ── Handlers ────────────────────────────────────────────────────
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -172,6 +161,59 @@ export default function HomeScreen({
     gstPercent: p.gstPercent,
   });
 
+  const renderItem = useCallback(
+    ({ item }: { item: Product }) => (
+      <View style={styles.gridCell}>
+        <ProductCard
+          product={item}
+          quantity={cartItems[item.id]?.quantity ?? 0}
+          onAdd={() => addItem(toCartProduct(item))}
+          onRemove={() => removeItem(item.id)}
+        />
+      </View>
+    ),
+    // cartItems changes when a quantity changes — keep renderItem fresh.
+    [cartItems] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  // Scrolls WITH the grid. No TextInput here, so re-rendering is safe.
+  const ListHeader = (
+    <View>
+      <DatePill
+        windowStatus={windowQuery.data ?? null}
+        onPress={onOpenIndentForDate}
+      />
+
+      {bannerItems.length > 0 && <PromoBanner items={bannerItems} />}
+
+      {categoryItems.length > 0 && (
+        <CategoryBar
+          categories={categoryItems}
+          selectedId={selectedCategoryId}
+          onSelect={setSelectedCategoryId}
+        />
+      )}
+
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{selectedCategoryName}</Text>
+        <Text style={styles.sectionMeta}>
+          {filteredProducts.length} item
+          {filteredProducts.length === 1 ? "" : "s"}
+        </Text>
+      </View>
+    </View>
+  );
+
+  const ListEmpty = (
+    <View style={styles.empty}>
+      <Text style={styles.emptyEmoji}>🔎</Text>
+      <Text style={styles.emptyTitle}>No products found</Text>
+      <Text style={styles.emptySub}>
+        {search ? `No matches for "${search}"` : "Try another category"}
+      </Text>
+    </View>
+  );
+
   // ── Render ──────────────────────────────────────────────────────
   if (!dealer) return null;
 
@@ -183,13 +225,54 @@ export default function HomeScreen({
         onProfilePress={onOpenProfile}
       />
 
-      <ScrollView
-        style={styles.scroll}
+      {/* Search bar — pinned ABOVE the list (keeps TextInput focus stable) */}
+      <View style={styles.searchWrap}>
+        <View
+          style={[
+            styles.searchBar,
+            searchFocused && { borderColor: colors.primary },
+          ]}
+        >
+          <Text style={styles.searchIcon}>🔍</Text>
+          <TextInput
+            style={styles.searchInput}
+            value={search}
+            onChangeText={setSearch}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+            placeholder="Search products…"
+            placeholderTextColor={colors.mutedForeground}
+            returnKeyType="search"
+          />
+          {search ? (
+            <TouchableOpacity onPress={() => setSearch("")} activeOpacity={0.7}>
+              <Text style={styles.searchClear}>✕</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </View>
+
+      {/* Virtualized product grid */}
+      <FlatList
+        data={filteredProducts}
+        renderItem={renderItem}
+        keyExtractor={(p) => p.id}
+        numColumns={2}
+        columnWrapperStyle={styles.gridRow}
+        ListHeaderComponent={ListHeader}
+        ListEmptyComponent={ListEmpty}
         contentContainerStyle={[
-          styles.scrollContent,
+          styles.listContent,
           { paddingBottom: cartItemCount > 0 ? 100 : 24 },
+          filteredProducts.length === 0 && styles.listContentEmpty,
         ]}
         showsVerticalScrollIndicator={false}
+        // ── Virtualization / memory tuning ──
+        removeClippedSubviews
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={5}
+        updateCellsBatchingPeriod={50}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -197,88 +280,7 @@ export default function HomeScreen({
             tintColor={colors.primary}
           />
         }
-      >
-        <DatePill
-          windowStatus={windowQuery.data ?? null}
-          onPress={onOpenIndentForDate}
-        />
-
-        {/* Search bar */}
-        <View style={styles.searchWrap}>
-          <View
-            style={[
-              styles.searchBar,
-              searchFocused && { borderColor: colors.primary },
-            ]}
-          >
-            <Text style={styles.searchIcon}>🔍</Text>
-            <TextInput
-              style={styles.searchInput}
-              value={search}
-              onChangeText={setSearch}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
-              placeholder="Search products…"
-              placeholderTextColor={colors.mutedForeground}
-              returnKeyType="search"
-            />
-            {search ? (
-              <TouchableOpacity onPress={() => setSearch("")} activeOpacity={0.7}>
-                <Text style={styles.searchClear}>✕</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        </View>
-
-        {/* Banners */}
-        {bannerItems.length > 0 && <PromoBanner items={bannerItems} />}
-
-        {/* Category quick-filter pills */}
-        {categoryItems.length > 0 && (
-          <CategoryBar
-            categories={categoryItems}
-            selectedId={selectedCategoryId}
-            onSelect={setSelectedCategoryId}
-          />
-        )}
-
-        {/* Section header */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>
-            {selectedCategoryId === ALL_CATEGORY_ID
-              ? "All products"
-              : categoryItems.find((c) => c.id === selectedCategoryId)?.name ??
-                "Products"}
-          </Text>
-          <Text style={styles.sectionMeta}>
-            {filteredProducts.length} item{filteredProducts.length === 1 ? "" : "s"}
-          </Text>
-        </View>
-
-        {/* Grid or empty state */}
-        {filteredProducts.length === 0 ? (
-          <View style={styles.empty}>
-            <Text style={styles.emptyEmoji}>🔎</Text>
-            <Text style={styles.emptyTitle}>No products found</Text>
-            <Text style={styles.emptySub}>
-              {search ? `No matches for "${search}"` : "Try another category"}
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.grid}>
-            {filteredProducts.map((p) => (
-              <View key={p.id} style={styles.gridCell}>
-                <ProductCard
-                  product={p}
-                  quantity={cartItems[p.id]?.quantity ?? 0}
-                  onAdd={() => addItem(toCartProduct(p))}
-                  onRemove={() => removeItem(p.id)}
-                />
-              </View>
-            ))}
-          </View>
-        )}
-      </ScrollView>
+      />
 
       {/* Sticky View Indent bar */}
       {cartItemCount > 0 && (
@@ -288,7 +290,9 @@ export default function HomeScreen({
             onPress={onOpenIndent}
             style={styles.stickyBar}
             accessibilityRole="button"
-            accessibilityLabel={`View indent, ${cartItemCount} items, ₹${cartGrand.toFixed(2)}`}
+            accessibilityLabel={`View indent, ${cartItemCount} items, ₹${cartGrand.toFixed(
+              2
+            )}`}
           >
             <View style={styles.stickyCount}>
               <Text style={styles.stickyCountText}>{cartItemCount}</Text>
@@ -317,13 +321,17 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 24 },
+
+  // ── List ──
+  listContent: { paddingBottom: 24 },
+  listContentEmpty: { flexGrow: 1 },
 
   // ── Search ──
   searchWrap: {
     paddingHorizontal: 12,
     paddingTop: 10,
+    paddingBottom: 4,
+    backgroundColor: colors.background,
   },
   searchBar: {
     flexDirection: "row",
@@ -371,18 +379,18 @@ const styles = StyleSheet.create({
   },
 
   // ── Grid ──
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+  gridRow: {
     paddingHorizontal: 12,
     gap: 8,
+    marginBottom: 8,
   },
   gridCell: {
-    width: "48.5%",
+    flex: 1,
   },
 
   // ── Empty state ──
   empty: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 60,
@@ -436,9 +444,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.extrabold,
     color: colors.foreground,
   },
-  stickyInfo: {
-    flex: 1,
-  },
+  stickyInfo: { flex: 1 },
   stickyItems: {
     fontSize: 10,
     fontFamily: fonts.medium,

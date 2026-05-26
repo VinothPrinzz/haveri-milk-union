@@ -36,8 +36,10 @@ export interface Dealer {
   zoneId: string;
   zoneName: string;
   walletBalance: number;
-  creditLimit: number;          // <- ADD
+  creditLimit: number;
   creditOutstanding?: number;
+  creditAvailable?: number;
+  ledgerBalance: number;
   locationLabel?: string;
   email?: string;
   gstNumber?: string;
@@ -46,7 +48,7 @@ export interface Dealer {
   notificationsEnabled?: boolean;
   biometricEnabled?: boolean;
   verified?: boolean;
-  memberSince?: string;       // ISO
+  memberSince?: string;
   
 }
 
@@ -115,7 +117,8 @@ export interface Banner {
 // ── Orders ─────────────────────────────────────────────────────────────
 
 export type OrderStatus =
-  | "pending"
+  | "draft"
+  | "payment_required"
   | "confirmed"
   | "dispatched"
   | "delivered"
@@ -272,7 +275,14 @@ export interface DailyDraft {
   paused: boolean;
   pausedReason?: string | null;
   orderId?: string;
-  status: "draft" | "pending" | "payment_required";
+  /**
+   * The single orders row for (dealer, deliveryDate) moves through the
+   * whole lifecycle — the server's GET /drafts/:date surfaces it in any
+   * non-cancelled status, so this must allow every OrderStatus, not just
+   * the three editable-ish ones. (Previously this was narrowed, which
+   * forced screens to cast.)
+   */
+  status: OrderStatus;
   items: DraftItem[];
   totals: DraftTotals;
 }
@@ -290,7 +300,7 @@ export interface CreditCheckSnapshot {
  
 export interface ConfirmDraftSuccess {
   orderId: string;
-  status: "pending";
+  status: "confirmed";
   deliveryDate: string;
   credit: CreditCheckSnapshot;
 }

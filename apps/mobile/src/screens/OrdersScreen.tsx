@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Linking,
   RefreshControl,
   ScrollView,
@@ -29,65 +30,49 @@ import type { Order, OrderStatus } from "../lib/types";
 import { ApiError } from "../lib/api";
 
 /**
- * OrdersScreen — mockup screen 08.
- *
- * Three layout sections:
- *   1. Header: "My Orders" + horizontal filter pill scroll
- *   2. Active order hero card (gradient with truck watermark) — pinned, only shows
- *      when there's a confirmed/dispatched order placed today
- *   3. Past orders list (white cards) with item chips, total, and per-status actions
- *
- * Mockup CSS reference (dealer-app.html lines 274-308):
- *   .orders-hdr     : white, padding 42/16/12, 1px border-bottom
- *   .orders-hdr h3  : 15px Unbounded ExtraBold
- *   .filter-scroll  : flex gap 6, mt 10
- *   .f-tab          : 6/12 padding, 999r, 1.5px border, 10/700 ink3, bg-light
- *   .f-tab.active   : brand bg/border, white
- *   .active-order-card : 135deg brand->#0D2B8F, 14r, padding 13, mb 10
- *     ::after = 🚚 watermark right-13 50% scale 2.2 opacity 0.1
- *     .aoc-label  : 8/800 white60, uppercase, ls 1, mb 7
- *     .aoc-id     : 11/800 white
- *     .aoc-status : flex gap 5 mt 5; dot 6x6 #4ADE80 pulse 1.5s
- *     .aoc-bottom : flex space-between mt 11
- *     .aoc-amount : 14 Unbounded ExtraBold white
- *     .aoc-invoice: 9/700 #FCD34D, bg rgba(252,211,77,0.15), 4/9 padding, 7r
- *   .order-card   : white 14r padding 12 shadow-sm mb 9
- *     .oc-id      : 11/800 ink
- *     .oc-date    : 9/500 ink3 mt 2
- *     .status-chip: 3/9 padding, 999r, 9/800
- *       .paid     : green-l bg, green text
- *       .pending  : amber-l bg, amber text
- *       .cancelled: red-l bg, red text
- *     .item-chip  : bg-light, 1px border, 7r, 2/7 padding, 9/600 ink2
- *     .oc-total   : 13/900 brand Unbounded
- *     .oc-action  : 9/700, 4/9 padding, 7r
- *       .reorder  : brand-l bg, brand text
- *       .invoice  : bg-light, 1px border, ink3
- *       .cancel   : red-l bg, red text
+ * OrdersScreen — Updated with FlatList + Infinite Scroll + Date Range Filter
  */
 
-type FilterId =
-  | "all"
-  | "today"
-  | "this_week"
-  | "paid"
-  | "pending"
-  | "cancelled";
+// ── Date Range Presets ─────────────────────────────────────────────
+type RangeId = "all" | "7d" | "30d" | "month";
+
+const ymd = (d: Date) => d.toISOString().slice(0, 10);
+
+function rangeFor(id: RangeId): { from?: string; to?: string } {
+  const now = new Date();
+  if (id === "7d")
+    return { from: ymd(new Date(Date.now() - 7 * 864e5)), to: ymd(now) };
+  if (id === "30d")
+    return { from: ymd(new Date(Date.now() - 30 * 864e5)), to: ymd(now) };
+  if (id === "month")
+    return {
+      from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)),
+      to: ymd(now),
+    };
+  return {};
+}
+
+const RANGES: { id: RangeId; label: string }[] = [
+  { id: "all", label: "All time" },
+  { id: "7d", label: "Last 7 days" },
+  { id: "30d", label: "Last 30 days" },
+  { id: "month", label: "This month" },
+];
+
+// ── Status Filters ────────────────────────────────────────────────
+type FilterId = "all" | "paid" | "confirmed" | "cancelled";
 
 interface FilterDef {
   id: FilterId;
   label: string;
-  /** Backend status filter; undefined = no server filter */
   apiStatus?: OrderStatus;
 }
 
 const FILTERS: ReadonlyArray<FilterDef> = [
-  { id: "all",        label: "All" },
-  { id: "today",      label: "Today" },
-  { id: "this_week",  label: "This Week" },
-  { id: "paid",       label: "Paid" },
-  { id: "pending",    label: "Pending",   apiStatus: "pending" },
-  { id: "cancelled",  label: "Cancelled", apiStatus: "cancelled" },
+  { id: "all",       label: "All" },
+  { id: "paid",      label: "Paid" },
+  { id: "confirmed", label: "Confirmed", apiStatus: "confirmed" },
+  { id: "cancelled", label: "Cancelled", apiStatus: "cancelled" },
 ];
 
 interface OrdersScreenProps {
@@ -97,46 +82,51 @@ interface OrdersScreenProps {
 }
 
 export default function OrdersScreen({
-    onOpenNotifications,
-    onOpenProfile,
-    onOpenInvoices,
-  }: OrdersScreenProps) {
+  onOpenNotifications,
+  onOpenProfile,
+  onOpenInvoices,
+}: OrdersScreenProps) {
   const insets = useSafeAreaInsets();
   const dealer = useAuthStore((s) => s.dealer);
   const products = useProducts().data ?? [];
   const addItem = useCartStore((s) => s.addItem);
 
   const [activeFilter, setActiveFilter] = useState<FilterId>("all");
+  const [range, setRange] = useState<RangeId>("all");
   const [refreshing, setRefreshing] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
-  // Translate filter to API params
+  const { from, to } = rangeFor(range);
   const apiStatus = FILTERS.find((f) => f.id === activeFilter)?.apiStatus;
-  const ordersQuery = useMyOrders({ page: 1, limit: 50, status: apiStatus });
+
+  const ordersQuery = useMyOrders({
+    limit: 20,
+    status: apiStatus,
+    from,
+    to,
+  });
+
   const invoicesQuery = useMyInvoices();
   const cancelOrder = useCancelOrder();
   const reorder = useReorder();
   const invoiceByOrder = useInvoiceByOrder();
 
-  // Client-side filters (today/this_week/paid)
-  const filteredOrders = useMemo(() => {
-    const orders = ordersQuery.data?.data ?? [];
-    if (activeFilter === "today")     return filterToday(orders);
-    if (activeFilter === "this_week") return filterThisWeek(orders);
-    if (activeFilter === "paid")      return orders.filter(isPaidStatus);
-    return orders;
-  }, [ordersQuery.data, activeFilter]);
+  const {
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = ordersQuery;
 
-  // The active-order pinned card — most recent paid order from today
+  const orders = ordersQuery.data?.orders ?? [];
+
+  // Active order (still client-side for hero card)
   const activeOrder = useMemo(() => {
-    const orders = ordersQuery.data?.data ?? [];
-    const today = startOfToday();
     return orders.find(
       (o) =>
-        new Date(o.createdAt).getTime() >= today &&
-        (o.status === "confirmed" || o.status === "dispatched")
+        (o.status === "confirmed" || o.status === "dispatched") &&
+        new Date(o.createdAt).getTime() >= startOfToday()
     );
-  }, [ordersQuery.data]);
+  }, [orders]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -147,46 +137,30 @@ export default function OrdersScreen({
     }
   };
 
-  // ── Action handlers ────────────────────────────────────────────────
-
-  // Replace the handleViewInvoice body
+  // Action handlers (unchanged)
   const handleViewInvoice = async (orderId: string) => {
-    // First check the cached invoice list (cheap, no roundtrip if R2 URL exists)
     const cached = invoicesQuery.data?.invoices.find((i) => i.orderId === orderId);
     if (cached?.pdfUrl && !cached.pdfUrl.startsWith("data:")) {
       try {
         await Linking.openURL(cached.pdfUrl);
         return;
-      } catch {
-        // fall through to mutation
-      }
-    }
-
-    // Otherwise fetch a fresh signed URL
-    let url: string;
-    try {
-      url = await invoiceByOrder.mutateAsync(orderId);
-    } catch (err) {
-      Alert.alert("Invoice Error", "Could not fetch the invoice. Please try again.");
-      return;
+      } catch {}
     }
 
     try {
+      const url = await invoiceByOrder.mutateAsync(orderId);
       await Linking.openURL(url);
-    } catch {
-      Alert.alert(
-        "Cannot open",
-        "Could not open the invoice in your browser. Please try again."
-      );
+    } catch (err) {
+      Alert.alert("Invoice Error", "Could not fetch or open the invoice.");
     }
   };
 
   const handleReorder = async (orderId: string) => {
     try {
       const result = await reorder.mutateAsync(orderId);
-      // Push every available item into the cart
       let added = 0;
       let skipped = 0;
+
       for (const it of result.items) {
         const product = products.find((p) => p.id === it.productId);
         if (!product || !product.available || product.stock < it.quantity) {
@@ -206,10 +180,11 @@ export default function OrdersScreen({
         }
         added++;
       }
+
       Alert.alert(
         "Items Added",
         `${added} product${added !== 1 ? "s" : ""} added to your cart${
-          skipped ? ` (${skipped} unavailable and skipped)` : ""
+          skipped ? ` (${skipped} unavailable)` : ""
         }.`
       );
     } catch (err) {
@@ -221,7 +196,7 @@ export default function OrdersScreen({
   const handleCancel = (order: Order) => {
     Alert.alert(
       "Cancel Order?",
-      `Are you sure you want to cancel order #${order.id.slice(0, 8).toUpperCase()}? Cancellation may require admin approval.`,
+      `Are you sure you want to cancel order #${order.id.slice(0, 8).toUpperCase()}?`,
       [
         { text: "Keep Order", style: "cancel" },
         {
@@ -247,8 +222,7 @@ export default function OrdersScreen({
     );
   };
 
-  // ── Render ─────────────────────────────────────────────────────────
-
+  // ── Render ───────────────────────────────────────────────────────
   if (ordersQuery.isLoading && !ordersQuery.data) {
     return (
       <View style={styles.firstLoad}>
@@ -260,15 +234,64 @@ export default function OrdersScreen({
 
   return (
     <View style={styles.root}>
-      {/* Header with filter pills */}
       <AppHeader
         title="My Orders"
         onBellPress={onOpenNotifications}
         onProfilePress={onOpenProfile}
       />
 
-      {/* Body */}
-      <ScrollView
+      {/* Status Filter Pills */}
+      <View style={styles.filterContainer}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterScroll}
+        >
+          {FILTERS.map((f) => {
+            const active = f.id === activeFilter;
+            return (
+              <TouchableOpacity
+                key={f.id}
+                onPress={() => setActiveFilter(f.id)}
+                style={[styles.fTab, active && styles.fTabActive]}
+                activeOpacity={0.75}
+              >
+                <Text style={[styles.fTabText, active && styles.fTabTextActive]}>
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {/* Date Range Filter Pills */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterScroll}
+        >
+          {RANGES.map((r) => {
+            const active = r.id === range;
+            return (
+              <TouchableOpacity
+                key={r.id}
+                onPress={() => setRange(r.id)}
+                style={[styles.fTab, active && styles.fTabActive]}
+                activeOpacity={0.75}
+              >
+                <Text style={[styles.fTabText, active && styles.fTabTextActive]}>
+                  {r.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* FlatList with Infinite Scroll */}
+      <FlatList
+        data={orders}
+        keyExtractor={(o) => o.id}
         style={styles.body}
         contentContainerStyle={styles.bodyContent}
         showsVerticalScrollIndicator={false}
@@ -279,43 +302,44 @@ export default function OrdersScreen({
             tintColor={colors.primary}
           />
         }
-      >
-        {/* Active order card (only when there's a paid order from today) */}
-        {activeFilter === "all" && activeOrder && (
-          <ActiveOrderCard
-            order={activeOrder}
-            onInvoice={() => handleViewInvoice(activeOrder.id)}
-          />
-        )}
-
-        {/* Empty state */}
-        {filteredOrders.length === 0 && (
+        ListHeaderComponent={
+          activeFilter === "all" && range === "all" && activeOrder ? (
+            <ActiveOrderCard
+              order={activeOrder}
+              onInvoice={() => handleViewInvoice(activeOrder.id)}
+            />
+          ) : null
+        }
+        ListEmptyComponent={
           <View style={styles.empty}>
             <Text style={styles.emptyEmoji}>📋</Text>
-            <Text style={styles.emptyTitle}>No orders yet</Text>
+            <Text style={styles.emptyTitle}>No orders</Text>
             <Text style={styles.emptySub}>
-              {activeFilter === "all"
-                ? "Your placed indents will appear here."
-                : "Try a different filter."}
+              Try a different filter or date range.
             </Text>
           </View>
+        }
+        renderItem={({ item: order }) => (
+          <OrderCard
+            key={order.id}
+            order={order}
+            productEmojis={emojiMapForOrder(order, products)}
+            cancelling={cancellingId === order.id}
+            onReorder={() => handleReorder(order.id)}
+            onInvoice={() => handleViewInvoice(order.id)}
+            onCancel={() => handleCancel(order)}
+          />
         )}
-
-        {/* Past orders */}
-        {filteredOrders
-          .filter((o) => !activeOrder || o.id !== activeOrder.id || activeFilter !== "all")
-          .map((order) => (
-            <OrderCard
-              key={order.id}
-              order={order}
-              productEmojis={emojiMapForOrder(order, products)}
-              cancelling={cancellingId === order.id}
-              onReorder={() => handleReorder(order.id)}
-              onInvoice={() => handleViewInvoice(order.id)}
-              onCancel={() => handleCancel(order)}
-            />
-          ))}
-      </ScrollView>
+        onEndReached={() => {
+          if (hasNextPage) fetchNextPage();
+        }}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          isFetchingNextPage ? (
+            <ActivityIndicator style={{ marginVertical: 24 }} color={colors.primary} />
+          ) : null
+        }
+      />
     </View>
   );
 }
@@ -388,12 +412,12 @@ function OrderCard({
   onCancel,
 }: OrderCardProps) {
   const chip = chipForStatus(order);   // ← Updated: now passes full order
-  const showCancel = 
-    order.status === "pending" &&
+  const showCancel =
+    order.status === "confirmed" &&
     order.cancellationStatus !== "pending" &&
     order.cancellationStatus !== "approved";
 
-  const showInvoice = order.status !== "cancelled" && order.status !== "pending";
+  const showInvoice = order.status !== "cancelled";
   const isCancelled = order.status === "cancelled";
 
   return (
@@ -522,13 +546,6 @@ function chipForStatus(order: Order) {   // ← Updated: now takes full Order
       textStyle: cardStyles.chipTextCancelled,
     };
   }
-  if (order.status === "pending") {
-    return {
-      label: "⏳ Pending",
-      style: cardStyles.chipPending,
-      textStyle: cardStyles.chipTextPending,
-    };
-  }
   // confirmed, dispatched, delivered all show as Paid
   return {
     label: "✓ Paid",
@@ -602,6 +619,13 @@ const styles = StyleSheet.create({
     fontFamily: fonts.headingExtra,
     fontSize: 15,                            // mockup
     color: colors.foreground,
+  },
+  filterContainer: {
+    backgroundColor: colors.card,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   filterScroll: {
     gap: 6,                                  // mockup

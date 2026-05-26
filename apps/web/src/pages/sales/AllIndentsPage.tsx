@@ -16,7 +16,6 @@ import { Printer, X } from "lucide-react";
 import { fetchIndents, fetchRoutes } from "@/services/api";
 
 const STATUS_OPTS: F9Option[] = [
-  { value: "pending",    label: "Pending" },
   { value: "confirmed",  label: "Confirmed" },
   { value: "dispatched", label: "Dispatched" },
   { value: "delivered",  label: "Delivered" },

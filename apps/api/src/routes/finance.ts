@@ -513,12 +513,12 @@ export async function financeRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const rows = await pgClient`
         SELECT d.id, d.name, d.city, z.name AS zone_name,
-               COALESCE(SUM(CASE WHEN o.status IN ('pending','confirmed','dispatched') THEN o.grand_total ELSE 0 END), 0)::numeric AS outstanding,
-               COALESCE(SUM(CASE WHEN o.status = 'pending' AND o.created_at < now() - interval '3 days' THEN o.grand_total ELSE 0 END), 0)::numeric AS overdue,
+               COALESCE(SUM(CASE WHEN o.status IN ('confirmed','dispatched') THEN o.grand_total ELSE 0 END), 0)::numeric AS outstanding,
+               COALESCE(SUM(CASE WHEN o.status = 'confirmed' AND o.created_at < now() - interval '3 days' THEN o.grand_total ELSE 0 END), 0)::numeric AS overdue,
                MAX(o.created_at) AS last_order_date,
                CASE
-                 WHEN SUM(CASE WHEN o.status = 'pending' AND o.created_at < now() - interval '7 days' THEN 1 ELSE 0 END) > 0 THEN 'critical'
-                 WHEN SUM(CASE WHEN o.status = 'pending' AND o.created_at < now() - interval '3 days' THEN 1 ELSE 0 END) > 0 THEN 'overdue'
+                 WHEN SUM(CASE WHEN o.status = 'confirmed' AND o.created_at < now() - interval '7 days' THEN 1 ELSE 0 END) > 0 THEN 'critical'
+                 WHEN SUM(CASE WHEN o.status = 'confirmed' AND o.created_at < now() - interval '3 days' THEN 1 ELSE 0 END) > 0 THEN 'overdue'
                  ELSE 'current'
                END AS payment_status
         FROM dealers d
@@ -526,7 +526,7 @@ export async function financeRoutes(app: FastifyInstance) {
         LEFT JOIN orders o ON o.dealer_id = d.id AND o.payment_mode = 'credit' AND o.status != 'cancelled'
         WHERE d.deleted_at IS NULL
         GROUP BY d.id, d.name, d.city, z.name
-        HAVING SUM(CASE WHEN o.status IN ('pending','confirmed','dispatched') THEN o.grand_total ELSE 0 END) > 0
+        HAVING SUM(CASE WHEN o.status IN ('confirmed','dispatched') THEN o.grand_total ELSE 0 END) > 0
         ORDER BY outstanding DESC
       `;
       const totalOut = rows.reduce((a: number, r: any) => a + parseFloat(r.outstanding), 0);

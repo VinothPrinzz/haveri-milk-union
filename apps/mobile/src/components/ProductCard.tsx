@@ -208,14 +208,14 @@ const styles = StyleSheet.create({
   // ── Image block ──
   imageBlock: {
     width: "100%",
-    height: 112,
+    height: 150,        // was 112
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
   },
   image: {
-    width: "78%",
-    height: "78%",
+    width: "100%",
+    height: "100%",
   },
   emoji: {
     fontSize: 40,

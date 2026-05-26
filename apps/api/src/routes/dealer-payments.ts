@@ -181,7 +181,7 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
                confirmed_at = COALESCE(confirmed_at, now()),
                updated_at = now()
          WHERE id = ${row.orderId}::uuid
-           AND status IN ('draft', 'payment_required', 'pending')
+           AND status IN ('draft', 'payment_required')
       `;
     }
 

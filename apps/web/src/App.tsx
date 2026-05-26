@@ -20,7 +20,6 @@ import DirectSalesPage from "@/pages/sales/DirectSalesPage";
 import VipContactsPage from "@/pages/masters/VipContactsPage";
 import EmployeesPage   from "@/pages/masters/EmployeesPage";
 import RecentSalesPage from "@/pages/sales/RecentSalesPage";
-import PostIndentPage from "@/pages/sales/PostIndentPage";
 import CancellationRequestsPage from "@/pages/sales/CancellationRequestsPage";
 import StockDashboard from "@/pages/fgs/StockDashboard";
 import StockEntryMilkCurdPage from "@/pages/fgs/StockEntryMilkCurdPage";
@@ -104,7 +103,6 @@ function AppInner() {
           <Route path="/masters/price-revisions"  element={<PriceRevisionsPage />} />
           {/* Sales */}
           <Route path="/sales/record-indents" element={<RecordIndentsPage />} />
-          <Route path="/sales/post-indent" element={<PostIndentPage />} />
           <Route path="/sales/all-indents" element={<AllIndentsPage />} />
           <Route path="/sales/dealer-indents" element={<DealerIndentsPage />} />
           <Route path="/sales/direct-sales/gate-pass" element={<DirectSalesPage tab="gate-pass" />} />
