@@ -16,6 +16,7 @@
   "devDependencies": {
     "typescript": "^5.4.5"
   },
+  "packageManager": "pnpm@10.32.1",
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
@@ -26,7 +27,9 @@
   },
   "pnpm": {
     "overrides": {
-      "drizzle-orm": "0.45.2"
+      "drizzle-orm": "0.45.2",
+      "react": "19.2.0",
+      "react-dom": "19.2.0"
     }
   }
 }

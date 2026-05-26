@@ -21,6 +21,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "../../packages/db/src/polling-replication"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
