@@ -540,11 +540,12 @@ function ProductFormBody({
             <FormItem>
               <FormLabel className="text-[11.5px] uppercase tracking-wide font-medium text-muted-foreground">HSN</FormLabel>
               <FormControl>
-                <Input 
-                  type="number" 
-                  step="0.01" 
-                  {...field} 
-                  onChange={e => field.onChange(e.target.value === "" ? undefined : parseFloat(e.target.value))} 
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={8}
+                  {...field}
+                  value={field.value ?? ""}
                 />
               </FormControl>
               <FormMessage className="text-[11.5px]" />
