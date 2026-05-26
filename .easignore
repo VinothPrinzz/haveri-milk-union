@@ -1,0 +1,9 @@
+# Always exclude node_modules from the EAS Build archive.
+# EAS will install dependencies fresh on the build server using the lock file.
+# Uploading node_modules (especially pnpm's symlink-based virtual store) causes
+# Windows-path symlinks to end up on the Linux build server, breaking Gradle autolinking.
+node_modules/
+**/node_modules/
+
+# pnpm virtual store – never upload, always rebuild on the server
+.pnpm-store/
