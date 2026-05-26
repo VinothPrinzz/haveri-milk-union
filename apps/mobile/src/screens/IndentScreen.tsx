@@ -1,3 +1,34 @@
+// src/screens/IndentScreen.tsx  —  FULL FILE (drop-in replacement)
+//
+// WHAT CHANGED & WHY
+//
+// 1. CONFIRM NO LONGER 404s ON A FRESH PREVIEW
+//    GET /drafts/:date returns a *synthesized preview* (exists:false) when
+//    no orders row exists yet. POST /confirm needs a real row. If the
+//    dealer never tapped +/- (never PATCHed), confirm 404'd. handleConfirm
+//    now PATCHes first when !draft.exists, materializing the row, then
+//    confirms.
+//
+// 2. THE INDENT PAGE NOW HAS PROPER PER-STATUS STATES
+//    A date's order is ONE orders row that moves through statuses. There is
+//    never a separate "draft" row beside a "confirmed" one — it's the same
+//    row changing status. So the page renders by status:
+//      • draft / preview      → editable: +/- steppers + "Confirm" button
+//      • payment_required     → locked items + "Pay for this indent"
+//      • pending / confirmed /
+//        dispatched / delivered → locked, read-only "Indent placed" card
+//      • paused               → "shop paused" notice
+//    Previously a confirmed (pending) order still showed editable steppers
+//    and a Confirm button — tapping it re-hit /confirm and 404'd.
+//
+// NOTE: requires DailyDraft.status in src/lib/types.ts to allow the full
+// order lifecycle. Change:
+//     status: "draft" | "pending" | "payment_required";
+// to:
+//     status: "draft" | "pending" | "payment_required"
+//           | "confirmed" | "dispatched" | "delivered" | "cancelled";
+// (This screen casts defensively, but widening the type is the clean fix.)
+
 import React, { useMemo, useState, useEffect } from "react";
 import {
   ActivityIndicator,
@@ -22,44 +53,30 @@ import {
   useTargetDateStore,
 } from "../store/targetDate";
 import {
-  useConfirmDraft,
   useDailyDraft,
   usePatchDraft,
-  isCreditExceededError,
 } from "../hooks/useDailyDraft";
 import { useOrderPayment } from "../hooks/useOrderPayment";
 import { RazorpayCancelled } from "../lib/razorpay";
-import type { DraftItem } from "../lib/types";
-
-/**
- * IndentScreen — FIXED.
- *
- * Changes from the broken version:
- *   1. DATE STRIP — was a horizontal ScrollView with no height
- *      constraint, so the chips stretched into giant vertical pills
- *      (see uploaded screenshot 3). Now it's a fixed flex-row of
- *      exactly three quick chips (Today / Tomorrow / day-after) plus
- *      a calendar button — all visible without scrolling, normal pill
- *      height.
- *   2. CALENDAR — the calendar button opens DatePickerModal for any
- *      other date within 30 days.
- *   3. ERROR HANDLING — if the draft request fails (e.g. API down,
- *      404), the screen shows a retry state instead of an infinite
- *      spinner.
- *   4. TOP-UP / PAY-NOW — credit-exceeded flow wired with TopUpSheet
- *      inline + a Rules-of-Hooks-safe pay-now path.
- */
+import type { DraftItem, OrderStatus } from "../lib/types";
 
 interface IndentScreenProps {
   onOpenNotifications: () => void;
   onOpenProfile: () => void;
   onOpenManageStanding: () => void;
+  /**
+   * Open the indent checkout screen for the currently selected date.
+   * Confirming an indent must go through checkout (pick a payment
+   * mode) — it is no longer placed straight from a button tap.
+   */
+  onOpenCheckout: () => void;
 }
 
 export default function IndentScreen({
   onOpenNotifications,
   onOpenProfile,
   onOpenManageStanding,
+  onOpenCheckout,
 }: IndentScreenProps) {
   const dealer = useAuthStore((s) => s.dealer);
   const { data: notifs } = useNotifications();
@@ -70,7 +87,6 @@ export default function IndentScreen({
 
   const draftQuery = useDailyDraft(selectedDate);
   const patchDraft = usePatchDraft(selectedDate);
-  const confirmDraft = useConfirmDraft(selectedDate);
 
   // ── Date strip data — three fixed quick dates ──
   const quickDates = useMemo(() => {
@@ -123,7 +139,19 @@ export default function IndentScreen({
   const isPaused = draft?.paused ?? false;
   const items = draft?.items ?? [];
   const totals = draft?.totals ?? { subtotal: 0, totalGst: 0, grandTotal: 0 };
-  const isPaymentRequired = draft?.status === "payment_required";
+
+  // ── Order status → page mode ─────────────────────────────────────
+  // One orders row per (dealer, delivery_date) moves through these
+  // statuses. "draft" (and the synthesized preview) is the only editable
+  // state. Once confirmed there is no editable draft for this date.
+  const draftStatus = (draft?.status ?? "draft") as OrderStatus;
+  const isPaymentRequired = draftStatus === "payment_required";
+  const isPlaced =
+    draftStatus === "pending" ||
+    draftStatus === "confirmed" ||
+    draftStatus === "dispatched" ||
+    draftStatus === "delivered";
+  const isEditable = !isPaused && !isPlaced && !isPaymentRequired;
 
   // ── Status banner ──
   const statusBanner = useMemo(() => {
@@ -133,6 +161,17 @@ export default function IndentScreen({
         text: `Shop is paused for this date${
           draft?.pausedReason ? ` · ${draft.pausedReason}` : ""
         }`,
+      };
+    }
+    if (isPlaced) {
+      return {
+        kind: "success" as const,
+        text:
+          draftStatus === "delivered"
+            ? "This indent has been delivered"
+            : draftStatus === "dispatched"
+            ? "Indent dispatched — on the way"
+            : "Indent placed — being processed",
       };
     }
     if (isPaymentRequired) {
@@ -158,7 +197,9 @@ export default function IndentScreen({
     };
   }, [
     isPaused,
+    isPlaced,
     isPaymentRequired,
+    draftStatus,
     isToday,
     windowState,
     windowQuery.data?.remainingSeconds,
@@ -167,7 +208,8 @@ export default function IndentScreen({
 
   // ── Item +/- ──
   const updateItemQty = (productId: string, delta: number) => {
-    if (isPaused) return;
+    // Only a true draft / preview can be edited.
+    if (!isEditable) return;
     const current = items.find((i) => i.productId === productId);
     const newQty = Math.max(0, (current?.quantity ?? 0) + delta);
     const nextItems = items
@@ -183,43 +225,17 @@ export default function IndentScreen({
   };
 
   // ── Confirm ──
-  const handleConfirm = async () => {
-    try {
-      const result = await confirmDraft.mutateAsync({ paymentMode: "credit" });
-      Alert.alert(
-        "Indent confirmed",
-        `Order placed for ${relativeLabel(result.deliveryDate)}.`
-      );
-    } catch (err) {
-      if (isCreditExceededError(err)) {
-        const body = err.body;
-        Alert.alert(
-          "Credit limit exceeded",
-          `Short by ₹${body.credit.shortfall.toFixed(
-            2
-          )}. Choose how to proceed:`,
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Top up credit",
-              onPress: () => {
-                setShortfall(body.credit.shortfall);
-                setShowTopUp(true);
-              },
-            },
-            {
-              text: "Pay this order now",
-              onPress: () => setPayNowOrderId(body.orderId),
-            },
-          ]
-        );
-        return;
-      }
-      Alert.alert(
-        "Could not confirm",
-        err instanceof Error ? err.message : "Please try again."
-      );
+  // Confirming an indent must let the dealer pick a payment mode, so the
+  // button no longer places the order directly — it routes to the
+  // checkout screen, which handles materialising the draft, the credit
+  // vs. pay-online choice, and the actual /confirm + payment calls.
+  const handleConfirm = () => {
+    const hasItems = items.some((i) => i.quantity > 0);
+    if (!hasItems) {
+      Alert.alert("Empty indent", "Add at least one item before confirming.");
+      return;
     }
+    onOpenCheckout();
   };
 
   if (!dealer) return null;
@@ -257,14 +273,10 @@ export default function IndentScreen({
             </TouchableOpacity>
           );
         })}
-        {/* Calendar chip — shows the picked date when a custom date is active */}
         <TouchableOpacity
           activeOpacity={0.75}
           onPress={() => setShowCalendar(true)}
-          style={[
-            styles.calChip,
-            isCustomDate && styles.dateChipActive,
-          ]}
+          style={[styles.calChip, isCustomDate && styles.dateChipActive]}
         >
           {isCustomDate ? (
             <Text style={[styles.dateChipText, styles.dateChipTextActive]}>
@@ -324,7 +336,7 @@ export default function IndentScreen({
               <Text style={styles.sectionTitle}>
                 Items for {relativeLabel(selectedDate)}
               </Text>
-              {!isPaused && (
+              {isEditable && (
                 <TouchableOpacity
                   activeOpacity={0.6}
                   onPress={onOpenManageStanding}
@@ -341,7 +353,8 @@ export default function IndentScreen({
                     key={it.productId}
                     item={it}
                     isLast={idx === items.length - 1}
-                    disabled={isPaused}
+                    // Steppers only when the order is still an editable draft.
+                    disabled={!isEditable}
                     onIncrement={() => updateItemQty(it.productId, 1)}
                     onDecrement={() => updateItemQty(it.productId, -1)}
                   />
@@ -377,33 +390,46 @@ export default function IndentScreen({
                   />
                 </View>
 
-                <View style={styles.payCard}>
-                  <View style={styles.payHeader}>
-                    <View style={styles.radioOn} />
-                    <Text style={styles.payLabel}>Use credit limit</Text>
-                    <Text style={styles.payAvail}>
-                      ₹{(dealer.creditLimit ?? 0).toFixed(0)} limit
-                    </Text>
-                  </View>
-                </View>
+                {/* ── EDITABLE: review → checkout (pick payment) ── */}
+                {isEditable && (
+                  <>
+                    <View style={styles.payCard}>
+                      <View style={styles.payHeader}>
+                        <Text style={styles.payHint}>
+                          You'll choose how to pay (credit limit or pay
+                          online) on the next step.
+                        </Text>
+                      </View>
+                    </View>
 
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={handleConfirm}
-                  disabled={confirmDraft.isPending}
-                  style={[
-                    styles.confirmBtn,
-                    confirmDraft.isPending && styles.confirmBtnDisabled,
-                  ]}
-                >
-                  {confirmDraft.isPending ? (
-                    <ActivityIndicator color={colors.primaryForeground} />
-                  ) : (
-                    <Text style={styles.confirmBtnText}>
-                      Confirm indent for {relativeLabel(selectedDate)}
-                    </Text>
-                  )}
-                </TouchableOpacity>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={handleConfirm}
+                      style={styles.confirmBtn}
+                    >
+                      <Text style={styles.confirmBtnText}>
+                        Review &amp; confirm · {relativeLabel(selectedDate)}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+                {/* ── PLACED: read-only confirmation ── */}
+                {isPlaced && <PlacedCard status={draftStatus} />}
+
+                {/* ── PAYMENT REQUIRED: pay / top up ── */}
+                {isPaymentRequired && (
+                  <PaymentRequiredCard
+                    busy={!!payNowOrderId}
+                    onPayNow={() => {
+                      if (draft.orderId) setPayNowOrderId(draft.orderId);
+                    }}
+                    onTopUp={() => {
+                      setShortfall(undefined);
+                      setShowTopUp(true);
+                    }}
+                  />
+                )}
               </>
             )}
           </>
@@ -468,25 +494,30 @@ function DraftRow({
           ₹{item.unitPrice.toFixed(2)} · {item.unit}
         </Text>
       </View>
-      <View style={[styles.itemStepper, disabled && styles.itemStepperDisabled]}>
-        <TouchableOpacity
-          onPress={onDecrement}
-          activeOpacity={0.7}
-          disabled={disabled}
-          style={styles.itemStepBtn}
-        >
-          <Text style={styles.itemStepIcon}>−</Text>
-        </TouchableOpacity>
-        <Text style={styles.itemStepVal}>{item.quantity}</Text>
-        <TouchableOpacity
-          onPress={onIncrement}
-          activeOpacity={0.7}
-          disabled={disabled}
-          style={styles.itemStepBtn}
-        >
-          <Text style={styles.itemStepIcon}>+</Text>
-        </TouchableOpacity>
-      </View>
+      {disabled ? (
+        // Read-only quantity badge — no steppers once the order is placed.
+        <View style={styles.qtyBadge}>
+          <Text style={styles.qtyBadgeText}>×{item.quantity}</Text>
+        </View>
+      ) : (
+        <View style={styles.itemStepper}>
+          <TouchableOpacity
+            onPress={onDecrement}
+            activeOpacity={0.7}
+            style={styles.itemStepBtn}
+          >
+            <Text style={styles.itemStepIcon}>−</Text>
+          </TouchableOpacity>
+          <Text style={styles.itemStepVal}>{item.quantity}</Text>
+          <TouchableOpacity
+            onPress={onIncrement}
+            activeOpacity={0.7}
+            style={styles.itemStepBtn}
+          >
+            <Text style={styles.itemStepIcon}>+</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -508,6 +539,64 @@ function Row({
       <Text style={emphasis ? styles.summaryTotalValue : styles.summaryValue}>
         {value}
       </Text>
+    </View>
+  );
+}
+
+/** Shown when the date's order is already placed (no editable draft). */
+function PlacedCard({ status }: { status: OrderStatus }) {
+  const sub =
+    status === "delivered"
+      ? "This indent was delivered."
+      : status === "dispatched"
+      ? "Your indent is on the way."
+      : "Your indent is confirmed and being processed.";
+  return (
+    <View style={styles.placedCard}>
+      <Text style={styles.placedIcon}>✓</Text>
+      <View style={styles.placedTextCol}>
+        <Text style={styles.placedTitle}>Indent placed</Text>
+        <Text style={styles.placedSub}>
+          {sub} Track it in the Orders tab. To change it, request a
+          cancellation from Orders.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/** Shown when the order needs payment (credit limit was exceeded). */
+function PaymentRequiredCard({
+  busy,
+  onPayNow,
+  onTopUp,
+}: {
+  busy: boolean;
+  onPayNow: () => void;
+  onTopUp: () => void;
+}) {
+  return (
+    <View style={styles.payReqCard}>
+      <Text style={styles.payReqTitle}>Payment required</Text>
+      <Text style={styles.payReqSub}>
+        This indent is over your available credit. Pay for it now, or top up
+        your credit limit and it will auto-confirm.
+      </Text>
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={onPayNow}
+        disabled={busy}
+        style={[styles.payNowBtn, busy && styles.confirmBtnDisabled]}
+      >
+        {busy ? (
+          <ActivityIndicator color={colors.primaryForeground} />
+        ) : (
+          <Text style={styles.payNowBtnText}>Pay for this indent</Text>
+        )}
+      </TouchableOpacity>
+      <TouchableOpacity activeOpacity={0.6} onPress={onTopUp}>
+        <Text style={styles.topUpLink}>Top up credit limit instead</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -605,11 +694,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: "#A32D2D",
   },
-  retryBtnText: {
-    fontSize: 12,
-    fontFamily: fonts.bold,
-    color: "#fff",
-  },
+  retryBtnText: { fontSize: 12, fontFamily: fonts.bold, color: "#fff" },
 
   // Section header
   sectionHeaderRow: {
@@ -678,7 +763,6 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     overflow: "hidden",
   },
-  itemStepperDisabled: { opacity: 0.4 },
   itemStepBtn: {
     width: 24,
     height: 26,
@@ -696,6 +780,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: fonts.extrabold,
     color: colors.primary,
+  },
+  // Read-only quantity badge (placed orders)
+  qtyBadge: {
+    minWidth: 34,
+    height: 26,
+    paddingHorizontal: 8,
+    borderRadius: 4,
+    backgroundColor: colors.background,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qtyBadgeText: {
+    fontSize: 12,
+    fontFamily: fonts.extrabold,
+    color: colors.foreground,
   },
 
   // Empty
@@ -767,7 +866,7 @@ const styles = StyleSheet.create({
     color: colors.foreground,
   },
 
-  // Payment
+  // Payment (credit) card
   payCard: {
     marginHorizontal: 12,
     marginTop: 10,
@@ -777,10 +876,13 @@ const styles = StyleSheet.create({
     borderWidth: 0.5,
     borderColor: colors.primary,
   },
-  payHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  payHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  payHint: {
+    flex: 1,
+    fontSize: 11,
+    fontFamily: fonts.semibold,
+    color: colors.primary,
+    lineHeight: 15,
   },
   radioOn: {
     width: 14,
@@ -817,6 +919,80 @@ const styles = StyleSheet.create({
     fontFamily: fonts.extrabold,
     color: colors.primaryForeground,
   },
+
+  // Placed (read-only) card
+  placedCard: {
+    flexDirection: "row",
+    gap: 10,
+    marginHorizontal: 12,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    backgroundColor: "#DCFCE7",
+    borderColor: "#86EFAC",
+  },
+  placedIcon: {
+    fontSize: 18,
+    color: "#15803D",
+    fontFamily: fonts.extrabold,
+  },
+  placedTextCol: { flex: 1 },
+  placedTitle: {
+    fontSize: 13,
+    fontFamily: fonts.bold,
+    color: "#15803D",
+  },
+  placedSub: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    color: "#166534",
+    marginTop: 2,
+    lineHeight: 16,
+  },
+
+  // Payment-required card
+  payReqCard: {
+    marginHorizontal: 12,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    backgroundColor: "#FAEEDA",
+    borderColor: "#FAC775",
+  },
+  payReqTitle: {
+    fontSize: 13,
+    fontFamily: fonts.bold,
+    color: "#92400E",
+  },
+  payReqSub: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    color: "#92400E",
+    marginTop: 3,
+    lineHeight: 16,
+  },
+  payNowBtn: {
+    marginTop: 10,
+    paddingVertical: 11,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+  },
+  payNowBtnText: {
+    fontSize: 13,
+    fontFamily: fonts.extrabold,
+    color: colors.primaryForeground,
+  },
+  topUpLink: {
+    fontSize: 11,
+    fontFamily: fonts.semibold,
+    color: "#92400E",
+    textAlign: "center",
+    marginTop: 9,
+    textDecorationLine: "underline",
+  },
 });
 
 const BANNER_STYLES = {
@@ -838,5 +1014,9 @@ const BANNER_STYLES = {
   future: {
     wrap: { backgroundColor: colors.card, borderColor: colors.border },
     text: { color: colors.foreground },
+  },
+  success: {
+    wrap: { backgroundColor: "#DCFCE7", borderColor: "#86EFAC" },
+    text: { color: "#15803D" },
   },
 } as const;

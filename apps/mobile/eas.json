@@ -16,7 +16,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api-staging.haverimunion.coop"
+        "EXPO_PUBLIC_API_URL": "https://api-production-9c68.up.railway.app"
       }
     },
     "production": {
@@ -24,7 +24,7 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api.haverimunion.coop"
+        "EXPO_PUBLIC_API_URL": "https://api-production-9c68.up.railway.app"
       }
     }
   },

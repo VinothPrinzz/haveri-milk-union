@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient, type QueryKey } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import type {
@@ -77,29 +77,35 @@ function normalizeOrder(o: RawOrder): Order {
 
 // ── GET /orders/my — paginated list of dealer's orders ─────────────────
 interface UseMyOrdersOpts {
-  page?: number;
   limit?: number;
   status?: OrderStatus;
+  from?: string;   // YYYY-MM-DD
+  to?: string;     // YYYY-MM-DD
 }
 
 export function useMyOrders(opts: UseMyOrdersOpts = {}) {
-  const { page = 1, limit = 20, status } = opts;
-  return useQuery({
-    queryKey: qk.orders.my(page, limit, status),
-    queryFn: async () => {
+  const { limit = 20, status, from, to } = opts;
+  return useInfiniteQuery({
+    queryKey: qk.orders.my(limit, status, from, to),
+    queryFn: async ({ pageParam }) => {
       const res = await api.get<PaginatedRawOrders>("/api/v1/orders/my", {
-        page,
-        limit,
-        status,
+        page: pageParam, limit, status, from, to,
       });
       return {
         data: (res.data ?? []).map(normalizeOrder),
         total: res.total ?? 0,
-        page: res.page ?? page,
-        limit: res.limit ?? limit,
+        page: res.page ?? pageParam,
         totalPages: res.totalPages ?? 0,
       };
     },
+    initialPageParam: 1,
+    getNextPageParam: (last) =>
+      last.page < last.totalPages ? last.page + 1 : undefined,
+    // Flatten pages so screens read a simple `.orders` array.
+    select: (d) => ({
+      orders: d.pages.flatMap((p) => p.data),
+      total: d.pages[0]?.total ?? 0,
+    }),
     staleTime: 15_000,
     refetchOnWindowFocus: true,
     retry: 1,

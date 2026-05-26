@@ -23,6 +23,7 @@ import { useMyOrders } from "../hooks/useOrders";
 import { useMyInvoices } from "../hooks/useInvoices";
 import ProfileFinanceCard from "../components/ProfileFinanceCard";
 import PaymentHistoryList from "../components/PaymentHistoryList";
+import BackButton from "../components/BackButton";
 
 type Lang = "en" | "kn";
 
@@ -35,7 +36,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
   const dealer = useAuthStore((s) => s.dealer);
   const patchDealer = useAuthStore((s) => s.patchDealer);
   const logout = useAuthStore((s) => s.logout);
-  const ordersQuery = useMyOrders({ page: 1, limit: 50 });
+  const ordersQuery = useMyOrders({ limit: 50 });
   const invQuery = useMyInvoices();
   const [lang, setLang] = useState<Lang>(dealer?.languagePref ?? "en");
   const [notifEnabled, setNotifEnabled] = useState(
@@ -46,7 +47,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
   );
 
   const stats = useMemo(() => {
-    const orders = ordersQuery.data?.data ?? [];
+    const orders = ordersQuery.data?.orders ?? [];
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const thisMonth = orders.filter(
@@ -165,25 +166,12 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
           ]}
         >
           {/* Back Button */}
-          <TouchableOpacity
+          <BackButton
             onPress={onBack}
-            activeOpacity={0.6}
-            hitSlop={10}
-            style={{
-              position: "absolute",
-              top: Math.max(insets.top + 6, 38),
-              left: 12,
-              width: 36,
-              height: 36,
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 10,
-            }}
-          >
-            <Text style={{ fontSize: 26, color: "#fff", fontFamily: fonts.medium, lineHeight: 28 }}>
-              ‹
-            </Text>
-          </TouchableOpacity>
+            variant="onDark"
+            absolute
+            top={Math.max(insets.top + 6, 38)}
+          />
 
           <View style={styles.agencyCard}>
             <View style={styles.agencyAvatar}>
@@ -252,10 +240,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
               title="Credit Limit"
               sub={
                 dealer.creditLimit > 0
-                  ? `₹${dealer.creditLimit.toLocaleString("en-IN")}` +
-                    (dealer.creditOutstanding
-                      ? ` · ₹${(dealer.creditLimit - dealer.creditOutstanding).toLocaleString("en-IN")} available`
-                      : "")
+                  ? `₹${dealer.creditLimit.toLocaleString("en-IN")} limit · ₹${(dealer.creditAvailable ?? dealer.creditLimit).toLocaleString("en-IN")} available`
                   : "Not set"
               }
               showArrow={false}

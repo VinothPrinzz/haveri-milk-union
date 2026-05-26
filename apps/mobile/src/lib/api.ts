@@ -215,6 +215,14 @@ export async function apiFetch<T = unknown>(
   const { method = "GET", body, params, skipAuthRetry = false } = opts;
 
   const url = buildUrl(path, params);
+
+  // Self-heal: the in-memory token can be null on the very first
+  // requests after launch (initialize() race). Load it before
+  // building headers so the first calls aren't sent unauthenticated.
+  if (!accessToken && !skipAuthRetry) {
+    await loadToken();
+  }
+  
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
 

@@ -1,15 +1,28 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   ActivityIndicator,
+  AppState,
+  type AppStateStatus,
+  BackHandler,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { SafeAreaProvider } from "react-native-safe-area-context";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  SafeAreaProvider,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import {
+  QueryClient,
+  QueryClientProvider,
+  QueryCache,
+  MutationCache,
+  focusManager,
+} from "@tanstack/react-query";
 import { useAuthStore } from "./src/store/auth";
+import { ApiError } from "./src/lib/api";
 import { colors, fonts, fontSize, shadows } from "./src/lib/theme";
 import { useAppFonts } from "./src/lib/fonts";
 
@@ -25,6 +38,7 @@ import InvoicesScreen from "./src/screens/InvoicesScreen";
 import ProfileScreen from "./src/screens/ProfileScreen";
 import NotificationsScreen from "./src/screens/NotificationsScreen";
 import ManageStandingIndentScreen from "./src/screens/ManageStandingIndentScreen";
+import IndentCheckoutScreen from "./src/screens/IndentCheckoutScreen";
 
 /**
  * App.tsx — v2 navigation shell.
@@ -43,10 +57,57 @@ import ManageStandingIndentScreen from "./src/screens/ManageStandingIndentScreen
  *   actions (credit top-up, settings, logout) are infrequent enough
  *   that one extra tap from the avatar is fine. The avatar lives in
  *   every tab's AppHeader, so Profile is always one tap away.
+ *
+ * WHAT CHANGED IN THIS REVISION
+ *   1. Android hardware/system back button is now intercepted (it used
+ *      to exit the app because this state-based nav never wired up
+ *      BackHandler). See the BackHandler effect in AppContent.
+ *   2. The bottom tab bar now respects the system navigation inset, so
+ *      3-button navigation no longer overlaps the tabs.
+ *   3. React Query's focus detection is wired to AppState, so queries
+ *      auto-refetch when the app returns to the foreground.
+ *   4. A dead session (ApiError 401) now triggers a global forced
+ *      logout instead of leaving the user stranded on a broken page.
  */
 
+// ── React Query: wire focus detection to React Native ──────────────────
+// `refetchOnWindowFocus` is a browser-only feature by default — there is
+// no `window` focus event in React Native. Bridging focusManager to
+// AppState makes "refetch when the app is foregrounded" actually work.
+focusManager.setEventListener((handleFocus) => {
+  const sub = AppState.addEventListener("change", (status: AppStateStatus) => {
+    handleFocus(status === "active");
+  });
+  return () => sub.remove();
+});
+
+// A truly dead session (access token expired AND refresh failed) surfaces
+// as ApiError 401 thrown from api.ts. Catch it globally so the app forces
+// a logout — App.tsx's auth effect then routes back to the splash screen
+// instead of sitting on a logged-in page that errors on every fetch.
+function handleGlobalAuthError(error: unknown) {
+  if (error instanceof ApiError && error.status === 401) {
+    useAuthStore.getState().forceLogout();
+  }
+}
+
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: 1, staleTime: 30000 } },
+  queryCache: new QueryCache({ onError: handleGlobalAuthError }),
+  mutationCache: new MutationCache({ onError: handleGlobalAuthError }),
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      // Works now because focusManager is bridged to AppState above.
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      // Never retry a 401 — the session is gone; retrying only delays
+      // the forced logout. Other errors still get one retry.
+      retry: (failureCount, error) => {
+        if (error instanceof ApiError && error.status === 401) return false;
+        return failureCount < 1;
+      },
+    },
+  },
 });
 
 type Tab = "home" | "indent" | "orders" | "categories";
@@ -59,9 +120,12 @@ type PushedScreen =
   | "profile"
   | "invoices"
   | "notifications"
-  | "manage-standing";
+  | "manage-standing"
+  | "indent-checkout";
 
 function AppContent() {
+  const insets = useSafeAreaInsets();
+
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
   const initialize = useAuthStore((s) => s.initialize);
@@ -92,6 +156,46 @@ function AppContent() {
       setScreen("splash");
     }
   }, [isAuthenticated, isLoading]);
+
+  // ── Android hardware / system back button ──────────────────────────
+  // This state-based navigation never registered a BackHandler, so the
+  // OS treated every back press as "exit the app". Now we map the press
+  // to the same logical "go back" the on-screen back buttons perform.
+  //
+  // Returning `true`  = "we handled it, don't exit".
+  // Returning `false` = "we didn't handle it, let the OS exit/background".
+  useEffect(() => {
+    const onBackPress = (): boolean => {
+      // Auth flow — login returns to splash; splash lets the OS exit.
+      if (!isAuthenticated || screen === "splash") {
+        if (screen === "login") {
+          setScreen("splash");
+          return true;
+        }
+        return false;
+      }
+
+      // Any pushed full-screen → return to the tab shell.
+      if (screen !== "tabs") {
+        const wasConfirmed = screen === "confirmed";
+        setScreen("tabs");
+        if (wasConfirmed) setActiveTab("home");
+        return true;
+      }
+
+      // On the tab shell but not Home → go to Home first.
+      if (activeTab !== "home") {
+        setActiveTab("home");
+        return true;
+      }
+
+      // Home tab at the root → allow the OS to background/exit the app.
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
+    return () => sub.remove();
+  }, [isAuthenticated, screen, activeTab]);
 
   const handleLoginSuccess = useCallback(() => {
     setScreen("tabs");
@@ -172,6 +276,21 @@ function AppContent() {
     return <ManageStandingIndentScreen onBack={goToTabs} />;
   }
 
+  if (screen === "indent-checkout") {
+    return (
+      <IndentCheckoutScreen
+        onBack={() => {
+          setScreen("tabs");
+          setActiveTab("indent");
+        }}
+        onConfirmed={() => {
+          setScreen("tabs");
+          setActiveTab("indent");
+        }}
+      />
+    );
+  }
+
   // ── Tabbed shell ──
   return (
     <View style={styles.main}>
@@ -189,6 +308,7 @@ function AppContent() {
             onOpenNotifications={handleOpenNotifications}
             onOpenProfile={handleOpenProfile}
             onOpenManageStanding={() => setScreen("manage-standing")}
+            onOpenCheckout={() => setScreen("indent-checkout")}
           />
         )}
         {activeTab === "orders" && (
@@ -208,7 +328,14 @@ function AppContent() {
         )}
       </View>
 
-      <View style={styles.tabBar}>
+      {/* Bottom tab bar — paddingBottom respects the system navigation
+          inset. With gesture nav insets.bottom is small (~16-24dp); with
+          3-button nav it is ~48dp. Math.max keeps a 14dp minimum so the
+          tabs never sit flush against the bezel and never overlap the
+          system buttons. */}
+      <View
+        style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, 14) }]}
+      >
         {(
           [
             { key: "home" as Tab, icon: "🏠", label: "Home" },
@@ -293,7 +420,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 0.5,
     borderTopColor: colors.border,
     paddingTop: 7,
-    paddingBottom: 14,
+    // paddingBottom is applied inline from the safe-area inset — do NOT
+    // hardcode it here, or 3-button navigation overlaps the tabs.
     ...shadows.bottomNav,
   },
   tab: {

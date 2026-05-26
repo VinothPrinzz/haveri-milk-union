@@ -1,3 +1,20 @@
+// src/store/auth.ts  —  FULL FILE (drop-in replacement)
+//
+// WHAT CHANGED & WHY
+//   1. login() fetches /dealer/profile right after saving tokens so the
+//      top bar (name / zone / code) is populated on first paint.
+//   2. initialize() retries the profile fetch once on a transient
+//      (network/timeout) error instead of silently leaving dealer = null.
+//   3. NEW: forceLogout() — a synchronous, side-effect-free logout used
+//      when a session is detected as dead (ApiError 401) from anywhere
+//      in the app. Unlike logout(), it does NOT call the logout endpoint
+//      (the session is already gone), it just clears local state so the
+//      navigation shell routes back to the splash/login screen.
+//   4. NEW: initialize()'s 401 branches now also flip isAuthenticated to
+//      false and clear the dealer. Previously a stale persisted
+//      `isAuthenticated: true` could survive a cold start with a dead
+//      session, leaving the user on logged-in screens that error.
+
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { api, saveTokens, clearTokens, loadToken, ApiError } from "../lib/api";
@@ -5,6 +22,12 @@ import type { Dealer } from "../lib/types";
 
 /**
  * Parses the backend dealer object into our camelCase Dealer type.
+ *
+ * Note: zoneId falls back to "" when absent. useWindowStatus already
+ * guards with `enabled: !!zoneId`, so an empty string is harmless — it
+ * simply disables the window query. The real cause of the empty zoneId
+ * (login returning no zone) is fixed by login() below now fetching the
+ * full profile.
  */
 function parseDealer(d: Record<string, unknown>): Dealer {
   const get = <T>(k1: string, k2?: string): T | undefined => {
@@ -27,6 +50,17 @@ function parseDealer(d: Record<string, unknown>): Dealer {
     typeof creditOutRaw === "string" ? parseFloat(creditOutRaw) :
     typeof creditOutRaw === "number" ? creditOutRaw : 0;
 
+  const creditAvailRaw = get<string | number>("credit_available", "creditAvailable");
+  const creditAvailable =
+    typeof creditAvailRaw === "string" ? parseFloat(creditAvailRaw) :
+    typeof creditAvailRaw === "number" ? creditAvailRaw : undefined;
+
+  // === FIX D: Add ledger balance ===
+  const ledgerRaw = get<string | number>("ledger_balance", "ledgerBalance");
+  const ledgerBalance =
+    typeof ledgerRaw === "string" ? parseFloat(ledgerRaw) :
+    typeof ledgerRaw === "number" ? ledgerRaw : 0;
+
   return {
     id:                    get<string>("id") ?? "",
     name:                  get<string>("name") ?? "",
@@ -38,6 +72,8 @@ function parseDealer(d: Record<string, unknown>): Dealer {
     walletBalance,
     creditLimit,
     creditOutstanding,
+    creditAvailable,
+    ledgerBalance,                    // ← New field
     locationLabel:         get<string>("location_label", "locationLabel"),
     gstNumber:             get<string>("gst_number", "gstNumber"),
     address:               get<string>("address"),
@@ -49,6 +85,11 @@ function parseDealer(d: Record<string, unknown>): Dealer {
   };
 }
 
+/** True if the dealer object actually has display-worthy data. */
+function isHydratedDealer(d: Dealer | null | undefined): boolean {
+  return !!d && (!!d.name || !!d.zoneName);
+}
+
 interface AuthState {
   dealer: Dealer | null;
   isLoading: boolean;
@@ -57,8 +98,22 @@ interface AuthState {
   initialize: () => Promise<void>;
   login: (username: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
+  /**
+   * Clears local auth state immediately, without hitting the logout
+   * endpoint. Use this when the session is already known to be dead
+   * (e.g. a global ApiError 401 handler). It is safe to call multiple
+   * times — flipping isAuthenticated to false is idempotent.
+   */
+  forceLogout: () => void;
   refreshProfile: () => Promise<void>;
   patchDealer: (patch: Partial<Dealer>) => void;
+}
+
+async function fetchProfile(): Promise<Dealer | null> {
+  const data = await api.get<{ dealer: Record<string, unknown> }>(
+    "/api/v1/dealer/profile"
+  );
+  return data?.dealer ? parseDealer(data.dealer) : null;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -71,20 +126,41 @@ export const useAuthStore = create<AuthState>()(
       initialize: async () => {
         try {
           await loadToken();
-          const data = await api.get<{ dealer: Record<string, unknown> }>("/api/v1/dealer/profile");
-          if (data?.dealer) {
-            set({ dealer: parseDealer(data.dealer), isAuthenticated: true });
+
+          // Fetch the profile; retry once on a transient failure so a
+          // single network blip on cold start doesn't leave the header
+          // permanently blank.
+          let dealer: Dealer | null = null;
+          try {
+            dealer = await fetchProfile();
+          } catch (err) {
+            if (err instanceof ApiError && err.status === 401) {
+              // Session is dead — clear tokens AND auth state so the
+              // navigation shell routes to splash on a cold start.
+              await clearTokens();
+              set({ isAuthenticated: false, dealer: null });
+              return;
+            }
+            // network / timeout — retry once
+            dealer = await fetchProfile();
+          }
+
+          if (dealer) {
+            set({ dealer, isAuthenticated: true });
           }
         } catch (err) {
           if (err instanceof ApiError && err.status === 401) {
             await clearTokens();
+            set({ isAuthenticated: false, dealer: null });
           }
+          // Any other error: keep whatever was rehydrated from storage.
+          // refreshProfile() (pull-to-refresh) will heal it.
         } finally {
           set({ isLoading: false });
         }
       },
 
-      // New Username + Password Login
+      // Username + Password login.
       login: async (username: string, password: string) => {
         set({ isLoading: true });
         try {
@@ -96,12 +172,19 @@ export const useAuthStore = create<AuthState>()(
 
           await saveTokens(res.accessToken, res.refreshToken);
 
-          set({
-            dealer: parseDealer(res.dealer),
-            isAuthenticated: true,
-            isLoading: false,
-          });
+          // The login response may only contain { id, phone } (older API).
+          // Always fetch the full profile so name/zone/code are present on
+          // the very first paint — no manual reload needed.
+          let dealer = parseDealer(res.dealer ?? {});
+          try {
+            const full = await fetchProfile();
+            if (full) dealer = full;
+          } catch {
+            // Profile fetch failed — fall back to the login payload.
+            // refreshProfile() / next launch will fill in the rest.
+          }
 
+          set({ dealer, isAuthenticated: true, isLoading: false });
           return true;
         } catch (err) {
           console.error("Login failed:", err);
@@ -115,14 +198,24 @@ export const useAuthStore = create<AuthState>()(
         set({ dealer: null, isAuthenticated: false });
       },
 
+      forceLogout: () => {
+        // Fire-and-forget token wipe; the session is already invalid so
+        // we don't await it — clearing state immediately is what matters.
+        void clearTokens();
+        set({ dealer: null, isAuthenticated: false, isLoading: false });
+      },
+
       refreshProfile: async () => {
         try {
-          const data = await api.get<{ dealer: Record<string, unknown> }>("/api/v1/dealer/profile");
-          if (data?.dealer) {
-            set({ dealer: parseDealer(data.dealer) });
+          const dealer = await fetchProfile();
+          if (dealer) set({ dealer });
+        } catch (err) {
+          // A 401 here means the session died — surface it as a logout
+          // so the user isn't left on a stale screen. Other errors are
+          // swallowed (keep existing dealer data).
+          if (err instanceof ApiError && err.status === 401) {
+            get().forceLogout();
           }
-        } catch {
-          // swallow — keep existing dealer data
         }
       },
 
@@ -139,6 +232,17 @@ export const useAuthStore = create<AuthState>()(
         isAuthenticated: state.isAuthenticated,
         dealer: state.dealer,
       }),
+      // If a stale/skimpy dealer was persisted, don't let it block
+      // initialize() — initialize() always re-fetches and overwrites.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<AuthState>;
+        return {
+          ...current,
+          ...p,
+          // Prefer a hydrated dealer; never downgrade to a skimpy one.
+          dealer: isHydratedDealer(p.dealer) ? p.dealer! : current.dealer,
+        };
+      },
     }
   )
 );

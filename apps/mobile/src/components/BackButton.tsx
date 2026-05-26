@@ -41,7 +41,7 @@ export default function BackButton({
       accessibilityLabel="Go back"
       style={[
         styles.btn,
-        { backgroundColor: v.bg },
+        { backgroundColor: v.bg, borderWidth: 1, borderColor: v.border },
         absolute && { position: "absolute", left: 12, top, zIndex: 20 },
       ]}
     >
@@ -51,8 +51,8 @@ export default function BackButton({
 }
 
 const VARIANTS = {
-  onDark: { bg: "rgba(0,0,0,0.28)", fg: "#FFFFFF" },
-  onLight: { bg: "rgba(0,0,0,0.06)", fg: "#1A1A1A" },
+  onDark:  { bg: "rgba(0,0,0,0.45)", fg: "#FFFFFF", border: "rgba(255,255,255,0.30)" },
+  onLight: { bg: "rgba(0,0,0,0.06)", fg: "#1A1A1A", border: "rgba(0,0,0,0.10)" },
 } as const;
 
 const styles = StyleSheet.create({

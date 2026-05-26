@@ -46,7 +46,7 @@ export default function PaymentHistoryList() {
     );
   }
 
-  const payments = data ?? [];
+  const payments = data?.rows ?? [];
   if (payments.length === 0) {
     return (
       <View style={styles.empty}>
@@ -140,8 +140,15 @@ function statusVariant(status: RazorpayPaymentRow["status"]): {
   }
 }
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  // ISO-8601 parses everywhere; if a non-ISO Postgres value
+  // ("YYYY-MM-DD HH:MM:SS+TZ") ever arrives, normalize the space so
+  // Hermes — which won't parse that form — can still read it.
+  let d = new Date(iso);
+  if (isNaN(d.getTime())) d = new Date(iso.trim().replace(" ", "T"));
+  if (isNaN(d.getTime())) return "—";
+
   const day = d.getDate();
   const month = d.toLocaleDateString("en-IN", { month: "short" });
   const year = d.getFullYear();

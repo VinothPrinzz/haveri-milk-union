@@ -27,9 +27,11 @@ export default function ProfileFinanceCard() {
 
   if (!dealer) return null;
 
-  const limit = dealer.creditLimit ?? 0;
-  const outstanding = (dealer as any).outstanding ?? 0;
-  const available = Math.max(0, limit - outstanding);
+  const limit         = dealer.creditLimit ?? 0;
+  const outstanding   = dealer.creditOutstanding ?? 0;
+  const ledgerBalance = dealer.ledgerBalance ?? 0;        // + prepaid / − owed
+  const prepaid       = ledgerBalance > 0 ? ledgerBalance : 0;
+  const available     = dealer.creditAvailable ?? Math.max(0, limit + ledgerBalance);
   const pct = limit > 0 ? Math.min(100, Math.round((outstanding / limit) * 100)) : 0;
 
   // Visual variant based on utilization
@@ -66,12 +68,23 @@ export default function ProfileFinanceCard() {
             ₹{limit.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
           </Text>
         </View>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>Outstanding</Text>
-          <Text style={styles.rowValue}>
-            ₹{outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-          </Text>
-        </View>
+        
+        {/* Fixed: Show Prepaid or Outstanding based on ledger balance */}
+        {prepaid > 0 ? (
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Prepaid balance</Text>
+            <Text style={[styles.rowValue, { color: "#1A7F4B" }]}>
+              ₹{prepaid.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Outstanding</Text>
+            <Text style={styles.rowValue}>
+              ₹{outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+            </Text>
+          </View>
+        )}
 
         <View style={styles.ctaRow}>
           <TouchableOpacity
