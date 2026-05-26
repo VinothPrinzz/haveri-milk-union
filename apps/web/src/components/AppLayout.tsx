@@ -128,6 +128,8 @@ const COMMAND_ITEMS: { label: string; path: string }[] = [
   { label: "Dispatch Sheet", path: "/fgs/dispatch-sheet" },
   { label: "Create Dispatch", path: "/fgs/dispatch/create" },
   { label: "Payments", path: "/finance/payments" },
+  { label: "Online Payments",  path: "/finance/online-payments" },
+  { label: "Reconciliation",   path: "/finance/reconciliation"  },
   { label: "Route Sheet", path: "/reports/route-sheet" },
   { label: "Gate Pass Report", path: "/reports/gate-pass" },
   { label: "Daily Sales Statement", path: "/sales-reports/daily-statement" },

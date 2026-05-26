@@ -32,6 +32,7 @@ import { zoneRoutes } from "./routes/zones.js";
 import { reportsRoutes } from "./routes/reports.js";
 import { vipContactsRoutes } from "./routes/vip-contacts.js";
 import { employeesRoutes }    from "./routes/employees.js";
+import { financeRazorpayRoutes } from "./routes/finance-razorpay.js";
 
 import { dealerIndentsRoutes } from "./routes/dealer-indents.js";
 import { adminIndentsRoutes } from "./routes/admin-indents.js";
@@ -166,6 +167,7 @@ await app.register(distributionRoutes);
 // Phase 1 Additions
 await app.register(cancellationRoutes);
 await app.register(financeRoutes);
+await app.register(financeRazorpayRoutes);
 await app.register(crudRoutes);
 await app.register(systemRoutes);
 await app.register(dealerAppRoutes);

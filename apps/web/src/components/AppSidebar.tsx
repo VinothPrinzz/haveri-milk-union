@@ -5,7 +5,7 @@ import {
   Receipt, XCircle, Warehouse, BarChart3, FileSpreadsheet, Plus, Truck,
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
   ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
-  Star, Briefcase, Gift, BadgePercent, CalendarClock
+  Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ModuleKey } from "@/components/AppLayout";
@@ -55,6 +55,8 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
   ],
   finance: [
     { label: "Payments Overview", path: "/finance/payments",        icon: Wallet },
+    { label: "Online Payments",   path: "/finance/online-payments", icon: CreditCard },
+    { label: "Reconciliation",    path: "/finance/reconciliation",  icon: GitCompareArrows },
   ],
   reports: [
     { label: "Route Sheet",      path: "/reports/route-sheet",      icon: RouteIcon },

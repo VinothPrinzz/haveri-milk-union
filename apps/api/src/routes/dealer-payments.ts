@@ -563,6 +563,24 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       return reply.status(200).send({ ok: true });
     }
 
+    if (event === "refund.processed" || event === "refund.failed") {
+      const refundEntity = payload?.payload?.refund?.entity;
+      const refundId = refundEntity?.id;
+      if (refundId) {
+        const newStatus = event === "refund.processed" ? "processed" : "failed";
+        await pgClient`
+          UPDATE razorpay_refunds
+             SET status = ${newStatus}::razorpay_refund_status,
+                 error_description = ${refundEntity?.error_description ?? null},
+                 processed_at = COALESCE(processed_at, now()),
+                 updated_at = now()
+           WHERE razorpay_refund_id = ${refundId}
+             AND status = 'pending'
+        `;
+      }
+      return reply.status(200).send({ ok: true });
+    }
+
     return reply.status(200).send({ ok: true, ignored: true, event });
   });
 }
