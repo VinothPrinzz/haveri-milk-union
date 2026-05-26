@@ -125,7 +125,7 @@ export function AppSidebar({
           {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronLeft className="w-3.5 h-3.5" />}
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto py-1">
+      <nav data-kbd-region="sidebar" className="flex-1 overflow-y-auto py-1">
         {items.map(item => {
           const Icon = item.icon;
           const active =

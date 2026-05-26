@@ -1,6 +1,7 @@
 // apps/web/src/components/contractors/ContractorForm.tsx
 
 import { useMemo } from "react";
+import { useSaveShortcut } from "@/lib/useKeyboardNav";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
@@ -103,6 +104,8 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
       if (first?.message) toast.error(first.message);
     }
   );
+
+  useSaveShortcut(() => submit(), !isSubmitting);
 
   return (
     <div className="flex flex-col h-full">

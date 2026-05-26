@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { NavLink } from "react-router-dom";
 import { AppSidebar } from "@/components/AppSidebar";
+import { useKeyboardNav } from "@/lib/useKeyboardNav";
 
 // ─── Module taxonomy (10-module spec, but we expose only the modules
 //     that exist in the current web.txt routes — Masters, Sales, Stock,
@@ -78,7 +79,11 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
   );
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black/50 flex items-start justify-center pt-32" onClick={onClose}>
+    <div
+      data-kbd-modal
+      className="fixed inset-0 z-[100] bg-black/50 flex items-start justify-center pt-32"
+      onClick={onClose}
+    >
       <div className="erp-panel w-[560px] max-w-[90vw]" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2 border-b border-border px-3 h-10">
           <Search className="w-3.5 h-3.5 text-muted-foreground" />
@@ -151,6 +156,8 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const [cmdOpen, setCmdOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
+  useKeyboardNav();
+
   const activeModule = useMemo(() => moduleOfPath(pathname), [pathname]);
   const breadcrumb = useBreadcrumb();
 
@@ -218,7 +225,10 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         </div>
 
         {/* Module tabs */}
-        <nav className="flex items-center gap-0.5 overflow-x-auto flex-1 min-w-0">
+        <nav
+          data-kbd-region="topbar"
+          className="flex items-center gap-0.5 overflow-x-auto flex-1 min-w-0"
+        >
           {MODULES.map(m => {
             const Icon = m.icon;
             const active = activeModule === m.key;
@@ -326,7 +336,9 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           </div>
 
           {/* PAGE CONTENT */}
-          <div className="flex-1 overflow-auto">{children || <Outlet />}</div>
+          <div data-kbd-region="content" className="flex-1 overflow-auto">
+            {children || <Outlet />}
+          </div>
 
           {/* Print-only footer */}
           <div className="print-only print-footer">
@@ -345,7 +357,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             <div className="flex-1" />
             <span className="flex items-center gap-1.5">
               <Keyboard className="w-3 h-3" />
-              F2 New • F4 Edit • F9 Lookup • Ctrl+S Save • Ctrl+P Print • Ctrl+K Find
+              Tab Switch area • ↑↓ Move • Enter Open/Next field • Ctrl+S Save • Ctrl+K Find
             </span>
           </div>
         </main>
