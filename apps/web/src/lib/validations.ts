@@ -117,23 +117,37 @@ export const REPORT_ALIAS_MAX: Record<"Across" | "Down", number> = {
   Down:   22,
 };
 
+// Accepts "", null, undefined → null; otherwise a non-negative number.
+// z.coerce.number() alone won't preserve null (coerces null→0), hence the
+// preprocess wrapper.
+const optionalQty = (integer = false) =>
+  z.preprocess(
+    v => {
+      if (v === "" || v === null || v === undefined) return null;
+      const n = Number(v);
+      return Number.isNaN(n) ? null : n;
+    },
+    integer ? z.number().int().min(0).nullable()
+            : z.number().min(0).nullable(),
+  );
+
 // Fix #10w: productSchema — all fields get proper defaults
 export const productSchema = z.object({
   name: z.string().min(2, "Product name required").default(""),
-  reportAlias: z.string().default(""),                          
+  reportAlias: z.string().default(""),
   category: z.string().min(1, "Category required").default(""),
-  packSize: z.coerce.number().positive().default(1),                  
-  unit: z.string().min(1, "Unit required").default(""),        
+  packSize:     optionalQty(),      // was z.coerce.number().positive().default(1)
+  unit: z.string().min(1, "Unit required").default(""),
   dealerPrice: z.coerce.number().min(0).default(0),  // Dealer-Price (client-entered)
   mrp:         z.coerce.number().min(0).default(0),  // MRP (client-entered)
-  gstPercent: z.coerce.number().min(0).max(100).default(0),          
-  hsnNo: z.string().default(""),                               
+  gstPercent: z.coerce.number().min(0).max(100).default(0),
+  hsnNo: z.string().default(""),
   subsidy: z.boolean().default(false),
   subRate: z.coerce.number().min(0).default(0),
   indentInBox: z.boolean().default(false),
   boxQty: z.coerce.number().int().min(0).default(0),
   sortPosition: z.coerce.number().int().min(0).default(0),
-  packetsCrate: z.coerce.number().int().min(0).default(0),
+  packetsCrate: optionalQty(true), // was z.coerce.number().int().min(0).default(0)
   printDirection: z.enum(["Across", "Down"]).default("Across"),
   makeZeroInIndents: z.boolean().default(false),
   terminated: z.boolean().default(false),
