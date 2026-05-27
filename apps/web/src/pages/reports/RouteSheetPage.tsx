@@ -363,8 +363,13 @@ function RouteRowsPage({
               <td className="num">{c.sl}</td>
               <td className="dealer-cell">
                 <span className="font-mono">{c.code}</span>
-                <span className="dealer-sep"> – </span>
+                <span className="dealer-sep"> - </span>
                 {c.name}
+                {c.isEmployee && (
+                  <span className="ml-1 text-[9px] font-semibold uppercase tracking-wide
+                                  px-1 py-[1px] border border-current rounded-[2px]
+                                  align-middle">EMP</span>
+                )}
               </td>
               {acrossProducts.map(p => (
                 <td key={p.id} className="center num">

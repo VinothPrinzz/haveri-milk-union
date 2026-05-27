@@ -14,6 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   fetchCustomers, fetchCustomersPage, fetchRoutes, fetchZones, createCustomer,
   removeCustomerFromRoute, assignCustomerToRoute,
+  fetchEmployees, assignEmployeeToRoute, removeEmployeeFromRoute,
   getRateCategories, getOfficers
 } from "@/services/api";
 import { customerSchema, type CustomerFormData } from "@/lib/validations";
@@ -35,6 +36,10 @@ export default function CustomersPage({ tab = "list" }: Props) {
   // ── ALL hooks at top — never inside conditionals (fixes React #310) ──
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
   const { data: zones  = [] } = useQuery({ queryKey: ["zones"],  queryFn: fetchZones  });
+  const { data: employees = [] } = useQuery({
+    queryKey: ["employees-all"],
+    queryFn: () => fetchEmployees(),
+  });
  
   // Full customer list (paginated server-side; populates F9 selects across the page)
   const { data: allCustomers = [] } = useQuery({
@@ -104,16 +109,49 @@ export default function CustomersPage({ tab = "list" }: Props) {
   };
 
   const savePosMutation = useMutation({
-    mutationFn: () =>
-      patch(`/routes/${selectedRoute}/dealer-positions`, {
-        positions: Object.entries(pendingPos).map(([dealerId, position]) => ({ dealerId, position })),
-      }),
+    mutationFn: async () => {
+      const dealerPos: { dealerId: string; position: number }[] = [];
+      const empPos:    { employeeId: string; position: number }[] = [];
+      for (const [id, position] of Object.entries(pendingPos)) {
+        const row = routeCustomers.find((c: any) => c.id === id);
+        if (row?.kind === "employee") empPos.push({ employeeId: id, position });
+        else dealerPos.push({ dealerId: id, position });
+      }
+      await Promise.all([
+        dealerPos.length
+          ? patch(`/routes/${selectedRoute}/dealer-positions`,   { positions: dealerPos })
+          : Promise.resolve(),
+        empPos.length
+          ? patch(`/routes/${selectedRoute}/employee-positions`, { positions: empPos })
+          : Promise.resolve(),
+      ]);
+    },
     onSuccess: () => {
       setPendingPos({});
       qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["employees-all"] });
       toast.success("Positions saved");
     },
     onError: () => toast.error("Failed to save positions"),
+  });
+
+  const assignEmpMutation = useMutation({
+    mutationFn: ({ employeeId, routeId }: { employeeId: string; routeId: string }) =>
+      assignEmployeeToRoute(employeeId, routeId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employees-all"] });
+      toast.success("Employee assigned to route");
+    },
+    onError: () => toast.error("Failed to assign employee"),
+  });
+
+  const removeEmpMutation = useMutation({
+    mutationFn: (employeeId: string) => removeEmployeeFromRoute(employeeId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employees-all"] });
+      toast.success("Employee removed from route");
+    },
+    onError: () => toast.error("Failed to remove employee"),
   });
  
   // New-customer alphabet state (used by both /new tab AND fallback form)
@@ -167,26 +205,57 @@ export default function CustomersPage({ tab = "list" }: Props) {
     onError: () => toast.error("Failed to assign customer"),
   });
  
-  // matching route entry, then sort.
-  const routeCustomers = allCustomers
+  // Dealers currently on the selected route
+  const routeDealers = allCustomers
     .map((c: any) => {
       const link = c.routes?.find((r: any) => r.routeId === selectedRoute);
-      return link ? { ...c, _pos: link.position ?? 9999 } : null;
+      return link ? { ...c, kind: "dealer" as const, _pos: link.position ?? 9999 } : null;
     })
-    .filter(Boolean)
+    .filter(Boolean);
+
+  // Employees currently on the selected route (Option A: single route_id)
+  const routeEmployeeRows = (employees as any[])
+    .filter((e: any) => e.route_id === selectedRoute)
+    .map((e: any) => ({
+      id: e.id,
+      code: e.employee_code ?? "",
+      name: e.name,
+      type: "Employee",
+      phone: e.phone ?? "",
+      kind: "employee" as const,
+      _pos: e.route_position ?? 9999,
+    }));
+
+  // Merged + ordered by position (dealers and employees interleaved)
+  const routeCustomers = [...routeDealers, ...routeEmployeeRows]
     .sort((a: any, b: any) => {
       const posA = pendingPos[a.id] ?? a._pos;
       const posB = pendingPos[b.id] ?? b._pos;
-      return (posA - posB) || a.code.localeCompare(b.code) || a.name.localeCompare(b.name);
-  });
-  
-  const eligibleToAdd = allCustomers.filter((c: any) => {
+      return (posA - posB)
+        || (a.code || "").localeCompare(b.code || "")
+        || a.name.localeCompare(b.name);
+    });
+
+  // Add-picker: dealers + employees NOT already on this route
+  const eligibleToAdd = [
+    ...allCustomers
+      .filter((c: any) => !c.routes?.some((r: any) => r.routeId === selectedRoute))
+      .map((c: any) => ({
+        id: c.id, code: c.code, name: c.name,
+        type: c.type, phone: c.phone, kind: "dealer" as const,
+      })),
+    ...(employees as any[])
+      .filter((e: any) => e.route_id !== selectedRoute)
+      .map((e: any) => ({
+        id: e.id, code: e.employee_code ?? "", name: e.name,
+        type: "Employee", phone: e.phone ?? "", kind: "employee" as const,
+      })),
+  ].filter((c: any) => {
     if (!selectedRoute) return false;
-    if (c.routes?.some((r: any) => r.routeId === selectedRoute)) return false;
     if (!pickerQuery.trim()) return true;
     const q = pickerQuery.trim().toLowerCase();
     return c.name.toLowerCase().includes(q)
-        || c.code.toLowerCase().includes(q)
+        || (c.code || "").toLowerCase().includes(q)
         || (c.phone ?? "").toString().includes(q);
   });
  
@@ -217,7 +286,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
       <div>
         <PageHeader
           title="Assign Route"
-          subtitle="Add or remove customers on a route"
+          subtitle="Add or remove customers and employees on a route"
           actions={
             <Button
               size="sm" className="h-8" disabled={!selectedRoute}
@@ -301,7 +370,10 @@ export default function CustomersPage({ tab = "list" }: Props) {
                         <Button
                           variant="ghost" size="sm"
                           className="h-7 px-2 text-destructive hover:text-destructive"
-                          onClick={() => removeMutation.mutate({ customerId: c.id, routeId: selectedRoute })}
+                          onClick={() => {
+                            if (c.kind === "employee") removeEmpMutation.mutate(c.id);
+                            else removeMutation.mutate({ customerId: c.id, routeId: selectedRoute });
+                          }}
                         >
                           Remove
                         </Button>
@@ -349,12 +421,19 @@ export default function CustomersPage({ tab = "list" }: Props) {
                         <Button
                           size="sm" className="h-7"
                           onClick={() => {
-                            assignMutation.mutate(
-                              { customerId: c.id, routeId: selectedRoute },
-                              { onSuccess: () => setPickerOpen(false) },
-                            );
+                            if (c.kind === "employee") {
+                              assignEmpMutation.mutate(
+                                { employeeId: c.id, routeId: selectedRoute },
+                                { onSuccess: () => setPickerOpen(false) },
+                              );
+                            } else {
+                              assignMutation.mutate(
+                                { customerId: c.id, routeId: selectedRoute },
+                                { onSuccess: () => setPickerOpen(false) },
+                              );
+                            }
                           }}
-                          disabled={assignMutation.isPending}
+                          disabled={assignMutation.isPending || assignEmpMutation.isPending}
                         >Add</Button>
                       </td>
                     </tr>
