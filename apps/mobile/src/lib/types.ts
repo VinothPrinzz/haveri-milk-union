@@ -15,8 +15,13 @@
 export type WindowState = "open" | "warning" | "closed";
 
 export interface WindowStatus {
-  zoneId: string;
-  zoneName: string;
+  // Route-based fields (new primary path)
+  routeId?: string;
+  routeName?: string;
+  routeCode?: string;
+  // Zone-based fields (legacy — kept for backward compat)
+  zoneId?: string;
+  zoneName?: string;
   state: WindowState;
   openTime: string;        // "06:00"
   closeTime: string;       // "08:00"
@@ -35,6 +40,10 @@ export interface Dealer {
   code?: string;              // agency ID (e.g. HMU-AG-2024-XXXX)
   zoneId: string;
   zoneName: string;
+  // Route — primary delivery route for ordering window + dispatch
+  routeId: string;
+  routeName: string;
+  routeCode: string;
   walletBalance: number;
   creditLimit: number;
   creditOutstanding?: number;
@@ -49,7 +58,6 @@ export interface Dealer {
   biometricEnabled?: boolean;
   verified?: boolean;
   memberSince?: string;
-  
 }
 
 // ── Login Response (new username/password flow) ────────────────────────

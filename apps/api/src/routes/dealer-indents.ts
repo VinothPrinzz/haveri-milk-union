@@ -578,13 +578,26 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
  
+        // cancel_window_ends_at = LEAST(now + 30 min, route's close_time for today).
+        // Uses the dealer's route_id from the dealers table. If no route or no
+        // time_window is configured for that route, falls back to now + 30 min.
         await tx`
           UPDATE orders
              SET status       = 'confirmed',
                  payment_mode = 'credit',
                  confirmed_at = now(),
-                 updated_at   = now()
-           WHERE id = ${order.id}::uuid
+                 updated_at   = now(),
+                 cancel_window_ends_at = LEAST(
+                   now() + interval '30 minutes',
+                   COALESCE(
+                     (delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                     now() + interval '30 minutes'
+                   )
+                 )
+           FROM dealers d
+           LEFT JOIN time_windows tw ON tw.route_id = d.route_id
+           WHERE orders.id = ${order.id}::uuid
+             AND d.id = ${dealerId}
         `;
  
         const [bal] = await tx`

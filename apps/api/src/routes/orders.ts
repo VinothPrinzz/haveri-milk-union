@@ -15,6 +15,7 @@ import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/paginat
 import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { signInvoicePdfToken, verifyInvoicePdfToken } from "../lib/auth.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
+import { cancelOrderWithReversal } from "../lib/cancel-order.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
 
@@ -641,37 +642,44 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [dealerAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const schema = z.object({ reason: z.string().min(1) });
-      const body = schema.parse(request.body);
-
+      const body = z.object({ reason: z.string().min(1) }).parse(request.body);
+  
       const [order] = await pgClient`
-        SELECT id, status, dealer_id FROM orders WHERE id = ${id} LIMIT 1
+        SELECT id, status, dealer_id, cancel_window_ends_at
+          FROM orders WHERE id = ${id} LIMIT 1
       `;
-
-      if (!order) {
-        return reply.status(404).send({ error: "Order not found" });
-      }
-      if (order.dealer_id !== request.dealer!.dealerId) {
+      if (!order) return reply.status(404).send({ error: "Order not found" });
+      if (order.dealer_id !== request.dealer!.dealerId)
         return reply.status(403).send({ error: "Not your order" });
-      }
-      if (order.status !== "confirmed") {
+      if (order.status !== "confirmed")
         return reply.status(400).send({
           error: "Cannot cancel",
           message: `Order is already ${order.status}`,
         });
+  
+      // ── Inside the 30-min window → cancel directly, no admin approval ──
+      const withinWindow =
+        order.cancel_window_ends_at != null &&
+        new Date() < new Date(order.cancel_window_ends_at);
+  
+      if (withinWindow) {
+        await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
+          await cancelOrderWithReversal(tx, id, body.reason, request.dealer!.dealerId);
+        });
+        return reply.status(200).send({
+          message: "Order cancelled", cancelled: true, orderId: id,
+        });
       }
-
+  
+      // ── Past the window → admin-approval request (existing behaviour) ──
       const [cr] = await db
         .insert(cancellationRequests)
-        .values({
-          orderId: id,
-          dealerId: request.dealer!.dealerId,
-          reason: body.reason,
-        })
+        .values({ orderId: id, dealerId: request.dealer!.dealerId, reason: body.reason })
         .returning();
-
       return reply.status(201).send({
         message: "Cancellation request submitted",
+        cancelled: false,
         cancellationRequest: cr,
       });
     }

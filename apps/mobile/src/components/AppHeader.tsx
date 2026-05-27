@@ -61,9 +61,11 @@ export default function AppHeader({
   const dealer = useAuthStore((s) => s.dealer);
 
   const resolvedTitle = title ?? dealer?.name ?? "Dealer";
+  // Prefer routeName over zoneName for the subtitle (migration to per-route windows).
+  // Falls back to zoneName for dealers not yet assigned a route.
   const resolvedSubtitle =
     (subtitle ??
-    [dealer?.zoneName, dealer?.code].filter(Boolean).join(" · ")) ||
+    [dealer?.routeName || dealer?.zoneName, dealer?.code].filter(Boolean).join(" · ")) ||
     "";
 
   return (

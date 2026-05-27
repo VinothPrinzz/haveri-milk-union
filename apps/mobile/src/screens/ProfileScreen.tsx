@@ -21,6 +21,7 @@ import {
 import { useAuthStore } from "../store/auth";
 import { useMyOrders } from "../hooks/useOrders";
 import { useMyInvoices } from "../hooks/useInvoices";
+import { useDealerRoutes, useSwitchRoute } from "../hooks/useDealerRoutes";
 import ProfileFinanceCard from "../components/ProfileFinanceCard";
 import PaymentHistoryList from "../components/PaymentHistoryList";
 import BackButton from "../components/BackButton";
@@ -38,6 +39,8 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
   const logout = useAuthStore((s) => s.logout);
   const ordersQuery = useMyOrders({ limit: 50 });
   const invQuery = useMyInvoices();
+  const dealerRoutesQuery = useDealerRoutes();
+  const switchRoute = useSwitchRoute();
   const [lang, setLang] = useState<Lang>(dealer?.languagePref ?? "en");
   const [notifEnabled, setNotifEnabled] = useState(
     dealer?.notificationsEnabled ?? false
@@ -126,6 +129,36 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
       `Editing ${field} requires admin approval. Please contact your union office.`
     );
   };
+
+  const handleRoutePicker = () => {
+    const routes = dealerRoutesQuery.data?.routes ?? [];
+    if (routes.length === 0) {
+      Alert.alert(
+        "Delivery Route",
+        "You're not assigned to any route yet. Contact your union office."
+      );
+      return;
+    }
+    if (routes.length === 1) {
+      Alert.alert(
+        "Delivery Route",
+        "You're assigned to one route. Contact your union office to be added to more."
+      );
+      return;
+    }
+    Alert.alert(
+      "Switch delivery route",
+      "Pick the route to order on:",
+      routes
+        .map((r) => ({
+          text: `${r.code} · ${r.name}${r.isPrimary ? "  ✓" : ""}`,
+          onPress: () => {
+            if (!r.isPrimary) switchRoute.mutate(r.id);
+          },
+        }))
+        .concat([{ text: "Cancel", style: "cancel" } as any])
+    );
+  };
   const handleLogout = () => {
     Alert.alert(
       "Logout?",
@@ -182,7 +215,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
                 {dealer.name}
               </Text>
               <Text style={styles.agencyId} numberOfLines={1}>
-                ID: {dealer.code ?? "—"} · {dealer.zoneName ?? dealer.locationLabel ?? ""}
+                ID: {dealer.code ?? "—"} · {dealer.routeName || dealer.zoneName || dealer.locationLabel || ""}
               </Text>
               {dealer.verified && (
                 <View style={styles.verifiedBadge}>
@@ -219,11 +252,11 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
           {/* Group 1: Account info */}
           <View style={styles.group}>
             <ProfileItem
-              icon="📍"
+              icon="🚚"
               tint="blue"
-              title="Delivery Zone"
-              sub={`${dealer.zoneName ?? "—"}${dealer.locationLabel ? ` · ${dealer.locationLabel}` : ""}`}
-              onPress={() => handleEditField("delivery zone")}
+              title="Delivery Route"
+              sub={dealer.routeName || dealer.zoneName || "Not assigned"}
+              onPress={handleRoutePicker}
               showArrow
             />
             <ProfileItem

@@ -745,13 +745,16 @@ export async function dealerRoutes(app: FastifyInstance) {
         .dealer.dealerId;
         const [dealer] = await pgClient`
           SELECT d.*,
-                z.name AS zone_name,
+                z.name  AS zone_name,
+                r.name  AS route_name,
+                r.code  AS route_code,
                 COALESCE(w.balance, 0) AS wallet_balance,
                 GREATEST(0, -led.closing_balance)::numeric                          AS credit_outstanding,
                 led.closing_balance::numeric                                        AS ledger_balance,
                 GREATEST(0, COALESCE(d.credit_limit, 0) + led.closing_balance)::numeric AS credit_available
           FROM dealers d
           JOIN zones z ON z.id = d.zone_id
+          LEFT JOIN routes r ON r.id = d.route_id
           LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
           CROSS JOIN LATERAL (
             SELECT COALESCE(d.opening_balance, 0)

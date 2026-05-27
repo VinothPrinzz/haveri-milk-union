@@ -3,6 +3,7 @@ import {
   Image,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -43,12 +44,18 @@ import type { Product } from "../lib/types";
 
 interface ProductCardProps {
   product: Product;
-  /** Current quantity in cart — drives ADD button vs stepper rendering */
+  /** Current quantity in cart — drives ADD button vs text-input rendering */
   quantity: number;
   /** Threshold below which low_stock visual treatment kicks in */
   lowStockThreshold?: number;
   onAdd: () => void;
   onRemove: () => void;
+  /**
+   * Absolute-quantity setter — called on blur/submit with the final value.
+   * Replaces the +/- stepper with a text input so users can type directly.
+   * Only fires once per edit session (no debounce needed).
+   */
+  onSetQuantity?: (qty: number) => void;
   /** Optional badge override (e.g. "New", "Offer"). Defaults to none. */
   badge?: { kind: "new" | "offer" | "low"; label: string };
 }
@@ -72,9 +79,22 @@ export default function ProductCard({
   lowStockThreshold = 10,
   onAdd,
   onRemove,
+  onSetQuantity,
   badge,
 }: ProductCardProps) {
   const [imageError, setImageError] = useState(false);
+  // draftQty: in-progress text while the user is typing. null = not editing.
+  // Only one PATCH fires per edit (on blur/submit), not on every keystroke.
+  const [draftQty, setDraftQty] = useState<string | null>(null);
+  const shownValue = draftQty ?? String(quantity);
+
+  const commitQty = () => {
+    if (draftQty == null) return;
+    const n = parseInt(draftQty.replace(/[^0-9]/g, ""), 10);
+    const clamped = Number.isNaN(n) ? 0 : Math.min(Math.max(n, 0), product.stock);
+    onSetQuantity?.(clamped);
+    setDraftQty(null);
+  };
 
   const outOfStock = !product.available || product.stock === 0;
   const lowStock = !outOfStock && product.stock <= lowStockThreshold;
@@ -158,25 +178,43 @@ export default function ProductCard({
               </Text>
             </TouchableOpacity>
           ) : (
-            <View style={styles.stepper}>
-              <TouchableOpacity
-                onPress={onRemove}
-                activeOpacity={0.7}
-                style={styles.stepBtn}
-                accessibilityLabel="Decrease quantity"
-              >
-                <Text style={styles.stepIcon}>−</Text>
-              </TouchableOpacity>
-              <Text style={styles.stepVal}>{quantity}</Text>
-              <TouchableOpacity
-                onPress={onAdd}
-                activeOpacity={0.7}
-                style={styles.stepBtn}
-                accessibilityLabel="Increase quantity"
-              >
-                <Text style={styles.stepIcon}>+</Text>
-              </TouchableOpacity>
-            </View>
+            // Text-input stepper: user can type a quantity directly.
+            // draftQty holds the in-progress value; commitQty fires on blur/submit.
+            // Falls back to +/- tap if onSetQuantity is not provided.
+            onSetQuantity ? (
+              <TextInput
+                style={styles.qtyInput}
+                keyboardType="number-pad"
+                value={shownValue}
+                selectTextOnFocus
+                maxLength={4}
+                onChangeText={setDraftQty}
+                onBlur={commitQty}
+                onSubmitEditing={commitQty}
+                returnKeyType="done"
+                accessibilityLabel={`Quantity for ${product.name}`}
+              />
+            ) : (
+              <View style={styles.stepper}>
+                <TouchableOpacity
+                  onPress={onRemove}
+                  activeOpacity={0.7}
+                  style={styles.stepBtn}
+                  accessibilityLabel="Decrease quantity"
+                >
+                  <Text style={styles.stepIcon}>−</Text>
+                </TouchableOpacity>
+                <Text style={styles.stepVal}>{quantity}</Text>
+                <TouchableOpacity
+                  onPress={onAdd}
+                  activeOpacity={0.7}
+                  style={styles.stepBtn}
+                  accessibilityLabel="Increase quantity"
+                >
+                  <Text style={styles.stepIcon}>+</Text>
+                </TouchableOpacity>
+              </View>
+            )
           )}
         </View>
       </View>
@@ -315,7 +353,7 @@ const styles = StyleSheet.create({
     color: colors.mutedForeground,
   },
 
-  // ── Stepper (solid primary, replaces ADD when qty > 0) ──
+  // ── Stepper (solid primary, replaces ADD when qty > 0, no onSetQuantity) ──
   stepper: {
     flexDirection: "row",
     alignItems: "center",
@@ -342,6 +380,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: fonts.extrabold,
     color: colors.primaryForeground,
+  },
+
+  // ── Quantity text-input (replaces stepper when onSetQuantity is provided) ──
+  qtyInput: {
+    minWidth: 76,
+    height: 34,
+    borderRadius: BTN_RADIUS,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    textAlign: "center",
+    fontSize: 14,
+    fontFamily: fonts.extrabold,
+    color: colors.foreground,
+    paddingVertical: 0,
   },
 });
 

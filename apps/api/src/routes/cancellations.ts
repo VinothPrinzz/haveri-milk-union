@@ -5,6 +5,7 @@ import { db, pgClient } from "../lib/db.js";
 import { cancellationRequests, orders, dealers } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { cancelOrderWithReversal } from "../lib/cancel-order.js";
 
 export async function cancellationRoutes(app: FastifyInstance) {
   // GET /api/v1/cancellations — list all cancellation requests
@@ -62,92 +63,24 @@ export async function cancellationRoutes(app: FastifyInstance) {
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
 
-        // 1. Update cancellation request
+        // 1. Mark cancellation request approved
         await tx`
-          UPDATE cancellation_requests 
-          SET status = 'approved', 
+          UPDATE cancellation_requests
+          SET status = 'approved',
               reviewed_by = ${request.admin!.userId},
-              reviewed_at = now(), 
-              updated_at = now() 
+              reviewed_at = now(),
+              updated_at = now()
           WHERE id = ${id}
         `;
 
-        // 2. Cancel the order
-        await tx`
-          UPDATE orders 
-          SET status = 'cancelled', 
-              cancelled_at = now(),
-              cancellation_reason = 'Approved cancellation request', 
-              updated_at = now()
-          WHERE id = ${cr.orderId}
-        `;
-
-        // 3. Get order details
-        const [order] = await tx`
-          SELECT payment_mode, grand_total, dealer_id 
-          FROM orders WHERE id = ${cr.orderId}
-        `;
-
-        if (!order) throw new Error("Order not found");
-
-        // ── Wallet Refund (existing logic) ─────────────────────────────
-        if (order.payment_mode === "wallet") {
-          const [wallet] = await tx`
-            UPDATE dealer_wallets 
-            SET balance = balance + ${order.grand_total}::numeric, 
-                updated_at = now()
-            WHERE dealer_id = ${order.dealer_id} 
-            RETURNING balance
-          `;
-
-          await tx`
-            INSERT INTO dealer_ledger 
-              (dealer_id, type, amount, reference_id, reference_type, 
-               description, balance_after, performed_by)
-            VALUES 
-              (${order.dealer_id}, 'credit', ${order.grand_total}::numeric, 
-               ${cr.orderId}, 'refund', 'Cancellation refund', 
-               ${wallet!.balance}::numeric, ${request.admin!.userId})
-          `;
-        }
-
-        // ── PATCH D: Credit-mode reversal (NEW) ───────────────────────
-        if (order.payment_mode === "credit") {
-          const [bal] = await tx`
-            SELECT
-              COALESCE(d.opening_balance, 0)
-              + COALESCE((SELECT SUM(CASE WHEN dl.type='credit'
-                                            AND COALESCE(dl.voucher_type,'') <> 'Opening'
-                                          THEN dl.amount ELSE 0 END) 
-                          FROM dealer_ledger dl
-                          WHERE dl.dealer_id = d.id), 0)
-              - COALESCE((SELECT SUM(CASE WHEN dl.type='debit'
-                                            AND COALESCE(dl.voucher_type,'') <> 'Opening'
-                                          THEN dl.amount ELSE 0 END) 
-                          FROM dealer_ledger dl
-                          WHERE dl.dealer_id = d.id), 0)
-              AS bal
-            FROM dealers d 
-            WHERE d.id = ${order.dealer_id}
-          `;
-
-          const balanceAfter = parseFloat(bal!.bal) + parseFloat(order.grand_total);
-
-          await tx`
-            INSERT INTO dealer_ledger
-              (dealer_id, type, amount, reference_id, reference_type,
-               voucher_type, voucher_date,
-               description, balance_after, performed_by)
-            VALUES
-              (${order.dealer_id}, 'credit',
-               ${parseFloat(order.grand_total).toFixed(2)}::numeric,
-               ${cr.orderId}, 'order',
-               'Adjustment', now()::date,
-               ${'Cancel credit order ' + cr.orderId},
-               ${balanceAfter.toFixed(2)}::numeric,
-               ${request.admin!.userId})
-          `;
-        }
+        // 2 + 3 + 4. Cancel order + financial reversal (wallet or credit)
+        // Uses the shared helper so admin and self-service paths stay in sync.
+        await cancelOrderWithReversal(
+          tx,
+          cr.orderId,
+          "Approved cancellation request",
+          request.admin!.userId,
+        );
 
         // 5. Restore product stock
         const items = await tx`
@@ -155,9 +88,9 @@ export async function cancellationRoutes(app: FastifyInstance) {
         `;
         for (const item of items) {
           await tx`
-            UPDATE products 
-            SET stock = stock + ${item.quantity}, 
-                updated_at = now() 
+            UPDATE products
+            SET stock = stock + ${item.quantity},
+                updated_at = now()
             WHERE id = ${item.product_id}
           `;
         }
