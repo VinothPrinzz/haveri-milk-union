@@ -76,7 +76,7 @@ export default function OrderConfirmedScreen({
 }: OrderConfirmedScreenProps) {
   const insets = useSafeAreaInsets();
   const dealer = useAuthStore((s) => s.dealer);
-  const ordersQuery = useMyOrders({ page: 1, limit: 10 });
+  const ordersQuery = useMyOrders({ limit: 10 });
   const invQuery = useMyInvoices({ pollWhilePending: true });
 
   // New: invoice-by-order mutation hook
@@ -84,7 +84,7 @@ export default function OrderConfirmedScreen({
 
   // Find the just-placed order
   const order: Order | undefined = useMemo(
-    () => ordersQuery.data?.data.find((o) => o.id === orderId),
+    () => ordersQuery.data?.orders.find((o) => o.id === orderId),
     [ordersQuery.data, orderId]
   );
 

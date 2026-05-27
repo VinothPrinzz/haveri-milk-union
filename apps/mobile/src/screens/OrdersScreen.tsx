@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -24,6 +24,7 @@ import AppHeader from "../components/AppHeader";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { useMyOrders, useCancelOrder, useReorder } from "../hooks/useOrders";
+import { useOrderPayment, RazorpayCancelled, RazorpayFailed } from "../hooks/useOrderPayment";
 import { useProducts } from "../hooks/useProducts";
 import { useMyInvoices, useInvoiceByOrder } from "../hooks/useInvoices";
 import type { Order, OrderStatus } from "../lib/types";
@@ -110,6 +111,10 @@ export default function OrdersScreen({
   const cancelOrder = useCancelOrder();
   const reorder = useReorder();
   const invoiceByOrder = useInvoiceByOrder();
+
+  // ── Razorpay pay-now for payment_required orders ──────────────────
+  const [payOrderId, setPayOrderId] = useState<string | null>(null);
+  const orderPayment = useOrderPayment(payOrderId ?? "");
 
   const {
     fetchNextPage,
@@ -222,6 +227,47 @@ export default function OrdersScreen({
     );
   };
 
+  const handlePayNow = (orderId: string) => {
+    setPayOrderId(orderId);
+  };
+
+  // Opens Razorpay once a payment_required orderId is set, then clears it.
+  useEffect(() => {
+    if (!payOrderId) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await orderPayment.mutateAsync();
+        if (cancelled) return;
+        setPayOrderId(null);
+        Alert.alert("Payment Successful", "Your order has been confirmed.");
+      } catch (err) {
+        if (cancelled) return;
+        setPayOrderId(null);
+        if (err instanceof RazorpayCancelled) {
+          Alert.alert(
+            "Payment Cancelled",
+            "You can try paying again from this screen."
+          );
+          return;
+        }
+        Alert.alert(
+          "Payment Failed",
+          err instanceof RazorpayFailed
+            ? err.description || "Please try again."
+            : err instanceof Error
+              ? err.message
+              : "Please try again."
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [payOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Render ───────────────────────────────────────────────────────
   if (ordersQuery.isLoading && !ordersQuery.data) {
     return (
@@ -325,9 +371,11 @@ export default function OrdersScreen({
             order={order}
             productEmojis={emojiMapForOrder(order, products)}
             cancelling={cancellingId === order.id}
+            paying={payOrderId === order.id}
             onReorder={() => handleReorder(order.id)}
             onInvoice={() => handleViewInvoice(order.id)}
             onCancel={() => handleCancel(order)}
+            onPayNow={() => handlePayNow(order.id)}
           />
         )}
         onEndReached={() => {
@@ -398,26 +446,32 @@ interface OrderCardProps {
   order: Order;
   productEmojis: Map<string, string>;
   cancelling: boolean;
+  paying?: boolean;
   onReorder: () => void;
   onInvoice: () => void;
   onCancel: () => void;
+  onPayNow?: () => void;
 }
 
 function OrderCard({
   order,
   productEmojis,
   cancelling,
+  paying = false,
   onReorder,
   onInvoice,
   onCancel,
+  onPayNow,
 }: OrderCardProps) {
-  const chip = chipForStatus(order);   // ← Updated: now passes full order
+  const chip = chipForStatus(order);
+  const showPayNow = order.status === "payment_required";
   const showCancel =
     order.status === "confirmed" &&
     order.cancellationStatus !== "pending" &&
     order.cancellationStatus !== "approved";
-
-  const showInvoice = order.status !== "cancelled";
+  // No invoice exists for unpaid (payment_required) orders yet.
+  const showInvoice =
+    order.status !== "cancelled" && order.status !== "payment_required";
   const isCancelled = order.status === "cancelled";
 
   return (
@@ -475,6 +529,21 @@ function OrderCard({
               style={[cardStyles.action, cardStyles.actionInvoice]}
             >
               <Text style={[cardStyles.actionText, cardStyles.actionTextInvoice]}>📄 Invoice</Text>
+            </TouchableOpacity>
+          )}
+
+          {showPayNow && (
+            <TouchableOpacity
+              onPress={onPayNow}
+              disabled={paying}
+              activeOpacity={0.75}
+              style={[cardStyles.action, cardStyles.actionPayNow]}
+            >
+              {paying ? (
+                <ActivityIndicator color={colors.warning} size="small" />
+              ) : (
+                <Text style={[cardStyles.actionText, cardStyles.actionTextPayNow]}>💳 Pay Now</Text>
+              )}
             </TouchableOpacity>
           )}
 
@@ -544,6 +613,13 @@ function chipForStatus(order: Order) {   // ← Updated: now takes full Order
       label: "✕ Cancelled",
       style: cardStyles.chipCancelled,
       textStyle: cardStyles.chipTextCancelled,
+    };
+  }
+  if (order.status === "payment_required") {
+    return {
+      label: "💳 Awaiting Payment",
+      style: cardStyles.chipPending,
+      textStyle: cardStyles.chipTextPending,
     };
   }
   // confirmed, dispatched, delivered all show as Paid
@@ -850,8 +926,10 @@ const cardStyles = StyleSheet.create({
   actionReorder:    { backgroundColor: colors.primaryLight },
   actionInvoice:    { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
   actionCancel:     { backgroundColor: colors.destructiveLight },
+  actionPayNow:     { backgroundColor: colors.warningLight, borderWidth: 1, borderColor: colors.warningBorder },
   actionText:       { fontSize: 9, fontFamily: fonts.bold },
   actionTextReorder:{ color: colors.primary },
   actionTextInvoice:{ color: colors.mutedForeground },
   actionTextCancel: { color: colors.destructive },
+  actionTextPayNow: { color: colors.warning },
 });

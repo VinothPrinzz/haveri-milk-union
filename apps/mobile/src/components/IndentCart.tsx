@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,6 +12,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, fonts, shadows } from "../lib/theme";
 import { useCartStore } from "../store/cart";
 import { usePlaceOrder } from "../hooks/useOrders";
+import { useOrderPayment } from "../hooks/useOrderPayment";
+import { RazorpayCancelled, RazorpayFailed } from "../lib/razorpay";
 import { uiPaymentToBackend, type UiPaymentMethod } from "../lib/types";
 import { ApiError } from "../lib/api";
 
@@ -92,6 +94,10 @@ export default function IndentCart({
   const placeOrder = usePlaceOrder();
   const [selectedPay, setSelectedPay] = useState<UiPaymentMethod>("upi");
 
+  // Razorpay pay-now plumbing for online payments.
+  const [payOrderId, setPayOrderId] = useState<string | null>(null);
+  const orderPayment = useOrderPayment(payOrderId ?? "");
+
   // ── Derived totals ────────────────────────────────────────────────
   const totalAfterSavings = grandTotal - savingsAmount;
   const cgst = totalGst / 2;
@@ -99,20 +105,31 @@ export default function IndentCart({
 
   const productCount = items.length;
   const isEmpty = productCount === 0;
-  const submitting = placeOrder.isPending;
+  const submitting =
+    placeOrder.isPending || orderPayment.isPending || payOrderId !== null;
 
   // ── Submit ────────────────────────────────────────────────────────
   const handleSubmit = async () => {
     if (isEmpty || submitting) return;
 
+    const backendMode = uiPaymentToBackend(selectedPay);
+
     try {
       const result = await placeOrder.mutateAsync({
         items: items.map((i) => ({ productId: i.id, quantity: i.quantity })),
-        paymentMode: uiPaymentToBackend(selectedPay),
+        paymentMode: backendMode,
       });
 
-      clearCart();
-      onOrderPlaced(result.order.id);
+      if (backendMode === "upi") {
+        // Server created the order as 'payment_required'. Don't clear the
+        // cart or navigate yet — the effect below opens Razorpay and we
+        // only finish once payment verifies.
+        setPayOrderId(result.order.id);
+      } else {
+        // wallet / credit settle on the server immediately.
+        clearCart();
+        onOrderPlaced(result.order.id);
+      }
     } catch (err) {
       const msg =
         err instanceof ApiError
@@ -121,6 +138,45 @@ export default function IndentCart({
       Alert.alert("Order Failed", msg);
     }
   };
+
+  // Razorpay runs once a payment_required order id is set.
+  useEffect(() => {
+    if (!payOrderId) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await orderPayment.mutateAsync();
+        if (cancelled) return;
+        const placedId = payOrderId;
+        setPayOrderId(null);
+        clearCart();
+        onOrderPlaced(placedId);
+      } catch (err) {
+        if (cancelled) return;
+        setPayOrderId(null);
+        if (err instanceof RazorpayCancelled) {
+          Alert.alert(
+            "Payment cancelled",
+            "Your indent is saved but not paid. You can pay it from the Orders tab."
+          );
+          return;
+        }
+        Alert.alert(
+          "Payment failed",
+          err instanceof RazorpayFailed
+            ? err.description || "Please try again."
+            : err instanceof Error
+              ? err.message
+              : "Please try again."
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [payOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ══════════════════════════════════════════════════════════════════
   return (

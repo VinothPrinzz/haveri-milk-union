@@ -171,10 +171,16 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      // ── 4. Create order + items + ledger entry in a single transaction ──                                                                    
-      // Wallet deduction is inside so it rolls back atomically if any step fails.                                                               
-      // TransactionSql<{}> extends Omit<Sql<{}>, ...> which drops call signatures;                                                              
+      // ── 4. Create order + items + ledger entry in a single transaction ──
+      // Wallet deduction is inside so it rolls back atomically if any step fails.
+      // TransactionSql<{}> extends Omit<Sql<{}>, ...> which drops call signatures;
       // cast to typeof pgClient to restore them.
+
+      // UPI orders aren't paid here — they go to 'payment_required' and the
+      // dealer settles via the Razorpay pay-now endpoint. wallet/credit settle
+      // synchronously inside the transaction below, so they're 'pending'.
+      const initialStatus =
+        body.paymentMode === "upi" ? "payment_required" : "pending";
 
       try {
         const result = await pgClient.begin(async (_tx) => {                
@@ -183,7 +189,7 @@ export async function orderRoutes(app: FastifyInstance) {
           const [order] = await tx`
             INSERT INTO orders (dealer_id, zone_id, status, payment_mode, payment_reference, subtotal, total_gst, grand_total, item_count, notes, created_at, updated_at)
             VALUES (
-              ${dealer.dealerId}, ${dealer.zoneId}, 'pending', ${body.paymentMode},
+              ${dealer.dealerId}, ${dealer.zoneId}, ${initialStatus}, ${body.paymentMode},
               ${body.paymentReference ?? null},
               ${subtotal.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric, ${grandTotal.toFixed(2)}::numeric,
               ${orderItemsData.length}, ${body.notes ?? null}, now(), now()
@@ -277,13 +283,18 @@ export async function orderRoutes(app: FastifyInstance) {
 
 
         // ── Auto-generate GST Invoice + Push Notification ──
-        if (result?.id) {
+        // UPI orders are NOT paid yet (status 'payment_required'). Invoice + push
+        // fire only for wallet/credit, which are settled by this point. A
+        // Razorpay-paid order gets its invoice on demand via /invoices/by-order
+        // after pay-now/verify — same as the date-based draft flow.
+        const settledNow = body.paymentMode !== "upi";
+
+        if (result?.id && settledNow) {
           try {
             await enqueuePDFInvoice(result.id);
           } catch (err) {
             console.warn("[orders] PDF enqueue failed:", err);
           }
-
           try {
             await enqueuePushNotification({
               event: "order.confirmed",
@@ -308,17 +319,17 @@ export async function orderRoutes(app: FastifyInstance) {
         let invoiceNumber: string | null = null;
         let invoicePdfUrl: string | null = null;
 
-        try {
-          const pdfResult = await generateInvoicePdfSync(result!.id);       
-          invoicePdfUrl = pdfResult.pdfUrl ?? null;
-
-          const [inv] = await pgClient`
-            SELECT invoice_number FROM invoices WHERE order_id = ${result!.id} LIMIT 1
-          `;
-          invoiceNumber = inv?.invoice_number ?? null;
-        } catch (err) {
-          console.error("[orders] Invoice generation failed:", err);
-          // Order still succeeds; dealer can retry from "View Invoice" later.
+        if (settledNow) {
+          try {
+            const pdfResult = await generateInvoicePdfSync(result!.id);
+            invoicePdfUrl = pdfResult.pdfUrl ?? null;
+            const [inv] = await pgClient`
+              SELECT invoice_number FROM invoices WHERE order_id = ${result!.id} LIMIT 1
+            `;
+            invoiceNumber = inv?.invoice_number ?? null;
+          } catch (err) {
+            console.error("[orders] Invoice generation failed:", err);
+          }
         }
 
         return reply.status(201).send({
