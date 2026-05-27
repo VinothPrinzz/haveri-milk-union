@@ -90,6 +90,8 @@ export async function authRoutes(app: FastifyInstance) {
     const [profile] = await pgClient`
       SELECT d.*,
              z.name AS zone_name,
+             r.name AS route_name,
+             r.code AS route_code,
              COALESCE(w.balance, 0) AS wallet_balance,
              COALESCE((
                SELECT SUM(o.grand_total) FROM orders o
@@ -99,6 +101,7 @@ export async function authRoutes(app: FastifyInstance) {
              ), 0) AS credit_outstanding
         FROM dealers d
         LEFT JOIN zones z          ON z.id = d.zone_id
+        LEFT JOIN routes r         ON r.id = d.route_id
         LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
        WHERE d.id = ${dealer.id} AND d.deleted_at IS NULL
        LIMIT 1

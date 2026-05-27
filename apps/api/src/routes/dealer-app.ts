@@ -9,6 +9,14 @@ import {
 } from "../lib/pagination.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 
+// ── Dealer route type (for the list/switch endpoints below) ──
+interface DealerRoute {
+  id: string;
+  code: string;
+  name: string;
+  isPrimary: boolean;
+}
+
 export async function dealerAppRoutes(app: FastifyInstance) {
   // GET /api/v1/banners — active marketing banners for dealer app
   app.get("/api/v1/banners", async (request, reply) => {
@@ -154,6 +162,68 @@ export async function dealerAppRoutes(app: FastifyInstance) {
 
       return reply.send({ invoices, summary });
     },
+  );
+
+  // GET /api/v1/dealer/routes — list routes the dealer is assigned to
+  app.get(
+    "/api/v1/dealer/routes",
+    { preHandler: [dealerAuth] },
+    async (request, reply) => {
+      const dealerId = request.dealer!.dealerId;
+      const routes = await pgClient`
+        SELECT r.id, r.code, r.name, dr.is_primary AS "isPrimary"
+        FROM dealer_routes dr
+        JOIN routes r ON r.id = dr.route_id
+        WHERE dr.dealer_id = ${dealerId} AND r.deleted_at IS NULL
+        ORDER BY dr.is_primary DESC, r.code
+      `;
+      return reply.send({ routes });
+    }
+  );
+
+  // PATCH /api/v1/dealer/route — switch the dealer's active route
+  // Only routes already assigned to the dealer are allowed.
+  app.patch(
+    "/api/v1/dealer/route",
+    { preHandler: [dealerAuth] },
+    async (request, reply) => {
+      const dealerId = request.dealer!.dealerId;
+      const body = z.object({ routeId: z.string().uuid() }).parse(request.body);
+
+      // Guard: only allow switching to an assigned route
+      const [assigned] = await pgClient`
+        SELECT 1 FROM dealer_routes
+         WHERE dealer_id = ${dealerId} AND route_id = ${body.routeId}::uuid
+         LIMIT 1
+      `;
+      if (!assigned)
+        return reply.status(403).send({
+          error: "Route not assigned",
+          message:
+            "You can only switch to a route you are assigned to. " +
+            "Contact your union office to be added to a route.",
+        });
+
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        await tx`UPDATE dealer_routes SET is_primary = false WHERE dealer_id = ${dealerId}`;
+        await tx`
+          UPDATE dealer_routes
+             SET is_primary = true
+           WHERE dealer_id = ${dealerId} AND route_id = ${body.routeId}::uuid
+        `;
+        await tx`
+          UPDATE dealers
+             SET route_id = ${body.routeId}::uuid, updated_at = now()
+           WHERE id = ${dealerId}
+        `;
+      });
+
+      const [route] = await pgClient`
+        SELECT id, code, name FROM routes WHERE id = ${body.routeId}::uuid
+      `;
+      return reply.send({ route, message: "Active route updated" });
+    }
   );
 
   // POST /api/v1/orders/reorder/:id — reorder from a previous order

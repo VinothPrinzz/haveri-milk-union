@@ -95,7 +95,7 @@ function round2(n: number): number {
 
 // ── Main job ────────────────────────────────────────────────────────
 
-interface ZoneRow {
+interface RouteRow {
   id: string;
   name: string;
   close_time: string; // "HH:MM:SS"
@@ -115,28 +115,27 @@ export async function processAutoConfirmDrafts(_job: Job) {
   const todayIso = istTodayIso();
   const nowIstTime = istNow().toISOString().slice(11, 19); // "HH:MM:SS"
 
-  // Find zones whose close_time elapsed within the last ~5 minutes.
-  // The existing schema uses a `time_windows` table per zone.
-  // (If the project's window schema is different, adjust this query.)
-  const zones: ZoneRow[] = await sql`
+  // Find routes whose close_time elapsed within the last ~5 minutes.
+  // Per-route time windows are keyed by time_windows.route_id (migration 0023).
+  const routesWithClosedWindows: RouteRow[] = await sql`
     SELECT
-      z.id::text       AS id,
-      z.name           AS name,
+      r.id::text          AS id,
+      r.name              AS name,
       tw.close_time::text AS close_time
-    FROM zones z
-    JOIN time_windows tw ON tw.zone_id = z.id
+    FROM routes r
+    JOIN time_windows tw ON tw.route_id = r.id
     WHERE tw.close_time <= ${nowIstTime}::time
       AND tw.close_time >  (${nowIstTime}::time - interval '5 minutes')
   `;
 
-  if (zones.length === 0) {
+  if (routesWithClosedWindows.length === 0) {
     // Quiet exit during off-hours — return cleanly, don't log per-tick.
     return { processed: 0, confirmed: 0, paymentRequired: 0, skippedNoDrafts: 0 };
   }
 
   console.log(
-    `[AutoConfirm] ${zones.length} zone(s) with windows just closed:`,
-    zones.map((z) => `${z.name}@${z.close_time}`).join(", ")
+    `[AutoConfirm] ${routesWithClosedWindows.length} route(s) with windows just closed:`,
+    routesWithClosedWindows.map((r) => `${r.name}@${r.close_time}`).join(", ")
   );
 
   let confirmed = 0;
@@ -146,7 +145,10 @@ export async function processAutoConfirmDrafts(_job: Job) {
 
   const notifQueue = new Queue("push-notifications", { connection: redis });
 
-  for (const zone of zones) {
+  for (const route of routesWithClosedWindows) {
+    // Drafts are keyed by dealer's route_id (dealers.route_id = route.id).
+    // auto-confirmed orders get cancel_window_ends_at = confirmed_at (zero grace),
+    // since the confirmed_at = closeTime, LEAST yields closeTime itself.
     const drafts: DraftRow[] = await sql`
       SELECT
         o.id::text                  AS id,
@@ -158,14 +160,14 @@ export async function processAutoConfirmDrafts(_job: Job) {
         d.name                      AS dealer_name
       FROM orders o
       JOIN dealers d ON d.id = o.dealer_id
-      WHERE o.zone_id = ${zone.id}::uuid
+      WHERE d.route_id = ${route.id}::uuid
         AND o.delivery_date = ${todayIso}::date
         AND o.status = 'draft'
     `;
 
     if (drafts.length === 0) continue;
     totalDrafts += drafts.length;
-    console.log(`[AutoConfirm]   zone=${zone.name}: ${drafts.length} drafts to process`);
+    console.log(`[AutoConfirm]   route=${route.name}: ${drafts.length} drafts to process`);
 
     for (const draft of drafts) {
       try {
@@ -189,10 +191,14 @@ export async function processAutoConfirmDrafts(_job: Job) {
         const credit = await workerCreditCheck(draft.dealer_id, grandTotal);
 
         if (credit.sufficient) {
+          // Auto-confirmed at close time → cancel_window_ends_at = close_time
+          // (LEAST of now+30min and close_time, but confirmed_at IS close_time,
+          // so LEAST always yields close_time → zero grace, which is correct).
           await sql`
             UPDATE orders
                SET status = 'confirmed',
                    confirmed_at = COALESCE(confirmed_at, now()),
+                   cancel_window_ends_at = now(),
                    updated_at = now()
              WHERE id = ${draft.id}::uuid AND status = 'draft'
           `;
@@ -252,7 +258,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
   await notifQueue.close();
 
   const summary = {
-    zonesMatched: zones.length,
+    routesMatched: routesWithClosedWindows.length,
     totalDrafts,
     confirmed,
     paymentRequired,

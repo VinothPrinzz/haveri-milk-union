@@ -19,8 +19,8 @@
  */
 
 export const qk = {
-  // Window status — polled every 30s
-  window: (zoneId: string | undefined) => ["window", zoneId ?? "none"] as const,
+  // Window status — polled every 30s. Keyed by routeId (primary) or zoneId (legacy).
+  window: (routeIdOrZoneId: string | undefined) => ["window", routeIdOrZoneId ?? "none"] as const,
 
   // Catalog (products, categories, banners)
   products:   ["products"] as const,

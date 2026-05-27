@@ -67,12 +67,13 @@ export default function HomeScreen({
   const cartProducts = useCartStore((s) => s.getItems());
   const addItem = useCartStore((s) => s.addItem);
   const removeItem = useCartStore((s) => s.removeItem);
+  const setQuantity = useCartStore((s) => s.setQuantity);
 
   // ── Target date store ───────────────────────────────────────────
   const advanceIfWindowClosed = useTargetDateStore((s) => s.advanceIfWindowClosed);
 
   // ── API ─────────────────────────────────────────────────────────
-  const windowQuery = useWindowStatus(dealer?.zoneId);
+  const windowQuery = useWindowStatus(dealer?.routeId);
   const productsQuery = useProducts();
   const catsQuery = useCategories();
   const bannersQuery = useBanners();
@@ -161,6 +162,23 @@ export default function HomeScreen({
     gstPercent: p.gstPercent,
   });
 
+  // Absolute-quantity setter — used by the ProductCard text input (blur/submit).
+  // Clamps to [0, stock] and removes the item when qty reaches 0.
+  const setItemQty = useCallback(
+    (productId: string, qty: number, product: Product) => {
+      if (qty <= 0) {
+        setQuantity(productId, 0); // removes item
+        return;
+      }
+      // Ensure the product is in the cart (addItem is idempotent for new products)
+      if (!cartItems[productId]) {
+        addItem(toCartProduct(product));
+      }
+      setQuantity(productId, qty);
+    },
+    [cartItems, addItem, setQuantity] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   const renderItem = useCallback(
     ({ item }: { item: Product }) => (
       <View style={styles.gridCell}>
@@ -169,11 +187,12 @@ export default function HomeScreen({
           quantity={cartItems[item.id]?.quantity ?? 0}
           onAdd={() => addItem(toCartProduct(item))}
           onRemove={() => removeItem(item.id)}
+          onSetQuantity={(qty) => setItemQty(item.id, qty, item)}
         />
       </View>
     ),
     // cartItems changes when a quantity changes — keep renderItem fresh.
-    [cartItems] // eslint-disable-line react-hooks/exhaustive-deps
+    [cartItems, setItemQty] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // Scrolls WITH the grid. No TextInput here, so re-rendering is safe.

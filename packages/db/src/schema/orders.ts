@@ -47,6 +47,10 @@ export const orders = pgTable("orders", {
   deliveryDate: date("delivery_date").notNull(),
   cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
   cancellationReason: text("cancellation_reason"),
+  // Set at confirm time: LEAST(now()+30min, route close_time).
+  // The self-service cancel endpoint uses this to decide between
+  // direct-cancel (within window) and admin-approval-request (past window).
+  cancelWindowEndsAt: timestamp("cancel_window_ends_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, () => [

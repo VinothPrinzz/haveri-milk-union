@@ -4,16 +4,18 @@ import { qk } from "../lib/queryKeys";
 import type { WindowStatus } from "../lib/types";
 
 /**
- * Polls the zone's window status every 30s (spec §2 Window: "polled every 30 seconds
- * during the window"). Returns backend-aligned state: "open" | "warning" | "closed".
+ * Polls the route's window status every 30s.
+ * Returns backend-aligned state: "open" | "warning" | "closed".
  *
- * @param zoneId  the dealer's zoneId (from useAuthStore)
+ * Calls GET /api/v1/window/status/route/:routeId (new route-keyed endpoint).
+ *
+ * @param routeId  the dealer's primary routeId (from useAuthStore)
  */
-export function useWindowStatus(zoneId: string | undefined) {
+export function useWindowStatus(routeId: string | undefined) {
   return useQuery<WindowStatus>({
-    queryKey: qk.window(zoneId),
-    queryFn: () => api.get<WindowStatus>(`/api/v1/window/status/${zoneId}`),
-    enabled: !!zoneId,
+    queryKey: qk.window(routeId),
+    queryFn: () => api.get<WindowStatus>(`/api/v1/window/status/route/${routeId}`),
+    enabled: !!routeId,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     staleTime: 25_000,
