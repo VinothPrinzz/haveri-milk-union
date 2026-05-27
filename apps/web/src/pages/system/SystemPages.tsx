@@ -40,13 +40,8 @@ export function TimeWindowsPage() {
   });
 
   const update = useMutation({
-    mutationFn: (p: { id: string; openTime: string; warningMinutes: number; closeTime: string; active: boolean }) =>
-      updateTimeWindow(p.id, {
-        openTime: p.openTime,
-        warningMinutes: p.warningMinutes,
-        closeTime: p.closeTime,
-        active: p.active,
-      }),
+    mutationFn: (p: { routeId: string; openTime: string; warningMinutes: number; closeTime: string; active: boolean }) =>
+      updateTimeWindow(p.routeId, { openTime: p.openTime, warningMinutes: p.warningMinutes, closeTime: p.closeTime, active: p.active }),
     onSuccess: () => {
       toast.success("Time window updated");
       qc.invalidateQueries({ queryKey: ["time-windows"] });
@@ -69,7 +64,8 @@ export function TimeWindowsPage() {
             <table className="erp-table">
               <thead>
                 <tr>
-                  <th>Zone</th>
+                  <th>Route</th>
+                  <th style={{ width: 90 }}>Code</th>   
                   <th style={{ width: 140 }}>Open</th>
                   <th style={{ width: 160 }}>Warning (min before close)</th>
                   <th style={{ width: 140 }}>Close</th>
@@ -93,8 +89,18 @@ export function TimeWindowsPage() {
 function TimeWindowRow({
   row, onSave,
 }: {
-  row: { id: string; zoneName: string; openTime: string; warningMinutes?: number; closeTime: string; active: boolean };
-  onSave: (p: { id: string; openTime: string; warningMinutes: number; closeTime: string; active: boolean }) => void;
+  row: {
+    id: string | null;
+    routeId: string;
+    routeName: string;
+    routeCode: string;
+    openTime: string;
+    warningMinutes?: number;
+    closeTime: string;
+    active: boolean;
+    configured: boolean;
+  };
+  onSave: (p: { routeId: string; openTime: string; warningMinutes: number; closeTime: string; active: boolean }) => void;
 }) {
   const [open, setOpen] = useState(row.openTime);
   const [warning, setWarning] = useState<number>(row.warningMinutes ?? 20);
@@ -109,7 +115,8 @@ function TimeWindowRow({
 
   return (
     <tr>
-      <td className="font-medium">{row.zoneName}</td>
+      <td className="font-medium">{row.routeName}</td>
+      <td className="font-mono text-[12.5px]">{row.routeCode}</td>
       <td>
         <Input type="time" value={open} onChange={e => setOpen(e.target.value)} className="erp-input h-8 w-32" />
       </td>
@@ -131,7 +138,7 @@ function TimeWindowRow({
       </td>
       <td>
         {dirty ? (
-          <Button size="sm" className="h-7" onClick={() => onSave({ id: row.id, openTime: open, warningMinutes: warning, closeTime: close, active })}>
+          <Button size="sm" className="h-7" onClick={() => onSave({ routeId: row.routeId, openTime: open, warningMinutes: warning, closeTime: close, active })}>
             Save
           </Button>
         ) : (

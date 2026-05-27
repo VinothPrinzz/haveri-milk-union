@@ -1170,20 +1170,26 @@ export const fetchDispatchAssignments = async (date?: string) => {
 export const fetchTimeWindows = async () => {
   const data = await get<{ windows: Record<string, unknown>[] }>("/time-windows");
   return (data.windows ?? []).map((w) => ({
-    id:              w.id as string,
-    zoneName:        (w.zone_name ?? w.zoneName ?? "") as string,
-    openTime:        (w.open_time ?? w.openTime ?? "06:00") as string,
-    warningMinutes:  Number(w.warning_minutes ?? w.warningMinutes ?? 20),
-    closeTime:       (w.close_time ?? w.closeTime ?? "08:00") as string,
-    active:          w.active !== false,
+    // time_windows row id (null when no window configured for this route yet)
+    id:             (w.id ?? null) as string | null,
+    routeId:        w.route_id as string,
+    routeName:      (w.route_name ?? "") as string,
+    routeCode:      (w.route_code ?? "") as string,
+    zoneName:       (w.zone_name ?? "") as string,
+    openTime:       (w.open_time ?? "06:00") as string,
+    warningMinutes: Number(w.warning_minutes ?? 20),
+    closeTime:      (w.close_time ?? "08:00") as string,
+    active:         w.active !== false,
+    configured:     Boolean(w.configured),
   }));
 };
 
 export const updateTimeWindow = async (
-  id: string,
-  body: Record<string, unknown>,
+  routeId: string,
+  body: { openTime: string; warningMinutes: number; closeTime: string; active: boolean },
 ) => {
-  await patch(`/time-windows/${id}`, body);
+  const data = await patch<{ window: Record<string, unknown> }>(`/time-windows/route/${routeId}`, body);
+  return data.window;
 };
 
 // ══════════════════════════════════════
