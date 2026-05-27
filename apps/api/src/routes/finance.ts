@@ -56,6 +56,7 @@ export async function financeRoutes(app: FastifyInstance) {
           r.name                   AS "routeName",
           o.payment_mode           AS "paymentMode",
           o.item_count             AS "itemCount",
+          o.delivery_date          AS "deliveryDate",
           -- Overdue days: only for unpaid/partial with a due_date in the past
           CASE
             WHEN i.payment_status <> 'paid' AND i.due_date IS NOT NULL
@@ -128,6 +129,7 @@ export async function financeRoutes(app: FastifyInstance) {
           o.status              AS "orderStatus",
           o.payment_mode        AS "paymentMode",
           o.item_count          AS "itemCount",
+          o.delivery_date       AS "deliveryDate",
           o.subtotal            AS "orderSubtotal",
           o.total_gst           AS "orderTotalGst",
           o.grand_total         AS "orderGrandTotal",
@@ -196,6 +198,86 @@ export async function financeRoutes(app: FastifyInstance) {
       `;
    
       return reply.send({ invoice, items, payments });
+    }
+  );
+
+  // POST /api/v1/invoices/:id/send — (re-)generate PDF and notify dealer
+  app.post(
+    "/api/v1/invoices/:id/send",
+    { preHandler: [adminAuth, requireRole("finance.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      const [inv] = await pgClient`
+        SELECT i.id, i.order_id, i.dealer_id, i.invoice_number
+        FROM invoices i
+        WHERE i.id = ${id}
+        LIMIT 1
+      `;
+      if (!inv) return reply.status(404).send({ error: "Invoice not found" });
+
+      // Re-generate PDF synchronously so the URL is fresh.
+      try {
+        await generateInvoicePdfSync(inv.order_id as string);
+      } catch (err) {
+        console.error("[invoices/send] PDF generation failed:", err);
+        return reply.status(500).send({ error: "Failed to generate invoice PDF" });
+      }
+
+      // Enqueue a push notification to the dealer.
+      try {
+        await enqueuePushNotification({
+          event:    "custom",
+          dealerId: inv.dealer_id as string,
+          orderId:  inv.order_id  as string,
+          title:    "Invoice ready",
+          body:     `Your GST invoice ${inv.invoice_number} is ready. Tap to download.`,
+        });
+      } catch (err) {
+        // Non-fatal — PDF is generated, push is best-effort.
+        console.warn("[invoices/send] Push notification failed:", err);
+      }
+
+      return reply.send({ message: "Invoice sent successfully" });
+    }
+  );
+
+  // POST /api/v1/invoices/:id/cancel — void an unpaid invoice (no payments linked)
+  app.post(
+    "/api/v1/invoices/:id/cancel",
+    { preHandler: [adminAuth, requireRole("finance.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      const [inv] = await pgClient`
+        SELECT id, payment_status, invoice_number
+        FROM invoices
+        WHERE id = ${id}
+        LIMIT 1
+      `;
+      if (!inv) return reply.status(404).send({ error: "Invoice not found" });
+
+      if (inv.payment_status === "paid") {
+        return reply.status(409).send({
+          error: "Cannot cancel a paid invoice",
+          message: "This invoice has been fully paid and cannot be cancelled.",
+        });
+      }
+
+      // Block cancel if any payment records exist (partial payments were made).
+      const [payCount] = await pgClient`
+        SELECT count(*)::int AS count FROM payments WHERE invoice_id = ${id}
+      `;
+      if ((payCount?.count ?? 0) > 0) {
+        return reply.status(409).send({
+          error: "Cannot cancel invoice with payments",
+          message: "One or more payments are recorded against this invoice. Reverse the payments first.",
+        });
+      }
+
+      await pgClient`DELETE FROM invoices WHERE id = ${id}`;
+
+      return reply.send({ message: `Invoice ${inv.invoice_number} cancelled successfully` });
     }
   );
 

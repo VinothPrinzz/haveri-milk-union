@@ -100,8 +100,6 @@ export async function dealerAppRoutes(app: FastifyInstance) {
     },
   );
 
-  // GET /api/v1/orders/my — handled in orders.ts, enriched below
-
   // GET /api/v1/invoices/my — dealer's own invoices
   app.get(
     "/api/v1/invoices/my",
@@ -130,7 +128,8 @@ export async function dealerAppRoutes(app: FastifyInstance) {
         -- NEW: invoice_date as a date-only string for display
         to_char((i.invoice_date AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD') AS invoice_date_ist,
         COALESCE(o.item_count, 0)        AS item_count,
-        COALESCE(o.status::text, 'unknown') AS order_status
+        COALESCE(o.status::text, 'unknown') AS order_status,
+        o.delivery_date                  AS delivery_date
       FROM invoices i
       LEFT JOIN orders o ON o.id = i.order_id
       WHERE i.dealer_id = ${dealerId}

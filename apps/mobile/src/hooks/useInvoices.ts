@@ -30,6 +30,7 @@ interface RawInvoice {
   pdf_url: string | null;
   item_count: number;
   order_status: OrderStatus;
+  delivery_date: string | null;
 }
 
 interface RawSummary {
@@ -59,6 +60,7 @@ function normalizeInvoice(r: RawInvoice): Invoice {
     pdfUrl:        r.pdf_url,
     itemCount:     r.item_count,
     orderStatus:   r.order_status,
+    deliveryDate:  r.delivery_date ?? null,
   };
 }
 
