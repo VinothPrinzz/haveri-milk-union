@@ -522,6 +522,20 @@ export const removeCustomerFromRoute = async (
   await del(`/dealers/${customerId}/routes/${routeId}`);
 };
 
+// Assign an employee to a route (Option A: one route per employee).
+export const assignEmployeeToRoute = async (employeeId: string, routeId: string) => {
+  const data = await post<{ employee: Record<string, unknown> }>(
+    `/employees/${employeeId}/route`,
+    { routeId },
+  );
+  return data.employee;
+};
+
+// Remove an employee's route assignment.
+export const removeEmployeeFromRoute = async (employeeId: string) => {
+  await del(`/employees/${employeeId}/route`);
+};
+
 // ══════════════════════════════════════
 // CONTRACTORS
 // ══════════════════════════════════════

@@ -41,6 +41,7 @@ export interface RouteSheetCustomer {
   id: string;
   code: string;
   name: string;
+  isEmployee?: boolean;
   acrossQty: Record<string, number>;
   othersText: string;
   othersQty: number;
@@ -140,8 +141,11 @@ export interface GatePassResponse {
   totalPages?: number;
 }
 
-export const fetchGatePassReport = (params: { from: string; to: string; page?: number; limit?: number }) =>
-  get<GatePassResponse>("/reports/gate-pass", { page: 1, limit: 100, ...params });
+export const fetchGatePassReport = (params: {
+  date: string;
+  batchId?: string;
+  routeId?: string;
+}) => get<RouteSheetResponse>("/reports/gate-pass", params);
 
 // ═══════════════════════════════════════════════════════════════
 // B1. Daily Sales Statement

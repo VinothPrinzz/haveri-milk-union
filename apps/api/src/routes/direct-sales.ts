@@ -483,11 +483,15 @@ export async function directSalesRoutes(app: FastifyInstance) {
 
       // Resolve employee
       const [employee] = await pgClient`
-        SELECT id, name, active FROM employees
+        SELECT id, name, active, route_id FROM employees
         WHERE id = ${body.customerId} AND deleted_at IS NULL
       `;
       if (!employee)         return reply.status(400).send({ error: "Employee not found" });
       if (!employee.active)  return reply.status(400).send({ error: "Employee is inactive" });
+
+      // Explicit routeId wins; otherwise fall back to the employee's
+      // standing route (migration 0037). NULL if the employee has none.
+      const effectiveRouteId = body.routeId ?? employee.route_id ?? null;
 
       // Validate every line is in the eligible product list, and resolve subsidy %
       const productIds = body.items.map(i => i.productId);
@@ -552,7 +556,7 @@ export async function directSalesRoutes(app: FastifyInstance) {
         )
         VALUES (
           'employee_subsidy', ${body.customerId}, ${employee.name},
-          ${body.routeId ?? null}, ${request.admin!.userId}, ${body.batchId ?? null},
+          ${effectiveRouteId}, ${request.admin!.userId}, ${body.batchId ?? null},
           ${saleDate}::date, ${body.paymentMode}::payment_mode, ${body.paymentRef ?? null},
           ${subtotal}, ${totalGst}, ${grandTotal},
           ${body.notes ? `${body.notes} | ${subsidyNote}` : subsidyNote}
