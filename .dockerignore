@@ -4,6 +4,8 @@ node_modules
 **/.env
 .git
 apps/web
+!apps/web/package.json
 apps/mobile
+!apps/mobile/package.json
 packages/types
 packages/utils
