@@ -8,7 +8,14 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "paths": {
+      "@hmu/db":                        ["../../packages/db/dist/index.d.ts"],
+      "@hmu/db/*":                      ["../../packages/db/dist/*.d.ts"],
+      "@hmu/db/schema":                 ["../../packages/db/dist/schema/index.d.ts"],
+      "@hmu/db/reconciliation":         ["../../packages/db/dist/reconciliation/index.d.ts"],
+      "@hmu/db/polling-replication":    ["../../packages/db/dist/polling-replication/index.d.ts"]
+    }
   },
   "include": ["src/**/*"]
 }
