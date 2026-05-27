@@ -212,6 +212,74 @@ export async function systemRoutes(app: FastifyInstance) {
     }
   );
 
+  // ═══ NOTIFICATIONS LOG (admin views) ═══
+  // GET /api/v1/notifications — list broadcast history.
+  // Aggregates per-broadcast send/delivered/failed counts from notifications_log.
+  // A "broadcast" row is one notifications_log row when target_type='all' or 'zone';
+  // for per-dealer sends the same logical broadcast may have one row per dealer
+  // (we do not yet group them), so the counts reflect that single row.
+  app.get(
+    "/api/v1/notifications",
+    { preHandler: [adminAuth, requireRole("system.view")] },
+    async (request, reply) => {
+      const q = z.object({
+        limit: z.coerce.number().int().min(1).max(500).default(100),
+      }).parse(request.query);
+      const data = await pgClient`
+        SELECT id,
+               title,
+               message,
+               target_type,
+               target_id,
+               channel,
+               status,
+               created_at,
+               sent_at,
+               delivered_at,
+               CASE WHEN sent_at      IS NOT NULL THEN 1 ELSE 0 END AS sent,
+               CASE WHEN delivered_at IS NOT NULL THEN 1 ELSE 0 END AS delivered,
+               CASE WHEN status = 'failed'        THEN 1 ELSE 0 END AS failed
+        FROM notifications_log
+        ORDER BY created_at DESC
+        LIMIT ${q.limit}
+      `;
+      return reply.send({ data });
+    }
+  );
+
+  // GET /api/v1/notifications/dealer-log — per-dealer notification history.
+  // Resolves target_id → dealer name for target_type='dealer'; for 'all' / 'zone'
+  // rows the dealer_name is blank (frontend already tolerates the empty string).
+  app.get(
+    "/api/v1/notifications/dealer-log",
+    { preHandler: [adminAuth, requireRole("system.view")] },
+    async (request, reply) => {
+      const q = z.object({
+        limit: z.coerce.number().int().min(1).max(500).default(100),
+      }).parse(request.query);
+      const data = await pgClient`
+        SELECT n.id,
+               n.title,
+               n.message,
+               n.channel,
+               n.status,
+               n.sent_at,
+               n.delivered_at,
+               n.created_at,
+               n.target_type,
+               n.target_id,
+               d.name AS dealer_name
+        FROM notifications_log n
+        LEFT JOIN dealers d
+          ON n.target_type = 'dealer'
+         AND d.id = n.target_id
+        ORDER BY n.created_at DESC
+        LIMIT ${q.limit}
+      `;
+      return reply.send({ data });
+    }
+  );
+
   // ═══ NOTIFICATIONS SEND ═══
   // POST /api/v1/notifications/send — send notification to dealers
   app.post(
@@ -269,18 +337,31 @@ export async function systemRoutes(app: FastifyInstance) {
   );
 
   // ═══ TIME WINDOWS (FIX #24) ═══
-  // GET /api/v1/time-windows — all time windows for admin config
+  // GET /api/v1/time-windows — all time windows for admin config.
+  //
+  // Migration 0023 moved time windows from per-zone to per-route. Older rows
+  // may still only have zone_id; new rows only have route_id. We LEFT JOIN
+  // both so every row comes back, with whichever label is populated.
   app.get(
     "/api/v1/time-windows",
     { preHandler: [adminAuth, requireRole("system.view")] },
     async (request, reply) => {
       const windows = await pgClient`
-        SELECT tw.id, tw.zone_id, tw.open_time, tw.warning_minutes,
-               tw.close_time, tw.active,
-               z.name AS zone_name
+        SELECT tw.id,
+               tw.route_id,
+               tw.zone_id,
+               tw.open_time,
+               tw.warning_minutes,
+               tw.close_time,
+               tw.active,
+               r.name AS route_name,
+               r.code AS route_code,
+               COALESCE(z.name, rz.name) AS zone_name
         FROM time_windows tw
-        JOIN zones z ON z.id = tw.zone_id
-        ORDER BY z.name
+        LEFT JOIN routes r ON r.id = tw.route_id
+        LEFT JOIN zones  z ON z.id = tw.zone_id
+        LEFT JOIN zones  rz ON rz.id = r.zone_id
+        ORDER BY COALESCE(r.name, z.name)
       `;
       return reply.send({ windows });
     }
