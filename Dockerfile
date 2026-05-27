@@ -1,6 +1,6 @@
 FROM node:20-alpine AS base
 
-RUN npm install -g pnpm@9
+RUN npm install -g pnpm@10
 
 WORKDIR /app
 
@@ -12,6 +12,12 @@ COPY packages/db/ packages/db/
 
 # Copy the API app
 COPY apps/api/ apps/api/
+
+# Copy package.json stubs for all other workspace members so pnpm can
+# resolve the full workspace graph and --frozen-lockfile passes.
+COPY apps/worker/package.json apps/worker/
+COPY apps/web/package.json apps/web/
+COPY apps/mobile/package.json apps/mobile/
 
 # Install all workspace dependencies
 RUN pnpm install --frozen-lockfile
