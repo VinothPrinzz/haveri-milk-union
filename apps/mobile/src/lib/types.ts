@@ -177,7 +177,8 @@ export interface Invoice {
   orderId: string;
   invoiceNumber: string;
   invoiceDate: string;          // ISO or YYYY-MM-DD
-  monthId: string;  
+  monthId: string;
+  deliveryDate: string | null;  // YYYY-MM-DD from orders.delivery_date
   taxableAmount: number;
   cgst: number;
   sgst: number;

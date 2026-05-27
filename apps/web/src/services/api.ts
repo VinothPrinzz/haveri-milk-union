@@ -1657,6 +1657,7 @@ export interface InvoiceListRow {
   routeName:        string | null;
   paymentMode:      string | null;
   itemCount:        number;
+  deliveryDate:     string | null;
   overdueDays:      number;
 }
  
@@ -1699,6 +1700,7 @@ export interface InvoiceDetail {
     orderStatus:           string | null;
     paymentMode:           string | null;
     itemCount:             number | null;
+    deliveryDate:          string | null;
     orderSubtotal:         string | null;
     orderTotalGst:         string | null;
     orderGrandTotal:       string | null;

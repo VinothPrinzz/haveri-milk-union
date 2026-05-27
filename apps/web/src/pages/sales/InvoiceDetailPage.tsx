@@ -274,6 +274,10 @@ export default function InvoiceDetailPage() {
                   <td className="py-[2px] pr-3 align-top">
                     <span className="text-muted-foreground">Route Name :</span> {routeDisplay}
                   </td>
+                  <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">Delivery Date :</span>{" "}
+                    <span className="font-medium">{fmtDate(inv?.deliveryDate)}</span>
+                  </td>
                   {/* <td className="py-[2px] pr-3 align-top">
                     <span className="text-muted-foreground">Vehicle No :</span>{" "}
                     <span className="font-mono">{vehicleNo}</span>
