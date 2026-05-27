@@ -336,34 +336,67 @@ export async function systemRoutes(app: FastifyInstance) {
     }
   );
 
-  // ═══ TIME WINDOWS (FIX #24) ═══
-  // GET /api/v1/time-windows — all time windows for admin config.
+  // ═══ TIME WINDOWS — route-driven ═══
   //
-  // Migration 0023 moved time windows from per-zone to per-route. Older rows
-  // may still only have zone_id; new rows only have route_id. We LEFT JOIN
-  // both so every row comes back, with whichever label is populated.
+  // One row per active route. time_windows is LEFT JOINed so routes
+  // without a configured window still appear with sensible defaults;
+  // the upsert endpoint below creates the row on first save.
   app.get(
     "/api/v1/time-windows",
     { preHandler: [adminAuth, requireRole("system.view")] },
-    async (request, reply) => {
+    async (_request, reply) => {
       const windows = await pgClient`
-        SELECT tw.id,
-               tw.route_id,
-               tw.zone_id,
-               tw.open_time,
-               tw.warning_minutes,
-               tw.close_time,
-               tw.active,
-               r.name AS route_name,
-               r.code AS route_code,
-               COALESCE(z.name, rz.name) AS zone_name
-        FROM time_windows tw
-        LEFT JOIN routes r ON r.id = tw.route_id
-        LEFT JOIN zones  z ON z.id = tw.zone_id
-        LEFT JOIN zones  rz ON rz.id = r.zone_id
-        ORDER BY COALESCE(r.name, z.name)
+        SELECT r.id                       AS route_id,
+              r.name                     AS route_name,
+              r.code                     AS route_code,
+              tw.id                      AS id,
+              COALESCE(tw.open_time,       '06:00'::time) AS open_time,
+              COALESCE(tw.warning_minutes, 20)             AS warning_minutes,
+              COALESCE(tw.close_time,      '08:00'::time) AS close_time,
+              COALESCE(tw.active,          true)           AS active,
+              (tw.id IS NOT NULL)        AS configured
+        FROM routes r
+        LEFT JOIN time_windows tw ON tw.route_id = r.id
+        WHERE r.deleted_at IS NULL
+          AND r.active = true
+        ORDER BY r.code
       `;
       return reply.send({ windows });
+    }
+  );
+
+  // PATCH /api/v1/time-windows/route/:routeId — upsert by route_id.
+  // (Old PATCH /:id can stay or be removed; this one is what the UI uses.)
+  app.patch(
+    "/api/v1/time-windows/route/:routeId",
+    { preHandler: [adminAuth, requireRole("system.manage")] },
+    async (request, reply) => {
+      const { routeId } = request.params as { routeId: string };
+      const schema = z.object({
+        openTime:       z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
+        warningMinutes: z.number().int().min(0).max(240),
+        closeTime:      z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
+        active:         z.boolean().optional(),
+      });
+      const body = schema.parse(request.body);
+
+      const [row] = await pgClient`
+        INSERT INTO time_windows (route_id, open_time, warning_minutes, close_time, active)
+        VALUES (
+          ${routeId}::uuid,
+          ${body.openTime}::time,
+          ${body.warningMinutes},
+          ${body.closeTime}::time,
+          ${body.active ?? true}
+        )
+        ON CONFLICT (route_id) DO UPDATE SET
+          open_time       = EXCLUDED.open_time,
+          warning_minutes = EXCLUDED.warning_minutes,
+          close_time      = EXCLUDED.close_time,
+          active          = EXCLUDED.active
+        RETURNING *
+      `;
+      return reply.send({ window: row });
     }
   );
 

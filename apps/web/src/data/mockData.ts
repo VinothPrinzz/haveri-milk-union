@@ -189,12 +189,16 @@ export interface CancellationRequest {
 }
 
 export interface TimeWindow {
-  id: string;
-  zoneName: string;
+  id: string | null;        // time_windows row id; null if route has no window yet
+  routeId: string;
+  routeName: string;
+  routeCode: string;
+  zoneName: string;         // parent zone of the route (for display)
   openTime: string;
-  warningTime: string;
+  warningMinutes: number;
   closeTime: string;
   active: boolean;
+  configured: boolean;      // false when route has no time_window row yet
 }
 
 export interface NotificationSetting {
@@ -315,12 +319,12 @@ export const cancellationRequests: CancellationRequest[] = [
 ];
 
 export const timeWindows: TimeWindow[] = [
-  { id: "tw1", zoneName: "Haveri", openTime: "06:00", warningTime: "07:45", closeTime: "08:00", active: true },
-  { id: "tw2", zoneName: "Ranebennur", openTime: "06:00", warningTime: "07:45", closeTime: "08:00", active: true },
-  { id: "tw3", zoneName: "Savanur", openTime: "06:30", warningTime: "07:45", closeTime: "08:00", active: true },
-  { id: "tw4", zoneName: "Byadgi", openTime: "06:30", warningTime: "07:45", closeTime: "08:00", active: true },
-  { id: "tw5", zoneName: "Hirekerur", openTime: "07:00", warningTime: "07:45", closeTime: "08:00", active: false },
-  { id: "tw6", zoneName: "Hangal", openTime: "06:00", warningTime: "07:45", closeTime: "08:00", active: true },
+  { id: "tw1", routeId: "r1", routeName: "Haveri Route 1",    routeCode: "HVR-01", zoneName: "Haveri",    openTime: "06:00", warningMinutes: 20, closeTime: "08:00", active: true,  configured: true },
+  { id: "tw2", routeId: "r2", routeName: "Ranebennur Route 1",routeCode: "RNB-01", zoneName: "Ranebennur",openTime: "06:00", warningMinutes: 20, closeTime: "08:00", active: true,  configured: true },
+  { id: "tw3", routeId: "r3", routeName: "Savanur Route 1",   routeCode: "SVN-01", zoneName: "Savanur",   openTime: "06:30", warningMinutes: 20, closeTime: "08:00", active: true,  configured: true },
+  { id: "tw4", routeId: "r4", routeName: "Byadgi Route 1",    routeCode: "BYD-01", zoneName: "Byadgi",    openTime: "06:30", warningMinutes: 20, closeTime: "08:00", active: true,  configured: true },
+  { id: "tw5", routeId: "r5", routeName: "Hirekerur Route 1", routeCode: "HRK-01", zoneName: "Hirekerur", openTime: "07:00", warningMinutes: 20, closeTime: "08:00", active: false, configured: true },
+  { id: "tw6", routeId: "r6", routeName: "Hangal Route 1",    routeCode: "HNL-01", zoneName: "Hangal",    openTime: "06:00", warningMinutes: 20, closeTime: "08:00", active: true,  configured: true },
 ];
 
 export const notificationSettings: NotificationSetting[] = [
