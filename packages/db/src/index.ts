@@ -13,12 +13,13 @@ export type { Database } from "./client.js";
 // Re-export all schema for convenience
 export * from "./schema/index.js";
 
-// Dual-DB failover manager (optional; only active when SECONDARY_DATABASE_URL is set)
-export { getDbManager, DatabaseManager } from "./db-manager.js";
-export type {
-  FailoverEvent,
-  DbRole,
-  DbStatus,
-  DbManagerConfig,
-  ConnectionStatus,
-} from "./db-manager.js";
+// ▼▼▼ DUAL-DB (Temporarily Commented Out — db-manager.ts not yet in repo) ▼▼▼
+// export { getDbManager, DatabaseManager } from "./db-manager.js";
+// export type {
+//   FailoverEvent,
+//   DbRole,
+//   DbStatus,
+//   DbManagerConfig,
+//   ConnectionStatus,
+// } from "./db-manager.js";
+// ▲▲▲ DUAL-DB ▲▲▲
