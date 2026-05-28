@@ -2254,3 +2254,240 @@ export const deleteUser = async (id: string) => {
 export const createRole = async (body: { name: string; permissions: string[] }) => {
   return await post<{ role: Record<string, unknown> }>("/roles", body);
 };
+
+// ══════════════════════════════════════════════════════════════════
+// Finance — Credit Control, Refunds, AR Aging, Statements, Cheques,
+// Adjustments, Dashboard, Day Book. All endpoints return camelCase.
+// ══════════════════════════════════════════════════════════════════
+
+export interface Paginated<T> {
+  data: T[]; total: number; page: number; limit: number; totalPages: number;
+}
+
+// Authenticated fetch that returns raw text (for server-rendered print HTML).
+async function getText(path: string, params?: Record<string, string | undefined>): Promise<string> {
+  const base = `${import.meta.env.VITE_API_URL ?? ""}/api/v1`;
+  const url = new URL(base + path, window.location.origin);
+  if (params) Object.entries(params).forEach(([k, v]) => { if (v !== undefined) url.searchParams.set(k, v); });
+  const token = localStorage.getItem("hmu_session");
+  const res = await fetch(url.toString(), {
+    credentials: "include",
+    headers: token ? { "x-session-token": token } : {},
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
+
+// Open server-rendered HTML in a new tab (auth via blob, then print-ready).
+async function openPrintWindow(path: string, params?: Record<string, string | undefined>) {
+  const html = await getText(path, params);
+  const blob = new Blob([html], { type: "text/html" });
+  const blobUrl = URL.createObjectURL(blob);
+  window.open(blobUrl, "_blank");
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+}
+
+// ── Credit Control ──
+export type CreditStatusBucket = "over_limit" | "critical" | "warning" | "healthy" | "no_limit";
+export interface CreditControlRow {
+  id: string; code: string; name: string; pay_mode: string;
+  route_id: string | null; route_name: string | null; zone_name: string | null;
+  creditLimit: number; outstanding: number; prepaid: number; closingBalance: number;
+  availableCredit: number; utilizationPct: number | null; statusBucket: CreditStatusBucket;
+  lastPaymentAt: string | null; lastOrderAt: string | null; daysSinceLastPayment: number | null;
+}
+export interface CreditControlSummary {
+  totalExposure: number; totalPrepaid: number; totalAvailable: number; totalLimitSanctioned: number;
+  overLimitCount: number; criticalCount: number; warningCount: number; dormantWithDuesCount: number;
+}
+export const fetchCreditControl = (f?: {
+  routeId?: string; payMode?: "Cash" | "Credit"; statusBucket?: CreditStatusBucket;
+  search?: string; page?: number; limit?: number;
+}) => get<Paginated<CreditControlRow>>("/finance/credit-control", {
+  page: f?.page ?? 1, limit: f?.limit ?? 50,
+  routeId: f?.routeId, payMode: f?.payMode, statusBucket: f?.statusBucket, search: f?.search,
+});
+export const fetchCreditControlSummary = async () =>
+  (await get<{ summary: CreditControlSummary }>("/finance/credit-control/summary")).summary;
+
+// ── Refunds ──
+export interface RefundRow {
+  id: string; razorpayRefundId: string | null; razorpayPaymentId: string;
+  razorpayPaymentRowId: string; amount: number; currency: string;
+  status: "pending" | "processed" | "failed"; reason: string; errorDescription: string | null;
+  createdAt: string; processedAt: string | null; ledgerEntryId: string | null;
+  dealerId: string; dealerName: string; dealerCode: string; initiatedByName: string | null;
+  voucherNo: string | null; originalPaymentAmount: number; originalPaymentKind: string;
+}
+export interface RefundsSummary {
+  totalRefunded: number; refundCount: number; pendingAmount: number; pendingCount: number;
+  failedAmount: number; failedCount: number; unlinkedCount: number;
+}
+export const fetchRefunds = (f?: {
+  status?: "pending" | "processed" | "failed"; dealerId?: string; initiatedBy?: string;
+  dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
+}) => get<Paginated<RefundRow>>("/finance/refunds", {
+  page: f?.page ?? 1, limit: f?.limit ?? 50,
+  status: f?.status, dealerId: f?.dealerId, initiatedBy: f?.initiatedBy,
+  dateFrom: f?.dateFrom, dateTo: f?.dateTo, search: f?.search,
+});
+export const fetchRefundsSummary = async (f?: { dateFrom?: string; dateTo?: string }) =>
+  (await get<{ summary: RefundsSummary }>("/finance/refunds/summary", { dateFrom: f?.dateFrom, dateTo: f?.dateTo })).summary;
+export const resyncRefund = (id: string) =>
+  post<{ message: string; status: string }>(`/finance/refunds/${id}/resync`, {});
+
+// ── AR Aging ──
+export type AgingBucket = "current" | "b1_30" | "b31_60" | "b61_90" | "b90_plus";
+export interface ArAgingRow {
+  id: string; code: string; name: string; routeName: string | null; creditLimit: number;
+  currentAmount: number; b1_30: number; b31_60: number; b61_90: number; b90Plus: number;
+  totalOutstanding: number; totalOverdue: number; invoiceCount: number; maxDaysOverdue: number;
+  worstBucket: AgingBucket;
+}
+export interface ArAgingSummary {
+  totalOutstanding: number; totalOverdue: number; criticalAmount: number;
+  dealersWithDues: number; dealers90PlusCount: number;
+  bucketCurrent: number; bucket1_30: number; bucket31_60: number; bucket61_90: number; bucket90Plus: number;
+}
+export interface ArInvoiceRow {
+  id: string; invoiceNumber: string; invoiceDate: string; dueDate: string;
+  totalAmount: number; paidAmount: number; outstanding: number; daysOverdue: number;
+  paymentStatus: string; lastReceiptDate: string | null;
+}
+export const fetchArAging = (f?: {
+  routeId?: string; bucket?: AgingBucket; search?: string; page?: number; limit?: number;
+}) => get<Paginated<ArAgingRow>>("/finance/ar-aging", {
+  page: f?.page ?? 1, limit: f?.limit ?? 50, routeId: f?.routeId, bucket: f?.bucket, search: f?.search,
+});
+export const fetchArAgingSummary = async () =>
+  (await get<{ summary: ArAgingSummary }>("/finance/ar-aging/summary")).summary;
+export const fetchArAgingDealer = (id: string) =>
+  get<{ data: ArInvoiceRow[] }>(`/finance/ar-aging/dealers/${id}`);
+
+// ── Dealer Statements ──
+export interface StatementIndexRow {
+  id: string; code: string; name: string; payMode: string;
+  routeName: string | null; closingBalance: number; lastPaymentAt: string | null;
+}
+export interface StatementRow {
+  id: string; voucherDate: string; voucherNo: string | null; voucherType: string | null;
+  particulars: string | null; type: "credit" | "debit"; amount: number; balanceAfter: number;
+}
+export interface StatementResponse {
+  dealer: { id: string; code: string; name: string; payMode: string; gstNumber: string | null;
+            address: string | null; city: string | null; state: string | null; routeName: string | null };
+  period: { from: string; to: string };
+  openingBalance: number;
+  rows: StatementRow[];
+  totals: { debits: number; credits: number; closingBalance: number };
+}
+export const fetchDealerStatementIndex = (f?: { routeId?: string; search?: string; page?: number; limit?: number }) =>
+  get<Paginated<StatementIndexRow>>("/finance/dealer-statements", {
+    page: f?.page ?? 1, limit: f?.limit ?? 50, routeId: f?.routeId, search: f?.search,
+  });
+export const fetchDealerStatement = (id: string, from?: string, to?: string) =>
+  get<StatementResponse>(`/finance/dealer-statements/${id}`, { from, to });
+export const printDealerStatement = (id: string, from?: string, to?: string) =>
+  openPrintWindow(`/finance/dealer-statements/${id}/print`, { from, to });
+
+// ── Cheques ──
+export type ChequeStatus = "received" | "deposited" | "cleared" | "bounced" | "stopped" | "cancelled";
+export interface ChequeRow {
+  id: string; chequeNumber: string; chequeDate: string; bankName: string; branch: string | null;
+  amount: number; status: ChequeStatus; receivedDate: string; depositedDate: string | null;
+  depositSlipNo: string | null; depositedToBank: string | null; clearedDate: string | null;
+  bouncedDate: string | null; bounceReason: string | null; bankCharges: number; ageingDays: number;
+  dealerId: string; dealerCode: string; dealerName: string;
+  paymentId: string; invoiceId: string | null; invoiceNumber: string | null;
+}
+export interface ChequesSummary {
+  inHandCount: number; inHandAmount: number; inBankCount: number; inBankAmount: number;
+  clearedCount: number; clearedAmount: number; bouncedCount: number; bouncedAmount: number;
+  stagnantInHandCount: number;
+}
+export const fetchCheques = (f?: {
+  status?: ChequeStatus; dealerId?: string; bankName?: string; dateFrom?: string; dateTo?: string;
+  search?: string; page?: number; limit?: number;
+}) => get<Paginated<ChequeRow>>("/finance/cheques", {
+  page: f?.page ?? 1, limit: f?.limit ?? 50,
+  status: f?.status, dealerId: f?.dealerId, bankName: f?.bankName,
+  dateFrom: f?.dateFrom, dateTo: f?.dateTo, search: f?.search,
+});
+export const fetchChequesSummary = async (f?: { dateFrom?: string; dateTo?: string }) =>
+  (await get<{ summary: ChequesSummary }>("/finance/cheques/summary", { dateFrom: f?.dateFrom, dateTo: f?.dateTo })).summary;
+export const fetchCheque = (id: string) => get<{ cheque: Record<string, unknown> }>(`/finance/cheques/${id}`);
+export const depositCheque = (id: string, body: { depositedDate: string; depositedToBank: string; depositSlipNo?: string }) =>
+  post<{ message: string }>(`/finance/cheques/${id}/deposit`, body);
+export const clearCheque = (id: string, body: { clearedDate: string }) =>
+  post<{ message: string }>(`/finance/cheques/${id}/clear`, body);
+export const bounceCheque = (id: string, body: { bouncedDate: string; bounceReason: string; bankCharges?: number; passChargesToDealer?: boolean }) =>
+  post<{ message: string }>(`/finance/cheques/${id}/bounce`, body);
+export const cancelCheque = (id: string, body: { reason: string }) =>
+  post<{ message: string }>(`/finance/cheques/${id}/cancel`, body);
+export const printDepositSlip = (ids?: string[]) =>
+  openPrintWindow("/finance/cheques/deposit-slip", { ids: ids && ids.length ? ids.join(",") : undefined });
+
+// ── Adjustments ──
+export type AdjustmentVoucherType = "Credit Note" | "Debit Note" | "Write-off";
+export interface AdjustmentRow {
+  id: string; voucherType: AdjustmentVoucherType; reason: string; reasonText: string;
+  attachmentUrl: string | null; createdAt: string; ledgerEntryId: string; voucherNo: string | null;
+  voucherDate: string; ledgerType: "credit" | "debit"; amount: number; balanceAfter: number;
+  dealerId: string; dealerCode: string; dealerName: string;
+  invoiceId: string | null; invoiceNumber: string | null; initiatedByName: string | null;
+  isReversed: boolean; isReversal: boolean;
+}
+export interface AdjustmentsSummary {
+  creditNoteCount: number; creditNoteAmount: number; debitNoteCount: number; debitNoteAmount: number;
+  writeOffCount: number; writeOffAmount: number; reversalCount: number;
+}
+export const fetchAdjustments = (f?: {
+  voucherType?: AdjustmentVoucherType; reason?: string; dealerId?: string;
+  dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
+}) => get<Paginated<AdjustmentRow>>("/finance/adjustments", {
+  page: f?.page ?? 1, limit: f?.limit ?? 50,
+  voucherType: f?.voucherType, reason: f?.reason, dealerId: f?.dealerId,
+  dateFrom: f?.dateFrom, dateTo: f?.dateTo, search: f?.search,
+});
+export const fetchAdjustmentsSummary = async (f?: { dateFrom?: string; dateTo?: string }) =>
+  (await get<{ summary: AdjustmentsSummary }>("/finance/adjustments/summary", { dateFrom: f?.dateFrom, dateTo: f?.dateTo })).summary;
+export const createAdjustment = (body: {
+  dealerId: string; voucherType: AdjustmentVoucherType; reason: string; reasonText: string;
+  amount: number; voucherDate?: string; invoiceId?: string | null;
+}) => post<{ message: string; voucherNo: string; balanceAfter: number }>("/finance/adjustments", body);
+export const reverseAdjustment = (id: string, body: { reasonText: string }) =>
+  post<{ message: string; voucherNo: string }>(`/finance/adjustments/${id}/reverse`, body);
+
+// ── Finance Dashboard ──
+export interface FinanceDashboard {
+  period: { period: string; from: string; to: string };
+  receivables: {
+    totalOutstanding: number; totalOverdue: number; overdue90Plus: number;
+    aging: { current: number; b1_30: number; b31_60: number; b61_90: number; b90Plus: number };
+    dealersWithDues: number;
+  };
+  collections: { today: number; thisMonth: number; byMode: Record<string, number> };
+  online: { pendingSettlement: number; needsReview: number; notPosted: number };
+  cheques: { inHandAmount: number; inHandCount: number; inBankAmount: number; inBankCount: number; bouncedThisMonth: number };
+  creditControl: { overLimitCount: number; totalExposure: number; totalAvailable: number };
+  attention: Array<{ severity: "critical" | "high" | "medium"; label: string; count: number; link: string }>;
+  recent: Array<{ date: string; dealerName: string; voucherType: string | null; type: string; amount: number; voucherNo: string | null }>;
+}
+export const fetchFinanceDashboard = (f?: { period?: string; from?: string; to?: string }) =>
+  get<FinanceDashboard>("/finance/dashboard", { period: f?.period, from: f?.from, to: f?.to });
+
+// ── Day Book ──
+export interface DayBook {
+  date: string;
+  receiptsByMode: Array<{ mode: string; cnt: number; total: number }>;
+  refundsOut: { cnt: number; total: number };
+  adjustments: Array<{ voucherType: string; type: string; cnt: number; total: number }>;
+  lines: Array<{
+    id: string; date: string; mode: string; amount: number; reference: string | null;
+    dealerCode: string; dealerName: string; invoiceNumber: string | null;
+    receivedByName: string | null; routeName: string | null;
+  }>;
+  routeWise: Array<{ id: string | null; name: string | null; collected: number; receipts: number }>;
+  summary: { totalReceipts: number; byMode: Record<string, number>; refundsOut: number; net: number; cashCollected: number };
+}
+export const fetchDayBook = (date?: string) => get<DayBook>("/finance/day-book", { date });

@@ -121,6 +121,23 @@ export async function createRazorpayRefund(
   };
 }
 
+/**
+ * Fetch the latest state of a refund from Razorpay. Used by the
+ * finance Refunds screen to resync 'pending' rows. Read-only.
+ */
+export async function fetchRazorpayRefund(
+  refundId: string
+): Promise<{ id: string; status: string; error_description: string | null }> {
+  const client = await getClient();
+  const refund = await client.refunds.fetch(refundId);
+  return {
+    id: refund.id,
+    status: refund.status,
+    error_description:
+      (refund as { error_description?: string | null }).error_description ?? null,
+  };
+}
+
 export interface CreateRefundParams {
   paymentId: string;            // pay_xxxxxx
   amountInRupees: number;       // partial or full
