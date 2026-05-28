@@ -5,7 +5,8 @@ import {
   Receipt, XCircle, Warehouse, BarChart3, FileSpreadsheet, Plus, Truck,
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
   ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
-  Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows
+  Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows,
+  ShieldAlert, Banknote, RotateCcw, FilePlus2
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ModuleKey } from "@/components/AppLayout";
@@ -53,9 +54,17 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Create Dispatch",  path: "/fgs/dispatch/create",      icon: Plus },
   ],
   finance: [
+    { label: "Finance Dashboard", path: "/finance/dashboard",       icon: BarChart3 },
     { label: "Payments Overview", path: "/finance/payments",        icon: Wallet },
     { label: "Online Payments",   path: "/finance/online-payments", icon: CreditCard },
     { label: "Reconciliation",    path: "/finance/reconciliation",  icon: GitCompareArrows },
+    { label: "Credit Control",    path: "/finance/credit-control",  icon: ShieldAlert },
+    { label: "AR Aging",          path: "/finance/ar-aging",        icon: FileBarChart2 },
+    { label: "Dealer Statements", path: "/finance/dealer-statements", icon: ScrollText },
+    { label: "Cheques",           path: "/finance/cheques",         icon: Banknote },
+    { label: "Refunds",           path: "/finance/refunds",         icon: RotateCcw },
+    { label: "Credit/Debit Notes", path: "/finance/adjustments",    icon: FilePlus2 },
+    { label: "Day Book",          path: "/finance/day-book",        icon: BookOpen },
   ],
   reports: [
     { label: "Route Sheet",      path: "/reports/route-sheet",      icon: RouteIcon },

@@ -739,6 +739,15 @@ export async function financeRoutes(app: FastifyInstance) {
         invoiceId:    z.string().uuid().optional().nullable(),
         reference:    z.string().optional(),
         notes:        z.string().optional(),
+        // Cheque lifecycle details (0041). When mode='cheque' a row is
+        // created in `cheques` so the Cheque Register can track it. If
+        // omitted, a stub is derived from `reference` (legacy callers).
+        cheque:       z.object({
+          chequeNumber: z.string().min(1),
+          chequeDate:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          bankName:     z.string().min(1),
+          branch:       z.string().optional(),
+        }).optional(),
       });
       const body = schema.parse(request.body);
       const receivedDate = body.receivedDate ?? new Date().toISOString().slice(0, 10);
@@ -789,6 +798,28 @@ export async function financeRoutes(app: FastifyInstance) {
           `;
 
           if (!payment) throw new Error("Failed to record payment");
+
+          // (a.1) Cheque lifecycle row (0041). Prefer supplied details;
+          // fall back to a stub derived from `reference` so the Cheque
+          // Register tracks every cheque-mode receipt.
+          if (body.mode === "cheque") {
+            await tx`
+              INSERT INTO cheques (
+                payment_id, dealer_id, cheque_number, cheque_date,
+                bank_name, branch, amount, status, received_date, received_by
+              ) VALUES (
+                ${payment.id}::uuid, ${body.dealerId}::uuid,
+                ${body.cheque?.chequeNumber ?? (body.reference?.trim() || "—")},
+                ${(body.cheque?.chequeDate ?? receivedDate)}::date,
+                ${body.cheque?.bankName ?? "— unspecified —"},
+                ${body.cheque?.branch ?? null},
+                ${body.amount.toFixed(2)}::numeric,
+                'received'::cheque_status,
+                ${receivedDate}::date,
+                ${request.admin!.userId}::uuid
+              )
+            `;
+          }
 
           // (b) Append to dealer_ledger. voucher_type='Receipt'.
           // reference_type must be a ledger_ref_type enum value —

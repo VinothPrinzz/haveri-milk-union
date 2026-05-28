@@ -36,6 +36,14 @@ import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
 import PaymentsOverviewPage from "@/pages/finance/PaymentsOverviewPage";
 import OnlinePaymentsPage        from "@/pages/finance/OnlinePaymentsPage";
 import RazorpayReconciliationPage from "@/pages/finance/RazorpayReconciliationPage";
+import FinanceDashboardPage       from "@/pages/finance/FinanceDashboardPage";
+import CreditControlPage          from "@/pages/finance/CreditControlPage";
+import RefundsPage                from "@/pages/finance/RefundsPage";
+import ARAgingPage                from "@/pages/finance/ARAgingPage";
+import DealerStatementsPage       from "@/pages/finance/DealerStatementsPage";
+import ChequesPage                from "@/pages/finance/ChequesPage";
+import AdjustmentsPage            from "@/pages/finance/AdjustmentsPage";
+import DayBookPage                from "@/pages/finance/DayBookPage";
 import DealerIndentsPage from "@/pages/sales/DealerIndentsPage";
 // import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
 import {
@@ -124,9 +132,17 @@ function AppInner() {
           <Route path="/fgs/dispatch-sheet" element={<DispatchSheetPage />} />
           <Route path="/fgs/dispatch/create" element={<CreateDispatchPage />} />
           {/* Finance */}
+          <Route path="/finance/dashboard" element={<FinanceDashboardPage />} />
           <Route path="/finance/payments" element={<PaymentsOverviewPage />} />
           <Route path="/finance/online-payments" element={<OnlinePaymentsPage />} />
           <Route path="/finance/reconciliation"  element={<RazorpayReconciliationPage />} />
+          <Route path="/finance/credit-control" element={<CreditControlPage />} />
+          <Route path="/finance/refunds" element={<RefundsPage />} />
+          <Route path="/finance/ar-aging" element={<ARAgingPage />} />
+          <Route path="/finance/dealer-statements" element={<DealerStatementsPage />} />
+          <Route path="/finance/cheques" element={<ChequesPage />} />
+          <Route path="/finance/adjustments" element={<AdjustmentsPage />} />
+          <Route path="/finance/day-book" element={<DayBookPage />} />
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />
