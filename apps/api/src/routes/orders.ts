@@ -6,7 +6,6 @@ import {
   orderItems,
   products,
   dealerWallets,
-  timeWindows,
   cancellationRequests,
 } from "@hmu/db/schema";
 import { dealerAuth } from "../middleware/dealer-auth.js";
@@ -50,15 +49,23 @@ export async function orderRoutes(app: FastifyInstance) {
       const dealer = request.dealer!;
 
       // ── 1. Validate ordering window is still open ──
-      const [tw] = await db
-        .select()
-        .from(timeWindows)
-        .where(eq(timeWindows.zoneId, dealer.zoneId))
-        .limit(1);
+      // Time-windows are route-based (migration 0023): the admin panel
+      // configures one window per route, so look it up via the dealer's
+      // assigned route — not their zone (which left this query empty and
+      // failed every order with "not active for your zone").
+      const [tw] = await pgClient`
+        SELECT tw.open_time  AS "openTime",
+               tw.close_time AS "closeTime",
+               tw.active     AS active
+          FROM dealers d
+          JOIN time_windows tw ON tw.route_id = d.route_id
+         WHERE d.id = ${dealer.dealerId}::uuid
+         LIMIT 1
+      ` as unknown as Array<{ openTime: string; closeTime: string; active: boolean }>;
       if (!tw || !tw.active) {
         return reply.status(403).send({
           error: "Window Closed",
-          message: "Ordering window is not active for your zone",
+          message: "Ordering window is not active for your route",
         });
       }
       const now = new Date();
