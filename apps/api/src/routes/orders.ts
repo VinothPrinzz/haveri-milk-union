@@ -465,6 +465,7 @@ export async function orderRoutes(app: FastifyInstance) {
           o.id, o.status, o.payment_mode,
           o.subtotal, o.total_gst, o.grand_total, o.item_count,
           o.created_at AS created_at,
+          o.confirmed_at AS confirmed_at,
           o.cancel_window_ends_at AS cancel_window_ends_at,
           cr.status  AS cancellation_status,
           cr.req_at  AS cancellation_requested_at,
