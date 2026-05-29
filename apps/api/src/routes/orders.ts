@@ -186,13 +186,15 @@ export async function orderRoutes(app: FastifyInstance) {
 
       // UPI orders aren't paid here — they go to 'payment_required' and the
       // dealer settles via the Razorpay pay-now endpoint. wallet/credit settle
-      // synchronously inside the transaction below, so they're 'pending'.
+      // synchronously inside the transaction below, so they're confirmed
+      // immediately. ('pending' is deprecated — dispatch/finance only look at
+      // 'confirmed', and the dealer app only offers Cancel on 'confirmed'.)
       const initialStatus =
-        body.paymentMode === "upi" ? "payment_required" : "pending";
+        body.paymentMode === "upi" ? "payment_required" : "confirmed";
 
       try {
-        const result = await pgClient.begin(async (_tx) => {                
-          const tx = _tx as unknown as typeof pgClient; 
+        const result = await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
           // Insert order
           const [order] = await tx`
             INSERT INTO orders (dealer_id, zone_id, status, payment_mode, payment_reference, subtotal, total_gst, grand_total, item_count, notes, created_at, updated_at)
@@ -204,6 +206,29 @@ export async function orderRoutes(app: FastifyInstance) {
             )
             RETURNING id, created_at
           `;
+
+          // For settled (confirmed) orders, stamp confirm time + the
+          // route-based self-cancel window: LEAST(now + 30 min, the route's
+          // close time for this order's delivery date). delivery_date
+          // defaults to today (IST), so these cart orders are same-day and
+          // get the close-time cap. UPI orders get this on pay-now instead.
+          if (initialStatus === "confirmed") {
+            await tx`
+              UPDATE orders
+                 SET confirmed_at = now(),
+                     cancel_window_ends_at = LEAST(
+                       now() + interval '30 minutes',
+                       COALESCE(
+                         (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                         now() + interval '30 minutes'
+                       )
+                     )
+                FROM dealers d
+                LEFT JOIN time_windows tw ON tw.route_id = d.route_id
+               WHERE orders.id = ${order!.id}::uuid
+                 AND orders.dealer_id = d.id
+            `;
+          }
 
           // Insert order items
           for (const item of orderItemsData) {
