@@ -114,9 +114,13 @@ export async function salesReportRoutes(app: FastifyInstance) {
       }
 
       // Helper to build a group page (milk | curd | lassi)
+      // Category names are matched case-insensitively: the config/defaults use
+      // capitalized names ("Milk") while the DB stores them lowercase ("milk"),
+      // so an exact match would silently drop every product from the group.
       const buildGroup = (key: "milk" | "curd" | "lassi", label: string, categories: string[]) => {
+        const catSet = new Set(categories.map(c => c.toLowerCase()));
         const groupProds = (products as any[])
-          .filter(p => categories.includes(p.category_name))
+          .filter(p => catSet.has((p.category_name ?? "").toLowerCase()))
           .map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order }));
 
         const rows = dates.map(date => {
@@ -616,8 +620,10 @@ export async function salesReportRoutes(app: FastifyInstance) {
         ORDER BY z.name, d.code, d.name
       `;
 
-      const milkCats: string[] = cfg.milkCategoryGroup;
-      const curdCats: string[] = cfg.categoryGroups.curd;
+      // Case-insensitive: config uses capitalized names, DB stores lowercase.
+      const milkCatSet = new Set(cfg.milkCategoryGroup.map(c => c.toLowerCase()));
+      const curdCatSet = new Set(cfg.categoryGroups.curd.map(c => c.toLowerCase()));
+      const catOf = (name: string) => (name ?? "").toLowerCase();
 
       // Index rows by (taluka → dealer → {products})
       const talukaMap = new Map<string, any>();
@@ -649,10 +655,10 @@ export async function salesReportRoutes(app: FastifyInstance) {
         cust.total = round2(cust.total + amt);
         cust.summary.totalAmount = round2(cust.summary.totalAmount + amt);
         // milk / curd category buckets
-        if (milkCats.includes(r.category_name) && !curdCats.includes(r.category_name)) {
+        if (milkCatSet.has(catOf(r.category_name)) && !curdCatSet.has(catOf(r.category_name))) {
           cust.summary.milkTotalQty += qty;
         }
-        if (curdCats.includes(r.category_name)) {
+        if (curdCatSet.has(catOf(r.category_name))) {
           cust.summary.curdTotalQty += qty;
         }
         // fixed cookie columns (resolved by product_id)
@@ -1038,7 +1044,8 @@ async function buildSalesGrid(opts: { q: { from: string; to: string }; cfg: Repo
     GROUP BY ds.route_id, dsi.product_id, c.name
   ` : [];
 
-  const milkCats = cfg.milkCategoryGroup;
+  // Case-insensitive: config uses capitalized names, DB stores lowercase.
+  const milkCatSet = new Set(cfg.milkCategoryGroup.map(c => c.toLowerCase()));
 
   const routeAgg = new Map<string, any>();
   for (const r of routes as any[]) {
@@ -1062,7 +1069,7 @@ async function buildSalesGrid(opts: { q: { from: string; to: string }; cfg: Repo
     const amt = parseFloat(row.amount) || 0;
     agg.qty[row.product_id] = (agg.qty[row.product_id] ?? 0) + qty;
     agg.amount[row.product_id] = round2((agg.amount[row.product_id] ?? 0) + amt);
-    if (milkCats.includes(row.category_name)) agg.milkAmount = round2(agg.milkAmount + amt);
+    if (milkCatSet.has((row.category_name ?? "").toLowerCase())) agg.milkAmount = round2(agg.milkAmount + amt);
     else agg.productAmount = round2(agg.productAmount + amt);
     agg.total = round2(agg.total + amt);
   };

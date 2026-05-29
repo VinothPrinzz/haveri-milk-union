@@ -63,6 +63,8 @@ export function ColumnPagedTable<TRow, TProd extends ProductCol>({
   totalRow,
   rowKey,
   pageInfo,
+  fixedLayout = false,
+  productColWidth = "60px",
 }: {
   title?: string;
   fixedHead: ColumnDef<TRow>[];
@@ -77,7 +79,18 @@ export function ColumnPagedTable<TRow, TProd extends ProductCol>({
   };
   rowKey?: (row: TRow, idx: number) => string | number;
   pageInfo?: { current: number; total: number };
+  // Opt-in: enforce colgroup widths (table-layout: fixed) and let the
+  // product headers wrap inside the narrow product columns. Needed when
+  // long report aliases would otherwise force the columns past the page
+  // width in print (Daily Sales Statement).
+  fixedLayout?: boolean;
+  productColWidth?: string;
 }) {
+  // Product header: when fixedLayout, wrap inside the column instead of the
+  // default `.num` nowrap (which expands the column to the full alias width).
+  // Product cells are centered (not right-aligned) under fixedLayout.
+  const prodHeadCls = fixedLayout ? "prod-col" : "num";
+  const prodCellCls = fixedLayout ? "prod-col" : "num";
   return (
     <div className="rs-page">
       {(title || pageInfo) && (
@@ -88,13 +101,13 @@ export function ColumnPagedTable<TRow, TProd extends ProductCol>({
           )}
         </div>
       )}
-      <table className="report-ledger compact">
+      <table className={`report-ledger compact${fixedLayout ? " col-paged-fixed" : ""}`}>
         <colgroup>
           {fixedHead.map((c, i) => (
             <col key={`f-${i}`} style={c.width ? { width: c.width } : undefined} />
           ))}
           {productCols.map(p => (
-            <col key={p.id} style={{ width: "60px" }} />
+            <col key={p.id} style={{ width: productColWidth }} />
           ))}
           {trailingHead?.map((c, i) => (
             <col key={`t-${i}`} style={c.width ? { width: c.width } : undefined} />
@@ -108,7 +121,7 @@ export function ColumnPagedTable<TRow, TProd extends ProductCol>({
               </th>
             ))}
             {productCols.map(p => (
-              <th key={p.id} className="num">{p.reportAlias}</th>
+              <th key={p.id} className={prodHeadCls}>{p.reportAlias}</th>
             ))}
             {trailingHead?.map((c, i) => (
               <th key={`t-${i}`} className={c.num ? "num" : c.className}>
@@ -126,7 +139,7 @@ export function ColumnPagedTable<TRow, TProd extends ProductCol>({
                 </td>
               ))}
               {productCols.map(p => (
-                <td key={p.id} className="num">
+                <td key={p.id} className={prodCellCls}>
                   {productCellRender(row, p)}
                 </td>
               ))}
@@ -146,7 +159,7 @@ export function ColumnPagedTable<TRow, TProd extends ProductCol>({
                 </td>
               ))}
               {productCols.map(p => (
-                <td key={p.id} className="num">{totalRow.productCell(p)}</td>
+                <td key={p.id} className={prodCellCls}>{totalRow.productCell(p)}</td>
               ))}
               {totalRow.trailingCells?.map((cell, i) => (
                 <td key={`t-${i}`} className="num">{cell}</td>
