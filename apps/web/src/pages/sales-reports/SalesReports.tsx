@@ -172,18 +172,22 @@ export const DailySalesStatement = () => (
     renderPages={(from, to, apiData) => {
       if (!apiData) return [];
     
+      // Cap at 8 product columns/page so a portrait A4 fits:
+      // Date (90px) + 8×60px + Total Amount (110px) ≈ 680px < 703px usable.
+      // Aliases are ≤14 chars (migration 0027) and wrap inside the 60px cols.
       return apiData.groups.flatMap((group, gi) => {
-        const productPages = paginateColumns(group.products, 12);
-    
+        const productPages = paginateColumns(group.products, 8);
+
         return productPages.map((prodChunk, pi) => (
           <ColumnPagedTable
             key={`${gi}-${pi}`}
             title={`Daily Sales Statement — ${group.label} • Cols ${pi + 1}/${productPages.length}`}
-            fixedHead={[{ label: "Date", accessor: r => r.date }]}
+            fixedLayout
+            fixedHead={[{ label: "Date", accessor: r => r.date, width: "90px" }]}
             productCols={prodChunk}
             productCellRender={(row, p) => fmtQty(row.qty[p.id] ?? 0)}
             trailingHead={[
-              { label: "Total Amount", accessor: r => fmtINR(r.totalAmount), num: true }
+              { label: "Total Amount", accessor: r => fmtINR(r.totalAmount), num: true, width: "110px" }
             ]}
             rows={group.rows}
             totalRow={{
@@ -219,14 +223,21 @@ export const DayRouteCashSales = () => (
     fetcher={(from, to) => fetchDayRouteCash({ from, to })}
     renderPages={(from, to, apiData) => {
       if (!apiData) return [];
-      return [(
-        <div key="p1">
-          <ReportHeader title="Day/Route Wise Cash Sales" subtitle={`Period: ${from} to ${to}`} />
+      // Cap route columns per page so a portrait A4 fits: usable ~703px −
+      // Indent Date (~86px) − Total (~96px) ≈ 521px ÷ ~87px/route ≈ 6 routes.
+      const ROUTES_PER_PAGE = 6;
+      const routePages = paginateColumns(apiData.routes, ROUTES_PER_PAGE);
+      return routePages.map((routeChunk, pi) => (
+        <div key={pi}>
+          <ReportHeader
+            title="Day/Route Wise Cash Sales"
+            subtitle={`Period: ${from} to ${to} · Cols ${pi + 1}/${routePages.length}`}
+          />
           <table className="w-full text-[11px] border-collapse">
             <thead>
               <tr className="bg-muted/50">
                 <th className="border border-border py-1.5 px-2 text-left font-bold">Indent Date</th>
-                {apiData.routes.map(r => <th key={r.id} className="border border-border py-1.5 px-2 text-center font-bold">{r.name}</th>)}
+                {routeChunk.map(r => <th key={r.id} className="border border-border py-1.5 px-2 text-center font-bold">{r.name}</th>)}
                 <th className="border border-border py-1.5 px-2 text-right font-bold num">Total</th>
               </tr>
             </thead>
@@ -234,21 +245,21 @@ export const DayRouteCashSales = () => (
               {apiData.dates.map(d => (
                 <tr key={d}>
                   <td className="border border-border py-1 px-2 font-medium">{d}</td>
-                  {apiData.routes.map(r => (
-                    <td key={r.id} className="border border-border py-1 px-2 text-right num">{fmtINR(apiData.matrix[d]?.[r.id] ?? 0)}</td>
+                  {routeChunk.map(r => (
+                    <td key={r.id} className="border border-border py-1 px-2 text-center num">{fmtINR(apiData.matrix[d]?.[r.id] ?? 0)}</td>
                   ))}
                   <td className="border border-border py-1 px-2 text-right font-bold num">{fmtINR(apiData.dayTotals[d] ?? 0)}</td>
                 </tr>
               ))}
               <tr className="font-bold bg-muted/40">
                 <td className="border border-border py-1.5 px-2">TOTAL</td>
-                {apiData.routes.map(r => <td key={r.id} className="border border-border py-1.5 px-2 text-right num">{fmtINR(apiData.routeTotals[r.id] ?? 0)}</td>)}
+                {routeChunk.map(r => <td key={r.id} className="border border-border py-1.5 px-2 text-center num">{fmtINR(apiData.routeTotals[r.id] ?? 0)}</td>)}
                 <td className="border border-border py-1.5 px-2 text-right num">{fmtINR(apiData.grandTotal)}</td>
               </tr>
             </tbody>
           </table>
         </div>
-      )];
+      ));
     }}
     buildCsv={(from, to, d) => {
       const out: any[][] = [];

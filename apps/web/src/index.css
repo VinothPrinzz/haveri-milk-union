@@ -413,7 +413,29 @@
   .report-ledger td.center {
     text-align: center;
   }
-  
+
+  /* Column-paged tables with many product columns (Daily Sales Statement):
+     enforce the colgroup widths so long aliases can't push the table past
+     the printable page width, and let the product headers wrap inside the
+     narrow product columns instead of forcing them onto one line. */
+  .report-ledger.col-paged-fixed {
+    table-layout: fixed;
+    width: auto;
+  }
+  .report-ledger.col-paged-fixed th.prod-col,
+  .report-ledger.col-paged-fixed td.prod-col {
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font-variant-numeric: tabular-nums;
+  }
+  .report-ledger.col-paged-fixed th.prod-col {
+    vertical-align: bottom;
+    font-size: 10px;
+    line-height: 1.12;
+  }
+
   /* Totals / subtotal rows */
   .report-ledger tr.total-row {
     border-top: 1px dashed #000 !important;
