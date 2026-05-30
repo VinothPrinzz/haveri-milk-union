@@ -1,7 +1,7 @@
 // apps/web/src/pages/masters/PriceChartPage.tsx
 // ════════════════════════════════════════════════════════════════════
 // Price Chart — three-tier pricing
-// Columns: Basic Price · Dealer Price · Margin (MRP − Dealer, auto) · MRP
+// Columns: Basic Price · Dealer Price · GST (Dealer − Basic, auto) · MRP
 //
 // Fix B9: Print produced a blank page because the global print CSS
 // (apps/web/src/index.css) hides everything by default and only shows
@@ -29,14 +29,15 @@ export default function PriceChartPage() {
     );
   }, [products, q]);
 
-  // Margin is auto-calculated: MRP − Dealer-Price. Never stored.
-  const marginOf = (p: Product) => (p.mrp ?? 0) - (p.dealerPrice ?? 0);
+  // GST amount in ₹ is auto-calculated: Dealer-Price − Basic Price
+  // (Basic Price is the dealer price excluding GST). Never stored.
+  const gstAmountOf = (p: Product) => (p.dealerPrice ?? 0) - (p.basePrice ?? 0);
 
   return (
     <div className="flex flex-col h-full">
       <PageHeader
         title="Price Chart"
-        subtitle="Basic Price · Dealer Price · Margin · MRP"
+        subtitle="Basic Price · Dealer Price · GST · MRP"
         actions={
           <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
             <Printer className="h-3.5 w-3.5 mr-1" /> Print (Ctrl+P)
@@ -80,13 +81,13 @@ export default function PriceChartPage() {
                   <th style={{ width: 100 }}>Pack</th>
                   <th className="num" style={{ width: 120, textAlign: "right" }}>Basic Price ₹</th>
                   <th className="num" style={{ width: 120, textAlign: "right" }}>Dealer Price ₹</th>
-                  <th className="num" style={{ width: 110, textAlign: "right" }}>Margin ₹</th>
+                  <th className="num" style={{ width: 110, textAlign: "right" }}>GST ₹</th>
                   <th className="num" style={{ width: 110, textAlign: "right" }}>MRP ₹</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((p: Product) => {
-                  const margin = marginOf(p);
+                  const gstAmount = gstAmountOf(p);
                   return (
                     <tr key={p.id}>
                       <td className="font-mono">{p.code}</td>
@@ -94,15 +95,7 @@ export default function PriceChartPage() {
                       <td className="text-[12.5px]">{p.packSize ?? "—"}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.basePrice ?? 0)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.dealerPrice ?? 0)}</td>
-                      <td
-                        className="num"
-                        style={{
-                          textAlign: "right",
-                          color: margin < 0 ? "var(--destructive, #dc2626)" : undefined,
-                        }}
-                      >
-                        {fmtINR(margin)}
-                      </td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(gstAmount)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
                     </tr>
                   );
