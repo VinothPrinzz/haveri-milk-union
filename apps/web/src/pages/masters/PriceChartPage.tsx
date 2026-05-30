@@ -81,7 +81,7 @@ export default function PriceChartPage() {
                   <th style={{ width: 100 }}>Pack</th>
                   <th className="num" style={{ width: 120, textAlign: "right" }}>Basic Price ₹</th>
                   <th className="num" style={{ width: 110, textAlign: "right" }}>GST ₹</th>
-                  <th className="num" style={{ width: 120, textAlign: "right" }}>Retail-Dealer Price ₹</th>
+                  <th className="num" style={{ width: 120, textAlign: "right" }}>Retail-Dealer ₹</th>
                   <th className="num" style={{ width: 110, textAlign: "right" }}>MRP ₹</th>
                 </tr>
               </thead>
