@@ -80,8 +80,8 @@ export default function PriceChartPage() {
                   <th>Product</th>
                   <th style={{ width: 100 }}>Pack</th>
                   <th className="num" style={{ width: 120, textAlign: "right" }}>Basic Price ₹</th>
-                  <th className="num" style={{ width: 120, textAlign: "right" }}>Dealer Price ₹</th>
                   <th className="num" style={{ width: 110, textAlign: "right" }}>GST ₹</th>
+                  <th className="num" style={{ width: 120, textAlign: "right" }}>Retail-Dealer Price ₹</th>
                   <th className="num" style={{ width: 110, textAlign: "right" }}>MRP ₹</th>
                 </tr>
               </thead>
@@ -94,8 +94,8 @@ export default function PriceChartPage() {
                       <td className="font-medium">{p.name}</td>
                       <td className="text-[12.5px]">{p.packSize != null ? `${p.packSize}${p.unit ? ` ${p.unit}` : ""}` : "—"}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.basePrice ?? 0)}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.dealerPrice ?? 0)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(gstAmount)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.dealerPrice ?? 0)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
                     </tr>
                   );
