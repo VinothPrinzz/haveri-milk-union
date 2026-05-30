@@ -153,7 +153,7 @@ function ProductListTab() {
                   <th className="num" style={{ width: 100, textAlign: "right" }}>MRP</th>
                   <th className="num" style={{ width: 70, textAlign: "right" }}>GST %</th>
                   <th className="num" style={{ width: 80, textAlign: "right" }}>Stock</th>
-                  <th style={{ width: 90, textAlign: "right" }}>Actions</th>
+                  <th style={{ width: 150, textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -169,13 +169,23 @@ function ProductListTab() {
                     <td className="num" style={{ textAlign: "right" }}>{Number(p.gstPercent ?? 0).toFixed(2)}</td>
                     <td className="num" style={{ textAlign: "right" }}>{p.stock ?? 0}</td>
                     <td style={{ textAlign: "right" }}>
-                      <Button
-                        size="sm"
-                        className="h-7 px-2.5 text-[12px]"
-                        onClick={() => setEditing(p)}
-                      >
-                        Update
-                      </Button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          size="sm"
+                          className="h-7 px-2.5 text-[12px]"
+                          onClick={() => setEditing(p)}
+                        >
+                          Update
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="h-7 px-2.5 text-[12px]"
+                          onClick={() => setDeleting(p)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}

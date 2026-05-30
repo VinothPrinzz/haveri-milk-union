@@ -6,7 +6,6 @@ import {
   orderItems,
   products,
   dealerWallets,
-  timeWindows,
   cancellationRequests,
 } from "@hmu/db/schema";
 import { dealerAuth } from "../middleware/dealer-auth.js";
@@ -50,15 +49,23 @@ export async function orderRoutes(app: FastifyInstance) {
       const dealer = request.dealer!;
 
       // ── 1. Validate ordering window is still open ──
-      const [tw] = await db
-        .select()
-        .from(timeWindows)
-        .where(eq(timeWindows.zoneId, dealer.zoneId))
-        .limit(1);
+      // Time-windows are route-based (migration 0023): the admin panel
+      // configures one window per route, so look it up via the dealer's
+      // assigned route — not their zone (which left this query empty and
+      // failed every order with "not active for your zone").
+      const [tw] = await pgClient`
+        SELECT tw.open_time  AS "openTime",
+               tw.close_time AS "closeTime",
+               tw.active     AS active
+          FROM dealers d
+          JOIN time_windows tw ON tw.route_id = d.route_id
+         WHERE d.id = ${dealer.dealerId}::uuid
+         LIMIT 1
+      ` as unknown as Array<{ openTime: string; closeTime: string; active: boolean }>;
       if (!tw || !tw.active) {
         return reply.status(403).send({
           error: "Window Closed",
-          message: "Ordering window is not active for your zone",
+          message: "Ordering window is not active for your route",
         });
       }
       const now = new Date();
@@ -179,13 +186,15 @@ export async function orderRoutes(app: FastifyInstance) {
 
       // UPI orders aren't paid here — they go to 'payment_required' and the
       // dealer settles via the Razorpay pay-now endpoint. wallet/credit settle
-      // synchronously inside the transaction below, so they're 'pending'.
+      // synchronously inside the transaction below, so they're confirmed
+      // immediately. ('pending' is deprecated — dispatch/finance only look at
+      // 'confirmed', and the dealer app only offers Cancel on 'confirmed'.)
       const initialStatus =
-        body.paymentMode === "upi" ? "payment_required" : "pending";
+        body.paymentMode === "upi" ? "payment_required" : "confirmed";
 
       try {
-        const result = await pgClient.begin(async (_tx) => {                
-          const tx = _tx as unknown as typeof pgClient; 
+        const result = await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
           // Insert order
           const [order] = await tx`
             INSERT INTO orders (dealer_id, zone_id, status, payment_mode, payment_reference, subtotal, total_gst, grand_total, item_count, notes, created_at, updated_at)
@@ -197,6 +206,29 @@ export async function orderRoutes(app: FastifyInstance) {
             )
             RETURNING id, created_at
           `;
+
+          // For settled (confirmed) orders, stamp confirm time + the
+          // route-based self-cancel window: LEAST(now + 30 min, the route's
+          // close time for this order's delivery date). delivery_date
+          // defaults to today (IST), so these cart orders are same-day and
+          // get the close-time cap. UPI orders get this on pay-now instead.
+          if (initialStatus === "confirmed") {
+            await tx`
+              UPDATE orders
+                 SET confirmed_at = now(),
+                     cancel_window_ends_at = LEAST(
+                       now() + interval '30 minutes',
+                       COALESCE(
+                         (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                         now() + interval '30 minutes'
+                       )
+                     )
+                FROM dealers d
+                LEFT JOIN time_windows tw ON tw.route_id = d.route_id
+               WHERE orders.id = ${order!.id}::uuid
+                 AND orders.dealer_id = d.id
+            `;
+          }
 
           // Insert order items
           for (const item of orderItemsData) {
@@ -458,6 +490,7 @@ export async function orderRoutes(app: FastifyInstance) {
           o.id, o.status, o.payment_mode,
           o.subtotal, o.total_gst, o.grand_total, o.item_count,
           o.created_at AS created_at,
+          o.confirmed_at AS confirmed_at,
           o.cancel_window_ends_at AS cancel_window_ends_at,
           cr.status  AS cancellation_status,
           cr.req_at  AS cancellation_requested_at,

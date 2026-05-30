@@ -585,13 +585,25 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
 
+        // cancel_window_ends_at = LEAST(now + 30 min, route's close_time for
+        // the delivery date) — same rule as the dealer credit-confirm path.
         await tx`
           UPDATE orders
              SET status       = 'confirmed',
                  payment_mode = 'credit',
                  confirmed_at = now(),
-                 updated_at   = now()
-           WHERE id = ${order.id}::uuid
+                 updated_at   = now(),
+                 cancel_window_ends_at = LEAST(
+                   now() + interval '30 minutes',
+                   COALESCE(
+                     (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                     now() + interval '30 minutes'
+                   )
+                 )
+           FROM dealers d
+           LEFT JOIN time_windows tw ON tw.route_id = d.route_id
+           WHERE orders.id = ${order.id}::uuid
+             AND orders.dealer_id = d.id
         `;
 
         // Running balance = opening_balance + non-Opening credits

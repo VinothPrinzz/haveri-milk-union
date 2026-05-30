@@ -173,15 +173,28 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
 
     // === Update Order Status (always done for order_payment) ===
     if (row.kind === "order_payment" && row.orderId) {
+      // cancel_window_ends_at = LEAST(now + 30 min, route's close_time for the
+      // delivery date). Same rule as the credit-confirm path so online-paid
+      // orders are cancellable for the same window.
       await tx`
         UPDATE orders
            SET status = 'confirmed',
                payment_mode = 'upi',
                payment_reference = ${row.rzpPaymentId},
                confirmed_at = COALESCE(confirmed_at, now()),
-               updated_at = now()
-         WHERE id = ${row.orderId}::uuid
-           AND status IN ('draft', 'payment_required')
+               updated_at = now(),
+               cancel_window_ends_at = LEAST(
+                 now() + interval '30 minutes',
+                 COALESCE(
+                   (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                   now() + interval '30 minutes'
+                 )
+               )
+          FROM dealers d
+          LEFT JOIN time_windows tw ON tw.route_id = d.route_id
+         WHERE orders.id = ${row.orderId}::uuid
+           AND orders.dealer_id = d.id
+           AND orders.status IN ('draft', 'payment_required')
       `;
     }
 
