@@ -92,7 +92,7 @@ export default function PriceChartPage() {
                     <tr key={p.id}>
                       <td className="font-mono">{p.code}</td>
                       <td className="font-medium">{p.name}</td>
-                      <td className="text-[12.5px]">{p.packSize ?? "—"}</td>
+                      <td className="text-[12.5px]">{p.packSize != null ? `${p.packSize}${p.unit ? ` ${p.unit}` : ""}` : "—"}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.basePrice ?? 0)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.dealerPrice ?? 0)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(gstAmount)}</td>
