@@ -16,41 +16,53 @@ import { Input } from "@/components/ui/input";
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import {
   fetchDailySalesReport,
+  type DailySalesReportColumn,
   type DailySalesReportResponse,
   type DailySalesReportRow,
 } from "@/services/report";
 import { toCsv } from "@/lib/exporters";
 
 // ── Column slots (fixed layout — matches the paper report) ──────────
-// `get` reads each value off a row; `total` flags the red computed
-// totals; everything else is a packet count (blank when 0).
+// `total` flags the red computed totals (already in Ltr / Kg / qty, read via
+// `get`); every other slot is a raw product column (`col`) stored as a packet
+// count that we convert to Ltr (milk) / Kg (curd) using the column's qtyToUnit.
 type Slot = {
   header: string;
   group: string; // "" → standalone column (spans both header rows)
   total?: boolean;
-  get: (r: DailySalesReportRow) => number;
+  col?: string;  // raw product column key (packets → Ltr/Kg via qtyToUnit)
+  get?: (r: DailySalesReportRow) => number; // value for total columns
 };
 
 const SLOTS: Slot[] = [
-  { header: "HTM 1000ml",          group: "HTM MILK", get: r => r.cols.htm1000 },
-  { header: "HTM 500ML",           group: "HTM MILK", get: r => r.cols.htm500 },
-  { header: "HCM 160ML",           group: "HCM MILK", get: r => r.cols.hcm160 },
-  { header: "HCM 500ML",           group: "HCM MILK", get: r => r.cols.hcm500 },
-  { header: "SBM 1000ML",          group: "SBM MILK", get: r => r.cols.sbm1000 },
-  { header: "SBM 500ML",           group: "SBM MILK", get: r => r.cols.sbm500 },
-  { header: "SBM 200ML",           group: "SBM MILK", get: r => r.cols.sbm200 },
-  { header: "SAMRUDHI 500ML",      group: "SAMRUDHI", get: r => r.cols.samrudhi500 },
+  { header: "HTM 1000ml",           group: "HTM MILK", col: "htm1000" },
+  { header: "HTM 500ML",            group: "HTM MILK", col: "htm500" },
+  { header: "HCM 160ML",            group: "HCM MILK", col: "hcm160" },
+  { header: "HCM 500ML",            group: "HCM MILK", col: "hcm500" },
+  { header: "SBM 1000ML",           group: "SBM MILK", col: "sbm1000" },
+  { header: "SBM 500ML",            group: "SBM MILK", col: "sbm500" },
+  { header: "SBM 200ML",            group: "SBM MILK", col: "sbm200" },
+  { header: "SAMRUDHI 500ML",       group: "SAMRUDHI", col: "samrudhi500" },
   { header: "TOTAL MILK (IN LTRS)", group: "", total: true, get: r => r.totalMilk },
-  { header: "CURD 140GM",          group: "CURD", get: r => r.cols.curd140 },
-  { header: "CURD 200GM",          group: "CURD", get: r => r.cols.curd200 },
-  { header: "CURD 510GM",          group: "CURD", get: r => r.cols.curd510 },
-  { header: "CURD 10KG (B)",       group: "CURD", get: r => r.cols.curd10kg },
-  { header: "CURD 05KG (B)",       group: "CURD", get: r => r.cols.curd5kg },
-  { header: "TOTAL CURD (IN KGS)", group: "", total: true, get: r => r.totalCurd },
-  { header: "SL 200 ML",           group: "", get: r => r.cols.sl200 },
-  { header: "MASAL MAJJIGE 200ML", group: "", get: r => r.cols.majjige },
-  { header: "TOTAL G/L",           group: "", total: true, get: r => r.totalGL },
+  { header: "CURD 140GM",           group: "CURD", col: "curd140" },
+  { header: "CURD 200GM",           group: "CURD", col: "curd200" },
+  { header: "CURD 500GM",           group: "CURD", col: "curd500" },
+  { header: "CURD 10KG (B)",        group: "CURD", col: "curd10kg" },
+  { header: "CURD 05KG (B)",        group: "CURD", col: "curd5kg" },
+  { header: "TOTAL CURD (IN KGS)",  group: "", total: true, get: r => r.totalCurd },
+  { header: "SL 200 ML",            group: "", col: "sl200" },
+  { header: "MASAL MAJJIGE 200ML",  group: "", col: "majjige" },
+  { header: "TOTAL G/L",            group: "", total: true, get: r => r.totalGL },
 ];
+
+// Build a column-key → Ltr/Kg-per-packet map from the API column metadata.
+const unitMap = (cols: DailySalesReportColumn[]): Record<string, number> =>
+  Object.fromEntries(cols.map(c => [c.key, c.qtyToUnit ?? 1]));
+
+// A slot's display value: totals are pre-computed (Ltr/Kg/qty); product
+// columns convert their packet count to Ltr (milk) / Kg (curd).
+const cellValue = (s: Slot, r: DailySalesReportRow, unit: Record<string, number>) =>
+  s.total ? (s.get?.(r) ?? 0) : (r.cols[s.col!] ?? 0) * (unit[s.col!] ?? 1);
 
 // The report is split across two landscape pages so the columns stay
 // readable: a Milk page (HTM…SAMRUDHI + TOTAL MILK) and a Curd page
@@ -174,6 +186,7 @@ function DailySalesTable({ data, slots }: { data: DailySalesReportResponse; slot
   const night = data.groups.find(g => g.key === "night");
   const afternoon = data.groups.find(g => g.key === "afternoon");
   const runs = buildRuns(slots);
+  const unit = unitMap(data.columns);
 
   // Continuous SL across both groups, skipping sub-total rows.
   let sl = 0;
@@ -199,7 +212,7 @@ function DailySalesTable({ data, slots }: { data: DailySalesReportResponse; slot
         <td className={`${tdNum} text-red-600`}>{fmtNum(row.diff)}</td>
         {slots.map((s, i) => (
           <td key={i} className={`${tdNum} ${s.total ? "text-red-600 font-semibold" : ""}`}>
-            {fmtCell(s.get(row), s.total)}
+            {fmtCell(cellValue(s, row, unit), s.total)}
           </td>
         ))}
       </tr>
@@ -215,7 +228,7 @@ function DailySalesTable({ data, slots }: { data: DailySalesReportResponse; slot
       <td className={`${tdNum} text-red-700`}>{fmtNum(row.diff)}</td>
       {slots.map((s, i) => (
         <td key={i} className={`${tdNum} ${s.total ? "text-red-700" : ""}`}>
-          {fmtCell(s.get(row), true)}
+          {fmtCell(cellValue(s, row, unit), true)}
         </td>
       ))}
     </tr>
@@ -286,11 +299,12 @@ function buildCsvRows(data: DailySalesReportResponse): (string | number)[][] {
     ...SLOTS.map(s => s.header.replace(/\s+/g, " ")),
   ]);
 
+  const unit = unitMap(data.columns);
   let sl = 0;
   const dataRow = (r: DailySalesReportRow) =>
-    [++sl, r.name, r.prevQty, r.todayQty, r.diff, ...SLOTS.map(s => s.get(r))];
+    [++sl, r.name, r.prevQty, r.todayQty, r.diff, ...SLOTS.map(s => cellValue(s, r, unit))];
   const totalRow = (r: DailySalesReportRow) =>
-    ["", r.name, r.prevQty, r.todayQty, r.diff, ...SLOTS.map(s => s.get(r))];
+    ["", r.name, r.prevQty, r.todayQty, r.diff, ...SLOTS.map(s => cellValue(s, r, unit))];
 
   const night = data.groups.find(g => g.key === "night");
   const afternoon = data.groups.find(g => g.key === "afternoon");
@@ -366,13 +380,14 @@ async function buildXlsx(data: DailySalesReportResponse): Promise<Blob> {
   }
 
   // Data
+  const unit = unitMap(data.columns);
   let r = 4;
   let sl = 0;
   const writeRow = (row: DailySalesReportRow, kind: "data" | "subtotal" | "total") => {
     const vals: (string | number)[] = [
       kind === "data" ? ++sl : "",
       row.name, row.prevQty, row.todayQty, row.diff,
-      ...SLOTS.map(s => s.get(row)),
+      ...SLOTS.map(s => cellValue(s, row, unit)),
     ];
     vals.forEach((v, i) => {
       const c = ws.getCell(r, i + 1);

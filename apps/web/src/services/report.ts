@@ -471,16 +471,18 @@ export interface DailySalesReportColumn {
   name: string;
   header: string;
   group: string; // "HTM MILK" | "HCM MILK" | "SBM MILK" | "SAMRUDHI" | "CURD" | ""
+  bucket: string;     // "milk" | "curd" | "other"
+  qtyToUnit: number;  // Ltr (milk) / Kg (curd) per packet
 }
 
 export interface DailySalesReportRow {
   id: string | null;
   code: string;
   name: string;
-  prevQty: number;    // previous-day total sales qty (packets, all products)
-  todayQty: number;   // selected-day total sales qty (packets, all products)
+  prevQty: number;    // previous-day total sales volume (milk Ltr + curd Kg + lassi Ltr)
+  todayQty: number;   // selected-day total sales volume (milk Ltr + curd Kg + lassi Ltr)
   diff: number;       // todayQty − prevQty
-  cols: Record<string, number>; // column key → qty (packets)
+  cols: Record<string, number>; // column key → qty (packets; ×qtyToUnit for Ltr/Kg)
   totalMilk: number;  // total milk (Ltr)
   totalCurd: number;  // total curd (Kg)
   totalGL: number;    // total Good Life qty
