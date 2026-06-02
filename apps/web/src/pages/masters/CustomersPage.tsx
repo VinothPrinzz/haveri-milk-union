@@ -833,9 +833,20 @@ function CustomerFormBody({
 
   // F9 option lists
   const zoneOpts: F9Option[]     = useMemo(() => zones.map((z: any) => ({ value: z.id, label: z.name })), [zones]);
-  const officerOpts: F9Option[]  = useMemo(() => (officers ?? []).map((o: any) => ({ value: o.name ?? o.id, label: o.name ?? o })), [officers]);
   const rateCatOpts: F9Option[]  = useMemo(() => (rateCategories ?? []).map((r: any) => ({ value: r.value ?? r, label: r.label ?? r })), [rateCategories]);
   const routeOpts: F9Option[]    = useMemo(() => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })), [routes]);
+
+  // Officer follows the taluka — auto-filled (read-only) from the selected
+  // zone's assigned officer. Re-runs once zones load so edits resolve too.
+  const selectedZoneId = form.watch("zoneId");
+  useEffect(() => {
+    if (!zones.length) return;
+    const zoneOfficer = (zones.find((z: any) => z.id === selectedZoneId)?.officerName ?? "") as string;
+    if (form.getValues("officerName") !== zoneOfficer) {
+      form.setValue("officerName", zoneOfficer);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedZoneId, zones]);
 
   // Distinct cities derived from existing dealers — populated lazily.
   const { data: existingCustomers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
@@ -901,12 +912,12 @@ function CustomerFormBody({
             </SelectContent>
           </Select>
         </Field>
-        <Field label="Officer" hint="F9">
-          <F9SearchSelect
-            value={form.watch("officerName") || null}
-            onChange={v => form.setValue("officerName", v ?? "")}
-            options={officerOpts}
-            className="w-full"
+        <Field label="Officer" hint="from taluka">
+          <Input
+            className="erp-input bg-muted"
+            value={form.watch("officerName") || ""}
+            readOnly
+            placeholder="Set by taluka"
           />
         </Field>
         <Field label="Bank">

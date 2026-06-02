@@ -9,6 +9,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { routes } from "./distribution.js";
+import { officers } from "./officers.js";
 
 // ── Zones ──
 // Haveri, Ranebennur, Savanur, Byadgi, Hirekerur, Hangal
@@ -19,6 +20,11 @@ export const zones = pgTable("zones", {
   slug: text("slug").notNull().unique(), // e.g. "haveri", "ranebennur"
   icon: text("icon"), // emoji or icon identifier
   color: text("color"), // hex color for UI display (e.g. "#1448CC")
+  // Field sales officer assigned to this taluka. One officer can cover
+  // multiple zones; a customer's officer is derived from its zone. (0043)
+  officerId: uuid("officer_id").references(() => officers.id, {
+    onDelete: "set null",
+  }),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -43,10 +49,14 @@ export const timeWindows = pgTable("time_windows", {
 });
 
 // ── Relations ──
-export const zonesRelations = relations(zones, ({ one, many }) => ({
+export const zonesRelations = relations(zones, ({ one }) => ({
   timeWindow: one(timeWindows, {
     fields: [zones.id],
     references: [timeWindows.zoneId],
+  }),
+  officer: one(officers, {
+    fields: [zones.officerId],
+    references: [officers.id],
   }),
 }));
 
