@@ -1040,11 +1040,12 @@ export async function salesReportRoutes(app: FastifyInstance) {
         { key: "samrudhi500", code: "PD0248", name: "SAMRUDHI 500ML",     header: "SAMRUDHI 500ML",     group: "SAMRUDHI", bucket: "milk", qtyToUnit: 0.5 },
         { key: "curd140",     code: "PD0122", name: "CURD 140GM",         header: "CURD 140GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.14 },
         { key: "curd200",     code: "PD0124", name: "CURD 200 GM",        header: "CURD 200GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.2 },
-        { key: "curd510",     code: "PD0126", name: "CURD 510GM",         header: "CURD 510GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.51 },
+        { key: "curd500",     code: "PD0126", name: "CURD 500GM",         header: "CURD 500GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.5 },
         { key: "curd10kg",    code: "PD0127", name: "CURD BUCKET 10KG",   header: "CURD 10KG (B)",      group: "CURD", bucket: "curd", qtyToUnit: 10 },
         { key: "curd5kg",     code: "PD0128", name: "CURD BUCKET 5KG",    header: "CURD 05KG (B)",      group: "CURD", bucket: "curd", qtyToUnit: 5 },
-        { key: "sl200",       code: "PD0288", name: "SWEET LASSI -200ML", header: "SL 200 ML",          group: "", bucket: "other", qtyToUnit: 0 },
-        { key: "majjige",     code: "PD0217", name: "MASALA MAJJIGE 200ML", header: "MASAL MAJJIGE 200ML", group: "", bucket: "other", qtyToUnit: 0 },
+        // 200ml lassi / buttermilk — 0.2 L per packet so they read in litres too.
+        { key: "sl200",       code: "PD0288", name: "SWEET LASSI -200ML", header: "SL 200 ML",          group: "", bucket: "other", qtyToUnit: 0.2 },
+        { key: "majjige",     code: "PD0217", name: "MASALA MAJJIGE 200ML", header: "MASAL MAJJIGE 200ML", group: "", bucket: "other", qtyToUnit: 0.2 },
       ] as const;
       const MILK_COLS = DSR_COLUMNS.filter(c => c.bucket === "milk");
       const CURD_COLS = DSR_COLUMNS.filter(c => c.bucket === "curd");
@@ -1152,9 +1153,10 @@ export async function salesReportRoutes(app: FastifyInstance) {
         qty: number;                       // selected-day total packets (all products)
         prevQty: number;                   // previous-day total packets (all products)
         cols: Record<string, number>;      // selected-day packet count per column
+        prevCols: Record<string, number>;  // previous-day packet count per column
         totalGL: number;                   // selected-day G/L packet count
       };
-      const newAcc = (): Acc => ({ qty: 0, prevQty: 0, cols: {}, totalGL: 0 });
+      const newAcc = (): Acc => ({ qty: 0, prevQty: 0, cols: {}, prevCols: {}, totalGL: 0 });
       const accByRoute = new Map<string, Acc>();
       for (const r of routes as any[]) accByRoute.set(r.id, newAcc());
       const adhocAcc = newAcc();
@@ -1171,6 +1173,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           if (glIds.has(row.product_id)) acc.totalGL += qty;
         } else if (row.date === prevDate) {
           acc.prevQty += qty;
+          if (colKey) acc.prevCols[colKey] = (acc.prevCols[colKey] ?? 0) + qty;
         }
       }
 
@@ -1178,12 +1181,19 @@ export async function salesReportRoutes(app: FastifyInstance) {
         MILK_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
       const curdKg = (cmap: Record<string, number>) =>
         CURD_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
+      // Combined sales volume across every fixed column (milk Ltr + curd Kg +
+      // lassi Ltr) — drives the day-over-day comparison columns so they read
+      // in volume units like the rest of the sheet.
+      const totalVol = (cmap: Record<string, number>) =>
+        DSR_COLUMNS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
 
       const mkRow = (id: string | null, code: string, name: string, acc: Acc) => ({
         id, code, name,
-        prevQty: acc.prevQty,            // total sales qty, previous day
-        todayQty: acc.qty,               // total sales qty, selected day
-        diff: acc.qty - acc.prevQty,     // qty difference
+        // Day-over-day comparison columns, in combined sales volume (milk Ltr
+        // + curd Kg + lassi Ltr) so they read in volume units like the rest.
+        prevQty: round1(totalVol(acc.prevCols)),                    // previous day
+        todayQty: round1(totalVol(acc.cols)),                       // selected day
+        diff: round1(totalVol(acc.cols) - totalVol(acc.prevCols)),  // difference
         cols: Object.fromEntries(DSR_COLUMNS.map(c => [c.key, acc.cols[c.key] ?? 0])),
         totalMilk: round1(milkLtr(acc.cols)),  // Ltr
         totalCurd: round1(curdKg(acc.cols)),   // Kg
@@ -1206,11 +1216,11 @@ export async function salesReportRoutes(app: FastifyInstance) {
       const sumRows = (rows: DSRRow[], name: string) => {
         const cols: Record<string, number> = {};
         for (const c of DSR_COLUMNS) cols[c.key] = rows.reduce((s, r) => s + (r.cols[c.key] ?? 0), 0);
-        const prevQty = rows.reduce((s, r) => s + r.prevQty, 0);
-        const todayQty = rows.reduce((s, r) => s + r.todayQty, 0);
+        const prevQty = round1(rows.reduce((s, r) => s + r.prevQty, 0));
+        const todayQty = round1(rows.reduce((s, r) => s + r.todayQty, 0));
         return {
           id: null, code: "", name,
-          prevQty, todayQty, diff: todayQty - prevQty, cols,
+          prevQty, todayQty, diff: round1(todayQty - prevQty), cols,
           totalMilk: round1(rows.reduce((s, r) => s + r.totalMilk, 0)),
           totalCurd: round1(rows.reduce((s, r) => s + r.totalCurd, 0)),
           totalGL: rows.reduce((s, r) => s + r.totalGL, 0),
