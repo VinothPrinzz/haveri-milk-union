@@ -45,7 +45,8 @@ export type Exporter = {
   label: string;
   filename: string;
   mimeType: string;
-  build: () => string | Blob;
+  // May be async (e.g. xlsx generation via exceljs.writeBuffer()).
+  build: () => string | Blob | Promise<string | Blob>;
 };
 
 export interface ReportShellProps {
@@ -399,8 +400,8 @@ export default function ReportShell({
 
 /* ExportMenu and ReportPrintMeta remain unchanged */
 function ExportMenu({ exporters }: { exporters: Exporter[] }) {
-  const handle = (exp: Exporter) => {
-    const out = exp.build();
+  const handle = async (exp: Exporter) => {
+    const out = await exp.build();
     const blob = out instanceof Blob ? out : new Blob([out], { type: exp.mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

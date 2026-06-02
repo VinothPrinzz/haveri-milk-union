@@ -460,3 +460,46 @@ export const fetchEmployeeSubsidyReport = (params: { from: string; to: string })
     "/reports/sales-reports/employee-subsidy",
     params,
   );
+
+// ═══════════════════════════════════════════════════════════════
+// Daily Sales Report — "MILK & CURD SALES REPORT"
+// Single-day route × product cross-tab, Evening / Morning groups.
+// ═══════════════════════════════════════════════════════════════
+export interface DailySalesReportColumn {
+  key: string;
+  code: string;
+  name: string;
+  header: string;
+  group: string; // "HTM MILK" | "HCM MILK" | "SBM MILK" | "SAMRUDHI" | "CURD" | ""
+}
+
+export interface DailySalesReportRow {
+  id: string | null;
+  code: string;
+  name: string;
+  prevQty: number;    // previous-day total sales qty (packets, all products)
+  todayQty: number;   // selected-day total sales qty (packets, all products)
+  diff: number;       // todayQty − prevQty
+  cols: Record<string, number>; // column key → qty (packets)
+  totalMilk: number;  // total milk (Ltr)
+  totalCurd: number;  // total curd (Kg)
+  totalGL: number;    // total Good Life qty
+}
+
+export interface DailySalesReportGroup {
+  key: "night" | "afternoon";
+  label: string;
+  rows: DailySalesReportRow[];
+  subtotal: DailySalesReportRow;
+}
+
+export interface DailySalesReportResponse {
+  date: string;
+  prevDate: string;
+  columns: DailySalesReportColumn[];
+  groups: DailySalesReportGroup[];
+  total: DailySalesReportRow; // HVR grand total
+}
+
+export const fetchDailySalesReport = (params: { date: string }) =>
+  get<DailySalesReportResponse>("/reports/sales-reports/daily-sales-report", params);

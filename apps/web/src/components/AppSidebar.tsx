@@ -71,6 +71,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Gate Pass Report", path: "/reports/gate-pass",        icon: FileText },
   ],
   "sales-reports": [
+    { label: "Daily Sales Report",        path: "/sales-reports/daily-sales-report", icon: FileSpreadsheet },
     { label: "Daily Sales Statement",     path: "/sales-reports/daily-statement", icon: FileSpreadsheet },
     { label: "Day/Route Wise Cash",       path: "/sales-reports/day-route-cash",  icon: FileSpreadsheet },
     { label: "Officer Wise Sales",        path: "/sales-reports/officer-wise",    icon: FileSpreadsheet },

@@ -17,10 +17,14 @@ export async function zoneRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth] },
     async (_request, reply) => {
       const zones = await pgClient`
-        SELECT id, name, slug, icon, color, active
-        FROM zones
-        WHERE active = true
-        ORDER BY name
+        SELECT
+          z.id, z.name, z.slug, z.icon, z.color, z.active,
+          z.officer_id AS "officerId",
+          o.name       AS "officerName"
+        FROM zones z
+        LEFT JOIN officers o ON o.id = z.officer_id
+        WHERE z.active = true
+        ORDER BY z.name
       `;
       return reply.send({ zones });
     }

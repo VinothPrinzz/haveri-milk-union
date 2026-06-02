@@ -266,10 +266,13 @@ export async function dealerRoutes(app: FastifyInstance) {
         if (codeExists) return reply.status(409).send({ error: `Code ${body.code} is already taken` });
       }
 
+      // officer_name is set automatically from the dealer's zone by the
+      // dealers_set_officer_from_zone trigger (migration 0043) — the
+      // officer always follows the taluka, so any client value is ignored.
       const [dealer] = await pgClient`
         INSERT INTO dealers (
           name, phone, email, gst_number, zone_id, address, city, pin_code, location_label,
-          code, customer_type, rate_category, pay_mode, route_id, bank, officer_name, active,
+          code, customer_type, rate_category, pay_mode, route_id, bank, active,
           account_no, address_type, state, area, house_no, street
         )
         VALUES (
@@ -278,7 +281,7 @@ export async function dealerRoutes(app: FastifyInstance) {
           ${body.pinCode || null}, ${body.locationLabel || null},
           ${body.code || null}, ${body.customerType || "Retail-Dealer"},
           ${body.rateCategory || body.customerType || "Retail-Dealer"}, ${body.payMode || "Cash"},
-          ${body.routeId || null}, ${body.bank || null}, ${body.officerName || null},
+          ${body.routeId || null}, ${body.bank || null},
           ${body.active !== false},
           ${body.accountNo || null}, ${body.addressType || null}, ${body.state || null},
           ${body.area || null}, ${body.houseNo || null}, ${body.street || null}
@@ -315,8 +318,11 @@ export async function dealerRoutes(app: FastifyInstance) {
         customerType: z.enum(["Retail-Dealer","Credit Inst-MRP","Credit Inst-Dealer","Parlour-Dealer"]).optional(),
         rateCategory: z.string().optional(),
         payMode: z.enum(["Cash", "Credit"]).optional(),
+        zoneId: z.string().uuid().optional(),
         routeId: z.string().uuid().optional().nullable(),
         bank: z.string().optional().nullable(),
+        // officerName is accepted for backward compat but ignored — the
+        // officer always follows the taluka (zone) and is derived below.
         officerName: z.string().optional().nullable(),
         accountNo: z.string().optional().nullable(),
         addressType: z.enum(["Office", "Residence"]).optional().nullable(),
@@ -344,9 +350,11 @@ export async function dealerRoutes(app: FastifyInstance) {
             customer_type = COALESCE(${body.customerType ?? null}::customer_type, customer_type),
             rate_category = COALESCE(${body.rateCategory ?? null}, rate_category),
             pay_mode = COALESCE(${body.payMode ?? null}::pay_mode, pay_mode),
+            zone_id = COALESCE(${body.zoneId ?? null}::uuid, zone_id),
             route_id = CASE WHEN ${body.routeId !== undefined} THEN ${body.routeId ?? null}::uuid ELSE route_id END,
             bank = CASE WHEN ${body.bank !== undefined} THEN ${body.bank ?? null} ELSE bank END,
-            officer_name = CASE WHEN ${body.officerName !== undefined} THEN ${body.officerName ?? null} ELSE officer_name END,
+            -- officer_name intentionally omitted: the dealers_set_officer_from_zone
+            -- trigger re-derives it from zone_id on every update (officer follows taluka).
             account_no = CASE WHEN ${body.accountNo !== undefined} THEN ${body.accountNo ?? null} ELSE account_no END,
             address_type = CASE WHEN ${body.addressType !== undefined} THEN ${body.addressType ?? null} ELSE address_type END,
             state = CASE WHEN ${body.state !== undefined} THEN ${body.state ?? null} ELSE state END,

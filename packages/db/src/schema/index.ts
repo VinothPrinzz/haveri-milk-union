@@ -42,6 +42,12 @@ export {
   adminSessionsRelations,
 } from "./users.js";
 
+// ── Officers (field sales officers assigned to talukas) ──
+export {
+  officers,
+  officersRelations,
+} from "./officers.js";
+
 // ── Categories ──
 export { categories } from "./categories.js";
 

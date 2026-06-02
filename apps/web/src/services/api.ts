@@ -617,6 +617,8 @@ export const fetchZones = async () => {
       id: z.id as string,
       name: (z.name ?? "") as string,
       slug: (z.slug ?? "") as string,
+      // Sales officer assigned to this taluka (empty when unassigned).
+      officerName: (z.officerName ?? z.officer_name ?? "") as string,
     }));
   }
   return [];

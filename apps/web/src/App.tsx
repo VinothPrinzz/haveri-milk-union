@@ -52,6 +52,7 @@ import {
   TalukaAgentSales, AdhocSalesReport, GSTStatement,
 } from "@/pages/sales-reports/SalesReports";
 import EmployeeSubsidyReportPage from "@/pages/sales-reports/EmployeeSubsidyReport";
+import DailySalesReport from "@/pages/sales-reports/DailySalesReport";
 import {
   TimeWindowsPage, NotificationsPage, DealerNotificationsPage,
   BannerManagementPage, RolesPage, UserManagementPage,
@@ -147,6 +148,7 @@ function AppInner() {
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />
           {/* Sales Reports */}
+          <Route path="/sales-reports/daily-sales-report" element={<DailySalesReport />} />
           <Route path="/sales-reports/daily-statement" element={<DailySalesStatement />} />
           <Route path="/sales-reports/day-route-cash" element={<DayRouteCashSales />} />
           <Route path="/sales-reports/officer-wise" element={<OfficerWiseSales />} />
