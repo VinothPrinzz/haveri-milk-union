@@ -10,7 +10,7 @@ import { adminSessions, users } from "@hmu/db/schema";
  * Usage in route: { preHandler: [adminAuth] }
  */
 
-type UserRole = "super_admin" | "manager" | "dispatch_officer" | "accountant" | "call_desk" | "officer";
+type UserRole = "super_admin" | "manager" | "dispatch_officer" | "accountant" | "call_desk" | "officer" | "viewer";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -105,80 +105,86 @@ export async function adminAuth(
 // Permission map: which roles can access which modules.
 // A mistake here could let a Call Desk user access finance data.
 
+// NOTE on the `viewer` role: it is a read-only role. It is added to EVERY
+// "*.view" / read-style permission below and to NONE of the "*.manage" /
+// create / update / cancel / wallet / users permissions. Result: a viewer can
+// browse every module but every write endpoint returns 403. When adding a new
+// permission, remember to include "viewer" only if it is a pure read.
 const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // Dashboard — everyone
-  dashboard: ["super_admin", "manager", "dispatch_officer", "accountant", "call_desk", "officer"],
+  dashboard: ["super_admin", "manager", "dispatch_officer", "accountant", "call_desk", "officer", "viewer"],
 
   // Orders
-  "orders.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "orders.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
   "orders.create": ["super_admin", "call_desk", "officer"],
   "orders.update": ["super_admin", "manager"],
   "orders.cancel": ["super_admin", "manager"],
 
   // Products
-  "products.view":   ["super_admin"],
+  "products.view":   ["super_admin", "viewer"],
   "products.manage": ["super_admin"],
 
   // Inventory / FGS
-  "inventory.view":   ["super_admin", "dispatch_officer"],
+  "inventory.view":   ["super_admin", "dispatch_officer", "viewer"],
   "inventory.update": ["super_admin", "dispatch_officer"],
 
   // Distribution / Routes
-  "distribution.view":   ["super_admin", "manager", "dispatch_officer"],
+  "distribution.view":   ["super_admin", "manager", "dispatch_officer", "viewer"],
   "distribution.manage": ["super_admin", "manager", "dispatch_officer"],
 
   // Dealers
-  "dealers.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "dealers.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
   "dealers.manage": ["super_admin", "manager"],
   "dealers.wallet": ["super_admin", "call_desk"],
 
   // Finance
-  "finance.view":   ["super_admin", "accountant"],
+  "finance.view":   ["super_admin", "accountant", "viewer"],
   "finance.manage": ["super_admin", "accountant"],
 
   // Reports
-  "reports.view": ["super_admin", "manager", "dispatch_officer", "accountant"],
+  "reports.view": ["super_admin", "manager", "dispatch_officer", "accountant", "viewer"],
 
-  // System
-  "system.view":   ["super_admin"],
+  // System — viewer gets read-only system.view, but NOT system.users
+  // (that permission also gates create/edit of users) or system.manage.
+  "system.view":   ["super_admin", "viewer"],
   "system.manage": ["super_admin"],
   "system.users":  ["super_admin"],
 
   // ── Phase 2 Permissions ──
 
   // Contractors (Masters → Contractors)
-  "contractors.view":   ["super_admin", "manager", "dispatch_officer"],
+  "contractors.view":   ["super_admin", "manager", "dispatch_officer", "viewer"],
   "contractors.manage": ["super_admin", "manager"],
 
   // Batches (Masters → Batches)
-  "batches.view":   ["super_admin", "manager", "dispatch_officer"],
+  "batches.view":   ["super_admin", "manager", "dispatch_officer", "viewer"],
   "batches.manage": ["super_admin", "manager", "dispatch_officer"],
 
   // Direct Sales (Sales Operations → Gate Pass / Cash Customer)
-  "direct_sales.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "direct_sales.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
   "direct_sales.manage": ["super_admin", "manager", "call_desk", "officer"],
 
   // VIP Contacts
-  "vip_contacts.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "vip_contacts.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
   "vip_contacts.manage": ["super_admin", "manager"],
 
   // Employees (HR-ish master)
-  "employees.view":   ["super_admin", "manager", "call_desk", "officer", "accountant"],
+  "employees.view":   ["super_admin", "manager", "call_desk", "officer", "accountant", "viewer"],
   "employees.manage": ["super_admin", "manager"],
 
   // Price Chart (Masters → Price Chart)
-  "price_chart.view":   ["super_admin", "manager", "accountant", "officer"],
+  "price_chart.view":   ["super_admin", "manager", "accountant", "officer", "viewer"],
   "price_chart.manage": ["super_admin", "manager"],
 
   // Route Sheets (Reports → Route Sheet)
-  "route_sheets.view":   ["super_admin", "manager", "dispatch_officer"],
+  "route_sheets.view":   ["super_admin", "manager", "dispatch_officer", "viewer"],
   "route_sheets.manage": ["super_admin", "manager", "dispatch_officer"],
 
   // Sales Reports (9 report types)
-  "sales_reports.view": ["super_admin", "manager", "accountant"],
+  "sales_reports.view": ["super_admin", "manager", "accountant", "viewer"],
 
   // Cash Customers (used by Direct Sales)
-  "cash_customers.view":   ["super_admin", "manager", "call_desk", "officer"],
+  "cash_customers.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
   "cash_customers.manage": ["super_admin", "manager", "call_desk", "officer"],
 };
 

@@ -2,6 +2,8 @@ import { pgEnum } from "drizzle-orm/pg-core";
 
 // ── Admin user roles ──
 // Phase 2: Added 'officer' for sales officers who handle direct sales / gate passes.
+// 'viewer' is a read-only role: granted only *.view permissions in the API
+// middleware (apps/api/src/middleware/admin-auth.ts).
 export const userRoleEnum = pgEnum("user_role", [
   "super_admin",
   "manager",
@@ -9,6 +11,7 @@ export const userRoleEnum = pgEnum("user_role", [
   "accountant",
   "call_desk",
   "officer",
+  "viewer",
 ]);
 
 // ── Order lifecycle ──
