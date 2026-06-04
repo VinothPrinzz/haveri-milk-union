@@ -3,7 +3,7 @@
 // Route preserved: /sales/invoices
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import PageHeader, {
   FilterBar, Field, EmptyState, StatusPill, fmtINR, fmtDate,
@@ -12,8 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
-import { Printer, X } from "lucide-react";
+import { Printer, X, RefreshCw } from "lucide-react";
 import { fetchInvoicesList as fetchInvoices } from "@/services/api";
+import { post } from "@/lib/apiClient";
 
 const STATUS_OPTS: F9Option[] = [
   { value: "draft", label: "Draft" },
@@ -31,6 +32,15 @@ export default function InvoicesListPage() {
   const [to, setTo] = useState(today);
   const [status, setStatus] = useState<string | null>(null);
   const [q, setQ] = useState("");
+
+  const qc = useQueryClient();
+  const backfill = useMutation({
+    mutationFn: () => post<{ total: number; enqueued: number }>("/api/v1/admin/invoices/backfill", {}),
+    onSuccess: (res) => {
+      alert(`Backfill started: ${res.enqueued} of ${res.total} missing invoices queued. Refresh in a moment.`);
+      qc.invalidateQueries({ queryKey: ["invoices"] });
+    },
+  });
 
   const { data: invoicesData, isLoading } = useQuery({
     queryKey: ["invoices", { from, to, status }],
@@ -55,9 +65,20 @@ export default function InvoicesListPage() {
         title="Invoices"
         subtitle="All invoices issued to dealers and customers"
         actions={
-          <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
-            <Printer className="h-3.5 w-3.5 mr-1" /> Print List
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              size="sm" variant="outline" className="h-8"
+              onClick={() => backfill.mutate()}
+              disabled={backfill.isPending}
+              title="Generate missing invoices for all confirmed orders"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 mr-1 ${backfill.isPending ? "animate-spin" : ""}`} />
+              {backfill.isPending ? "Generating…" : "Generate Missing"}
+            </Button>
+            <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
+              <Printer className="h-3.5 w-3.5 mr-1" /> Print List
+            </Button>
+          </div>
         }
       />
 
