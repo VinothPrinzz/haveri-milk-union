@@ -403,6 +403,8 @@ export async function orderRoutes(app: FastifyInstance) {
         routeId:  z.string().uuid().optional(),
         batchId:  z.string().uuid().optional(),
         date:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        from:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to:       z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         search:   z.string().optional(),
       });
       const q = querySchema.parse(request.query);
@@ -412,7 +414,7 @@ export async function orderRoutes(app: FastifyInstance) {
       const rows = await pgClient`
         SELECT o.id, o.dealer_id, o.zone_id, o.status, o.payment_mode,
                o.subtotal, o.total_gst, o.grand_total, o.item_count,
-               o.created_at, o.confirmed_at, o.dispatched_at,
+               o.created_at, o.delivery_date, o.confirmed_at, o.dispatched_at,
                d.name  AS dealer_name,
                d.phone AS dealer_phone,
                d.code  AS agent_code,
@@ -439,7 +441,9 @@ export async function orderRoutes(app: FastifyInstance) {
           AND (${q.dealerId ?? null}::uuid IS NULL OR o.dealer_id = ${q.dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.zoneId   ?? null}::uuid IS NULL OR o.zone_id   = ${q.zoneId   ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.routeId  ?? null}::uuid IS NULL OR d.route_id  = ${q.routeId  ?? '00000000-0000-0000-0000-000000000000'}::uuid)
-          AND (${q.date     ?? null}::date IS NULL OR o.created_at::date = ${q.date ?? '1970-01-01'}::date)
+          AND (${q.date     ?? null}::date IS NULL OR o.delivery_date = ${q.date ?? '1970-01-01'}::date)
+          AND (${q.from     ?? null}::date IS NULL OR o.delivery_date >= ${q.from ?? '1970-01-01'}::date)
+          AND (${q.to       ?? null}::date IS NULL OR o.delivery_date <= ${q.to   ?? '9999-12-31'}::date)
           AND (${q.batchId  ?? null}::uuid IS NULL OR EXISTS (
                 SELECT 1 FROM batch_routes br
                 WHERE br.batch_id = ${q.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
@@ -457,7 +461,9 @@ export async function orderRoutes(app: FastifyInstance) {
           AND (${q.dealerId ?? null}::uuid IS NULL OR o.dealer_id = ${q.dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.zoneId   ?? null}::uuid IS NULL OR o.zone_id   = ${q.zoneId   ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.routeId  ?? null}::uuid IS NULL OR d.route_id  = ${q.routeId  ?? '00000000-0000-0000-0000-000000000000'}::uuid)
-          AND (${q.date     ?? null}::date IS NULL OR o.created_at::date = ${q.date ?? '1970-01-01'}::date)
+          AND (${q.date     ?? null}::date IS NULL OR o.delivery_date = ${q.date ?? '1970-01-01'}::date)
+          AND (${q.from     ?? null}::date IS NULL OR o.delivery_date >= ${q.from ?? '1970-01-01'}::date)
+          AND (${q.to       ?? null}::date IS NULL OR o.delivery_date <= ${q.to   ?? '9999-12-31'}::date)
           AND (${q.batchId  ?? null}::uuid IS NULL OR EXISTS (
                 SELECT 1 FROM batch_routes br
                 WHERE br.batch_id = ${q.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid

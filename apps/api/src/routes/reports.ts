@@ -132,7 +132,7 @@ export async function reportsRoutes(app: FastifyInstance) {
                SELECT 1
                  FROM orders o
                  JOIN dealers d ON d.id = o.dealer_id
-                WHERE o.created_at::date = ${q.date}::date
+                WHERE o.delivery_date = ${q.date}::date
                   AND o.status != 'cancelled'
                   AND d.route_id = r.id
              )
@@ -174,6 +174,11 @@ export async function reportsRoutes(app: FastifyInstance) {
       `;
  
       // ── 6. Dealer order items for the day ──
+      // Keyed on delivery_date (the day goods are loaded/delivered), NOT
+      // created_at. Standing-indent drafts are materialized the night
+      // before delivery, so created_at lands on the prior day — filtering
+      // on it would drop them from their own delivery-day route sheet.
+      // direct_sales already uses sale_date (below) for the same reason.
       const itemRows = await pgClient`
         SELECT o.id AS order_id, o.dealer_id, d.route_id,
                oi.product_id, oi.quantity::int AS qty,
@@ -181,7 +186,7 @@ export async function reportsRoutes(app: FastifyInstance) {
           FROM orders o
           JOIN dealers d      ON d.id = o.dealer_id
           JOIN order_items oi ON oi.order_id = o.id
-         WHERE o.created_at::date = ${q.date}::date
+         WHERE o.delivery_date = ${q.date}::date
            AND o.status != 'cancelled'
            AND d.route_id = ANY(${routeIds}::uuid[])
       `;

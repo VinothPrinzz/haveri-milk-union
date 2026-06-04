@@ -81,7 +81,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
             COALESCE(SUM(o.grand_total), 0)::numeric AS total_amount
           FROM orders o
           JOIN dealers d ON d.id = o.dealer_id AND d.deleted_at IS NULL
-          WHERE o.created_at::date = ${targetDate}::date
+          WHERE o.delivery_date = ${targetDate}::date
             AND o.status::text = ANY(${DISPATCHABLE_STATUSES as unknown as string[]}::text[])
             AND d.route_id IS NOT NULL
             AND (${routeId}::uuid IS NULL
@@ -150,7 +150,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
         JOIN order_items oi   ON oi.order_id = o.id
         JOIN products p       ON p.id = oi.product_id AND p.deleted_at IS NULL
         LEFT JOIN categories c ON c.id = p.category_id
-        WHERE o.created_at::date = ${targetDate}::date
+        WHERE o.delivery_date = ${targetDate}::date
           AND o.status::text = ANY(${DISPATCHABLE_STATUSES as unknown as string[]}::text[])
           AND d.route_id IS NOT NULL
           AND (${routeId}::uuid IS NULL
@@ -322,7 +322,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
               COALESCE(SUM(o.grand_total), 0)::numeric AS total_amount
             FROM orders o
             JOIN dealers d ON d.id = o.dealer_id
-            WHERE o.created_at::date = ${body.date}::date
+            WHERE o.delivery_date = ${body.date}::date
               AND d.route_id = ${body.routeId}::uuid
               AND o.status IN ('confirmed','dispatched','delivered')
           `;
@@ -409,8 +409,10 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
           SELECT * FROM inserted
         `;
 
-        // Route-scoped cascade. orders is partitioned by created_at,
-        // so the date filter prunes partitions correctly.
+        // Route-scoped cascade. Keyed on delivery_date so it matches the
+        // orders the dispatch sheet was built from (idx_orders_delivery_date
+        // supports the scan). Filtering on created_at here would miss
+        // standing-indent orders materialized the night before delivery.
         const cascaded = await tx`
           UPDATE orders o SET
             status         = 'dispatched',
@@ -418,7 +420,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
             updated_at     = now()
           FROM dealers d
           WHERE o.dealer_id = d.id
-            AND o.created_at::date = ${body.date}::date
+            AND o.delivery_date = ${body.date}::date
             AND d.route_id = ${body.routeId}::uuid
             AND o.status   = 'confirmed'
           RETURNING o.id

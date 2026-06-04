@@ -44,6 +44,31 @@ async function loadReportConfig(): Promise<ReportConfig> {
   };
 }
 
+// Fixed milk / curd / lassi SKU map shared by the Daily Sales Report and the
+// Taluka/Agent milk-sales summary. `bucket` + `qtyToUnit` give the per-packet
+// Ltr (milk) / Kg (curd) factor, so volume totals are derived straight from
+// packet counts — always consistent regardless of how pack_size is stored.
+const DSR_COLUMNS = [
+  { key: "htm1000",     code: "PD0191", name: "HTM 1000ML",         header: "HTM 1000ml",         group: "HTM MILK", bucket: "milk", qtyToUnit: 1.0 },
+  { key: "htm500",      code: "PD0193", name: "HTM 500ML",          header: "HTM 500ML",          group: "HTM MILK", bucket: "milk", qtyToUnit: 0.5 },
+  { key: "hcm160",      code: "PD0187", name: "HCM 160ML",          header: "HCM 160ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.16 },
+  { key: "hcm500",      code: "PD0188", name: "HCM 500ML",          header: "HCM 500ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.5 },
+  { key: "sbm1000",     code: "PD0274", name: "SHUBHAM 1000ML",     header: "SBM 1000ML",         group: "SBM MILK", bucket: "milk", qtyToUnit: 1.0 },
+  { key: "sbm500",      code: "PD0277", name: "SHUBHAM 500ML",      header: "SBM 500ML",          group: "SBM MILK", bucket: "milk", qtyToUnit: 0.5 },
+  { key: "sbm200",      code: "PD0276", name: "SHUBHAM 200ML",      header: "SBM 200ML",          group: "SBM MILK", bucket: "milk", qtyToUnit: 0.2 },
+  { key: "samrudhi500", code: "PD0248", name: "SAMRUDHI 500ML",     header: "SAMRUDHI 500ML",     group: "SAMRUDHI", bucket: "milk", qtyToUnit: 0.5 },
+  { key: "curd140",     code: "PD0122", name: "CURD 140GM",         header: "CURD 140GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.14 },
+  { key: "curd200",     code: "PD0124", name: "CURD 200 GM",        header: "CURD 200GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.2 },
+  { key: "curd500",     code: "PD0126", name: "CURD 500GM",         header: "CURD 500GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.5 },
+  { key: "curd10kg",    code: "PD0127", name: "CURD BUCKET 10KG",   header: "CURD 10KG (B)",      group: "CURD", bucket: "curd", qtyToUnit: 10 },
+  { key: "curd5kg",     code: "PD0128", name: "CURD BUCKET 5KG",    header: "CURD 05KG (B)",      group: "CURD", bucket: "curd", qtyToUnit: 5 },
+  // 200ml lassi / buttermilk — 0.2 L per packet so they read in litres too.
+  { key: "sl200",       code: "PD0288", name: "SWEET LASSI -200ML", header: "SL 200 ML",          group: "", bucket: "other", qtyToUnit: 0.2 },
+  { key: "majjige",     code: "PD0217", name: "MASALA MAJJIGE 200ML", header: "MASAL MAJJIGE 200ML", group: "", bucket: "other", qtyToUnit: 0.2 },
+] as const;
+const MILK_COLS = DSR_COLUMNS.filter(c => c.bucket === "milk");
+const CURD_COLS = DSR_COLUMNS.filter(c => c.bucket === "curd");
+
 export async function salesReportRoutes(app: FastifyInstance) {
   // ════════════════════════════════════════════
   // B1. Daily Sales Statement — 3 pages (Milk / Curd / Lassi+Majige)
@@ -712,11 +737,60 @@ export async function salesReportRoutes(app: FastifyInstance) {
         return { name: t.name, customers, detailedTotals, summary, summaryTotals };
       });
 
+      // ── Taluka wise milk sales (In Ltrs) overview ──
+      // Total Milk (Ltr) / Total Curd (Kg) per taluka = Σ packets × qtyToUnit,
+      // using the same SKU factors as the Daily Sales Report. Avg = Total ÷ days.
+      const milkFactorById = new Map<string, number>();
+      const curdFactorById = new Map<string, number>();
+      {
+        const milkByCode = new Map(MILK_COLS.map(c => [c.code, c.qtyToUnit]));
+        const curdByCode = new Map(CURD_COLS.map(c => [c.code, c.qtyToUnit]));
+        for (const p of products as any[]) {
+          if (milkByCode.has(p.code)) milkFactorById.set(p.id, milkByCode.get(p.code)!);
+          if (curdByCode.has(p.code)) curdFactorById.set(p.id, curdByCode.get(p.code)!);
+        }
+      }
+      const volByTaluka = new Map<string, { milk: number; curd: number }>();
+      for (const r of rows as any[]) {
+        const v = volByTaluka.get(r.taluka) ?? { milk: 0, curd: 0 };
+        const qty = Number(r.qty) || 0;
+        if (milkFactorById.has(r.product_id)) v.milk += qty * milkFactorById.get(r.product_id)!;
+        if (curdFactorById.has(r.product_id)) v.curd += qty * curdFactorById.get(r.product_id)!;
+        volByTaluka.set(r.taluka, v);
+      }
+      const numDays = Math.max(
+        1,
+        Math.round((new Date(q.to).getTime() - new Date(q.from).getTime()) / 86_400_000) + 1
+      );
+      const milkSummaryRows = talukas.map(t => {
+        const v = volByTaluka.get(t.name) ?? { milk: 0, curd: 0 };
+        return {
+          taluka: t.name,
+          totalMilk: round2(v.milk),
+          avgMilk: round2(v.milk / numDays),
+          totalCurd: round2(v.curd),
+          avgCurd: round2(v.curd / numDays),
+        };
+      });
+      const grandMilk = round2(milkSummaryRows.reduce((s, r) => s + r.totalMilk, 0));
+      const grandCurd = round2(milkSummaryRows.reduce((s, r) => s + r.totalCurd, 0));
+      const talukaMilkSummary = {
+        numDays,
+        rows: milkSummaryRows,
+        totals: {
+          totalMilk: grandMilk,
+          avgMilk: round2(grandMilk / numDays),
+          totalCurd: grandCurd,
+          avgCurd: round2(grandCurd / numDays),
+        },
+      };
+
       return reply.send({
         from: q.from,
         to: q.to,
         products: (products as any[]).map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
         fixedSummaryProducts,
+        talukaMilkSummary,
         talukas,
       });
     }
@@ -1023,32 +1097,8 @@ export async function salesReportRoutes(app: FastifyInstance) {
         .toISOString()
         .slice(0, 10);
 
-      // Fixed column layout — order + grouping matches the paper report.
-      // Resolved to product ids by code → name → alias (normalised).
-      // `bucket` + `qtyToUnit` give the per-packet Ltr (milk) / Kg (curd)
-      // factor, so TOTAL MILK / TOTAL CURD are derived straight from these
-      // columns — always consistent with what's printed, regardless of how
-      // pack_size is stored on the product row.
-      const DSR_COLUMNS = [
-        { key: "htm1000",     code: "PD0191", name: "HTM 1000ML",         header: "HTM 1000ml",         group: "HTM MILK", bucket: "milk", qtyToUnit: 1.0 },
-        { key: "htm500",      code: "PD0193", name: "HTM 500ML",          header: "HTM 500ML",          group: "HTM MILK", bucket: "milk", qtyToUnit: 0.5 },
-        { key: "hcm160",      code: "PD0187", name: "HCM 160ML",          header: "HCM 160ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.16 },
-        { key: "hcm500",      code: "PD0188", name: "HCM 500ML",          header: "HCM 500ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.5 },
-        { key: "sbm1000",     code: "PD0274", name: "SHUBHAM 1000ML",     header: "SBM 1000ML",         group: "SBM MILK", bucket: "milk", qtyToUnit: 1.0 },
-        { key: "sbm500",      code: "PD0277", name: "SHUBHAM 500ML",      header: "SBM 500ML",          group: "SBM MILK", bucket: "milk", qtyToUnit: 0.5 },
-        { key: "sbm200",      code: "PD0276", name: "SHUBHAM 200ML",      header: "SBM 200ML",          group: "SBM MILK", bucket: "milk", qtyToUnit: 0.2 },
-        { key: "samrudhi500", code: "PD0248", name: "SAMRUDHI 500ML",     header: "SAMRUDHI 500ML",     group: "SAMRUDHI", bucket: "milk", qtyToUnit: 0.5 },
-        { key: "curd140",     code: "PD0122", name: "CURD 140GM",         header: "CURD 140GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.14 },
-        { key: "curd200",     code: "PD0124", name: "CURD 200 GM",        header: "CURD 200GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.2 },
-        { key: "curd500",     code: "PD0126", name: "CURD 500GM",         header: "CURD 500GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.5 },
-        { key: "curd10kg",    code: "PD0127", name: "CURD BUCKET 10KG",   header: "CURD 10KG (B)",      group: "CURD", bucket: "curd", qtyToUnit: 10 },
-        { key: "curd5kg",     code: "PD0128", name: "CURD BUCKET 5KG",    header: "CURD 05KG (B)",      group: "CURD", bucket: "curd", qtyToUnit: 5 },
-        // 200ml lassi / buttermilk — 0.2 L per packet so they read in litres too.
-        { key: "sl200",       code: "PD0288", name: "SWEET LASSI -200ML", header: "SL 200 ML",          group: "", bucket: "other", qtyToUnit: 0.2 },
-        { key: "majjige",     code: "PD0217", name: "MASALA MAJJIGE 200ML", header: "MASAL MAJJIGE 200ML", group: "", bucket: "other", qtyToUnit: 0.2 },
-      ] as const;
-      const MILK_COLS = DSR_COLUMNS.filter(c => c.bucket === "milk");
-      const CURD_COLS = DSR_COLUMNS.filter(c => c.bucket === "curd");
+      // Fixed column layout (DSR_COLUMNS / MILK_COLS / CURD_COLS) is defined at
+      // module scope and shared with the Taluka/Agent milk-sales summary.
 
       // ── 1. Products: resolve the fixed columns + the G/L set by name ──
       const products = await pgClient`
