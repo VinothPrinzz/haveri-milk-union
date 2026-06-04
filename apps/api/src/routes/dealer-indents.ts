@@ -19,6 +19,7 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { dealerAuth } from "../middleware/dealer-auth.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
+import { enqueuePDFInvoice } from "../lib/queue.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -631,6 +632,9 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         `;
       });
  
+      // Generate invoice in the background (same queue as direct orders).
+      await enqueuePDFInvoice(order.id);
+
       return reply.send({
         orderId: order.id,
         status: "confirmed",

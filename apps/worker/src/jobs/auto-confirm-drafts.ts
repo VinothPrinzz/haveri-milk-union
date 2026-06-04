@@ -144,6 +144,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
   let totalDrafts = 0;
 
   const notifQueue = new Queue("push-notifications", { connection: redis });
+  const pdfQueue   = new Queue("pdf-invoice",        { connection: redis });
 
   for (const route of routesWithClosedWindows) {
     // Drafts are keyed by dealer's route_id (dealers.route_id = route.id).
@@ -204,6 +205,18 @@ export async function processAutoConfirmDrafts(_job: Job) {
           `;
           confirmed++;
 
+          // Enqueue invoice generation (same queue the API uses).
+          await pdfQueue
+            .add(`invoice-${draft.id.slice(0, 8)}`, { orderId: draft.id }, {
+              removeOnComplete: 100,
+              removeOnFail: 500,
+              attempts: 3,
+              backoff: { type: "exponential", delay: 5000 },
+            })
+            .catch((e) =>
+              console.warn(`[AutoConfirm] invoice enqueue failed for ${draft.id}:`, e?.message)
+            );
+
           if (draft.notifications_enabled && draft.fcm_token) {
             await notifQueue
               .add("indent-confirmed", {
@@ -256,6 +269,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
   }
 
   await notifQueue.close();
+  await pdfQueue.close();
 
   const summary = {
     routesMatched: routesWithClosedWindows.length,

@@ -22,7 +22,9 @@ interface CartScreenProps {
 
 export default function CartScreen({ onBack, onOrderPlaced }: CartScreenProps) {
   const dealer = useAuthStore((s) => s.dealer);
-  const windowQuery = useWindowStatus(dealer?.zoneId);
+  // Time-windows are route-based — the endpoint is keyed by routeId, not
+  // zoneId. Passing zoneId queried the wrong key and yielded no window.
+  const windowQuery = useWindowStatus(dealer?.routeId);
 
   // Build a friendly subtitle from the window remaining time.
   const windowSubtitle = useMemo(() => {
@@ -42,12 +44,17 @@ export default function CartScreen({ onBack, onOrderPlaced }: CartScreenProps) {
     return `Window closes in ${mins}m`;
   }, [windowQuery.data]);
 
-  // Location label: prefer locationLabel field, fall back to zoneName
+  // Location label: mirror the profile screen — show the dealer's route
+  // first (that's their assigned delivery route), then fall back to zone
+  // or a free-text location label. Previously this showed the old zone.
   const locationLabel = useMemo(() => {
     if (!dealer) return "Your Location";
-    const parts = [dealer.locationLabel, dealer.zoneName]
-      .filter(Boolean) as string[];
-    return parts.length > 0 ? parts.join(" - ") : "Your Location";
+    return (
+      dealer.routeName ||
+      dealer.zoneName ||
+      dealer.locationLabel ||
+      "Your Location"
+    );
   }, [dealer]);
 
   return (

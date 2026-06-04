@@ -39,6 +39,7 @@ import { colors, fonts } from "../lib/theme";
 import AppHeader from "../components/AppHeader";
 import DatePickerModal from "../components/DatePickerModal";
 import TopUpSheet from "../components/TopUpSheet";
+import QtyStepper from "../components/QtyStepper";
 import { useAuthStore } from "../store/auth";
 import { useNotifications } from "../hooks/useNotifications";
 import { useWindowStatus } from "../hooks/useWindow";
@@ -76,7 +77,8 @@ export default function IndentScreen({
 }: IndentScreenProps) {
   const dealer = useAuthStore((s) => s.dealer);
   const { data: notifs } = useNotifications();
-  const windowQuery = useWindowStatus(dealer?.zoneId);
+  // Time-windows are route-based — fetch by routeId, not zoneId.
+  const windowQuery = useWindowStatus(dealer?.routeId);
 
   const selectedDate = useTargetDateStore((s) => s.selectedDate);
   const setSelectedDate = useTargetDateStore((s) => s.setSelectedDate);
@@ -202,11 +204,13 @@ export default function IndentScreen({
   ]);
 
   // ── Item +/- ──
-  const updateItemQty = (productId: string, delta: number) => {
+  // Absolute-quantity setter — used by the editable stepper input (and +/-).
+  // Lets the dealer type a quantity directly instead of tapping +.
+  const setItemQty = (productId: string, qty: number) => {
     // Only a true draft / preview can be edited.
     if (!isEditable) return;
     const current = items.find((i) => i.productId === productId);
-    const newQty = Math.max(0, (current?.quantity ?? 0) + delta);
+    const newQty = Math.max(0, qty);
     const nextItems = items
       .map((i) => ({
         productId: i.productId,
@@ -350,8 +354,7 @@ export default function IndentScreen({
                     isLast={idx === items.length - 1}
                     // Steppers only when the order is still an editable draft.
                     disabled={!isEditable}
-                    onIncrement={() => updateItemQty(it.productId, 1)}
-                    onDecrement={() => updateItemQty(it.productId, -1)}
+                    onSetQty={(qty) => setItemQty(it.productId, qty)}
                   />
                 ))}
               </View>
@@ -467,14 +470,12 @@ function DraftRow({
   item,
   isLast,
   disabled,
-  onIncrement,
-  onDecrement,
+  onSetQty,
 }: {
   item: DraftItem;
   isLast: boolean;
   disabled: boolean;
-  onIncrement: () => void;
-  onDecrement: () => void;
+  onSetQty: (qty: number) => void;
 }) {
   return (
     <View style={[styles.itemRow, isLast && styles.itemRowLast]}>
@@ -495,23 +496,11 @@ function DraftRow({
           <Text style={styles.qtyBadgeText}>×{item.quantity}</Text>
         </View>
       ) : (
-        <View style={styles.itemStepper}>
-          <TouchableOpacity
-            onPress={onDecrement}
-            activeOpacity={0.7}
-            style={styles.itemStepBtn}
-          >
-            <Text style={styles.itemStepIcon}>−</Text>
-          </TouchableOpacity>
-          <Text style={styles.itemStepVal}>{item.quantity}</Text>
-          <TouchableOpacity
-            onPress={onIncrement}
-            activeOpacity={0.7}
-            style={styles.itemStepBtn}
-          >
-            <Text style={styles.itemStepIcon}>+</Text>
-          </TouchableOpacity>
-        </View>
+        <QtyStepper
+          value={item.quantity}
+          onSet={onSetQty}
+          accessibilityLabel={`quantity for ${item.productName}`}
+        />
       )}
     </View>
   );
@@ -750,31 +739,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.medium,
     color: colors.mutedForeground,
     marginTop: 1,
-  },
-  itemStepper: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.primaryLight,
-    borderRadius: 4,
-    overflow: "hidden",
-  },
-  itemStepBtn: {
-    width: 24,
-    height: 26,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  itemStepIcon: {
-    fontSize: 14,
-    fontFamily: fonts.bold,
-    color: colors.primary,
-  },
-  itemStepVal: {
-    minWidth: 22,
-    textAlign: "center",
-    fontSize: 12,
-    fontFamily: fonts.extrabold,
-    color: colors.primary,
   },
   // Read-only quantity badge (placed orders)
   qtyBadge: {
