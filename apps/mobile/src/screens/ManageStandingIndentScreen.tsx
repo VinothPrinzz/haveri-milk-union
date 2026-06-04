@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, fonts } from "../lib/theme";
+import QtyStepper from "../components/QtyStepper";
 import {
   useEligibleProducts,
   useUpdateStandingIndent,
@@ -115,9 +116,11 @@ export default function ManageStandingIndentScreen({
     });
   };
 
-  const handleQtyChange = (productId: string, delta: number) => {
+  // Absolute-quantity setter — used by the stepper's editable input (and +/-),
+  // so the dealer can type a default quantity directly instead of tapping +.
+  const handleQtySet = (productId: string, qty: number) => {
     const cur = edits.get(productId);
-    const newQty = Math.max(0, Math.min(10_000, (cur?.defaultQty ?? 0) + delta));
+    const newQty = Math.max(0, Math.min(10_000, qty));
     // Auto-flip active=true when qty goes from 0 → positive
     const wasZero = (cur?.defaultQty ?? 0) === 0;
     const isPositive = newQty > 0;
@@ -250,8 +253,7 @@ export default function ManageStandingIndentScreen({
                 edit={edit}
                 dirty={dirty}
                 onActiveToggle={(v) => handleActiveToggle(p.productId, v)}
-                onIncrement={() => handleQtyChange(p.productId, 1)}
-                onDecrement={() => handleQtyChange(p.productId, -1)}
+                onSetQty={(qty) => handleQtySet(p.productId, qty)}
               />
             );
           })
@@ -316,15 +318,13 @@ function ProductRow({
   edit,
   dirty,
   onActiveToggle,
-  onIncrement,
-  onDecrement,
+  onSetQty,
 }: {
   product: EligibleProduct;
   edit: LocalEdit;
   dirty: boolean;
   onActiveToggle: (v: boolean) => void;
-  onIncrement: () => void;
-  onDecrement: () => void;
+  onSetQty: (qty: number) => void;
 }) {
   const inactive = !edit.active;
   return (
@@ -351,25 +351,13 @@ function ProductRow({
       </View>
 
       <View style={styles.rowControls}>
-        <View style={[styles.stepper, inactive && styles.stepperInactive]}>
-          <TouchableOpacity
-            onPress={onDecrement}
-            disabled={inactive}
-            activeOpacity={0.7}
-            style={styles.stepBtn}
-          >
-            <Text style={styles.stepIcon}>−</Text>
-          </TouchableOpacity>
-          <Text style={styles.stepVal}>{edit.defaultQty}</Text>
-          <TouchableOpacity
-            onPress={onIncrement}
-            disabled={inactive}
-            activeOpacity={0.7}
-            style={styles.stepBtn}
-          >
-            <Text style={styles.stepIcon}>+</Text>
-          </TouchableOpacity>
-        </View>
+        <QtyStepper
+          value={edit.defaultQty}
+          onSet={onSetQty}
+          max={10_000}
+          disabled={inactive}
+          accessibilityLabel={`default quantity for ${product.productName}`}
+        />
         <Switch
           value={edit.active}
           onValueChange={onActiveToggle}
@@ -514,34 +502,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-  },
-  stepper: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.background,
-    borderWidth: 0.5,
-    borderColor: colors.border,
-    borderRadius: 4,
-    overflow: "hidden",
-  },
-  stepperInactive: { opacity: 0.4 },
-  stepBtn: {
-    width: 24,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  stepIcon: {
-    fontSize: 14,
-    fontFamily: fonts.bold,
-    color: colors.foreground,
-  },
-  stepVal: {
-    minWidth: 22,
-    textAlign: "center",
-    fontSize: 12,
-    fontFamily: fonts.extrabold,
-    color: colors.foreground,
   },
   switch: { transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] },
 

@@ -28,6 +28,8 @@ interface RawOrder {
   grand_total: string;
   item_count: number;
   created_at: string;           // ← always string from backend
+  confirmed_at?: string | null;
+  cancel_window_ends_at?: string | null;
   items?: RawOrderItem[];
   cancellation_status?: "pending" | "approved" | "rejected" | null;
 }
@@ -62,6 +64,8 @@ function normalizeOrder(o: RawOrder): Order {
     grandTotal:  parseFloat(String(o.grand_total)) || 0,
     itemCount:   Number(o.item_count) || 0,
     createdAt:   toIsoString(o.created_at),
+    confirmedAt: o.confirmed_at ? toIsoString(o.confirmed_at) : null,
+    cancelWindowEndsAt: o.cancel_window_ends_at ? toIsoString(o.cancel_window_ends_at) : null,
     cancellationStatus: o.cancellation_status ?? null,
     items: (o.items ?? []).map((i) => ({
       productId:  i.product_id,

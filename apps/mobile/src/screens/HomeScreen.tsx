@@ -162,15 +162,16 @@ export default function HomeScreen({
     gstPercent: p.gstPercent,
   });
 
-  // Absolute-quantity setter — used by the ProductCard text input (blur/submit).
-  // Clamps to [0, stock] and removes the item when qty reaches 0.
+  // Absolute-quantity setter — used by the ProductCard stepper's editable
+  // input (and its +/-). Clamps to [0, stock] and removes at 0. addItem is
+  // called first when the product isn't in the cart yet, because the store's
+  // setQuantity is a no-op for products it doesn't know about.
   const setItemQty = useCallback(
     (productId: string, qty: number, product: Product) => {
       if (qty <= 0) {
         setQuantity(productId, 0); // removes item
         return;
       }
-      // Ensure the product is in the cart (addItem is idempotent for new products)
       if (!cartItems[productId]) {
         addItem(toCartProduct(product));
       }
@@ -191,8 +192,7 @@ export default function HomeScreen({
         />
       </View>
     ),
-    // cartItems changes when a quantity changes — keep renderItem fresh.
-    [cartItems, setItemQty] // eslint-disable-line react-hooks/exhaustive-deps
+    [cartItems, addItem, removeItem, setItemQty] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // Scrolls WITH the grid. No TextInput here, so re-rendering is safe.

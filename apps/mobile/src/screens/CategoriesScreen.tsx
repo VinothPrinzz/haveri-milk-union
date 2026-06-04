@@ -61,10 +61,12 @@ export default function CategoriesScreen({
   const cartProducts = useCartStore((s) => s.getItems());
   const addItem = useCartStore((s) => s.addItem);
   const removeItem = useCartStore((s) => s.removeItem);
+  const setQuantity = useCartStore((s) => s.setQuantity);
 
   const catsQuery = useCategories();
   const productsQuery = useProducts();
-  const windowQuery = useWindowStatus(dealer?.zoneId);
+  // Time-windows are route-based — fetch by routeId, not zoneId.
+  const windowQuery = useWindowStatus(dealer?.routeId);
   const { data: notifs } = useNotifications();
 
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
@@ -105,6 +107,19 @@ export default function CategoriesScreen({
     mrp: p.mrp,
     gstPercent: p.gstPercent,
   });
+
+  // Absolute-quantity setter for the ProductCard stepper's editable input.
+  // addItem first when not in cart — setQuantity is a no-op for unknown items.
+  const setItemQty = (product: Product, qty: number) => {
+    if (qty <= 0) {
+      setQuantity(product.id, 0);
+      return;
+    }
+    if (!cartItems[product.id]) {
+      addItem(toCartProduct(product));
+    }
+    setQuantity(product.id, qty);
+  };
 
   if (!dealer) return null;
 
@@ -158,6 +173,7 @@ export default function CategoriesScreen({
                     quantity={cartItems[p.id]?.quantity ?? 0}
                     onAdd={() => addItem(toCartProduct(p))}
                     onRemove={() => removeItem(p.id)}
+                    onSetQuantity={(qty) => setItemQty(p, qty)}
                   />
                 </View>
               ))}
