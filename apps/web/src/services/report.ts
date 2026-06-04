@@ -348,11 +348,26 @@ export interface TalukaBlock {
   };
 }
 
+export interface TalukaMilkSummaryRow {
+  taluka: string;
+  totalMilk: number;
+  avgMilk: number;
+  totalCurd: number;
+  avgCurd: number;
+}
+
+export interface TalukaMilkSummary {
+  numDays: number;
+  rows: TalukaMilkSummaryRow[];
+  totals: { totalMilk: number; avgMilk: number; totalCurd: number; avgCurd: number };
+}
+
 export interface TalukaAgentResponse {
   from: string;
   to: string;
   products: ProductLite[];
   fixedSummaryProducts: Array<{ code: string; label: string; id: string | null }>;
+  talukaMilkSummary: TalukaMilkSummary;
   talukas: TalukaBlock[];
 }
 

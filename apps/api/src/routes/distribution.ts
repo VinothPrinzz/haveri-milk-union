@@ -324,7 +324,7 @@ export async function distributionRoutes(app: FastifyInstance) {
           FROM orders o
           JOIN dealers d ON d.id = o.dealer_id
           WHERE d.route_id = ${a.route_id}::uuid
-            AND o.created_at::date = ${targetDate}::date
+            AND o.delivery_date = ${targetDate}::date
             AND o.status != 'cancelled'
           ORDER BY d.name
         `;

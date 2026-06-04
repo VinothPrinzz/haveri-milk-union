@@ -211,7 +211,10 @@ function normalizeIndent(d: Record<string, unknown>) {
   const rawId = (d.id ?? "") as string;
   const formattedId = rawId ? `#HMU-${rawId.slice(-4).toUpperCase()}` : "";
 
-  const rawDate = d.created_at ?? d.date ?? "";
+  // Prefer delivery_date (the operational/delivery day) so this row lines up
+  // with the route sheet & dispatch sheet, which key on delivery_date.
+  // Fall back to created_at for older rows / sources without a delivery_date.
+  const rawDate = d.delivery_date ?? d.created_at ?? d.date ?? "";
   const formattedDate = rawDate
     ? (() => {
         const dt = new Date(String(rawDate));
@@ -794,7 +797,9 @@ export const fetchIndents = async (filters?: {
   if (filters?.status) params.status = filters.status.toLowerCase();
   if (filters?.routeId) params.routeId = filters.routeId;
   if (filters?.batchId) params.batchId = filters.batchId;
-  if (filters?.date) params.date = filters.date; // YYYY-MM-DD
+  if (filters?.date) params.date = filters.date; // YYYY-MM-DD (exact delivery day)
+  if (filters?.from) params.from = filters.from; // YYYY-MM-DD (delivery_date >= from)
+  if (filters?.to) params.to = filters.to;       // YYYY-MM-DD (delivery_date <= to)
   if (filters?.dealerId) params.dealerId = filters.dealerId;
   const data = await get<{ data: Record<string, unknown>[] }>(
     "/orders",

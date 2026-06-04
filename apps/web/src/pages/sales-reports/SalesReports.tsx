@@ -16,6 +16,7 @@ import {
   type OfficerWiseResponse, type SalesGridResponse, type SalesGridRoute,
   type CreditSalesResponse, type TalukaAgentResponse,
   type AdhocResponse, type GstStatementResponse,
+  type ProductLite,
 } from "@/services/report";
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import { toCsv } from "@/lib/exporters";
@@ -634,56 +635,153 @@ export const CreditSalesReport = () => (
 );
 
 // ─── B7. Taluka / Agent Wise ────────────────────────────────────
+// Legacy "Taluka wise agent wise sales statement" layout: one taluka per
+// sheet. Each taluka renders a detailed customer × product matrix (split
+// across column-pages when it is too wide for the paper) followed by a
+// summary page (fixed product columns + Milk / Curd totals + amount).
 export const TalukaAgentSales = () => (
   <SalesReportShell<TalukaAgentResponse>
     title="Taluka / Agent Wise Sales"
-    description="Sales aggregated by taluka and agent"
+    description="Taluka wise agent wise sales statement — one taluka per page"
+    printOrientation="landscape"
     fetcher={(from, to) => fetchTalukaAgent({ from, to })}
     renderPages={(from, to, apiData) => {
       if (!apiData) return [];
-      return [(
-        <div key="p1">
-          <ReportHeader title="Taluka / Agent Wise Sales" subtitle={`Period: ${from} to ${to}`} />
-          <table className="w-full text-[11px] border-collapse">
-            <thead>
-              <tr className="bg-muted/50">
-                <th className="border border-border py-1.5 px-2 text-left font-bold">Taluka</th>
-                <th className="border border-border py-1.5 px-2 text-left font-bold">Agent</th>
-                <th className="border border-border py-1.5 px-2 text-right font-bold num">Orders</th>
-                <th className="border border-border py-1.5 px-2 text-right font-bold num">Quantity</th>
-                <th className="border border-border py-1.5 px-2 text-right font-bold num">Amount ₹</th>
-              </tr>
-            </thead>
-            <tbody>
-              {apiData.talukas.flatMap((t, ti) =>
-                t.customers.map((r: any, i: number) => (
-                  <tr key={`${ti}-${i}`}>
-                    <td className="border border-border py-1 px-2 font-medium">{i === 0 ? t.name : ""}</td>
-                    <td className="border border-border py-1 px-2">{r.name}</td>
-                    <td className="border border-border py-1 px-2 text-right num">{fmtQty(r.orders ?? 0)}</td>
-                    <td className="border border-border py-1 px-2 text-right num">{fmtQty(r.total ?? 0)}</td>
-                    <td className="border border-border py-1 px-2 text-right num">{fmtINR(r.amount ?? r.total ?? 0)}</td>
-                  </tr>
-                ))
-              )}
-              <tr className="font-bold bg-muted/40">
-                <td colSpan={2} className="border border-border py-1.5 px-2 text-right">TOTAL</td>
-                <td className="border border-border py-1.5 px-2 text-right num">—</td>
-                <td className="border border-border py-1.5 px-2 text-right num">—</td>
-                <td className="border border-border py-1.5 px-2 text-right num">—</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )];
+
+      // Cap product columns/page so a landscape A4 fits. Tune after print test.
+      const COLUMNS_PER_PAGE = 9;
+      const stmt = `Taluka wise agent wise sales statement · Period ${from} to ${to}`;
+      const fmtVol = (n: number) =>
+        Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const fmtPeriod = (iso: string) =>
+        new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase();
+
+      const customerHead = [
+        { label: "Sl",   accessor: (r: { sl: number }) => r.sl, width: "30px", num: true },
+        { label: "Code", accessor: (r: { code: string }) => r.code, width: "48px" },
+        { label: "Customer Name", accessor: (r: { name: string }) => r.name, width: "170px" },
+      ];
+
+      // ── Page 1: Taluka Wise Milk Sales (In Ltrs) overview ──
+      const ms = apiData.talukaMilkSummary;
+      const milkSummaryPage = (
+        <ColumnPagedTable
+          key="milk-summary"
+          title={`Taluka Wise Milk Sales (In Ltrs) · For The Period ${fmtPeriod(from)} To ${fmtPeriod(to)}`}
+          fixedHead={[{ label: "Taluka", accessor: (r) => r.taluka, width: "220px" }]}
+          productCols={[] as ProductLite[]}
+          productCellRender={() => null}
+          trailingHead={[
+            { label: "Total Milk", accessor: (r) => fmtVol(r.totalMilk), num: true, width: "130px" },
+            { label: "Avg milk",   accessor: (r) => fmtVol(r.avgMilk),   num: true, width: "130px" },
+            { label: "Total Curd", accessor: (r) => fmtVol(r.totalCurd), num: true, width: "130px" },
+            { label: "Avg Curd",   accessor: (r) => fmtVol(r.avgCurd),   num: true, width: "130px" },
+          ]}
+          rows={ms?.rows ?? []}
+          rowKey={(r) => r.taluka}
+          totalRow={{
+            fixedCells: ["Total"],
+            productCell: () => null,
+            trailingCells: ms
+              ? [fmtVol(ms.totals.totalMilk), fmtVol(ms.totals.avgMilk), fmtVol(ms.totals.totalCurd), fmtVol(ms.totals.avgCurd)]
+              : ["", "", "", ""],
+          }}
+        />
+      );
+
+      const talukaPages = apiData.talukas.flatMap((t, ti) => {
+        const nodes: ReactNode[] = [];
+
+        // ── Detailed product matrix (column-paged) ──
+        const productPages = paginateColumns(apiData.products, COLUMNS_PER_PAGE);
+        productPages.forEach((prodChunk, pi) => {
+          nodes.push(
+            <ColumnPagedTable
+              key={`d-${ti}-${pi}`}
+              title={`Taluka Name: ${t.name}  —  ${stmt}${productPages.length > 1 ? ` · Products ${pi + 1}/${productPages.length}` : ""}`}
+              fixedLayout
+              productColWidth="78px"
+              fixedHead={customerHead}
+              productCols={prodChunk}
+              productCellRender={(row, p) => {
+                const v = row.qty[p.id] ?? 0;
+                return v ? fmtQty(v) : "";
+              }}
+              rows={t.customers}
+              rowKey={(r) => r.code || r.sl}
+              totalRow={{
+                fixedCells: ["", "", "TOTAL"],
+                productCell: (p) => fmtQty(t.detailedTotals.qty[p.id] ?? 0),
+              }}
+            />
+          );
+        });
+
+        // ── Summary page (cookies + milk/curd totals + amount) ──
+        nodes.push(
+          <ColumnPagedTable
+            key={`s-${ti}`}
+            title={`Taluka Name: ${t.name}  —  ${stmt} · Summary`}
+            fixedHead={customerHead}
+            productCols={[] as ProductLite[]}
+            productCellRender={() => null}
+            trailingHead={[
+              { label: "Milk Total Qty", accessor: (r) => r.milkTotalQty || "", num: true },
+              { label: "Curd Total Qty", accessor: (r) => r.curdTotalQty || "", num: true },
+              { label: "Total Amt ₹",    accessor: (r) => fmtINR(r.totalAmount), num: true },
+            ]}
+            rows={t.summary}
+            rowKey={(r) => r.code || r.sl}
+            totalRow={{
+              fixedCells: ["", "", "TOTAL"],
+              productCell: () => null,
+              trailingCells: [
+                fmtQty(t.summaryTotals.milkTotalQty),
+                fmtQty(t.summaryTotals.curdTotalQty),
+                fmtINR(t.summaryTotals.totalAmount),
+              ],
+            }}
+          />
+        );
+
+        return nodes;
+      });
+
+      return [milkSummaryPage, ...talukaPages];
     }}
     buildCsv={(from, to, d) => {
-      const out: any[][] = [["Taluka", "Agent", "Orders", "Quantity", "Amount ₹"]];
-      d.talukas.forEach(t => {
-        t.customers.forEach(r => {
-          const quantity = Object.values(r.qty ?? {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
-          out.push([t.name || "", r.name, 0, quantity, r.total ?? 0]);
-        });
+      const out: (string | number)[][] = [];
+      const fmtP = (iso: string) =>
+        new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase();
+      // Taluka Wise Milk Sales (In Ltrs) overview
+      const ms = d.talukaMilkSummary;
+      if (ms) {
+        out.push([`Taluka Wise Milk Sales (In Ltrs) For The Period ${fmtP(from)} To ${fmtP(to)}`]);
+        out.push(["Taluka", "Total Milk", "Avg milk", "Total Curd", "Avg Curd"]);
+        ms.rows.forEach((r) => out.push([r.taluka, r.totalMilk, r.avgMilk, r.totalCurd, r.avgCurd]));
+        out.push(["Total", ms.totals.totalMilk, ms.totals.avgMilk, ms.totals.totalCurd, ms.totals.avgCurd]);
+        out.push([]);
+      }
+      out.push(["Taluka wise agent wise sales statement", `Period ${from} to ${to}`]);
+      d.talukas.forEach((t) => {
+        out.push([]);
+        out.push([`Taluka Name: ${t.name}`]);
+        // detailed matrix
+        out.push(["Sl", "Code", "Customer Name", ...d.products.map((p) => p.reportAlias)]);
+        t.customers.forEach((c) =>
+          out.push([c.sl, c.code, c.name, ...d.products.map((p) => c.qty[p.id] ?? 0)])
+        );
+        out.push(["", "", "TOTAL", ...d.products.map((p) => t.detailedTotals.qty[p.id] ?? 0)]);
+        // summary
+        out.push([]);
+        out.push(["Sl", "Code", "Customer Name", "Milk Total Qty", "Curd Total Qty", "Total Amt"]);
+        t.summary.forEach((s) =>
+          out.push([s.sl, s.code, s.name, s.milkTotalQty, s.curdTotalQty, s.totalAmount])
+        );
+        out.push([
+          "", "", "TOTAL",
+          t.summaryTotals.milkTotalQty, t.summaryTotals.curdTotalQty, t.summaryTotals.totalAmount,
+        ]);
       });
       return out;
     }}

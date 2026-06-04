@@ -86,7 +86,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
         WHERE d.route_id = ${sheet.route_id}::uuid
-          AND o.created_at::date = ${sheet.date}::date
+          AND o.delivery_date = ${sheet.date}::date
           AND o.status IN ('confirmed', 'dispatched', 'delivered')
         ORDER BY d.name
       `;
@@ -139,7 +139,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
         WHERE d.route_id = ${body.routeId}
-          AND o.created_at::date = ${body.date}::date
+          AND o.delivery_date = ${body.date}::date
           AND o.status = 'confirmed'
       `;
 
