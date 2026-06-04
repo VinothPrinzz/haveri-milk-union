@@ -522,9 +522,9 @@ export async function orderRoutes(app: FastifyInstance) {
         ) cr ON true
         WHERE o.dealer_id = ${dealerId}
           AND (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
-          AND (${q.from ?? null}::date IS NULL OR o.created_at::date >= ${q.from ?? '1970-01-01'}::date)
-          AND (${q.to   ?? null}::date IS NULL OR o.created_at::date <= ${q.to   ?? '9999-12-31'}::date)
-        ORDER BY o.created_at DESC
+          AND (${q.from ?? null}::date IS NULL OR o.delivery_date >= ${q.from ?? '1970-01-01'}::date)
+          AND (${q.to   ?? null}::date IS NULL OR o.delivery_date <= ${q.to   ?? '9999-12-31'}::date)
+        ORDER BY o.delivery_date DESC, o.created_at DESC
         LIMIT ${q.limit} OFFSET ${offset}
       `;
 
@@ -532,8 +532,8 @@ export async function orderRoutes(app: FastifyInstance) {
         SELECT count(*)::int AS count FROM orders o
         WHERE o.dealer_id = ${dealerId}
           AND (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
-          AND (${q.from ?? null}::date IS NULL OR o.created_at::date >= ${q.from ?? '1970-01-01'}::date)
-          AND (${q.to   ?? null}::date IS NULL OR o.created_at::date <= ${q.to   ?? '9999-12-31'}::date)
+          AND (${q.from ?? null}::date IS NULL OR o.delivery_date >= ${q.from ?? '1970-01-01'}::date)
+          AND (${q.to   ?? null}::date IS NULL OR o.delivery_date <= ${q.to   ?? '9999-12-31'}::date)
       `;
 
       return reply.status(200).send({
@@ -1074,6 +1074,39 @@ export async function orderRoutes(app: FastifyInstance) {
         .header("Content-Disposition",
           `inline; filename="invoices-${new Date().toISOString().slice(0,10)}.pdf"`)
         .send(Buffer.from(out));
+    }
+  );
+
+  // POST /api/v1/admin/invoices/backfill
+  // Enqueues invoice generation for every confirmed/dispatched/delivered
+  // order that has no invoice row yet. Safe to run multiple times — the
+  // pdf-invoice worker uses ON CONFLICT DO UPDATE so duplicates are harmless.
+  app.post(
+    "/api/v1/admin/invoices/backfill",
+    { preHandler: [adminAuth, requireRole("orders.update")] },
+    async (_request, reply) => {
+      const missing = await pgClient`
+        SELECT o.id::text AS id
+        FROM orders o
+        WHERE o.status IN ('confirmed', 'dispatched', 'delivered')
+          AND o.payment_mode != 'upi'
+          AND NOT EXISTS (
+            SELECT 1 FROM invoices i WHERE i.order_id = o.id
+          )
+        ORDER BY o.delivery_date DESC
+      `;
+
+      let enqueued = 0;
+      for (const row of missing) {
+        try {
+          await enqueuePDFInvoice(row.id);
+          enqueued++;
+        } catch {
+          // logged inside enqueuePDFInvoice
+        }
+      }
+
+      return reply.send({ total: missing.length, enqueued });
     }
   );
 }
