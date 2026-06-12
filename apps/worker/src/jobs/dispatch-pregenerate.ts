@@ -1,6 +1,6 @@
-import { Job, Queue } from "bullmq";
+import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
-import { redis } from "../lib/redis.js";
+import { pushQueue as notifQueue } from "../lib/queues.js";
 
 export async function processDispatchPregenerate(job: Job) {
   const today = new Date().toISOString().split("T")[0];
@@ -67,14 +67,12 @@ export async function processDispatchPregenerate(job: Job) {
 
   console.log(`[Dispatch] ✅ Created ${created} route assignments for ${today}`);
 
-  // Queue window opening notification for all zones
-  const notifQueue = new Queue("push-notifications", { connection: redis });
+  // Queue window opening notification for all zones (shared queue — not closed here)
   await notifQueue.add("window-opening-reminder", {
     event: "window.opening" as const,
     title: "Window Opening Soon 🟢",
     body: "The ordering window opens in 5 minutes. Get ready to place your indent!",
   });
-  await notifQueue.close();
 
   return { date: today, status: "created", count: created };
 }

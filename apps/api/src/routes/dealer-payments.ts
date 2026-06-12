@@ -24,6 +24,8 @@ import {
   isRazorpayConfigured,
   verifyPaymentSignature,
   verifyWebhookSignature,
+  fetchRazorpayPayment,
+  captureRazorpayPayment,
 } from "../lib/razorpay-client.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 
@@ -44,6 +46,85 @@ function require503IfUnconfigured(reply: any): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Confirm with Razorpay that a payment actually reached 'captured'
+ * (money taken), capturing it first if it is only 'authorized'.
+ *
+ * The checkout signature only proves the (order_id, payment_id) pair is
+ * authentic — it does NOT prove the payment succeeded. Without this
+ * check an authorized-but-uncaptured payment (the default when the
+ * account is in manual-capture mode) flips the order to 'confirmed'
+ * even though no money was settled, and Razorpay later auto-voids it.
+ *
+ * Returns `{ ok: true }` only when the payment is genuinely captured for
+ * the right order and amount.
+ */
+async function ensureCaptured(opts: {
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+  expectedAmountPaise: number;
+}): Promise<{ ok: true } | { ok: false; status: string; message: string }> {
+  let payment;
+  try {
+    payment = await fetchRazorpayPayment(opts.razorpayPaymentId);
+  } catch {
+    return {
+      ok: false,
+      status: "unknown",
+      message: "Could not verify payment status with Razorpay",
+    };
+  }
+
+  // The payment must belong to the order we created and match its amount.
+  if (payment.order_id && payment.order_id !== opts.razorpayOrderId) {
+    return {
+      ok: false,
+      status: payment.status,
+      message: "Payment does not belong to this order",
+    };
+  }
+  if (payment.amount !== opts.expectedAmountPaise) {
+    return {
+      ok: false,
+      status: payment.status,
+      message: "Payment amount does not match the order",
+    };
+  }
+
+  if (payment.status === "captured") return { ok: true };
+
+  if (payment.status === "authorized") {
+    try {
+      const cap = await captureRazorpayPayment(
+        opts.razorpayPaymentId,
+        opts.expectedAmountPaise,
+        payment.currency || "INR"
+      );
+      if (cap.status === "captured") return { ok: true };
+      return {
+        ok: false,
+        status: cap.status,
+        message: "Payment could not be captured",
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        status: "authorized",
+        message:
+          e instanceof Error ? e.message : "Payment capture failed",
+      };
+    }
+  }
+
+  // created / failed / refunded / etc. — never treat as paid.
+  return {
+    ok: false,
+    status: payment.status,
+    message:
+      payment.error_description ?? `Payment is ${payment.status}, not captured`,
+  };
 }
 
 /**
@@ -300,7 +381,8 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       }
 
       const [row] = await pgClient`
-        SELECT id::text, kind::text, dealer_id::text AS "dealerId", status::text
+        SELECT id::text, kind::text, dealer_id::text AS "dealerId", status::text,
+               amount::numeric AS amount
           FROM razorpay_payments
          WHERE razorpay_order_id = ${body.razorpayOrderId}
          LIMIT 1
@@ -312,6 +394,30 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         return reply.status(400).send({
           error: "Wrong endpoint",
           message: "This razorpay order is not a credit-topup",
+        });
+      }
+
+      // Signature only proves authenticity — confirm the money was
+      // actually captured before crediting the dealer's ledger.
+      const capture = await ensureCaptured({
+        razorpayOrderId: body.razorpayOrderId,
+        razorpayPaymentId: body.razorpayPaymentId,
+        expectedAmountPaise: Math.round(parseFloat(row.amount) * 100),
+      });
+      if (!capture.ok) {
+        await pgClient`
+          UPDATE razorpay_payments
+             SET status = 'failed',
+                 razorpay_payment_id = COALESCE(razorpay_payment_id, ${body.razorpayPaymentId}),
+                 error_description = ${capture.message},
+                 updated_at = now()
+           WHERE id = ${row.id}::uuid
+             AND status IN ('created', 'attempted')
+        `;
+        return reply.status(402).send({
+          error: "Payment not captured",
+          message: capture.message,
+          paymentStatus: capture.status,
         });
       }
 
@@ -429,7 +535,8 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
 
       const [row] = await pgClient`
         SELECT id::text, kind::text, dealer_id::text AS "dealerId",
-               order_id::text AS "orderId", status::text
+               order_id::text AS "orderId", status::text,
+               amount::numeric AS amount
           FROM razorpay_payments
          WHERE razorpay_order_id = ${body.razorpayOrderId}
          LIMIT 1
@@ -441,6 +548,30 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         return reply.status(400).send({
           error: "Mismatched payment",
           message: "This razorpay payment is for a different order",
+        });
+      }
+
+      // Signature only proves authenticity — confirm the money was
+      // actually captured before flipping the order to 'confirmed'.
+      const capture = await ensureCaptured({
+        razorpayOrderId: body.razorpayOrderId,
+        razorpayPaymentId: body.razorpayPaymentId,
+        expectedAmountPaise: Math.round(parseFloat(row.amount) * 100),
+      });
+      if (!capture.ok) {
+        await pgClient`
+          UPDATE razorpay_payments
+             SET status = 'failed',
+                 razorpay_payment_id = COALESCE(razorpay_payment_id, ${body.razorpayPaymentId}),
+                 error_description = ${capture.message},
+                 updated_at = now()
+           WHERE id = ${row.id}::uuid
+             AND status IN ('created', 'attempted')
+        `;
+        return reply.status(402).send({
+          error: "Payment not captured",
+          message: capture.message,
+          paymentStatus: capture.status,
         });
       }
 
