@@ -12,12 +12,27 @@ import { processDispatchPregenerate } from "./jobs/dispatch-pregenerate.js";
 // } from "./polling-replication-bootstrap.js";
 import { processMaterializeDrafts } from "./jobs/materialize-drafts.js";
 import { processAutoConfirmDrafts } from "./jobs/auto-confirm-drafts.js";
+import { closeSharedQueues } from "./lib/queues.js";
 
 console.log("═══════════════════════════════════════");
 console.log("  🐄 Haveri Milk Union — BullMQ Worker");
 console.log("═══════════════════════════════════════");
 
 const connection = redis;
+
+// ── Shared worker options to slash idle Redis traffic ──
+// On a per-request-billed Redis (Upstash) BullMQ's idle polling is the
+// dominant cost. These two knobs cut it ~7x with no functional change:
+//   • drainDelay: when a queue is empty, block up to 30s before
+//     re-polling (default 5s). Adding a job still wakes the worker
+//     instantly via the marker key, so job latency is unaffected.
+//   • stalledInterval: scan for stalled jobs every 5 min (default 30s).
+//     A job orphaned by a worker crash is retried within 5 min — fine
+//     for these batch jobs.
+const SHARED_WORKER_OPTS = {
+  drainDelay: 30,
+  stalledInterval: 300_000,
+} as const;
 
 // ── Queue Definitions ──
 // These are also used by the API to enqueue jobs
@@ -39,6 +54,7 @@ const pushWorker = new Worker(
   processPushNotification,
   {
     connection,
+    ...SHARED_WORKER_OPTS,
     concurrency: 10, // Handle 10 FCM sends in parallel
     limiter: { max: 100, duration: 1000 }, // Max 100/sec (FCM limit is 500/sec)
   }
@@ -50,6 +66,7 @@ const pdfWorker = new Worker(
   processPDFInvoice,
   {
     connection,
+    ...SHARED_WORKER_OPTS,
     concurrency: 3,
   }
 );
@@ -60,6 +77,7 @@ const partitionWorker = new Worker(
   processPartitionCreation,
   {
     connection,
+    ...SHARED_WORKER_OPTS,
     concurrency: 1,
   }
 );
@@ -70,6 +88,7 @@ const paymentWorker = new Worker(
   processPaymentReminders,
   {
     connection,
+    ...SHARED_WORKER_OPTS,
     concurrency: 1,
   }
 );
@@ -80,6 +99,7 @@ const dispatchWorker = new Worker(
   processDispatchPregenerate,
   {
     connection,
+    ...SHARED_WORKER_OPTS,
     concurrency: 1,
   }
 );
@@ -90,6 +110,7 @@ const materializeWorker = new Worker(
   processMaterializeDrafts,
   {
     connection,
+    ...SHARED_WORKER_OPTS,
     concurrency: 1, // one batch at a time; the job itself iterates all dealers
   }
 );
@@ -100,6 +121,7 @@ const autoConfirmWorker = new Worker(
   processAutoConfirmDrafts,
   {
     connection,
+    ...SHARED_WORKER_OPTS,
     concurrency: 1,
   }
 );
@@ -218,8 +240,9 @@ async function shutdown() {
   console.log("\n🛑 Shutting down workers...");
 
   // await stopPollingReplicator();
-  
+
   await Promise.all(workers.map((w) => w.close()));
+  await closeSharedQueues();
   await redis.quit();
   console.log("👋 Worker stopped");
   process.exit(0);

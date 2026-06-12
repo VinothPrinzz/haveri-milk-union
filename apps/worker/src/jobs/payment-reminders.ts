@@ -1,6 +1,6 @@
-import { Job, Queue } from "bullmq";
+import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
-import { redis } from "../lib/redis.js";
+import { pushQueue as notifQueue } from "../lib/queues.js";
 
 export async function processPaymentReminders(job: Job) {
   // Find dealers with overdue credit orders (pending > 3 days)
@@ -26,9 +26,7 @@ export async function processPaymentReminders(job: Job) {
 
   console.log(`[PaymentReminders] Found ${overdue.length} dealers with overdue payments`);
 
-  // Queue push notifications for each overdue dealer
-  const notifQueue = new Queue("push-notifications", { connection: redis });
-
+  // Queue push notifications for each overdue dealer (shared queue)
   for (const dealer of overdue) {
     const amount = parseFloat(dealer.overdue_amount);
     await notifQueue.add("payment-reminder", {
@@ -39,7 +37,7 @@ export async function processPaymentReminders(job: Job) {
     });
   }
 
-  await notifQueue.close();
+  // Shared queue — closed once on worker shutdown.
 
   console.log(`[PaymentReminders] Queued ${overdue.length} reminder notifications`);
   return { checked: overdue.length, reminders: overdue.length };

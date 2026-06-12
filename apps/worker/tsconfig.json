@@ -17,5 +17,15 @@
       "@hmu/db/polling-replication":    ["../../packages/db/dist/polling-replication/index.d.ts"]
     }
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    // Not yet wired into index.ts (imports are commented out). The
+    // bootstrap depends on getDbManager, which is still commented out
+    // in @hmu/db's index.ts. Excluded so the worker build stays green;
+    // re-include once the dual-DB export is enabled.
+    "src/polling-replication-bootstrap.ts",
+    "src/index.patch.ts"
+  ]
 }

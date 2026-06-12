@@ -48,6 +48,101 @@ function calcLine(basePrice: number, gstPercent: number, qty: number) {
   };
 }
 
+/**
+ * Re-sync the dealer's still-editable draft orders (today + future,
+ * status='draft' only) to their CURRENT standing-indent template.
+ *
+ * Called after the dealer changes their standing indent so that
+ * already-materialised drafts (e.g. tomorrow's, pre-built nightly) and
+ * today's not-yet-placed draft pick up the new quantities — which is
+ * what the auto-confirm job will then place at close time.
+ *
+ * Only touches status='draft' rows, so placed/confirmed/payment_required
+ * orders are never mutated. Drafts whose template is now empty are left
+ * empty (item_count=0); the close-time job cancels empty drafts.
+ */
+async function resyncEditableDrafts(dealerId: string): Promise<number> {
+  // Canonical line set from the live standing template.
+  const standing = await pgClient`
+    SELECT
+      dsi.product_id::text         AS "productId",
+      dsi.default_qty              AS "quantity",
+      p.name                       AS "productName",
+      p.base_price::numeric        AS "basePrice",
+      p.gst_percent::numeric       AS "gstPercent"
+    FROM dealer_standing_indents dsi
+    JOIN products p ON p.id = dsi.product_id
+                   AND p.deleted_at IS NULL
+                   AND p.available = true
+    WHERE dsi.dealer_id = ${dealerId}
+      AND dsi.active = true
+      AND dsi.default_qty > 0
+  `;
+
+  let subtotal = 0;
+  let totalGst = 0;
+  let itemCount = 0;
+  const lines = standing.map((r: any) => {
+    const qty = Number(r.quantity);
+    const price = parseFloat(r.basePrice);
+    const gstPct = parseFloat(r.gstPercent);
+    const line = calcLine(price, gstPct, qty);
+    subtotal += line.subtotal;
+    totalGst += line.gst;
+    itemCount += qty;
+    return {
+      productId: r.productId,
+      productName: r.productName,
+      quantity: qty,
+      unitPrice: price.toFixed(2),
+      gstPercent: gstPct.toFixed(2),
+      gstAmount: line.gst.toFixed(2),
+      lineTotal: line.total.toFixed(2),
+    };
+  });
+  const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
+
+  // Editable drafts: today (IST) onward, still status='draft'.
+  const targets = await pgClient`
+    SELECT id::text AS id FROM orders
+     WHERE dealer_id = ${dealerId}
+       AND status = 'draft'
+       AND delivery_date >= (now() AT TIME ZONE 'Asia/Kolkata')::date
+  `;
+
+  for (const t of targets) {
+    await pgClient.begin(async (_tx) => {
+      const tx = _tx as unknown as typeof pgClient;
+      // Guard on status='draft' so we never race a confirm in flight.
+      const upd = await tx`
+        UPDATE orders SET
+          subtotal    = ${subtotal.toFixed(2)}::numeric,
+          total_gst   = ${totalGst.toFixed(2)}::numeric,
+          grand_total = ${grandTotal.toFixed(2)}::numeric,
+          item_count  = ${itemCount},
+          updated_at  = now()
+        WHERE id = ${t.id}::uuid AND status = 'draft'
+      `;
+      if (upd.count === 0) return; // moved on (confirmed/placed) — skip
+      await tx`DELETE FROM order_items WHERE order_id = ${t.id}::uuid`;
+      for (const ln of lines) {
+        await tx`
+          INSERT INTO order_items (
+            order_id, product_id, product_name, quantity,
+            unit_price, gst_percent, gst_amount, line_total
+          ) VALUES (
+            ${t.id}::uuid, ${ln.productId}::uuid, ${ln.productName},
+            ${ln.quantity}, ${ln.unitPrice}::numeric, ${ln.gstPercent}::numeric,
+            ${ln.gstAmount}::numeric, ${ln.lineTotal}::numeric
+          )
+        `;
+      }
+    });
+  }
+
+  return targets.length;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Routes
 // ═══════════════════════════════════════════════════════════════════════
@@ -163,7 +258,21 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
               updated_at  = now()
       `;
 
-      return reply.send({ updated: body.items.length });
+      // Reflect the new template in any still-editable drafts (today +
+      // future) so the close-time auto-confirm places the updated order.
+      // Placed orders are never touched. Best-effort: a re-sync failure
+      // must not fail the template save itself.
+      let resyncedDrafts = 0;
+      try {
+        resyncedDrafts = await resyncEditableDrafts(dealerId);
+      } catch (err) {
+        request.log.warn(
+          { err },
+          "[standing-indents] draft re-sync failed (template saved)"
+        );
+      }
+
+      return reply.send({ updated: body.items.length, resyncedDrafts });
     }
   );
 

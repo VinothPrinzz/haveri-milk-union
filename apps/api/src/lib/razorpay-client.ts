@@ -73,6 +73,12 @@ export async function createRazorpayOrder(
     currency: "INR",
     receipt: params.receipt,
     notes: params.notes,
+    // Auto-capture authorized payments. Belt-and-suspenders only: the
+    // verify endpoints ALSO fetch the live payment status and capture
+    // explicitly, so confirmation never depends on the account-level
+    // capture setting (which is the real source of "authorized but not
+    // captured" payments looking 'paid').
+    payment_capture: 1,
   });
   return {
     id: order.id,
@@ -136,6 +142,51 @@ export async function fetchRazorpayRefund(
     error_description:
       (refund as { error_description?: string | null }).error_description ?? null,
   };
+}
+
+/**
+ * Fetch the live state of a payment from Razorpay. This is the
+ * authoritative source of truth for whether money was actually taken —
+ * the checkout signature only proves the (order_id, payment_id) pair is
+ * authentic, NOT that the payment reached 'captured'. Read-only.
+ */
+export async function fetchRazorpayPayment(paymentId: string): Promise<{
+  id: string;
+  order_id: string | null;
+  status: string;            // created | authorized | captured | refunded | failed
+  amount: number;            // paise
+  currency: string;
+  error_code: string | null;
+  error_description: string | null;
+}> {
+  const client = await getClient();
+  const p = await client.payments.fetch(paymentId);
+  return {
+    id: p.id,
+    order_id: (p as { order_id?: string | null }).order_id ?? null,
+    status: p.status,
+    amount: typeof p.amount === "string" ? parseInt(p.amount, 10) : p.amount,
+    currency: p.currency,
+    error_code: (p as { error_code?: string | null }).error_code ?? null,
+    error_description:
+      (p as { error_description?: string | null }).error_description ?? null,
+  };
+}
+
+/**
+ * Capture an authorized payment. Required when the account default is
+ * manual capture: without this the money stays only authorized and is
+ * auto-voided by Razorpay after a few days. `amountPaise` must equal the
+ * authorized amount.
+ */
+export async function captureRazorpayPayment(
+  paymentId: string,
+  amountPaise: number,
+  currency = "INR"
+): Promise<{ status: string }> {
+  const client = await getClient();
+  const p = await client.payments.capture(paymentId, amountPaise, currency);
+  return { status: p.status };
 }
 
 export interface CreateRefundParams {

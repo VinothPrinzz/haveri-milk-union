@@ -36,9 +36,9 @@
 //   add items manually via the app.
 // ═══════════════════════════════════════════════════════════════════════
 
-import { Job, Queue } from "bullmq";
+import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
-import { redis } from "../lib/redis.js";
+import { pushQueue as notifQueue } from "../lib/queues.js";
 
 // IST = UTC+5:30, no DST.
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -85,8 +85,6 @@ export async function processMaterializeDrafts(_job: Job) {
   let skippedExisting = 0;
   let skippedEmpty = 0;
   let failed = 0;
-
-  const notifQueue = new Queue("push-notifications", { connection: redis });
 
   for (const dealer of dealers) {
     try {
@@ -219,7 +217,7 @@ export async function processMaterializeDrafts(_job: Job) {
     }
   }
 
-  await notifQueue.close();
+  // Shared queue is long-lived — closed once on worker shutdown.
 
   const summary = {
     deliveryDate,

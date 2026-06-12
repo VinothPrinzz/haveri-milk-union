@@ -1,0 +1,27 @@
+FROM node:20-alpine AS base
+
+RUN npm install -g pnpm@10
+
+WORKDIR /app
+
+# Copy workspace manifests and configs first (better layer caching)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
+
+# Copy the worker app in full (source + tsconfig + package.json)
+COPY apps/worker/ apps/worker/
+
+# Copy package.json stubs for the other workspace members so pnpm can
+# resolve the full workspace graph and --frozen-lockfile passes.
+COPY packages/db/package.json packages/db/
+COPY apps/api/package.json apps/api/
+COPY apps/web/package.json apps/web/
+COPY apps/mobile/package.json apps/mobile/
+
+# Install all workspace dependencies
+RUN pnpm install --frozen-lockfile
+
+# Build the worker (compiles apps/worker/src -> apps/worker/dist)
+RUN pnpm --filter @hmu/worker build
+
+# Background BullMQ worker — no HTTP port, no healthcheck.
+CMD ["node", "apps/worker/dist/index.js"]
