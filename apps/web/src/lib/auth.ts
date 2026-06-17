@@ -60,3 +60,11 @@ export async function getMe(): Promise<AdminUser | null> {
     return null;
   }
 }
+
+/** Change the logged-in admin's own password (verifies the current one). */
+export async function changeAdminPassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  await post("/auth/admin/change-password", { currentPassword, newPassword });
+}

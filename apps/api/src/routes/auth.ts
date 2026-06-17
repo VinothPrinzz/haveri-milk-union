@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, sql, gt, isNull } from "drizzle-orm";
+import { eq, and, ne, sql, gt, isNull } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
 import {
   dealers,
@@ -12,9 +12,11 @@ import {
   signDealerAccessToken,
   signDealerRefreshToken,
   comparePassword,
+  hashPassword,
   generateSessionToken,
   verifyDealerRefreshToken,
 } from "../lib/auth.js";
+import { adminAuth } from "../middleware/admin-auth.js";
 
 export async function authRoutes(app: FastifyInstance) {
   // ─────────────────────────────────────────────────────────────
@@ -315,4 +317,73 @@ export async function authRoutes(app: FastifyInstance) {
 
     return reply.status(200).send({ user });
   });
+
+  // POST /api/v1/auth/admin/change-password
+  // Self-service: the logged-in admin changes their OWN password after
+  // verifying their current one. Distinct from PATCH /users/:id/reset-password
+  // (which is a super-admin resetting someone else's password, no current-
+  // password check). Any authenticated admin role may use this.
+  app.post(
+    "/api/v1/auth/admin/change-password",
+    { preHandler: [adminAuth] },
+    async (request, reply) => {
+      const schema = z.object({
+        currentPassword: z.string().min(1),
+        newPassword: z.string().min(6, "New password must be at least 6 characters"),
+      });
+      const { currentPassword, newPassword } = schema.parse(request.body);
+      const userId = request.admin!.userId;
+
+      const [user] = await db
+        .select({ id: users.id, passwordHash: users.passwordHash })
+        .from(users)
+        .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+        .limit(1);
+
+      if (!user) {
+        return reply.status(401).send({ error: "Unauthorized" });
+      }
+
+      // Verify current password
+      const valid = await comparePassword(currentPassword, user.passwordHash);
+      if (!valid) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Current password is incorrect",
+        });
+      }
+
+      // Disallow reusing the same password
+      const same = await comparePassword(newPassword, user.passwordHash);
+      if (same) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "New password must be different from your current password",
+        });
+      }
+
+      const newHash = await hashPassword(newPassword);
+      await db
+        .update(users)
+        .set({ passwordHash: newHash, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+
+      // Security: revoke this user's OTHER sessions, keep the current one alive.
+      const currentToken =
+        request.cookies?.["hmu_session"] ||
+        (request.headers["x-session-token"] as string | undefined);
+      if (currentToken) {
+        await db
+          .delete(adminSessions)
+          .where(
+            and(
+              eq(adminSessions.userId, userId),
+              ne(adminSessions.token, currentToken),
+            ),
+          );
+      }
+
+      return reply.status(200).send({ message: "Password changed successfully" });
+    },
+  );
 }

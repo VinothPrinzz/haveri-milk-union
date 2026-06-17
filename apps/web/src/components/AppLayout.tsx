@@ -3,7 +3,7 @@ import { useLocation, useNavigate, Outlet } from "react-router-dom";
 import {
   LayoutDashboard, Database, ShoppingCart, Truck, Boxes,
   BookOpenCheck, FileBarChart2, ShieldCheck, Search, Bell,
-  ChevronDown, LogOut, Keyboard, Wallet,
+  ChevronDown, LogOut, Keyboard, Wallet, KeyRound,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { NavLink } from "react-router-dom";
 import { AppSidebar } from "@/components/AppSidebar";
+import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { useKeyboardNav } from "@/lib/useKeyboardNav";
 
 // ─── Module taxonomy (10-module spec, but we expose only the modules
@@ -153,6 +154,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const { pathname } = useLocation();
   const [userMenu, setUserMenu] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
+  const [changePwdOpen, setChangePwdOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useKeyboardNav();
@@ -289,6 +291,11 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
                 className="w-full text-left px-3 py-2 text-[12px] hover:bg-accent">
                 Settings
               </button>
+              <button
+                onClick={() => { setUserMenu(false); setChangePwdOpen(true); }}
+                className="w-full text-left px-3 py-2 text-[12px] hover:bg-accent flex items-center gap-2">
+                <KeyRound className="w-3.5 h-3.5" /> Change Password
+              </button>
               <div className="border-t border-border" />
               <button
                 onClick={() => { setUserMenu(false); handleLogout(); }}
@@ -363,6 +370,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
       </div>
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} />
+      <ChangePasswordDialog open={changePwdOpen} onOpenChange={setChangePwdOpen} />
     </div>
   );
 };
