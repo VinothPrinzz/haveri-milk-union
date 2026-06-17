@@ -6,7 +6,7 @@ import {
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
   ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
   Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows,
-  ShieldAlert, Banknote, RotateCcw, FilePlus2
+  ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ModuleKey } from "@/components/AppLayout";
@@ -59,6 +59,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Online Payments",   path: "/finance/online-payments", icon: CreditCard },
     { label: "Reconciliation",    path: "/finance/reconciliation",  icon: GitCompareArrows },
     { label: "Credit Control",    path: "/finance/credit-control",  icon: ShieldAlert },
+    { label: "Credit Limits",     path: "/finance/credit-limits",   icon: BadgeIndianRupee },
     { label: "AR Aging",          path: "/finance/ar-aging",        icon: FileBarChart2 },
     { label: "Dealer Statements", path: "/finance/dealer-statements", icon: ScrollText },
     { label: "Cheques",           path: "/finance/cheques",         icon: Banknote },

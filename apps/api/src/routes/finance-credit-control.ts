@@ -2,15 +2,19 @@
 // ═══════════════════════════════════════════════════════════════════════
 // Finance → Credit Control
 //
-//   GET /api/v1/finance/credit-control          — paginated dealer list
-//   GET /api/v1/finance/credit-control/summary  — KPI tiles
+//   GET   /api/v1/finance/credit-control          — paginated dealer list
+//   GET   /api/v1/finance/credit-control/summary  — KPI tiles
+//   PATCH /api/v1/finance/credit-control/:dealerId/limit — set credit limit
 //
 // One row per dealer: credit limit, closing balance, outstanding,
 // available headroom, utilisation. Uses the SAME closing-balance math
 // as checkDealerCredit() (opening_balance + non-Opening ledger net), so
 // a dealer the system blocks at checkout also shows as over-limit here.
 //
-// All endpoints require finance.view. No mutations on this page.
+// Reads require finance.view. The ONLY credit-limit mutation in the whole
+// API lives here and requires finance.manage (accountant / super_admin) —
+// the dealer-master endpoints deliberately do NOT accept credit_limit, so
+// managers cannot change it. Credit limits are a finance responsibility.
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { FastifyInstance } from "fastify";
@@ -205,6 +209,35 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
         FROM dealer_balance
       `;
       return reply.send({ summary: s });
+    }
+  );
+
+  // ┌─────────────────────────────────────────────────────────────────┐
+  // │  PATCH /api/v1/finance/credit-control/:dealerId/limit             │
+  // │  Set a dealer's credit limit. Finance-only (finance.manage).      │
+  // └─────────────────────────────────────────────────────────────────┘
+  app.patch(
+    "/api/v1/finance/credit-control/:dealerId/limit",
+    { preHandler: [adminAuth, requireRole("finance.manage")] },
+    async (request, reply) => {
+      const { dealerId } = z
+        .object({ dealerId: z.string().uuid() })
+        .parse(request.params);
+      const { creditLimit } = z
+        .object({ creditLimit: z.number().min(0).max(100_000_000) })
+        .parse(request.body);
+
+      const [updated] = await pgClient`
+        UPDATE dealers
+           SET credit_limit = ${creditLimit}, updated_at = now()
+         WHERE id = ${dealerId} AND deleted_at IS NULL
+         RETURNING id, name, code, COALESCE(credit_limit, 0)::float8 AS "creditLimit"
+      `;
+
+      if (!updated) {
+        return reply.status(404).send({ error: "Not Found", message: "Dealer not found" });
+      }
+      return reply.send({ dealer: updated });
     }
   );
 }

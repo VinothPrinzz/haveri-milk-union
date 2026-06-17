@@ -33,9 +33,11 @@
     "push": "drizzle-kit push",
     "studio": "drizzle-kit studio",
     "check": "drizzle-kit check",
-    "seed": "tsx src/seed.ts"
+    "seed": "tsx src/seed.ts",
+    "seed:users": "tsx src/seed-users.ts"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "drizzle-orm": "^0.45.1",
     "postgres": "^3.4.5"
   },

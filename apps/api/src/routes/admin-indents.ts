@@ -6,8 +6,8 @@
 // template and per-date draft orders — the admin mirror of the dealer
 // app's /api/v1/dealer/standing-indents and /api/v1/dealer/drafts/:date.
 //
-//   • reads  → requireRole("dealers.view")
-//   • writes → requireRole("dealers.manage")
+//   • reads  → requireRole("indents.view")
+//   • writes → requireRole("indents.manage")
 //
 // ── Finance link ───────────────────────────────────────────────────────
 // POST .../drafts/:date/confirm places the draft as a 'pending' order AND
@@ -84,7 +84,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
   // └───────────────────────────────────────────────────────────────────┘
   app.get(
     "/api/v1/admin/dealers/:dealerId/standing-indents",
-    { preHandler: [adminAuth, requireRole("dealers.view")] },
+    { preHandler: [adminAuth, requireRole("indents.view")] },
     async (request, reply) => {
       const { dealerId } = z.object({ dealerId: uuid }).parse(request.params);
       const dealer = await loadDealer(dealerId);
@@ -127,7 +127,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
   // └───────────────────────────────────────────────────────────────────┘
   app.put(
     "/api/v1/admin/dealers/:dealerId/standing-indents",
-    { preHandler: [adminAuth, requireRole("dealers.manage")] },
+    { preHandler: [adminAuth, requireRole("indents.manage")] },
     async (request, reply) => {
       const { dealerId } = z.object({ dealerId: uuid }).parse(request.params);
       await loadDealer(dealerId);
@@ -190,7 +190,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
   // └───────────────────────────────────────────────────────────────────┘
   app.get(
     "/api/v1/admin/dealers/:dealerId/drafts/:date",
-    { preHandler: [adminAuth, requireRole("dealers.view")] },
+    { preHandler: [adminAuth, requireRole("indents.view")] },
     async (request, reply) => {
       const { dealerId, date } = z
         .object({ dealerId: uuid, date: isoDate })
@@ -343,7 +343,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
   // └───────────────────────────────────────────────────────────────────┘
   app.patch(
     "/api/v1/admin/dealers/:dealerId/drafts/:date",
-    { preHandler: [adminAuth, requireRole("dealers.manage")] },
+    { preHandler: [adminAuth, requireRole("indents.manage")] },
     async (request, reply) => {
       const { dealerId, date } = z
         .object({ dealerId: uuid, date: isoDate })
@@ -515,7 +515,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
   // └───────────────────────────────────────────────────────────────────┘
   app.post(
     "/api/v1/admin/dealers/:dealerId/drafts/:date/confirm",
-    { preHandler: [adminAuth, requireRole("dealers.manage")] },
+    { preHandler: [adminAuth, requireRole("indents.manage")] },
     async (request, reply) => {
       const { dealerId, date } = z
         .object({ dealerId: uuid, date: isoDate })
@@ -654,7 +654,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
   // ── Pause windows (so admin can park a dealer's auto-drafts) ───────────
   app.get(
     "/api/v1/admin/dealers/:dealerId/indent-pauses",
-    { preHandler: [adminAuth, requireRole("dealers.view")] },
+    { preHandler: [adminAuth, requireRole("indents.view")] },
     async (request, reply) => {
       const { dealerId } = z.object({ dealerId: uuid }).parse(request.params);
       await loadDealer(dealerId);
@@ -674,7 +674,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
   app.post(
     "/api/v1/admin/dealers/:dealerId/indent-pauses",
-    { preHandler: [adminAuth, requireRole("dealers.manage")] },
+    { preHandler: [adminAuth, requireRole("indents.manage")] },
     async (request, reply) => {
       const { dealerId } = z.object({ dealerId: uuid }).parse(request.params);
       await loadDealer(dealerId);
@@ -704,7 +704,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
   app.delete(
     "/api/v1/admin/dealers/:dealerId/indent-pauses/:id",
-    { preHandler: [adminAuth, requireRole("dealers.manage")] },
+    { preHandler: [adminAuth, requireRole("indents.manage")] },
     async (request, reply) => {
       const { dealerId, id } = z
         .object({ dealerId: uuid, id: uuid })

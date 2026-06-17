@@ -26,7 +26,6 @@ export const customerSchema = z.object({
   officerName: z.string().default(""),
   bank: z.string().default(""),
   accountNo: z.string().default(""),
-  creditLimit: z.coerce.number().min(0).default(0),
 
   // Address (v1.4)
   addressType: z.enum(["Office", "Residence"]).or(z.literal("")).optional().default(""),

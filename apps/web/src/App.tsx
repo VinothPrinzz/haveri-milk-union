@@ -38,6 +38,7 @@ import OnlinePaymentsPage        from "@/pages/finance/OnlinePaymentsPage";
 import RazorpayReconciliationPage from "@/pages/finance/RazorpayReconciliationPage";
 import FinanceDashboardPage       from "@/pages/finance/FinanceDashboardPage";
 import CreditControlPage          from "@/pages/finance/CreditControlPage";
+import CreditLimitsPage           from "@/pages/finance/CreditLimitsPage";
 import RefundsPage                from "@/pages/finance/RefundsPage";
 import ARAgingPage                from "@/pages/finance/ARAgingPage";
 import DealerStatementsPage       from "@/pages/finance/DealerStatementsPage";
@@ -138,6 +139,7 @@ function AppInner() {
           <Route path="/finance/online-payments" element={<OnlinePaymentsPage />} />
           <Route path="/finance/reconciliation"  element={<RazorpayReconciliationPage />} />
           <Route path="/finance/credit-control" element={<CreditControlPage />} />
+          <Route path="/finance/credit-limits" element={<CreditLimitsPage />} />
           <Route path="/finance/refunds" element={<RefundsPage />} />
           <Route path="/finance/ar-aging" element={<ARAgingPage />} />
           <Route path="/finance/dealer-statements" element={<DealerStatementsPage />} />

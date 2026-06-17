@@ -467,7 +467,6 @@ export const createCustomer = async (body: Record<string, unknown>) => {
     officerName: body.officerName || undefined,
     bank: body.bank || undefined,
     accountNo: body.accountNo || undefined,
-    creditLimit: body.creditLimit,
     addressType: body.addressType || undefined,
     state: body.state || undefined,
     city: body.city || undefined,
@@ -491,7 +490,7 @@ export const updateCustomer = async (id: string, body: Record<string, unknown>) 
     name: body.name, phone: body.phone, email: body.email || undefined,
     customerType: body.type, rateCategory: body.rateCategory, payMode: body.payMode,
     officerName: body.officerName || undefined, bank: body.bank || undefined,
-    accountNo: body.accountNo || undefined, creditLimit: body.creditLimit,
+    accountNo: body.accountNo || undefined,
     addressType: body.addressType || undefined, state: body.state || undefined,
     city: body.city || undefined, area: body.area || undefined,
     houseNo: body.houseNo || undefined, street: body.street || undefined,
@@ -2316,6 +2315,13 @@ export const fetchCreditControl = (f?: {
 });
 export const fetchCreditControlSummary = async () =>
   (await get<{ summary: CreditControlSummary }>("/finance/credit-control/summary")).summary;
+// Set a dealer's credit limit. Finance-only (finance.manage) — the API
+// returns 403 for any other role. This is the ONLY way to change a credit limit.
+export const updateDealerCreditLimit = async (dealerId: string, creditLimit: number) =>
+  (await patch<{ dealer: { id: string; name: string; code: string | null; creditLimit: number } }>(
+    `/finance/credit-control/${dealerId}/limit`,
+    { creditLimit },
+  )).dealer;
 
 // ── Refunds ──
 export interface RefundRow {

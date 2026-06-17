@@ -120,6 +120,12 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "orders.update": ["super_admin", "manager"],
   "orders.cancel": ["super_admin", "manager"],
 
+  // Indents (admin standing-indent + daily-draft management).
+  // Decoupled from dealers.* so Indent staff (call_desk) can record/edit
+  // indents WITHOUT gaining dealer master-data (incl. credit) write access.
+  "indents.view":   ["super_admin", "manager", "call_desk", "viewer"],
+  "indents.manage": ["super_admin", "manager", "call_desk"],
+
   // Products
   "products.view":   ["super_admin", "viewer"],
   "products.manage": ["super_admin"],
@@ -128,9 +134,9 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "inventory.view":   ["super_admin", "dispatch_officer", "viewer"],
   "inventory.update": ["super_admin", "dispatch_officer"],
 
-  // Distribution / Routes
-  "distribution.view":   ["super_admin", "manager", "dispatch_officer", "viewer"],
-  "distribution.manage": ["super_admin", "manager", "dispatch_officer"],
+  // Distribution / Routes (incl. Dispatch Sheet) — officers run dispatch sheets
+  "distribution.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer"],
+  "distribution.manage": ["super_admin", "manager", "dispatch_officer", "officer"],
 
   // Dealers
   "dealers.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
@@ -176,9 +182,9 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "price_chart.view":   ["super_admin", "manager", "accountant", "officer", "viewer"],
   "price_chart.manage": ["super_admin", "manager"],
 
-  // Route Sheets (Reports → Route Sheet)
-  "route_sheets.view":   ["super_admin", "manager", "dispatch_officer", "viewer"],
-  "route_sheets.manage": ["super_admin", "manager", "dispatch_officer"],
+  // Route Sheets (Reports → Route Sheet) — officers build/confirm route sheets
+  "route_sheets.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer"],
+  "route_sheets.manage": ["super_admin", "manager", "dispatch_officer", "officer"],
 
   // Sales Reports (9 report types)
   "sales_reports.view": ["super_admin", "manager", "accountant", "viewer"],

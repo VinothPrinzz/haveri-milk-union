@@ -59,7 +59,7 @@ export async function systemRoutes(app: FastifyInstance) {
         username: z.string().min(3).max(32).regex(/^[a-z0-9_]+$/i, "Username may only contain letters, numbers and underscores"),
         email:    z.string().email(),
         password: z.string().min(6),
-        role:     z.enum(["super_admin", "manager", "dispatch_officer", "accountant", "call_desk"]),
+        role:     z.enum(["super_admin", "manager", "dispatch_officer", "accountant", "call_desk", "officer", "viewer"]),
         phone:    z.string().optional(),
         zoneId:   z.string().uuid().optional(),
       });
@@ -103,7 +103,7 @@ export async function systemRoutes(app: FastifyInstance) {
         name:     z.string().min(1).optional(),
         username: z.string().min(3).max(32).regex(/^[a-z0-9_]+$/i).optional(),
         email:    z.string().email().optional(),
-        role:     z.enum(["super_admin", "manager", "dispatch_officer", "accountant", "call_desk"]).optional(),
+        role:     z.enum(["super_admin", "manager", "dispatch_officer", "accountant", "call_desk", "officer", "viewer"]).optional(),
         phone:    z.string().optional(),
         active:   z.boolean().optional(),
       });
