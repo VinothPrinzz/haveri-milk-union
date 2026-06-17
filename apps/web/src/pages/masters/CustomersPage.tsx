@@ -798,7 +798,6 @@ function CustomerFormBody({
       officerName: initial?.officerName ?? "",
       bank: initial?.bank ?? "",
       accountNo: initial?.accountNo ?? "",
-      creditLimit: initial?.creditLimit ?? undefined,
       addressType: initial?.addressType ?? "",
       state: initial?.state ?? "Karnataka",
       zoneId: initial?.zoneId ?? "",
@@ -925,19 +924,6 @@ function CustomerFormBody({
         </Field>
         <Field label="Account No.">
           <Input className="erp-input" {...form.register("accountNo")} />
-        </Field>
-        <Field label="Credit Limit">
-        <Input
-          className="erp-input num"
-          type="number"
-          step="0.01"
-          min="0"
-          value={form.watch("creditLimit") ?? ""}
-          onChange={e => {
-            const val = e.target.value;
-            form.setValue("creditLimit", val === "" ? 0 : parseFloat(val));
-          }}
-        />
         </Field>
         <Field label="Primary Route" hint="F9">
           <F9SearchSelect

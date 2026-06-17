@@ -134,7 +134,6 @@ export function CustomerForm({
           officerName: initialData.officerName ?? "",
           bank: initialData.bank ?? "",
           accountNo: initialData.accountNo ?? "",
-          creditLimit: initialData.creditLimit ?? 0,
           addressType: (initialData.addressType ?? "") as any,
           state: initialData.state ?? "Karnataka",
           zoneId: initialData.zoneId ?? "",
@@ -150,7 +149,6 @@ export function CustomerForm({
           active: true,
           payMode: "Cash",
           state: "Karnataka",
-          creditLimit: 0,
         },
   });
 
@@ -359,26 +357,6 @@ export function CustomerForm({
               />
             </Field>
 
-            <Field label="Credit Limit (₹)" error={form.formState.errors.creditLimit?.message}>
-              <FormField
-                control={form.control}
-                name="creditLimit"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormControl>
-                      <Input
-                        className="erp-input"
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        {...field}
-                        onChange={e => field.onChange(parseFloat(e.target.value) || 0)}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-            </Field>
           </FormSection>
 
           {/* Address */}
