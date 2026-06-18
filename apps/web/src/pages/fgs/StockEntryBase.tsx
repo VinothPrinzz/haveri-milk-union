@@ -63,9 +63,14 @@ export default function StockEntryBase({ bucket }: Props) {
 
   const saveMutation = useMutation({
     mutationFn: () => {
+      // Opening is NOT editable — it's the previous day's closing (auto-filled
+      // by the server). Persist that displayed value, never the edits map.
+      const openingById = new Map(
+        (visibleEntries as any[]).map(s => [s.productId, Number(s.opening ?? 0)]),
+      );
       const entriesToSave = Object.entries(edits).map(([productId, e]) => ({
         productId,
-        opening:    Number(e.opening    ?? 0),
+        opening:    openingById.get(productId) ?? 0,
         received:   Number(e.received   ?? 0),
         dispatched: Number(e.dispatched ?? 0),
         wastage:    Number(e.wastage    ?? 0),
@@ -86,7 +91,8 @@ export default function StockEntryBase({ bucket }: Props) {
 
   const computeClosing = (s: any) => {
     const e = edits[s.productId] ?? {};
-    const opening    = e.opening    ?? s.opening    ?? 0;
+    // Opening is read-only (previous day's closing) — always use the row value.
+    const opening    = s.opening    ?? 0;
     const received   = e.received   ?? s.received   ?? 0;
     const dispatched = e.dispatched ?? s.dispatched ?? 0;
     const wastage    = e.wastage    ?? s.wastage    ?? 0;
@@ -174,11 +180,12 @@ export default function StockEntryBase({ bucket }: Props) {
                         <tr key={s.productId}>
                           <td className="font-medium">{s.productName}</td>
                           <td className="text-muted-foreground uppercase">{s.category ?? "—"}</td>
-                          <td style={{ textAlign: "right" }}>
-                            <StockInput
-                              value={edits[s.productId]?.opening ?? s.opening ?? 0}
-                              onChange={v => setEdit(s.productId, "opening", v)}
-                            />
+                          <td
+                            className="num text-muted-foreground"
+                            style={{ textAlign: "right" }}
+                            title="Auto-filled from the previous day's closing"
+                          >
+                            {fmtNum(s.opening ?? 0)}
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <StockInput
