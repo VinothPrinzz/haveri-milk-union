@@ -1438,6 +1438,14 @@ export const fetchRoles = async () => [
     role: "Dispatch Officer",
     permissions: ["dashboard", "fgs", "sales.dispatch"],
   },
+  {
+    role: "FGS — Milk & Curd",
+    permissions: ["dashboard", "fgs.stock.milk-curd"],
+  },
+  {
+    role: "FGS — Other Products",
+    permissions: ["dashboard", "fgs.stock.others"],
+  },
   { role: "Accountant", permissions: ["dashboard", "reports", "sales.view"] },
   {
     role: "Call Desk",

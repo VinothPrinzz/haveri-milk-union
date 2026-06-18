@@ -10,6 +10,15 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ModuleKey } from "@/components/AppLayout";
+import { useAuth } from "@/lib/auth";
+import { allowedBucketsForRole } from "@/lib/stock-buckets";
+
+// Stock Entry sidebar links that are gated to a specific stock bucket. A
+// bucket-scoped FGS operator only sees the link for their own SK diary.
+const BUCKET_PATHS: Record<string, "milk-curd" | "others"> = {
+  "/fgs/stock-entry/milk-curd": "milk-curd",
+  "/fgs/stock-entry/others":    "others",
+};
 
 interface NavItem { label: string; path: string; icon: React.ComponentType<{ className?: string }>; }
 
@@ -109,8 +118,15 @@ const MODULE_LABEL: Record<ModuleKey, string> = {
 export function AppSidebar({
   module, collapsed, onToggle,
 }: { module: ModuleKey; collapsed: boolean; onToggle: () => void }) {
-  const items = SIDEBAR_NAV[module] ?? [];
   const { pathname } = useLocation();
+  const { user } = useAuth();
+  const allowedBuckets = allowedBucketsForRole(user?.role);
+
+  // Hide the Stock Entry link for a bucket the current user can't access.
+  const items = (SIDEBAR_NAV[module] ?? []).filter(item => {
+    const bucket = BUCKET_PATHS[item.path];
+    return !bucket || allowedBuckets.includes(bucket);
+  });
 
   if (items.length === 0) return null;
 

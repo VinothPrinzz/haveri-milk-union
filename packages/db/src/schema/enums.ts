@@ -4,6 +4,9 @@ import { pgEnum } from "drizzle-orm/pg-core";
 // Phase 2: Added 'officer' for sales officers who handle direct sales / gate passes.
 // 'viewer' is a read-only role: granted only *.view permissions in the API
 // middleware (apps/api/src/middleware/admin-auth.ts).
+// 'fgs_milk_curd' / 'fgs_others' are bucket-scoped FGS roles: same capabilities
+// as dispatch_officer, but stock view/entry is limited to one product bucket
+// (see bucketsForRole() in apps/api/src/routes/inventory.ts).
 export const userRoleEnum = pgEnum("user_role", [
   "super_admin",
   "manager",
@@ -12,6 +15,8 @@ export const userRoleEnum = pgEnum("user_role", [
   "call_desk",
   "officer",
   "viewer",
+  "fgs_milk_curd",
+  "fgs_others",
 ]);
 
 // ── Order lifecycle ──

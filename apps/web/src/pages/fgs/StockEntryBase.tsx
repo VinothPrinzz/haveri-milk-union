@@ -173,7 +173,7 @@ export default function StockEntryBase({ bucket }: Props) {
                       return (
                         <tr key={s.productId}>
                           <td className="font-medium">{s.productName}</td>
-                          <td className="text-muted-foreground">{s.category ?? "—"}</td>
+                          <td className="text-muted-foreground uppercase">{s.category ?? "—"}</td>
                           <td style={{ textAlign: "right" }}>
                             <StockInput
                               value={edits[s.productId]?.opening ?? s.opening ?? 0}

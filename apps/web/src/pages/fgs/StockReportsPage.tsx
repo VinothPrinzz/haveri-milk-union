@@ -58,7 +58,7 @@ export default function StockReportsPage() {
           {(stockEntries as any[]).map((s: any) => (
             <tr key={s.id}>
               <td className="border border-border py-1 px-2">{(s.productName || "").replace("Nandini ", "")}</td>
-              <td className="border border-border py-1 px-2">{s.category}</td>
+              <td className="border border-border py-1 px-2 uppercase">{s.category}</td>
               <td className="border border-border py-1 px-2 text-right num">{fmtNum(s.opening)}</td>
               <td className="border border-border py-1 px-2 text-right num">{fmtNum(s.received)}</td>
               <td className="border border-border py-1 px-2 text-right num">{fmtNum(s.dispatched)}</td>

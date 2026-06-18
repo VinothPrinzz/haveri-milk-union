@@ -47,3 +47,17 @@ export const BUCKET_SUBTITLES: Record<StockBucket, string> = {
   "milk-curd": "Daily entry from the milk & curd SK diary",
   "others":    "Daily entry from the other-products SK diary",
 };
+
+/**
+ * Which stock buckets a role may view/edit. The two bucket-scoped FGS roles
+ * are limited to a single SK diary; everyone else sees both. Mirrors
+ * bucketsForRole() in apps/api/src/routes/inventory.ts — the server enforces
+ * this, the client uses it only to hide the inaccessible Stock Entry page.
+ */
+export function allowedBucketsForRole(role: string | null | undefined): StockBucket[] {
+  switch (role) {
+    case "fgs_milk_curd": return ["milk-curd"];
+    case "fgs_others":    return ["others"];
+    default:              return ["milk-curd", "others"];
+  }
+}

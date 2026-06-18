@@ -24,6 +24,7 @@ import CancellationRequestsPage from "@/pages/sales/CancellationRequestsPage";
 import StockDashboard from "@/pages/fgs/StockDashboard";
 import StockEntryMilkCurdPage from "@/pages/fgs/StockEntryMilkCurdPage";
 import StockEntryOthersPage   from "@/pages/fgs/StockEntryOthersPage";
+import { allowedBucketsForRole } from "@/lib/stock-buckets";
 import StockReportsPage from "@/pages/fgs/StockReportsPage";
 import DispatchPage from "@/pages/fgs/DispatchPage";
 import DispatchSheetPage from "@/pages/fgs/DispatchSheetPage";
@@ -90,6 +91,11 @@ function AppInner() {
 
   if (!user) return <LoginPage onLogin={login} />;
 
+  // Bucket-scoped FGS operators only reach their own Stock Entry page; the
+  // others redirect to whichever bucket their role can access.
+  const stockBuckets = allowedBucketsForRole(user.role);
+  const defaultStockBucket = stockBuckets[0];
+
   return (
     <BrowserRouter>
       <AppLayout>
@@ -126,9 +132,19 @@ function AppInner() {
           <Route path="/sales/invoices/:id"  element={<InvoiceDetailPage />} />
           {/* FGS */}
           <Route path="/fgs/dashboard" element={<StockDashboard />} />
-          <Route path="/fgs/stock-entry"            element={<Navigate to="/fgs/stock-entry/milk-curd" replace />} />
-          <Route path="/fgs/stock-entry/milk-curd"  element={<StockEntryMilkCurdPage />} />
-          <Route path="/fgs/stock-entry/others"     element={<StockEntryOthersPage   />} />
+          <Route path="/fgs/stock-entry"            element={<Navigate to={`/fgs/stock-entry/${defaultStockBucket}`} replace />} />
+          <Route
+            path="/fgs/stock-entry/milk-curd"
+            element={stockBuckets.includes("milk-curd")
+              ? <StockEntryMilkCurdPage />
+              : <Navigate to={`/fgs/stock-entry/${defaultStockBucket}`} replace />}
+          />
+          <Route
+            path="/fgs/stock-entry/others"
+            element={stockBuckets.includes("others")
+              ? <StockEntryOthersPage />
+              : <Navigate to={`/fgs/stock-entry/${defaultStockBucket}`} replace />}
+          />
           <Route path="/fgs/reports" element={<StockReportsPage />} />
           <Route path="/fgs/dispatch" element={<DispatchPage />} />
           <Route path="/fgs/dispatch-sheet" element={<DispatchSheetPage />} />
