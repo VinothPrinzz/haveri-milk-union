@@ -139,7 +139,7 @@ export default function StockDashboard() {
                         }
                       >
                         <td className="font-medium">{s.productName}</td>
-                        <td className="text-muted-foreground">{s.category ?? "—"}</td>
+                        <td className="text-muted-foreground uppercase">{s.category ?? "—"}</td>
                         <td>{s.unit ?? "—"}</td>
                         <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(s.closing ?? s.stock ?? 0)}</td>
                         <td className="num text-muted-foreground" style={{ textAlign: "right" }}>{fmtNum(s.low_stock_threshold ?? "—")}</td>

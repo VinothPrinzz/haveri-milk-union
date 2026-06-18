@@ -44,7 +44,8 @@ const EMAIL_DOMAIN = "haverimilkunion.coop";
 
 type Role =
   | "super_admin" | "manager" | "dispatch_officer"
-  | "accountant" | "call_desk" | "officer" | "viewer";
+  | "accountant" | "call_desk" | "officer" | "viewer"
+  | "fgs_milk_curd" | "fgs_others";
 
 interface SeedUser {
   name: string;
@@ -55,31 +56,35 @@ interface SeedUser {
 }
 
 // ── The staff roster ────────────────────────────────────────────────────
+// NOTE: All non-FGS accounts are already seeded. They're commented out so a
+// re-run only upserts the two FGS logins (whose roles changed to the bucket-
+// scoped fgs_milk_curd / fgs_others). Un-comment to re-seed the full roster.
 const USERS: SeedUser[] = [
-  // Managers (2)
-  { name: "Prashant",            username: "prashant",  role: "manager" },
-  { name: "Ramya",               username: "ramya",     role: "manager" },
+  // // Managers (2)
+  // { name: "Prashant",            username: "prashant",  role: "manager" },
+  // { name: "Ramya",               username: "ramya",     role: "manager" },
 
-  // Indent operators (3) — record/edit dealer indents
-  { name: "Indent Operator 1",   username: "indent1",   role: "call_desk" },
-  { name: "Indent Operator 2",   username: "indent2",   role: "call_desk" },
-  { name: "Indent Operator 3",   username: "indent3",   role: "call_desk" },
+  // // Indent operators (3) — record/edit dealer indents
+  // { name: "Indent Operator 1",   username: "indent1",   role: "call_desk" },
+  // { name: "Indent Operator 2",   username: "indent2",   role: "call_desk" },
+  // { name: "Indent Operator 3",   username: "indent3",   role: "call_desk" },
 
-  // FGS — Finished Goods Store (2): one per product line
-  { name: "SKA Dairy (FGS)",         username: "fgs_ska",    role: "dispatch_officer" },
-  { name: "Other Products (FGS)",    username: "fgs_others", role: "dispatch_officer" },
+  // FGS — Finished Goods Store (2): one per product line. Bucket-scoped roles
+  // limit each operator's stock view/entry to their own SK diary.
+  { name: "SKA Dairy (FGS)",         username: "fgs_ska",    role: "fgs_milk_curd" },
+  { name: "Other Products (FGS)",    username: "fgs_others", role: "fgs_others" },
 
-  // Route officers (6) — direct sales / gate pass
-  { name: "Route Officer 1",     username: "route1",    role: "officer" },
-  { name: "Route Officer 2",     username: "route2",    role: "officer" },
-  { name: "Route Officer 3",     username: "route3",    role: "officer" },
-  { name: "Route Officer 4",     username: "route4",    role: "officer" },
-  { name: "Route Officer 5",     username: "route5",    role: "officer" },
-  { name: "Route Officer 6",     username: "route6",    role: "officer" },
+  // // Route officers (6) — direct sales / gate pass
+  // { name: "Route Officer 1",     username: "route1",    role: "officer" },
+  // { name: "Route Officer 2",     username: "route2",    role: "officer" },
+  // { name: "Route Officer 3",     username: "route3",    role: "officer" },
+  // { name: "Route Officer 4",     username: "route4",    role: "officer" },
+  // { name: "Route Officer 5",     username: "route5",    role: "officer" },
+  // { name: "Route Officer 6",     username: "route6",    role: "officer" },
 
-  // Finance (2) — accountants; only role that may edit credit limits
-  { name: "Finance Officer 1",   username: "finance1",  role: "accountant" },
-  { name: "Finance Officer 2",   username: "finance2",  role: "accountant" },
+  // // Finance (2) — accountants; only role that may edit credit limits
+  // { name: "Finance Officer 1",   username: "finance1",  role: "accountant" },
+  // { name: "Finance Officer 2",   username: "finance2",  role: "accountant" },
 ];
 
 const sql = postgres(DATABASE_URL, { max: 1 });

@@ -22,8 +22,8 @@ Logins use **username + password** (see `auth.ts` → `/auth/admin/login`).
 | 3 | Indent Operator 1 | `indent1` | `call_desk` | Indent |
 | 4 | Indent Operator 2 | `indent2` | `call_desk` | Indent |
 | 5 | Indent Operator 3 | `indent3` | `call_desk` | Indent |
-| 6 | SKA Dairy (FGS) | `fgs_ska` | `dispatch_officer` | FGS |
-| 7 | Other Products (FGS) | `fgs_others` | `dispatch_officer` | FGS |
+| 6 | SKA Dairy (FGS) | `fgs_ska` | `fgs_milk_curd` | FGS |
+| 7 | Other Products (FGS) | `fgs_others` | `fgs_others` | FGS |
 | 8–13 | Route Officer 1–6 | `route1`…`route6` | `officer` | Route officer |
 | 14 | Finance Officer 1 | `finance1` | `accountant` | Finance |
 | 15 | Finance Officer 2 | `finance2` | `accountant` | Finance |
@@ -39,12 +39,17 @@ business groups:
 |---|---|---|
 | Manager | `manager` | orders, dealers (master), distribution, routes, batches, price chart |
 | Indent | `call_desk` | record/edit indents, create orders, view dealers, wallet top-ups |
-| FGS | `dispatch_officer` | inventory (stock entry/update), dispatch, batches, route sheets |
+| FGS — Milk & Curd | `fgs_milk_curd` | inventory (stock entry/update) **scoped to Milk & Curd**, dispatch, batches, route sheets |
+| FGS — Other Products | `fgs_others` | inventory (stock entry/update) **scoped to Other Products**, dispatch, batches, route sheets |
 | Route officer | `officer` | gate pass, **route sheets**, **dispatch sheets**, direct sales, cash customers, create orders |
 | Finance | `accountant` | finance view + manage, **credit limits**, reports |
 
-> The two FGS accounts (SKA Dairy / Other Products) share the same role —
-> the product-line split is operational, not a permission difference.
+> The two FGS accounts carry the same FGS capabilities, but the stock
+> view/entry endpoints (`/fgs/overview`, `/fgs/update`) scope each role to a
+> single product bucket — the SKA milk & curd diary vs. the other-products
+> diary — via `bucketsForRole()` in `apps/api/src/routes/inventory.ts`. A
+> Milk & Curd operator cannot view or edit Other-Products stock, and vice
+> versa. Opening stock auto-fills from the previous day's closing.
 
 ## 3. Issues found & fixed
 
@@ -118,8 +123,8 @@ Files: `apps/api/src/middleware/admin-auth.ts`, `apps/api/src/routes/admin-inden
 - **Finance** (`accountant`) has `finance.manage` but **not** `dealers.manage` →
   can edit credit limits but not other dealer master fields. ✔
 - **Manager** does **not** have `finance.manage` → cannot edit credit limits. ✔
-- **FGS** (`dispatch_officer`) has `inventory.update` + dispatch/route-sheet
-  manage; no finance/orders write access. ✔
+- **FGS** (`fgs_milk_curd` / `fgs_others`) has `inventory.update` + dispatch/route-sheet
+  manage, scoped to its own stock bucket; no finance/orders write access. ✔
 - **Route officer** (`officer`) has `direct_sales.manage`, `cash_customers.manage`,
   `orders.create`; no dealer/finance master write access. ✔
 

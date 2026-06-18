@@ -5,6 +5,30 @@ import { db, pgClient } from "../lib/db.js";
 import { products, fgsStockLog, categories } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 
+type StockBucket = "milk-curd" | "others";
+
+// Keep in sync with apps/web/src/lib/stock-buckets.ts MILK_CURD_CATEGORIES.
+const MILK_CURD_CATEGORIES = ["milk", "curd"];
+
+const bucketOfCategory = (category: string | null | undefined): StockBucket =>
+  MILK_CURD_CATEGORIES.includes(String(category ?? "").trim().toLowerCase())
+    ? "milk-curd"
+    : "others";
+
+/**
+ * Which stock buckets a role may view/edit. The two bucket-scoped FGS roles
+ * (the SKA milk & curd diary vs. the other-products diary) are limited to a
+ * single bucket; everyone else with inventory access sees both.
+ * Keep in sync with apps/web/src/lib/stock-buckets.ts allowedBucketsForRole().
+ */
+function bucketsForRole(role: string): StockBucket[] {
+  switch (role) {
+    case "fgs_milk_curd": return ["milk-curd"];
+    case "fgs_others":    return ["others"];
+    default:              return ["milk-curd", "others"];
+  }
+}
+
 export async function inventoryRoutes(app: FastifyInstance) {
   // GET /api/v1/fgs/overview — current stock for all products
   app.get(
@@ -16,9 +40,13 @@ export async function inventoryRoutes(app: FastifyInstance) {
         bucket: z.enum(["milk-curd", "others"]).optional(),
       });
       const { date, bucket } = querySchema.parse(request.query);
-      
-      // Keep in sync with apps/web/src/lib/stock-buckets.ts MILK_CURD_CATEGORIES
-      const MILK_CURD_CATEGORIES = ["milk", "curd"];
+
+      // Bucket-scoped roles (SKA milk-curd diary / other-products diary) can only
+      // ever see their own bucket — force it, ignoring any wider query param.
+      // Unrestricted roles honour the requested bucket (undefined → all).
+      const allowedBuckets = bucketsForRole(request.admin!.role);
+      const effectiveBucket: StockBucket | null =
+        allowedBuckets.length === 1 ? allowedBuckets[0]! : (bucket ?? null);
 
       // If date is given, return that day's snapshot from fgs_stock_log,
       // joined with products (some products may not have an entry that day).
@@ -27,7 +55,19 @@ export async function inventoryRoutes(app: FastifyInstance) {
           SELECT p.id, p.name, p.icon, p.unit, p.available,
                  p.low_stock_threshold, p.critical_stock_threshold,
                  c.name AS category_name,
-                 COALESCE(fsl.opening,    0) AS opening,
+                 -- Opening auto-fills from the most recent prior day's closing
+                 -- when this date has no entry yet (falls back to 0 for a brand
+                 -- new product with no history).
+                 COALESCE(
+                   fsl.opening,
+                   (SELECT prev.closing
+                      FROM fgs_stock_log prev
+                     WHERE prev.product_id = p.id
+                       AND prev.date < ${date}::date
+                     ORDER BY prev.date DESC
+                     LIMIT 1),
+                   0
+                 ) AS opening,
                  COALESCE(fsl.received,   0) AS received,
                  COALESCE(fsl.dispatched, 0) AS dispatched,
                  COALESCE(fsl.wastage,    0) AS wastage,
@@ -45,9 +85,9 @@ export async function inventoryRoutes(app: FastifyInstance) {
           LEFT JOIN fgs_stock_log fsl ON fsl.product_id = p.id AND fsl.date = ${date}::date
           WHERE p.deleted_at IS NULL
             AND (
-              ${bucket ?? null}::text IS NULL
-              OR (${bucket ?? null}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
-              OR (${bucket ?? null}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
+              ${effectiveBucket}::text IS NULL
+              OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
+              OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
             )
           ORDER BY p.sort_order
         `;
@@ -76,9 +116,9 @@ export async function inventoryRoutes(app: FastifyInstance) {
         JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
         AND (
-          ${bucket ?? null}::text IS NULL
-          OR (${bucket ?? null}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
-          OR (${bucket ?? null}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
+          ${effectiveBucket}::text IS NULL
+          OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
+          OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
         )
       ORDER BY p.sort_order
       `;
@@ -111,6 +151,35 @@ export async function inventoryRoutes(app: FastifyInstance) {
         ),
       });
       const body = schema.parse(request.body);
+
+      // Bucket scoping: a bucket-restricted FGS operator may only write stock for
+      // products in their own bucket. Verify every submitted product's category
+      // before touching any row, so a Milk & Curd operator can't edit Other
+      // Products stock (and vice versa) by crafting a request.
+      const allowedBuckets = bucketsForRole(request.admin!.role);
+      if (allowedBuckets.length === 1 && body.entries.length > 0) {
+        const productIds = body.entries.map(e => e.productId);
+        const productCats = await pgClient`
+          SELECT p.id, c.name AS category
+          FROM products p
+          JOIN categories c ON c.id = p.category_id
+          WHERE p.id = ANY(${productIds}::uuid[])
+        `;
+        const catById = new Map<string, string>(
+          productCats.map(r => [r.id as string, r.category as string]),
+        );
+        const offending = body.entries.filter(e => {
+          // Unknown product ids are treated as out-of-bucket — reject defensively.
+          const cat = catById.get(e.productId);
+          return cat === undefined || !allowedBuckets.includes(bucketOfCategory(cat));
+        });
+        if (offending.length > 0) {
+          return reply.status(403).send({
+            error: "Forbidden",
+            message: `Role '${request.admin!.role}' may only edit ${allowedBuckets[0]} stock`,
+          });
+        }
+      }
 
       const results = [];
 

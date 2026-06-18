@@ -10,7 +10,7 @@ import { adminSessions, users } from "@hmu/db/schema";
  * Usage in route: { preHandler: [adminAuth] }
  */
 
-type UserRole = "super_admin" | "manager" | "dispatch_officer" | "accountant" | "call_desk" | "officer" | "viewer";
+type UserRole = "super_admin" | "manager" | "dispatch_officer" | "accountant" | "call_desk" | "officer" | "viewer" | "fgs_milk_curd" | "fgs_others";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -112,7 +112,7 @@ export async function adminAuth(
 // permission, remember to include "viewer" only if it is a pure read.
 const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // Dashboard — everyone
-  dashboard: ["super_admin", "manager", "dispatch_officer", "accountant", "call_desk", "officer", "viewer"],
+  dashboard: ["super_admin", "manager", "dispatch_officer", "accountant", "call_desk", "officer", "viewer", "fgs_milk_curd", "fgs_others"],
 
   // Orders
   "orders.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
@@ -130,13 +130,15 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "products.view":   ["super_admin", "viewer"],
   "products.manage": ["super_admin"],
 
-  // Inventory / FGS
-  "inventory.view":   ["super_admin", "dispatch_officer", "viewer"],
-  "inventory.update": ["super_admin", "dispatch_officer"],
+  // Inventory / FGS. The bucket-scoped FGS roles share these permissions; the
+  // inventory routes further restrict them to a single product bucket — see
+  // bucketsForRole() in apps/api/src/routes/inventory.ts.
+  "inventory.view":   ["super_admin", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  "inventory.update": ["super_admin", "dispatch_officer", "fgs_milk_curd", "fgs_others"],
 
   // Distribution / Routes (incl. Dispatch Sheet) — officers run dispatch sheets
-  "distribution.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer"],
-  "distribution.manage": ["super_admin", "manager", "dispatch_officer", "officer"],
+  "distribution.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  "distribution.manage": ["super_admin", "manager", "dispatch_officer", "officer", "fgs_milk_curd", "fgs_others"],
 
   // Dealers
   "dealers.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
@@ -148,7 +150,7 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "finance.manage": ["super_admin", "accountant"],
 
   // Reports
-  "reports.view": ["super_admin", "manager", "dispatch_officer", "accountant", "viewer"],
+  "reports.view": ["super_admin", "manager", "dispatch_officer", "accountant", "viewer", "fgs_milk_curd", "fgs_others"],
 
   // System — viewer gets read-only system.view, but NOT system.users
   // (that permission also gates create/edit of users) or system.manage.
@@ -159,12 +161,12 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // ── Phase 2 Permissions ──
 
   // Contractors (Masters → Contractors)
-  "contractors.view":   ["super_admin", "manager", "dispatch_officer", "viewer"],
+  "contractors.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
   "contractors.manage": ["super_admin", "manager"],
 
   // Batches (Masters → Batches)
-  "batches.view":   ["super_admin", "manager", "dispatch_officer", "viewer"],
-  "batches.manage": ["super_admin", "manager", "dispatch_officer"],
+  "batches.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  "batches.manage": ["super_admin", "manager", "dispatch_officer", "fgs_milk_curd", "fgs_others"],
 
   // Direct Sales (Sales Operations → Gate Pass / Cash Customer)
   "direct_sales.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
@@ -183,8 +185,8 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "price_chart.manage": ["super_admin", "manager"],
 
   // Route Sheets (Reports → Route Sheet) — officers build/confirm route sheets
-  "route_sheets.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer"],
-  "route_sheets.manage": ["super_admin", "manager", "dispatch_officer", "officer"],
+  "route_sheets.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  "route_sheets.manage": ["super_admin", "manager", "dispatch_officer", "officer", "fgs_milk_curd", "fgs_others"],
 
   // Sales Reports (9 report types)
   "sales_reports.view": ["super_admin", "manager", "accountant", "viewer"],
