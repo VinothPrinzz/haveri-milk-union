@@ -8,7 +8,7 @@ import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 type StockBucket = "milk-curd" | "others";
 
 // Keep in sync with apps/web/src/lib/stock-buckets.ts MILK_CURD_CATEGORIES.
-const MILK_CURD_CATEGORIES = ["milk", "curd"];
+const MILK_CURD_CATEGORIES = ["milk", "curd", "lassi", "buttermilk"];
 
 const bucketOfCategory = (category: string | null | undefined): StockBucket =>
   MILK_CURD_CATEGORIES.includes(String(category ?? "").trim().toLowerCase())
@@ -89,7 +89,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
               OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
               OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
             )
-          ORDER BY p.sort_order
+          ORDER BY c.name, p.sort_order
         `;
         const summary = {
           totalProducts: stockData.length,
@@ -120,7 +120,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
           OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
           OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
         )
-      ORDER BY p.sort_order
+      ORDER BY c.name, p.sort_order
       `;
       const summary = {
         totalProducts: stockData.length,

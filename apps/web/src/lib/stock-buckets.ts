@@ -14,7 +14,7 @@
 // filter and the backend SQL filter read this same list.
 // ════════════════════════════════════════════════════════════════════
 
-export const MILK_CURD_CATEGORIES = ["Milk", "Curd"] as const;
+export const MILK_CURD_CATEGORIES = ["Milk", "Curd", "Lassi", "Buttermilk"] as const;
 
 export type StockBucket = "milk-curd" | "others";
 
