@@ -259,23 +259,51 @@ export default function CustomersPage({ tab = "list" }: Props) {
         || (c.phone ?? "").toString().includes(q);
   });
  
-  const exportCsv = () => {
-    const header = ["Code", "Name", "Type", "Routes", "Phone", "Pay Mode", "City", "Status"];
-    const data = pageRows.map((c: any) => [
-      c.code, c.name, c.type,
-      (c.routes ?? []).map((r: any) => r.routeCode).join(" | "),
-      c.phone, c.payMode, c.city,
-      c.active === false ? "Inactive" : "Active",
-    ]);
-    const csv = toCsv([header, ...data]);
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const ts = new Date().toISOString().slice(0, 10);
-    a.href = url; a.download = `customers_page${page}_${ts}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Exported ${data.length} row(s)`);
+  const [exporting, setExporting] = useState(false);
+  const exportCsv = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      // Fetch ALL customers matching the current filters (every page), not just the page on screen.
+      const baseParams = {
+        limit: 100,
+        search:       debouncedSearch || undefined,
+        customerType: typeFilter !== "All Types" ? typeFilter : undefined,
+        routeId:      routeFilter ?? undefined,
+        activeFilter: statusFilter !== "all" ? (statusFilter as "true" | "false") : undefined,
+      };
+
+      const first = await fetchCustomersPage({ ...baseParams, page: 1 });
+      const allRows = [...first.rows];
+      if (first.totalPages > 1) {
+        const pages = Array.from({ length: first.totalPages - 1 }, (_, i) => i + 2);
+        const rest = await Promise.all(
+          pages.map((p) => fetchCustomersPage({ ...baseParams, page: p })),
+        );
+        rest.forEach((r) => allRows.push(...r.rows));
+      }
+
+      const header = ["Code", "Name", "Type", "Routes", "Phone", "Pay Mode", "City", "Status"];
+      const data = allRows.map((c: any) => [
+        c.code, c.name, c.type,
+        (c.routes ?? []).map((r: any) => r.routeCode).join(" | "),
+        c.phone, c.payMode, c.city,
+        c.active === false ? "Inactive" : "Active",
+      ]);
+      const csv = toCsv([header, ...data]);
+      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const ts = new Date().toISOString().slice(0, 10);
+      a.href = url; a.download = `customers_${ts}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${data.length} row(s)`);
+    } catch {
+      toast.error("Failed to export customers");
+    } finally {
+      setExporting(false);
+    }
   };
  
   // ─────────────────────────────────────────────────────────────────
@@ -518,8 +546,8 @@ export default function CustomersPage({ tab = "list" }: Props) {
         subtitle={`${totalCount} customer(s) registered`}
         actions={
           <>
-            <Button variant="outline" size="sm" className="h-8" onClick={exportCsv}>
-              <Download className="w-3.5 h-3.5 mr-1.5" />Export CSV
+            <Button variant="outline" size="sm" className="h-8" onClick={exportCsv} disabled={exporting}>
+              <Download className="w-3.5 h-3.5 mr-1.5" />{exporting ? "Exporting…" : "Export CSV"}
             </Button>
             <Button size="sm" className="h-8 bg-primary hover:bg-primary-hover" asChild>
               <a href="/masters/customers/new"><Plus className="w-3.5 h-3.5 mr-1.5" />New Customer</a>

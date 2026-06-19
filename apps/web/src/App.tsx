@@ -40,6 +40,7 @@ import RazorpayReconciliationPage from "@/pages/finance/RazorpayReconciliationPa
 import FinanceDashboardPage       from "@/pages/finance/FinanceDashboardPage";
 import CreditControlPage          from "@/pages/finance/CreditControlPage";
 import CreditLimitsPage           from "@/pages/finance/CreditLimitsPage";
+import EmployeeCreditLimitsPage   from "@/pages/finance/EmployeeCreditLimitsPage";
 import RefundsPage                from "@/pages/finance/RefundsPage";
 import ARAgingPage                from "@/pages/finance/ARAgingPage";
 import DealerStatementsPage       from "@/pages/finance/DealerStatementsPage";
@@ -47,11 +48,12 @@ import ChequesPage                from "@/pages/finance/ChequesPage";
 import AdjustmentsPage            from "@/pages/finance/AdjustmentsPage";
 import DayBookPage                from "@/pages/finance/DayBookPage";
 import DealerIndentsPage from "@/pages/sales/DealerIndentsPage";
+import EmployeeIndentsPage from "@/pages/sales/EmployeeIndentsPage";
 // import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
 import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
-  TalukaAgentSales, AdhocSalesReport, GSTStatement,
+  TalukaAgentSales, AdhocSalesReport, GSTStatement, VipSalesReport,
 } from "@/pages/sales-reports/SalesReports";
 import EmployeeSubsidyReportPage from "@/pages/sales-reports/EmployeeSubsidyReport";
 import DailySalesReport from "@/pages/sales-reports/DailySalesReport";
@@ -121,6 +123,7 @@ function AppInner() {
           <Route path="/sales/record-indents" element={<RecordIndentsPage />} />
           <Route path="/sales/all-indents" element={<AllIndentsPage />} />
           <Route path="/sales/dealer-indents" element={<DealerIndentsPage />} />
+          <Route path="/sales/employee-indents" element={<EmployeeIndentsPage />} />
           <Route path="/sales/direct-sales/gate-pass" element={<DirectSalesPage tab="gate-pass" />} />
           <Route path="/sales/direct-sales/cash-customer" element={<DirectSalesPage tab="cash-customer" />} />
           <Route path="/sales/direct-sales/modify" element={<DirectSalesPage tab="modify" />} />
@@ -156,6 +159,7 @@ function AppInner() {
           <Route path="/finance/reconciliation"  element={<RazorpayReconciliationPage />} />
           <Route path="/finance/credit-control" element={<CreditControlPage />} />
           <Route path="/finance/credit-limits" element={<CreditLimitsPage />} />
+          <Route path="/finance/employee-credit-limits" element={<EmployeeCreditLimitsPage />} />
           <Route path="/finance/refunds" element={<RefundsPage />} />
           <Route path="/finance/ar-aging" element={<ARAgingPage />} />
           <Route path="/finance/dealer-statements" element={<DealerStatementsPage />} />
@@ -177,6 +181,7 @@ function AppInner() {
           <Route path="/sales-reports/adhoc" element={<AdhocSalesReport />} />
           <Route path="/sales-reports/gst" element={<GSTStatement />} />
           <Route path="/sales-reports/employee-subsidy" element={<EmployeeSubsidyReportPage />} />
+          <Route path="/sales-reports/vip-sales" element={<VipSalesReport />} />
           {/* System */}
           <Route path="/system/time-windows" element={<TimeWindowsPage />} />
           <Route path="/system/notifications" element={<NotificationsPage />} />

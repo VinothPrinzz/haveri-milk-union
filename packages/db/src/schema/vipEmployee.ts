@@ -1,5 +1,5 @@
 import {
-    pgTable, uuid, text, boolean, timestamp, numeric, index, uniqueIndex,
+    pgTable, uuid, text, boolean, timestamp, numeric, integer, index, uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { products } from "./products.js";
@@ -30,6 +30,12 @@ phone:        text("phone"),
 department:   text("department"),
 designation:  text("designation"),
 active:       boolean("active").notNull().default(true),
+// Route assignment (migration 0037)
+routeId:        uuid("route_id"),
+routePosition:  integer("route_position").notNull().default(9999),
+// Credit (migration 0048) — finance-managed; mirrors dealers.
+creditLimit:     numeric("credit_limit", { precision: 14, scale: 2 }).notNull().default("0"),
+openingBalance:  numeric("opening_balance", { precision: 14, scale: 2 }).notNull().default("0"),
 createdAt:    timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 updatedAt:    timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 deletedAt:    timestamp("deleted_at", { withTimezone: true }),

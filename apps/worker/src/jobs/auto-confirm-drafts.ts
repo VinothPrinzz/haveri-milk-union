@@ -83,6 +83,36 @@ async function workerCreditCheck(
   return { available: round2(available), sufficient, shortfall };
 }
 
+// ── Employee credit check (ledger-based; mirror of checkEmployeeCredit) ─
+async function workerEmployeeCreditCheck(
+  employeeId: string,
+  orderTotal: number
+): Promise<{ available: number; sufficient: boolean; shortfall: number }> {
+  const [row] = await sql`
+    SELECT
+      COALESCE(e.credit_limit, 0)::numeric AS credit_limit,
+      (
+        COALESCE(e.opening_balance, 0)
+        + COALESCE((
+            SELECT SUM(CASE WHEN el.type = 'credit' THEN el.amount
+                            WHEN el.type = 'debit'  THEN -el.amount END)
+              FROM employee_ledger el
+             WHERE el.employee_id = e.id
+               AND COALESCE(el.voucher_type, '') <> 'Opening'
+          ), 0)
+      )::numeric AS closing_balance
+    FROM employees e
+    WHERE e.id = ${employeeId}::uuid AND e.deleted_at IS NULL
+  `;
+  if (!row) throw new Error(`Employee ${employeeId} not found`);
+  const creditLimit = parseFloat(row.credit_limit);
+  const closing = parseFloat(row.closing_balance);
+  const available = Math.max(0, creditLimit + closing);
+  const sufficient = orderTotal <= available;
+  const shortfall = sufficient ? 0 : round2(orderTotal - available);
+  return { available: round2(available), sufficient, shortfall };
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
 interface RouteRow {
@@ -454,6 +484,216 @@ export async function processAutoConfirmDrafts(_job: Job) {
     }
   }
 
+  // ── Employee pass (no app / no FCM / no PDF) ───────────────────────
+  // Same close-time routes; employees are route-assigned (migration 0037).
+  // Materialise-then-confirm from the employee standing indent at subsidy
+  // pricing. Over-limit → 'payment_required' (finance releases later).
+  let empConfirmed = 0;
+  let empPaymentRequired = 0;
+  let empMaterialized = 0;
+  let empCancelledEmpty = 0;
+  let empSkipped = 0;
+  let empFailed = 0;
+
+  // Build a draft employee_order from the standing indent. null if empty.
+  async function materializeEmployeeFromStanding(
+    employeeId: string,
+    routeId: string
+  ): Promise<{ orderId: string; grandTotal: number } | null> {
+    const items: Array<{
+      product_id: string; default_qty: number; name: string;
+      base_price: string; gst_percent: string; subsidy_percent: string;
+    }> = await sql`
+      SELECT
+        esi.product_id::text         AS product_id,
+        esi.default_qty              AS default_qty,
+        p.name                       AS name,
+        p.base_price::numeric::text  AS base_price,
+        p.gst_percent::numeric::text AS gst_percent,
+        r.subsidy_percent::numeric::text AS subsidy_percent
+      FROM employee_standing_indents esi
+      JOIN products p ON p.id = esi.product_id
+                     AND p.deleted_at IS NULL AND p.available = true
+      JOIN employee_subsidy_rules r ON r.product_id = esi.product_id AND r.active = true
+      WHERE esi.employee_id = ${employeeId}::uuid
+        AND esi.active = true AND esi.default_qty > 0
+    `;
+    if (items.length === 0) return null;
+
+    let subtotal = 0;
+    let totalGst = 0;
+    let itemCount = 0;
+    const lines = items.map((it) => {
+      const mrp = parseFloat(it.base_price);
+      const subsidyPct = parseFloat(it.subsidy_percent);
+      const gstPct = parseFloat(it.gst_percent);
+      const unitPrice = round2(mrp * (1 - subsidyPct / 100));
+      const lineSub = unitPrice * it.default_qty;
+      const lineGst = lineSub * (gstPct / 100);
+      subtotal += lineSub;
+      totalGst += lineGst;
+      itemCount += it.default_qty;
+      return {
+        product_id: it.product_id, name: it.name, default_qty: it.default_qty,
+        unitPrice: unitPrice.toFixed(2), gst_percent: gstPct.toFixed(2),
+        gstAmount: lineGst.toFixed(2), lineTotal: (lineSub + lineGst).toFixed(2),
+        subsidy_percent: subsidyPct.toFixed(2), mrp_reference: mrp.toFixed(2),
+      };
+    });
+    const grandTotal = round2(subtotal + totalGst);
+
+    const orderId = await sql.begin(async (tx) => {
+      const [row] = await tx`
+        INSERT INTO employee_orders (
+          employee_id, route_id, status, payment_mode,
+          subtotal, total_gst, grand_total, item_count, delivery_date
+        ) VALUES (
+          ${employeeId}::uuid, ${routeId}::uuid, 'draft', 'credit',
+          ${subtotal.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric,
+          ${grandTotal.toFixed(2)}::numeric, ${itemCount}, ${todayIso}::date
+        )
+        RETURNING id::text AS id
+      `;
+      for (const ln of lines) {
+        await tx`
+          INSERT INTO employee_order_items (
+            employee_order_id, product_id, product_name, quantity,
+            unit_price, gst_percent, gst_amount, line_total,
+            subsidy_percent, mrp_reference
+          ) VALUES (
+            ${row!.id}::uuid, ${ln.product_id}::uuid, ${ln.name},
+            ${ln.default_qty}, ${ln.unitPrice}::numeric, ${ln.gst_percent}::numeric,
+            ${ln.gstAmount}::numeric, ${ln.lineTotal}::numeric,
+            ${ln.subsidy_percent}::numeric, ${ln.mrp_reference}::numeric
+          )
+        `;
+      }
+      return row!.id;
+    });
+    return { orderId, grandTotal };
+  }
+
+  // Confirm an employee draft on credit, or flag payment_required.
+  async function confirmEmployeeOnCredit(
+    employeeId: string,
+    orderId: string,
+    grandTotal: number
+  ): Promise<"confirmed" | "payment_required"> {
+    const credit = await workerEmployeeCreditCheck(employeeId, grandTotal);
+    if (!credit.sufficient) {
+      await sql`
+        UPDATE employee_orders SET status = 'payment_required', updated_at = now()
+         WHERE id = ${orderId}::uuid AND status = 'draft'
+      `;
+      return "payment_required";
+    }
+    await sql.begin(async (tx) => {
+      const upd = await tx`
+        UPDATE employee_orders
+           SET status = 'confirmed', payment_mode = 'credit',
+               confirmed_at = COALESCE(confirmed_at, now()), updated_at = now()
+         WHERE id = ${orderId}::uuid AND status = 'draft'
+      `;
+      if (upd.count === 0) return;
+      const [bal] = await tx`
+        SELECT
+          COALESCE(e.opening_balance, 0)
+          + COALESCE((SELECT SUM(CASE WHEN el.type = 'credit'
+                                       AND COALESCE(el.voucher_type,'') <> 'Opening'
+                                      THEN el.amount ELSE 0 END)
+                        FROM employee_ledger el WHERE el.employee_id = e.id), 0)
+          - COALESCE((SELECT SUM(CASE WHEN el.type = 'debit'
+                                       AND COALESCE(el.voucher_type,'') <> 'Opening'
+                                      THEN el.amount ELSE 0 END)
+                        FROM employee_ledger el WHERE el.employee_id = e.id), 0)
+          AS bal
+        FROM employees e WHERE e.id = ${employeeId}::uuid
+      `;
+      const balanceAfter = parseFloat(bal!.bal) - grandTotal;
+      await tx`
+        INSERT INTO employee_ledger
+          (employee_id, type, amount, reference_id, reference_type,
+           voucher_type, voucher_date, description, balance_after)
+        VALUES
+          (${employeeId}::uuid, 'debit', ${grandTotal.toFixed(2)}::numeric,
+           ${orderId}::uuid, 'order', 'Invoice', now()::date,
+           ${"Auto-confirmed employee standing-indent order " + orderId},
+           ${balanceAfter.toFixed(2)}::numeric)
+      `;
+    });
+    return "confirmed";
+  }
+
+  for (const route of routesWithClosedWindows) {
+    const emps: Array<{
+      employee_id: string; order_id: string | null; order_status: string | null;
+      grand_total: string | null; item_count: number | null; has_standing: boolean;
+    }> = await sql`
+      SELECT
+        e.id::text                   AS employee_id,
+        o.id::text                   AS order_id,
+        o.status::text               AS order_status,
+        o.grand_total::numeric::text AS grand_total,
+        o.item_count                 AS item_count,
+        EXISTS (
+          SELECT 1 FROM employee_standing_indents esi
+          JOIN employee_subsidy_rules r ON r.product_id = esi.product_id AND r.active = true
+           WHERE esi.employee_id = e.id AND esi.active = true AND esi.default_qty > 0
+        ) AS has_standing
+      FROM employees e
+      LEFT JOIN LATERAL (
+        SELECT eo.id, eo.status, eo.grand_total, eo.item_count
+          FROM employee_orders eo
+         WHERE eo.employee_id = e.id AND eo.delivery_date = ${todayIso}::date
+         ORDER BY eo.created_at DESC LIMIT 1
+      ) o ON true
+      WHERE e.route_id = ${route.id}::uuid
+        AND e.active = true AND e.deleted_at IS NULL
+    `;
+
+    for (const emp of emps) {
+      try {
+        const status = emp.order_status;
+        if (status === "draft" && emp.order_id) {
+          const grandTotal = parseFloat(emp.grand_total ?? "0");
+          if ((emp.item_count ?? 0) === 0 || grandTotal === 0) {
+            await sql`
+              UPDATE employee_orders
+                 SET status = 'cancelled',
+                     cancellation_reason = 'Empty draft at close time',
+                     cancelled_at = now(), updated_at = now()
+               WHERE id = ${emp.order_id}::uuid AND status = 'draft'
+            `;
+            empCancelledEmpty++;
+            continue;
+          }
+          const outcome = await confirmEmployeeOnCredit(emp.employee_id, emp.order_id, grandTotal);
+          outcome === "confirmed" ? empConfirmed++ : empPaymentRequired++;
+          continue;
+        }
+        if (status !== null) {
+          empSkipped++;
+          continue;
+        }
+        if (!emp.has_standing) {
+          empSkipped++;
+          continue;
+        }
+        const built = await materializeEmployeeFromStanding(emp.employee_id, route.id);
+        if (!built) {
+          empSkipped++;
+          continue;
+        }
+        empMaterialized++;
+        const outcome = await confirmEmployeeOnCredit(emp.employee_id, built.orderId, built.grandTotal);
+        outcome === "confirmed" ? empConfirmed++ : empPaymentRequired++;
+      } catch (err: any) {
+        empFailed++;
+        console.error(`[AutoConfirm] employee=${emp.employee_id} failed:`, err?.message ?? err);
+      }
+    }
+  }
+
   // Shared queues are long-lived — closed once on worker shutdown.
 
   const summary = {
@@ -464,6 +704,14 @@ export async function processAutoConfirmDrafts(_job: Job) {
     cancelledEmpty,
     skipped,
     failed,
+    employees: {
+      confirmed: empConfirmed,
+      paymentRequired: empPaymentRequired,
+      materialized: empMaterialized,
+      cancelledEmpty: empCancelledEmpty,
+      skipped: empSkipped,
+      failed: empFailed,
+    },
   };
   console.log(`[AutoConfirm] Done:`, summary);
   return summary;

@@ -477,6 +477,31 @@ export const fetchEmployeeSubsidyReport = (params: { from: string; to: string })
   );
 
 // ═══════════════════════════════════════════════════════════════
+// B11. VIP Sales (Free Samples)
+// ═══════════════════════════════════════════════════════════════
+export interface VipSalesRow {
+  sl: number;
+  date: string;
+  gpNo: string;
+  vipName: string;
+  designation: string | null;
+  itemsText: string;
+  totalQty: number;
+  value: number;
+}
+
+export interface VipSalesResponse {
+  from: string;
+  to: string;
+  rows: VipSalesRow[];
+  totalQty: number;
+  totalValue: number;
+}
+
+export const fetchVipSales = (params: { from: string; to: string }) =>
+  get<VipSalesResponse>("/reports/sales-reports/vip-sales", params);
+
+// ═══════════════════════════════════════════════════════════════
 // Daily Sales Report — "MILK & CURD SALES REPORT"
 // Single-day route × product cross-tab, Evening / Morning groups.
 // ═══════════════════════════════════════════════════════════════

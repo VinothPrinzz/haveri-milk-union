@@ -2176,6 +2176,83 @@ export const confirmDealerDraft = (
   `/admin/dealers/${dealerId}/drafts/${date}/confirm`, body,
 );
 
+// ── Admin: employee standing indents & drafts (subsidized pricing) ───
+
+export interface EmployeeStandingIndentItem {
+  productId: string;
+  productName: string;
+  unit: string;
+  icon: string | null;
+  imageUrl: string | null;
+  basePrice: number;       // MRP reference
+  subsidyPercent: number;
+  unitPrice: number;       // subsidized price the employee pays
+  gstPercent: number;
+  productAvailable: boolean;
+  defaultQty: number;
+  active: boolean;
+  inTemplate: boolean;
+}
+
+export interface EmployeeDraftItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  gstPercent: number;
+  subsidyPercent: number;
+  lineTotal: number;
+  unit: string;
+  icon: string | null;
+  imageUrl: string | null;
+}
+
+export const fetchEmployeeStandingIndents = (employeeId: string) =>
+  get<{ employee: { id: string; name: string; code: string | null };
+        items: EmployeeStandingIndentItem[] }>(
+    `/admin/employees/${employeeId}/standing-indents`,
+  );
+
+export const saveEmployeeStandingIndents = (
+  employeeId: string,
+  body: { items: { productId: string; defaultQty: number; active: boolean }[] },
+) => put<{ updated: number }>(
+  `/admin/employees/${employeeId}/standing-indents`, body,
+);
+
+export const fetchEmployeeDraft = (employeeId: string, date: string) =>
+  get<{
+    employee: { id: string; name: string; code: string | null };
+    deliveryDate: string;
+    exists: boolean;
+    orderId?: string;
+    status: string;
+    editable: boolean;
+    items: EmployeeDraftItem[];
+    totals: { subtotal: number; totalGst: number; grandTotal: number };
+    credit: CreditSnapshot;
+  }>(`/admin/employees/${employeeId}/drafts/${date}`);
+
+export const patchEmployeeDraft = (
+  employeeId: string,
+  date: string,
+  body: { items: { productId: string; quantity: number }[] },
+) => patch<{ orderId: string; status: string;
+             totals: { subtotal: number; totalGst: number; grandTotal: number };
+             itemCount: number }>(
+  `/admin/employees/${employeeId}/drafts/${date}`, body,
+);
+
+export const confirmEmployeeDraft = (
+  employeeId: string,
+  date: string,
+  body: { force?: boolean } = {},
+) => post<{ orderId: string; status: string; deliveryDate: string;
+            credit?: CreditSnapshot; forced?: boolean;
+            alreadyConfirmed?: boolean }>(
+  `/admin/employees/${employeeId}/drafts/${date}/confirm`, body,
+);
+
 // ══════════════════════════════════════
 // STATIC HELPERS
 // ══════════════════════════════════════
@@ -2330,6 +2407,41 @@ export const updateDealerCreditLimit = async (dealerId: string, creditLimit: num
     `/finance/credit-control/${dealerId}/limit`,
     { creditLimit },
   )).dealer;
+
+// ── Employee Credit Control (finance) ──
+export interface EmployeeCreditRow {
+  id: string; code: string | null; name: string;
+  route_id: string | null; route_name: string | null;
+  creditLimit: number; outstanding: number; closingBalance: number;
+  availableCredit: number; heldCount: number; statusBucket: CreditStatusBucket;
+}
+export interface EmployeeCreditSummary {
+  totalExposure: number; totalAvailable: number; totalLimitSanctioned: number;
+  overLimitCount: number; heldCount: number;
+}
+export const fetchEmployeeCreditControl = (f?: {
+  routeId?: string; search?: string; page?: number; limit?: number;
+}) => get<Paginated<EmployeeCreditRow>>("/finance/employee-credit-control", {
+  page: f?.page ?? 1, limit: f?.limit ?? 50,
+  routeId: f?.routeId, search: f?.search,
+});
+export const fetchEmployeeCreditSummary = async () =>
+  (await get<{ summary: EmployeeCreditSummary }>("/finance/employee-credit-control/summary")).summary;
+export const updateEmployeeCreditLimit = async (employeeId: string, creditLimit: number) =>
+  (await patch<{ employee: { id: string; name: string; code: string | null; creditLimit: number } }>(
+    `/finance/employee-credit-control/${employeeId}/limit`,
+    { creditLimit },
+  )).employee;
+export interface HeldEmployeeOrder {
+  id: string; deliveryDate: string; grandTotal: number; itemCount: number;
+  createdAt: string; employeeId: string; employeeName: string; employeeCode: string | null;
+}
+export const fetchHeldEmployeeOrders = async () =>
+  (await get<{ data: HeldEmployeeOrder[] }>("/finance/employee-orders/held")).data;
+export const releaseEmployeeOrder = async (orderId: string) =>
+  post<{ orderId: string; status: string; released: boolean }>(
+    `/finance/employee-orders/${orderId}/release`, {},
+  );
 
 // ── Refunds ──
 export interface RefundRow {

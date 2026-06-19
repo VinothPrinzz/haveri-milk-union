@@ -1070,6 +1070,82 @@ export async function salesReportRoutes(app: FastifyInstance) {
   );
 
   // ════════════════════════════════════════════════════════════════
+  // B11. VIP Sales (Free Samples) — 1 page
+  //   Lists complimentary issues to VIP contacts (customer_type =
+  //   'vip_sample'). Sale prices are 0, so we also surface a notional
+  //   value (qty × product base_price) showing the worth of the
+  //   samples handed out. One row per sale (line items rolled up).
+  // ════════════════════════════════════════════════════════════════
+  app.get(
+    "/api/v1/reports/sales-reports/vip-sales",
+    { preHandler: [adminAuth, requireRole("sales_reports.view")] },
+    async (request, reply) => {
+      const q = dateRangeSchema.parse(request.query);
+
+      const lines = await pgClient`
+        SELECT ds.id,
+               ds.gp_no,
+               ds.sale_date,
+               COALESCE(ds.recipient_name, vc.name) AS vip_name,
+               vc.designation,
+               dsi.product_name,
+               dsi.quantity::int                  AS qty,
+               COALESCE(p.base_price, 0)::numeric  AS base_price
+        FROM direct_sales ds
+        JOIN direct_sale_items dsi ON dsi.direct_sale_id = ds.id
+        LEFT JOIN vip_contacts vc  ON vc.id = ds.customer_id
+        LEFT JOIN products p       ON p.id = dsi.product_id
+        WHERE ds.customer_type = 'vip_sample'
+          AND ds.sale_date >= ${q.from}::date
+          AND ds.sale_date <= ${q.to}::date
+        ORDER BY ds.sale_date DESC, ds.gp_no
+      `;
+
+      // Roll line items back up into one row per sale (items arrive
+      // consecutively thanks to the ORDER BY on sale_date + gp_no).
+      const bySale = new Map<string, {
+        id: string; date: string; gpNo: string;
+        vipName: string; designation: string | null;
+        items: string[]; totalQty: number; value: number;
+      }>();
+      for (const r of lines as any[]) {
+        let row = bySale.get(r.id);
+        if (!row) {
+          row = {
+            id: r.id,
+            date: new Date(r.sale_date).toISOString().slice(0, 10),
+            gpNo: r.gp_no ?? "",
+            vipName: r.vip_name ?? "",
+            designation: r.designation ?? null,
+            items: [], totalQty: 0, value: 0,
+          };
+          bySale.set(r.id, row);
+        }
+        const qty = Number(r.qty) || 0;
+        row.items.push(`${r.product_name} × ${qty}`);
+        row.totalQty += qty;
+        row.value += qty * (parseFloat(r.base_price) || 0);
+      }
+
+      const rows = Array.from(bySale.values()).map((r, idx) => ({
+        sl: idx + 1,
+        date: r.date,
+        gpNo: r.gpNo,
+        vipName: r.vipName,
+        designation: r.designation,
+        itemsText: r.items.join(", "),
+        totalQty: r.totalQty,
+        value: round2(r.value),
+      }));
+
+      const totalQty = rows.reduce((s, r) => s + r.totalQty, 0);
+      const totalValue = round2(rows.reduce((s, r) => s + r.value, 0));
+
+      return reply.send({ from: q.from, to: q.to, rows, totalQty, totalValue });
+    }
+  );
+
+  // ════════════════════════════════════════════════════════════════
   // Daily Sales Report — "MILK & CURD SALES REPORT"
   //   Single-day route × product cross-tab, split into Night / Afternoon
   //   sales groups (by the route's batch which_batch), with a prev-day
