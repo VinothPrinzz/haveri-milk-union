@@ -51,7 +51,7 @@ import DealerIndentsPage from "@/pages/sales/DealerIndentsPage";
 import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
-  TalukaAgentSales, AdhocSalesReport, GSTStatement,
+  TalukaAgentSales, AdhocSalesReport, GSTStatement, VipSalesReport,
 } from "@/pages/sales-reports/SalesReports";
 import EmployeeSubsidyReportPage from "@/pages/sales-reports/EmployeeSubsidyReport";
 import DailySalesReport from "@/pages/sales-reports/DailySalesReport";
@@ -177,6 +177,7 @@ function AppInner() {
           <Route path="/sales-reports/adhoc" element={<AdhocSalesReport />} />
           <Route path="/sales-reports/gst" element={<GSTStatement />} />
           <Route path="/sales-reports/employee-subsidy" element={<EmployeeSubsidyReportPage />} />
+          <Route path="/sales-reports/vip-sales" element={<VipSalesReport />} />
           {/* System */}
           <Route path="/system/time-windows" element={<TimeWindowsPage />} />
           <Route path="/system/notifications" element={<NotificationsPage />} />

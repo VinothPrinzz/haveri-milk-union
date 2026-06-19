@@ -11,11 +11,11 @@ import { ChevronLeft, ChevronRight, Printer, FileBarChart2 } from "lucide-react"
 import {
   fetchDailyStatement, fetchDayRouteCash, fetchOfficerWise,
   fetchCashSales, fetchSalesRegister, fetchCreditSales,
-  fetchTalukaAgent, fetchAdhocSales, fetchGstStatement,
+  fetchTalukaAgent, fetchAdhocSales, fetchGstStatement, fetchVipSales,
   type DailyStatementResponse, type DayRouteCashResponse,
   type OfficerWiseResponse, type SalesGridResponse, type SalesGridRoute,
   type CreditSalesResponse, type TalukaAgentResponse,
-  type AdhocResponse, type GstStatementResponse,
+  type AdhocResponse, type GstStatementResponse, type VipSalesResponse,
   type ProductLite,
 } from "@/services/report";
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
@@ -164,6 +164,140 @@ const buildSalesGridCsv = (from: string, to: string, d: SalesGridResponse) => {
   return out;
 };
 
+// ─── Shared "cash-style" grid (Cash Sales + Sales Register) ─────
+// Product (rows) × Route (columns) qty grid with a trailing Total-Qty
+// column and Total-Qty / Milk ₹ / Product ₹ / Total ₹ footer rows. Qty
+// values are centre-aligned; the ₹ footer rows stay right-aligned.
+const CASH_ROUTES_PER_PAGE = 8; // A4 landscape fit
+
+function renderCashStyleGrid(
+  title: string,
+  from: string,
+  to: string,
+  apiData: SalesGridResponse,
+): ReactNode[] {
+  const routePages = paginateColumns(apiData.routes, CASH_ROUTES_PER_PAGE);
+  const pageCount = routePages.length;
+
+  return routePages.map((routeChunk, pageIdx) => {
+    const routeQtyTotal = (r: SalesGridRoute) =>
+      apiData.products.reduce((s, p) => s + (r.qty[p.id] ?? 0), 0);
+    const grandQtyTotal = apiData.products.reduce(
+      (s, p) => s + (apiData.totals.qty[p.id] ?? 0), 0);
+    const isLast = pageIdx === pageCount - 1;
+
+    return (
+      <div key={pageIdx} className="report-page">
+        <ReportHeader
+          title={title}
+          subtitle={`Period: ${from} to ${to} · Columns ${pageIdx + 1}/${pageCount}`}
+        />
+        <table className="w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="bg-muted/50">
+              <th className="border border-border py-1.5 px-2 text-left font-bold">Product</th>
+              {routeChunk.map(r => (
+                <th key={r.id} className="border border-border py-1 px-2 text-center font-bold">
+                  <div className="font-mono text-[10px] text-muted-foreground">{r.code}</div>
+                  <div>{r.name}</div>
+                  <div className="font-normal text-[9.5px] text-muted-foreground truncate max-w-[90px]">
+                    {r.contractorName ?? ""}
+                  </div>
+                </th>
+              ))}
+              {isLast && (
+                <th className="border border-border py-1.5 px-2 text-center font-bold num">Total Qty</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {apiData.products.map(p => (
+              <tr key={p.id}>
+                <td className="border border-border py-1 px-2 font-medium">{p.reportAlias}</td>
+                {routeChunk.map(r => (
+                  <td key={r.id} className="border border-border py-1 px-2 text-center num">
+                    {fmtQty(r.qty[p.id] ?? 0)}
+                  </td>
+                ))}
+                {isLast && (
+                  <td className="border border-border py-1 px-2 text-center font-bold num">
+                    {fmtQty(apiData.totals.qty[p.id] ?? 0)}
+                  </td>
+                )}
+              </tr>
+            ))}
+
+            {/* ── TOTAL QTY row ── */}
+            <tr className="font-bold bg-muted/40">
+              <td className="border border-border py-1.5 px-2">TOTAL</td>
+              {routeChunk.map(r => (
+                <td key={r.id} className="border border-border py-1.5 px-2 text-center num">
+                  {fmtQty(routeQtyTotal(r))}
+                </td>
+              ))}
+              {isLast && (
+                <td className="border border-border py-1.5 px-2 text-center num">
+                  {fmtQty(grandQtyTotal)}
+                </td>
+              )}
+            </tr>
+
+            {/* ── Amount rows — only on last page ── */}
+            {isLast && (
+              <>
+                <tr className="font-bold bg-muted/20">
+                  <td className="border border-border py-1 px-2">Milk ₹</td>
+                  {routeChunk.map(r => (
+                    <td key={r.id} className="border border-border py-1 px-2 text-right num">{fmtINR(r.milkAmount)}</td>
+                  ))}
+                  <td className="border border-border py-1 px-2 text-right num">{fmtINR(apiData.totals.milkAmount)}</td>
+                </tr>
+                <tr className="font-bold bg-muted/20">
+                  <td className="border border-border py-1 px-2">Product ₹</td>
+                  {routeChunk.map(r => (
+                    <td key={r.id} className="border border-border py-1 px-2 text-right num">{fmtINR(r.productAmount)}</td>
+                  ))}
+                  <td className="border border-border py-1 px-2 text-right num">{fmtINR(apiData.totals.productAmount)}</td>
+                </tr>
+                <tr className="font-bold bg-muted/40">
+                  <td className="border border-border py-1.5 px-2">Total ₹</td>
+                  {routeChunk.map(r => (
+                    <td key={r.id} className="border border-border py-1.5 px-2 text-right num">{fmtINR(r.total)}</td>
+                  ))}
+                  <td className="border border-border py-1.5 px-2 text-right num">{fmtINR(apiData.totals.total)}</td>
+                </tr>
+              </>
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  });
+}
+
+const buildCashGridCsv = (from: string, to: string, d: SalesGridResponse) => {
+  const rows: (string | number)[][] = [
+    [`${from} to ${to}`],
+    ["Product", ...d.routes.map(r => `${r.code} ${r.name}`), "Total Qty"],
+  ];
+  d.products.forEach(p => {
+    rows.push([
+      p.reportAlias,
+      ...d.routes.map(r => r.qty[p.id] ?? 0),
+      d.totals.qty[p.id] ?? 0,
+    ]);
+  });
+  rows.push([
+    "TOTAL QTY",
+    ...d.routes.map(r => d.products.reduce((s, p) => s + (r.qty[p.id] ?? 0), 0)),
+    d.products.reduce((s, p) => s + (d.totals.qty[p.id] ?? 0), 0),
+  ]);
+  rows.push(["Milk ₹",    ...d.routes.map(r => r.milkAmount),    d.totals.milkAmount]);
+  rows.push(["Product ₹", ...d.routes.map(r => r.productAmount), d.totals.productAmount]);
+  rows.push(["Total ₹",   ...d.routes.map(r => r.total),         d.totals.total]);
+  return rows;
+};
+
 // ─── B1. Daily Sales Statement ──────────────────────────────────
 export const DailySalesStatement = () => (
   <SalesReportShell<DailyStatementResponse>
@@ -201,16 +335,32 @@ export const DailySalesStatement = () => (
       });
     }}
     buildCsv={(from, to, d) => {
-      const out: any[][] = [];
-      d.groups.forEach(g => {
-        out.push([`${g.label} — ${from} to ${to}`]);
-        out.push(["Date", ...g.products.map(p => p.reportAlias), "Total Amount"]);
-        g.rows.forEach(row =>
-          out.push([row.date, ...g.products.map(p => row.qty[p.id] ?? 0), row.totalAmount])
-        );
-        out.push(["TOTAL", ...g.products.map(p => g.totals.qty[p.id] ?? 0), g.totals.totalAmount]);
-        out.push([]); // blank line between groups
+      // One combined table: every product (across all groups) as its own
+      // column, one row per date, plus a single Total Amount column.
+      const cols = d.groups.flatMap(g => g.products);
+      const out: any[][] = [
+        [`Daily Sales Statement — ${from} to ${to}`],
+        ["Date", ...cols.map(p => p.reportAlias), "Total Amount"],
+      ];
+      d.dates.forEach(date => {
+        const cells: any[] = [date];
+        let amount = 0;
+        d.groups.forEach(g => {
+          const row = g.rows.find(r => r.date === date);
+          g.products.forEach(p => cells.push(row?.qty[p.id] ?? 0));
+          amount += row?.totalAmount ?? 0;
+        });
+        cells.push(Math.round(amount * 100) / 100);
+        out.push(cells);
       });
+      const totalCells: any[] = ["TOTAL"];
+      let grand = 0;
+      d.groups.forEach(g => {
+        g.products.forEach(p => totalCells.push(g.totals.qty[p.id] ?? 0));
+        grand += g.totals.totalAmount;
+      });
+      totalCells.push(Math.round(grand * 100) / 100);
+      out.push(totalCells);
       return out;
     }}
   />
@@ -303,14 +453,14 @@ export const OfficerWiseSales = () => (
                 <tr key={p.id}>
                   <td className="border border-border py-1 px-2 font-medium">{p.reportAlias}</td>
                   {apiData.officers.map(o => (
-                    <td key={o.id} className="border border-border py-1 px-2 text-right num">{fmtQty(apiData.matrix[p.id]?.[o.id] ?? 0)}</td>
+                    <td key={o.id} className="border border-border py-1 px-2 text-center num">{fmtQty(apiData.matrix[p.id]?.[o.id] ?? 0)}</td>
                   ))}
                   <td className="border border-border py-1 px-2 text-right font-bold num">{fmtQty(apiData.productTotals[p.id] ?? 0)}</td>
                 </tr>
               ))}
               <tr className="font-bold bg-muted/40">
                 <td className="border border-border py-1.5 px-2">TOTAL</td>
-                {apiData.officers.map(o => <td key={o.id} className="border border-border py-1.5 px-2 text-right num">{fmtQty(apiData.officerTotals[o.id] ?? 0)}</td>)}
+                {apiData.officers.map(o => <td key={o.id} className="border border-border py-1.5 px-2 text-center num">{fmtQty(apiData.officerTotals[o.id] ?? 0)}</td>)}
                 <td className="border border-border py-1.5 px-2 text-right num">{fmtQty(apiData.grandTotal)}</td>
               </tr>
             </tbody>
@@ -331,250 +481,30 @@ export const OfficerWiseSales = () => (
   />
 );
 
-const ROUTES_PER_PAGE = 8; // adjust for A4 landscape fit
- 
 export const CashSalesReport = () => (
   <SalesReportShell<SalesGridResponse>
     title="Cash Sales"
     description="Cash-mode sales grid by product × route"
     fetcher={(from, to) => fetchCashSales({ from, to })}
     printOrientation="landscape"
-    renderPages={(from, to, apiData) => {
-      if (!apiData) return [];
- 
-      // Paginate ROUTES into column chunks
-      const routePages = paginateColumns(apiData.routes, ROUTES_PER_PAGE);
-      const pageCount = routePages.length;
- 
-      return routePages.map((routeChunk, pageIdx) => {
-        // Per-route qty grand total (across all products in the response)
-        const routeQtyTotal = (r: SalesGridRoute) =>
-          apiData.products.reduce((s, p) => s + (r.qty[p.id] ?? 0), 0);
- 
-        // Grand qty total (bottom-right corner)
-        const grandQtyTotal = apiData.products.reduce(
-          (s, p) => s + (apiData.totals.qty[p.id] ?? 0),
-          0
-        );
- 
-        return (
-          <div key={pageIdx} className="report-page">
-            <ReportHeader
-              title="Cash Sales"
-              subtitle={`Period: ${from} to ${to} · Columns ${pageIdx + 1}/${pageCount}`}
-            />
- 
-            <table className="w-full text-[11px] border-collapse">
-              <thead>
-                {/* Row 1: route codes */}
-                <tr className="bg-muted/50">
-                  <th className="border border-border py-1.5 px-2 text-left font-bold">
-                    Product
-                  </th>
-                  {routeChunk.map(r => (
-                    <th
-                      key={r.id}
-                      className="border border-border py-1 px-2 text-center font-bold"
-                    >
-                      <div className="font-mono text-[10px] text-muted-foreground">{r.code}</div>
-                      <div>{r.name}</div>
-                      <div className="font-normal text-[9.5px] text-muted-foreground truncate max-w-[90px]">
-                        {r.contractorName ?? ""}
-                      </div>
-                    </th>
-                  ))}
-                  {/* Grand-total column only on the last page */}
-                  {pageIdx === pageCount - 1 && (
-                    <th className="border border-border py-1.5 px-2 text-right font-bold num">
-                      Total Qty
-                    </th>
-                  )}
-                </tr>
-              </thead>
- 
-              <tbody>
-                {apiData.products.map(p => (
-                  <tr key={p.id}>
-                    <td className="border border-border py-1 px-2 font-medium">
-                      {p.reportAlias}
-                    </td>
-                    {routeChunk.map(r => (
-                      <td
-                        key={r.id}
-                        className="border border-border py-1 px-2 text-right num"
-                      >
-                        {fmtQty(r.qty[p.id] ?? 0)}
-                      </td>
-                    ))}
-                    {/* Row total (grand total across ALL routes, not just this chunk) */}
-                    {pageIdx === pageCount - 1 && (
-                      <td className="border border-border py-1 px-2 text-right font-bold num">
-                        {fmtQty(apiData.totals.qty[p.id] ?? 0)}
-                      </td>
-                    )}
-                  </tr>
-                ))}
- 
-                {/* ── TOTAL QTY row ── */}
-                <tr className="font-bold bg-muted/40">
-                  <td className="border border-border py-1.5 px-2">TOTAL</td>
-                  {routeChunk.map(r => (
-                    <td
-                      key={r.id}
-                      className="border border-border py-1.5 px-2 text-right num"
-                    >
-                      {fmtQty(routeQtyTotal(r))}
-                    </td>
-                  ))}
-                  {pageIdx === pageCount - 1 && (
-                    <td className="border border-border py-1.5 px-2 text-right num">
-                      {fmtQty(grandQtyTotal)}
-                    </td>
-                  )}
-                </tr>
- 
-                {/* ── TOTAL AMOUNT row — only on last page ── */}
-                {pageIdx === pageCount - 1 && (
-                  <>
-                    <tr className="font-bold bg-muted/20">
-                      <td className="border border-border py-1 px-2">Milk ₹</td>
-                      {routeChunk.map(r => (
-                        <td
-                          key={r.id}
-                          className="border border-border py-1 px-2 text-right num"
-                        >
-                          {fmtINR(r.milkAmount)}
-                        </td>
-                      ))}
-                      <td className="border border-border py-1 px-2 text-right num">
-                        {fmtINR(apiData.totals.milkAmount)}
-                      </td>
-                    </tr>
-                    <tr className="font-bold bg-muted/20">
-                      <td className="border border-border py-1 px-2">Product ₹</td>
-                      {routeChunk.map(r => (
-                        <td
-                          key={r.id}
-                          className="border border-border py-1 px-2 text-right num"
-                        >
-                          {fmtINR(r.productAmount)}
-                        </td>
-                      ))}
-                      <td className="border border-border py-1 px-2 text-right num">
-                        {fmtINR(apiData.totals.productAmount)}
-                      </td>
-                    </tr>
-                    <tr className="font-bold bg-muted/40">
-                      <td className="border border-border py-1.5 px-2">Total ₹</td>
-                      {routeChunk.map(r => (
-                        <td
-                          key={r.id}
-                          className="border border-border py-1.5 px-2 text-right num"
-                        >
-                          {fmtINR(r.total)}
-                        </td>
-                      ))}
-                      <td className="border border-border py-1.5 px-2 text-right num">
-                        {fmtINR(apiData.totals.total)}
-                      </td>
-                    </tr>
-                  </>
-                )}
-              </tbody>
-            </table>
-          </div>
-        );
-      });
-    }}
- 
-    buildCsv={(from, to, d) => {
-      // CSV: product rows × route columns (transposed)
-      const header = [
-        "Product",
-        ...d.routes.map(r => `${r.code} ${r.name}`),
-        "Total Qty",
-      ];
-      const rows: (string | number)[][] = [header];
- 
-      d.products.forEach(p => {
-        rows.push([
-          p.reportAlias,
-          ...d.routes.map(r => r.qty[p.id] ?? 0),
-          d.totals.qty[p.id] ?? 0,
-        ]);
-      });
- 
-      // Total qty row
-      rows.push([
-        "TOTAL QTY",
-        ...d.routes.map(r =>
-          d.products.reduce((s, p) => s + (r.qty[p.id] ?? 0), 0)
-        ),
-        d.products.reduce((s, p) => s + (d.totals.qty[p.id] ?? 0), 0),
-      ]);
-      // Milk ₹ row
-      rows.push(["Milk ₹",    ...d.routes.map(r => r.milkAmount),    d.totals.milkAmount]);
-      // Product ₹ row
-      rows.push(["Product ₹", ...d.routes.map(r => r.productAmount), d.totals.productAmount]);
-      // Total ₹ row
-      rows.push(["Total ₹",   ...d.routes.map(r => r.total),         d.totals.total]);
- 
-      return rows;
-    }}
+    renderPages={(from, to, apiData) =>
+      apiData ? renderCashStyleGrid("Cash Sales", from, to, apiData) : []}
+    buildCsv={buildCashGridCsv}
   />
 );
 
 // ─── Sales Register ─────────────────────────────────────────────
+// Same product × route grid as Cash Sales, but the data includes both
+// cash and credit (plus direct) sales (server: register endpoint).
 export const SalesRegister = () => (
   <SalesReportShell<SalesGridResponse>
     title="Sales Register"
-    description="All sales (cash + credit) by route × product"
+    description="All sales (cash + credit) by product × route"
     fetcher={(from, to) => fetchSalesRegister({ from, to })}
     printOrientation="landscape"
-    renderPages={(from, to, apiData) => {
-      if (!apiData) return [];
-
-      const COLUMNS_PER_PAGE = 10; // Adjust after print testing
-
-      const productPages = paginateColumns(apiData.products, COLUMNS_PER_PAGE);
-
-      return productPages.map((productChunk, i) => (
-        <ColumnPagedTable
-          key={i}
-          title={`Sales Register • Columns ${i + 1} of ${productPages.length}`}
-          // pageInfo={{ current: i + 1, total: productPages.length }} // alternative
-
-          fixedHead={[
-            { label: "Code", accessor: r => r.code },
-            { label: "Route", accessor: r => r.name },
-            { label: "Contractor", accessor: r => r.contractorName ?? "—" },
-          ]}
-
-          productCols={productChunk}
-          productCellRender={(row, prod) => fmtQty(row.qty[prod.id] ?? 0)}
-
-          trailingHead={[
-            { label: "Milk ₹", accessor: r => fmtINR(r.milkAmount), num: true },
-            { label: "Product ₹", accessor: r => fmtINR(r.productAmount), num: true },
-            { label: "Total ₹", accessor: r => fmtINR(r.total), num: true },
-          ]}
-
-          rows={apiData.routes}
-          rowKey={r => r.id}
-
-          totalRow={{
-            fixedCells: ["TOTAL", "", ""],
-            productCell: (prod) => fmtQty(apiData.totals.qty[prod.id] ?? 0),
-            trailingCells: [
-              fmtINR(apiData.totals.milkAmount),
-              fmtINR(apiData.totals.productAmount),
-              fmtINR(apiData.totals.total),
-            ],
-          }}
-        />
-      ));
-    }}
-    buildCsv={buildSalesGridCsv}
+    renderPages={(from, to, apiData) =>
+      apiData ? renderCashStyleGrid("Sales Register", from, to, apiData) : []}
+    buildCsv={buildCashGridCsv}
   />
 );
 
@@ -588,12 +518,12 @@ export const CreditSalesReport = () => (
       if (!apiData) return [];
       return apiData.customers.map((b, i) => (
         <div key={i}>
-          <ReportHeader title="Credit Sales" subtitle={`${b.name} · Period: ${from} to ${to}`} />
+          <ReportHeader title="Credit Sales" subtitle={`Period: ${from} to ${to}`} />
           <div className="text-[11px] mb-2 grid grid-cols-2 gap-1">
             <div><strong>Customer Code:</strong> {b.code}</div>
+            <div><strong>Customer Name:</strong> {b.name}</div>
             <div><strong>Address:</strong> {b.address ?? "—"}</div>
             {b.gstNumber && <div><strong>GSTIN:</strong> <span className="font-mono">{b.gstNumber}</span></div>}
-            <div><strong>Bill #:</strong> {b.billNo}</div>
             <div><strong>Period:</strong> {b.periodFrom} — {b.periodTo}</div>
           </div>
           <table className="w-full text-[11px] border-collapse">
@@ -897,6 +827,67 @@ export const GSTStatement = () => (
         r.taxableValue, r.cgst, r.sgst, r.invoiceValue
       ]));
       out.push(["", "TOTAL", "", d.totals.qty, "", d.totals.taxableValue, d.totals.cgst, d.totals.sgst, d.totals.invoiceValue]);
+      return out;
+    }}
+  />
+);
+
+// ─── B11. VIP Sales (Free Samples) ──────────────────────────────
+export const VipSalesReport = () => (
+  <SalesReportShell<VipSalesResponse>
+    title="VIP Sales"
+    description="Complimentary samples issued to VIP contacts"
+    fetcher={(from, to) => fetchVipSales({ from, to })}
+    renderPages={(from, to, apiData) => {
+      if (!apiData) return [];
+      return [(
+        <div key="p1">
+          <ReportHeader title="VIP Sales (Free Samples)" subtitle={`Period: ${from} to ${to}`} />
+          <table className="w-full text-[11px] border-collapse">
+            <thead>
+              <tr className="bg-muted/50">
+                <th className="border border-border py-1 px-1.5 text-left font-bold w-10">Sl</th>
+                <th className="border border-border py-1 px-1.5 text-left font-bold">Date</th>
+                <th className="border border-border py-1 px-1.5 text-left font-bold">GP #</th>
+                <th className="border border-border py-1 px-1.5 text-left font-bold">VIP Name</th>
+                <th className="border border-border py-1 px-1.5 text-left font-bold">Designation</th>
+                <th className="border border-border py-1 px-1.5 text-left font-bold">Items</th>
+                <th className="border border-border py-1 px-1.5 text-center font-bold num">Qty</th>
+                <th className="border border-border py-1 px-1.5 text-right font-bold num">Value ₹</th>
+              </tr>
+            </thead>
+            <tbody>
+              {apiData.rows.map(r => (
+                <tr key={r.sl}>
+                  <td className="border border-border py-0.5 px-1.5 text-right num">{r.sl}</td>
+                  <td className="border border-border py-0.5 px-1.5">{r.date}</td>
+                  <td className="border border-border py-0.5 px-1.5 font-mono">{r.gpNo}</td>
+                  <td className="border border-border py-0.5 px-1.5">{r.vipName || "—"}</td>
+                  <td className="border border-border py-0.5 px-1.5 text-muted-foreground">{r.designation ?? "—"}</td>
+                  <td className="border border-border py-0.5 px-1.5 text-[10px] text-muted-foreground">{r.itemsText}</td>
+                  <td className="border border-border py-0.5 px-1.5 text-center num">{fmtQty(r.totalQty)}</td>
+                  <td className="border border-border py-0.5 px-1.5 text-right num">{fmtINR(r.value)}</td>
+                </tr>
+              ))}
+              <tr className="font-bold bg-muted/40">
+                <td colSpan={6} className="border border-border py-1 px-1.5 text-right">TOTAL</td>
+                <td className="border border-border py-1 px-1.5 text-center num">{fmtQty(apiData.totalQty)}</td>
+                <td className="border border-border py-1 px-1.5 text-right num">{fmtINR(apiData.totalValue)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )];
+    }}
+    buildCsv={(from, to, d) => {
+      const out: any[][] = [
+        [`VIP Sales (Free Samples) — ${from} to ${to}`],
+        ["Sl", "Date", "GP #", "VIP Name", "Designation", "Items", "Qty", "Value ₹"],
+      ];
+      d.rows.forEach(r => out.push([
+        r.sl, r.date, r.gpNo, r.vipName, r.designation ?? "", r.itemsText, r.totalQty, r.value,
+      ]));
+      out.push(["", "", "", "", "", "TOTAL", d.totalQty, d.totalValue]);
       return out;
     }}
   />

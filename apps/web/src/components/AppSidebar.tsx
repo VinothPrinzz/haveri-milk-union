@@ -92,6 +92,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Adhoc Sales",               path: "/sales-reports/adhoc",           icon: FileSpreadsheet },
     { label: "GST Statement",             path: "/sales-reports/gst",             icon: FileBarChart2 },
     { label: "Employee Subsidy",          path: "/sales-reports/employee-subsidy", icon: BadgePercent },
+    { label: "VIP Sales",                 path: "/sales-reports/vip-sales",        icon: Gift },
   ],
   system: [
     { label: "User Management",        path: "/system/users",                icon: UserCog },
