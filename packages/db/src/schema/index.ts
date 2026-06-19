@@ -184,6 +184,18 @@ export {
   dealerIndentPausesRelations,
 } from "./dealerIndents.js";
 
+// ── Employee Standing Indents + Orders + Ledger (0048) ──
+export {
+  employeeStandingIndents,
+  employeeOrders,
+  employeeOrderItems,
+  employeeLedger,
+  employeeStandingIndentsRelations,
+  employeeOrdersRelations,
+  employeeOrderItemsRelations,
+  employeeLedgerRelations,
+} from "./employeeIndents.js";
+
 //razorpay
 export {
   razorpayPayments,

@@ -44,6 +44,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
   sales: [
     { label: "Record Indents",   path: "/sales/record-indents",                  icon: FileText },
     { label: "Dealer Indents", path: "/sales/dealer-indents", icon: CalendarClock },
+    { label: "Employee Indents", path: "/sales/employee-indents", icon: CalendarClock },
     { label: "All Indents",      path: "/sales/all-indents",                     icon: ClipboardCheck },
     { label: "Direct - Gate Pass", path: "/sales/direct-sales/gate-pass",        icon: ScrollText },
     { label: "Direct - Cash",    path: "/sales/direct-sales/cash-customer",      icon: CreditCard },
@@ -69,6 +70,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Reconciliation",    path: "/finance/reconciliation",  icon: GitCompareArrows },
     { label: "Credit Control",    path: "/finance/credit-control",  icon: ShieldAlert },
     { label: "Credit Limits",     path: "/finance/credit-limits",   icon: BadgeIndianRupee },
+    { label: "Employee Credit",   path: "/finance/employee-credit-limits", icon: BadgeIndianRupee },
     { label: "AR Aging",          path: "/finance/ar-aging",        icon: FileBarChart2 },
     { label: "Dealer Statements", path: "/finance/dealer-statements", icon: ScrollText },
     { label: "Cheques",           path: "/finance/cheques",         icon: Banknote },

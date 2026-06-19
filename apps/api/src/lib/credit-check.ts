@@ -92,3 +92,55 @@ export async function checkDealerCredit(
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
+
+/**
+ * Employee mirror of checkDealerCredit. Employees have their own
+ * credit_limit / opening_balance (migration 0048) and an append-only
+ * employee_ledger. Same closing-balance maths:
+ *
+ *   closing   = opening_balance + Σ(credit) − Σ(debit)   [non-'Opening' rows]
+ *   available = max(0, credit_limit + closing)
+ *
+ * Pure read — does not mutate state.
+ */
+export async function checkEmployeeCredit(
+  employeeId: string,
+  orderTotal: number
+): Promise<CreditCheckResult> {
+  const [row] = await pgClient`
+    SELECT
+      COALESCE(e.credit_limit, 0)::numeric AS credit_limit,
+      (
+        COALESCE(e.opening_balance, 0)
+        + COALESCE((
+            SELECT SUM(CASE WHEN el.type = 'credit' THEN el.amount
+                            WHEN el.type = 'debit'  THEN -el.amount END)
+              FROM employee_ledger el
+            WHERE el.employee_id = e.id
+              AND COALESCE(el.voucher_type, '') <> 'Opening'
+          ), 0)
+      )::numeric AS closing_balance
+    FROM employees e
+    WHERE e.id = ${employeeId} AND e.deleted_at IS NULL
+  `;
+
+  if (!row) {
+    throw new Error(`Employee ${employeeId} not found`);
+  }
+
+  const creditLimit = parseFloat(row.credit_limit);
+  const closing     = parseFloat(row.closing_balance);
+  const outstanding = closing < 0 ? -closing : 0;
+  const available   = Math.max(0, creditLimit + closing);
+  const sufficient  = orderTotal <= available;
+  const shortfall   = sufficient ? 0 : Math.round((orderTotal - available) * 100) / 100;
+
+  return {
+    creditLimit: round2(creditLimit),
+    outstanding: round2(outstanding),
+    available: round2(available),
+    orderTotal: round2(orderTotal),
+    sufficient,
+    shortfall,
+  };
+}

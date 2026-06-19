@@ -219,6 +219,9 @@ export async function processMaterializeDrafts(_job: Job) {
 
   // Shared queue is long-lived — closed once on worker shutdown.
 
+  // ── Employee standing indents (subsidized, no app / no FCM) ─────────
+  const employeeSummary = await materializeEmployeeDrafts(deliveryDate);
+
   const summary = {
     deliveryDate,
     totalDealers: dealers.length,
@@ -227,7 +230,150 @@ export async function processMaterializeDrafts(_job: Job) {
     skippedExisting,
     skippedEmpty,
     failed,
+    employees: employeeSummary,
   };
   console.log(`[Materialize] Done:`, summary);
+  return summary;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Employee pass — the employee mirror of the dealer loop above.
+//
+// Employees have no app login, so there's no FCM / push. Indents are priced
+// at the employee-subsidy rate (employee_subsidy_rules): only products with
+// an active rule are included, at base_price × (1 − subsidy%) + GST.
+// Idempotent: skips any employee that already has a non-cancelled
+// employee_order for the date.
+// ═══════════════════════════════════════════════════════════════════════
+
+interface EmployeeStandingItem {
+  product_id: string;
+  default_qty: number;
+  name: string;
+  base_price: string;
+  gst_percent: string;
+  subsidy_percent: string;
+}
+
+async function materializeEmployeeDrafts(deliveryDate: string) {
+  const employees: { id: string; route_id: string | null; name: string }[] = await sql`
+    SELECT e.id::text AS id, e.route_id::text AS route_id, e.name AS name
+      FROM employees e
+     WHERE e.active = true AND e.deleted_at IS NULL
+  `;
+
+  let created = 0;
+  let skippedExisting = 0;
+  let skippedEmpty = 0;
+  let failed = 0;
+
+  for (const emp of employees) {
+    try {
+      // Skip if a non-cancelled employee_order already exists for this date.
+      const [existing] = await sql`
+        SELECT 1 FROM employee_orders
+         WHERE employee_id = ${emp.id}::uuid
+           AND delivery_date = ${deliveryDate}::date
+           AND status <> 'cancelled'
+         LIMIT 1
+      `;
+      if (existing) {
+        skippedExisting++;
+        continue;
+      }
+
+      const items: EmployeeStandingItem[] = await sql`
+        SELECT
+          esi.product_id::text         AS product_id,
+          esi.default_qty              AS default_qty,
+          p.name                       AS name,
+          p.base_price::numeric::text  AS base_price,
+          p.gst_percent::numeric::text AS gst_percent,
+          r.subsidy_percent::numeric::text AS subsidy_percent
+        FROM employee_standing_indents esi
+        JOIN products p ON p.id = esi.product_id
+                       AND p.deleted_at IS NULL
+                       AND p.available = true
+        JOIN employee_subsidy_rules r ON r.product_id = esi.product_id AND r.active = true
+        WHERE esi.employee_id = ${emp.id}::uuid
+          AND esi.active = true
+          AND esi.default_qty > 0
+      `;
+      if (items.length === 0) {
+        skippedEmpty++;
+        continue;
+      }
+
+      let subtotal = 0;
+      let totalGst = 0;
+      let itemCount = 0;
+      const lines = items.map((it) => {
+        const mrp = parseFloat(it.base_price);
+        const subsidyPct = parseFloat(it.subsidy_percent);
+        const gstPct = parseFloat(it.gst_percent);
+        const unitPrice = Math.round(mrp * (1 - subsidyPct / 100) * 100) / 100;
+        const lineSub = unitPrice * it.default_qty;
+        const lineGst = lineSub * (gstPct / 100);
+        subtotal += lineSub;
+        totalGst += lineGst;
+        itemCount += it.default_qty;
+        return {
+          product_id: it.product_id,
+          name: it.name,
+          default_qty: it.default_qty,
+          unitPrice: unitPrice.toFixed(2),
+          gst_percent: gstPct.toFixed(2),
+          gstAmount: lineGst.toFixed(2),
+          lineTotal: (lineSub + lineGst).toFixed(2),
+          subsidy_percent: subsidyPct.toFixed(2),
+          mrp_reference: mrp.toFixed(2),
+        };
+      });
+      const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
+
+      await sql.begin(async (tx) => {
+        const [row] = await tx`
+          INSERT INTO employee_orders (
+            employee_id, route_id, status, payment_mode,
+            subtotal, total_gst, grand_total, item_count, delivery_date
+          ) VALUES (
+            ${emp.id}::uuid, ${emp.route_id}::uuid,
+            'draft', 'credit',
+            ${subtotal.toFixed(2)}::numeric,
+            ${totalGst.toFixed(2)}::numeric,
+            ${grandTotal.toFixed(2)}::numeric,
+            ${itemCount},
+            ${deliveryDate}::date
+          )
+          RETURNING id::text AS id
+        `;
+        for (const ln of lines) {
+          await tx`
+            INSERT INTO employee_order_items (
+              employee_order_id, product_id, product_name, quantity,
+              unit_price, gst_percent, gst_amount, line_total,
+              subsidy_percent, mrp_reference
+            ) VALUES (
+              ${row!.id}::uuid, ${ln.product_id}::uuid, ${ln.name},
+              ${ln.default_qty}, ${ln.unitPrice}::numeric,
+              ${ln.gst_percent}::numeric, ${ln.gstAmount}::numeric,
+              ${ln.lineTotal}::numeric, ${ln.subsidy_percent}::numeric,
+              ${ln.mrp_reference}::numeric
+            )
+          `;
+        }
+      });
+      created++;
+    } catch (err: any) {
+      failed++;
+      console.error(
+        `[Materialize] employee=${emp.id} (${emp.name}) failed:`,
+        err?.message ?? err
+      );
+    }
+  }
+
+  const summary = { totalEmployees: employees.length, created, skippedExisting, skippedEmpty, failed };
+  console.log(`[Materialize] Employee pass done:`, summary);
   return summary;
 }
