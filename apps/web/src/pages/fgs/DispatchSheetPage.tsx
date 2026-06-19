@@ -23,6 +23,24 @@ import {
   type DispatchSheetRoute,
 } from "@/services/api";
 
+// Crates ± loose packets, mirroring the Route Sheet formula
+// (apps/api/src/routes/reports.ts): round to the NEAREST full crate, then the
+// signed remainder becomes Pkt (+) (extra packets over the rounded crates) or
+// Pkt (−) (packets short of the rounded-up crates). With round (not floor) the
+// remainder can be negative, which is what makes Pkt (−) possible.
+function cratePkts(totalPackets: number, packetsPerCrate: number) {
+  if (!packetsPerCrate || packetsPerCrate <= 0) {
+    return { crates: 0, pktPlus: totalPackets, pktMinus: 0 };
+  }
+  const crates = Math.round(totalPackets / packetsPerCrate);
+  const diff = totalPackets - crates * packetsPerCrate;
+  return {
+    crates,
+    pktPlus: diff > 0 ? diff : 0,
+    pktMinus: diff < 0 ? -diff : 0,
+  };
+}
+
 export default function DispatchSheetPage() {
   const qc = useQueryClient();
   const today = new Date().toISOString().slice(0, 10);
@@ -31,12 +49,10 @@ export default function DispatchSheetPage() {
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [selectedBatch, setSelectedBatch] = useState<string | null>(null);
   const [verified, setVerified] = useState<Record<string, boolean>>({});
-  const [adjustments, setAdjustments] = useState<Record<string, { pktPlus: number; pktMinus: number }>>({});
 
-  // Reset verification and adjustments when filters change
+  // Reset verification when filters change
   useEffect(() => {
     setVerified({});
-    setAdjustments({});
   }, [selectedDate, selectedRoute, selectedBatch]);
 
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
@@ -71,18 +87,11 @@ export default function DispatchSheetPage() {
   const summary = data?.summary;
   const sheetRoutes: DispatchSheetRoute[] = data?.routes ?? [];
 
-  const adj = (routeId: string, productId: string) =>
-    adjustments[`${routeId}::${productId}`] ?? { pktPlus: 0, pktMinus: 0 };
-
-  const setAdj = (routeId: string, productId: string, patch: Partial<{ pktPlus: number; pktMinus: number }>) => {
-    setAdjustments(prev => ({
-      ...prev,
-      [`${routeId}::${productId}`]: { ...adj(routeId, productId), ...patch },
-    }));
-  };
-
-  const eff = (pendingQty: number, a: { pktPlus: number; pktMinus: number }) =>
-    Math.max(0, pendingQty + (a.pktPlus || 0) - (a.pktMinus || 0));
+  // Crates per route, summed from the same round-based formula as the rows,
+  // so the header badge / summary stay consistent with the per-product cells.
+  const routeCrates = (r: DispatchSheetRoute) =>
+    r.items.reduce((s, it) => s + cratePkts(it.totalPackets ?? 0, it.packetsPerCrate ?? 0).crates, 0);
+  const totalCrates = sheetRoutes.reduce((s, r) => s + routeCrates(r), 0);
 
   return (
     <div className="flex flex-col h-full">
@@ -117,7 +126,7 @@ export default function DispatchSheetPage() {
             <StatCard label="Routes" value={fmtNum(summary.totalRoutes)} icon={<Truck className="h-5 w-5" />} tone="default" />
             <StatCard label="Items" value={fmtNum(summary.totalItems)} icon={<Package className="h-5 w-5" />} />
             <StatCard label="Packets" value={fmtNum(summary.totalPackets)} icon={<Layers className="h-5 w-5" />} />
-            <StatCard label="Crates" value={fmtNum(summary.totalCrates)} icon={<Package className="h-5 w-5" />} tone="success" />
+            <StatCard label="Crates" value={fmtNum(totalCrates)} icon={<Package className="h-5 w-5" />} tone="success" />
           </div>
         )}
 
@@ -142,7 +151,7 @@ export default function DispatchSheetPage() {
                       <div className="flex items-center gap-4 text-[12px]">
                         <span><span className="text-muted-foreground">Dealers</span> <span className="font-semibold num">{r.dealerCount}</span></span>
                         <span><span className="text-muted-foreground">Packets</span> <span className="font-semibold num">{fmtNum(r.totals.packets)}</span></span>
-                        <span><span className="text-muted-foreground">Crates</span> <span className="font-semibold num">{fmtNum(r.totals.crates)}</span></span>
+                        <span><span className="text-muted-foreground">Crates</span> <span className="font-semibold num">{fmtNum(routeCrates(r))}</span></span>
                         <span className="font-medium num">{fmtINR(r.totalAmount)}</span>
                         <StatusPill status={r.status} />
                       </div>
@@ -167,8 +176,9 @@ export default function DispatchSheetPage() {
                       <tbody>
                         {r.items.map(it => {
                           const k = `${r.routeId}:${it.productId}`;
-                          const a = adj(r.routeId, it.productId);
-                          const effectivePackets = eff(it.totalPackets ?? 0, a);
+                          // Pkt (+) / Pkt (−) and crates auto-generated from the
+                          // route-sheet formula — no manual entry.
+                          const cp = cratePkts(it.totalPackets ?? 0, it.packetsPerCrate ?? 0);
 
                           return (
                             <tr key={it.productId}>
@@ -177,23 +187,9 @@ export default function DispatchSheetPage() {
                               <td className="text-muted-foreground">{it.packSize ?? "—"}{it.unit && ` ${it.unit}`}</td>
                               <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(it.totalPackets)}</td>
                               <td className="num text-muted-foreground" style={{ textAlign: "right" }}>{fmtNum(it.packetsPerCrate)}</td>
-                              <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(it.crates)}</td>
-                              <td className="num" style={{ textAlign: "right" }}>
-                                <Input
-                                  className="erp-input num text-right h-7 px-1 w-16"
-                                  type="number" min="0"
-                                  value={a.pktPlus || ""}
-                                  onChange={e => setAdj(r.routeId, it.productId, { pktPlus: parseInt(e.target.value) || 0 })}
-                                />
-                              </td>
-                              <td className="num" style={{ textAlign: "right" }}>
-                                <Input
-                                  className="erp-input num text-right h-7 px-1 w-16"
-                                  type="number" min="0"
-                                  value={a.pktMinus || ""}
-                                  onChange={e => setAdj(r.routeId, it.productId, { pktMinus: parseInt(e.target.value) || 0 })}
-                                />
-                              </td>
+                              <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(cp.crates)}</td>
+                              <td className="num font-semibold" style={{ textAlign: "right" }}>{cp.pktPlus > 0 ? fmtNum(cp.pktPlus) : "—"}</td>
+                              <td className="num font-semibold" style={{ textAlign: "right" }}>{cp.pktMinus > 0 ? fmtNum(cp.pktMinus) : "—"}</td>
                               <td style={{ textAlign: "center" }}>
                                 <Checkbox
                                   checked={!!verified[k]}
