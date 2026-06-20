@@ -658,6 +658,11 @@ export async function financeRoutes(app: FastifyInstance) {
           d.name                             AS "dealerName",
           d.code                             AS "dealerCode",
           p.mode,
+          ch.status::text                    AS "chequeStatus",
+          CASE
+            WHEN p.mode = 'cheque' THEN COALESCE(ch.status::text, 'received')
+            ELSE 'completed'
+          END                                AS "status",
           p.reference,
           p.amount,
           p.invoice_id                       AS "invoiceId",
@@ -669,6 +674,7 @@ export async function financeRoutes(app: FastifyInstance) {
         JOIN dealers d        ON d.id = p.dealer_id
         LEFT JOIN invoices i  ON i.id = p.invoice_id
         LEFT JOIN users u     ON u.id = p.received_by
+        LEFT JOIN cheques ch  ON ch.payment_id = p.id
         WHERE (${dateFrom}::date IS NULL OR p.received_date >= ${dateFrom ?? '1970-01-01'}::date)
           AND (${dateTo}::date   IS NULL OR p.received_date <= ${dateTo   ?? '9999-12-31'}::date)
           AND (${mode}::text     IS NULL OR p.mode = ${mode ?? 'cash'})
@@ -696,14 +702,19 @@ export async function financeRoutes(app: FastifyInstance) {
               p.reference ILIKE ${search ?? ''})
       `;
   
-      // Summary for the page header strip.
+      // Summary for the page header strip. Bounced/cancelled cheques are
+      // reversed in the ledger, so they are NOT real money — excluded from the
+      // money totals, but still counted as transactions (rows are kept).
       const [summary] = await pgClient`
         SELECT
-          COALESCE(SUM(p.amount), 0)::numeric AS total_received,
+          COALESCE(SUM(CASE WHEN ch.status IN ('bounced','cancelled')
+                            THEN 0 ELSE p.amount END), 0)::numeric AS total_received,
           COUNT(*)::int                        AS total_count,
           COALESCE(SUM(CASE WHEN p.received_date = CURRENT_DATE
+                             AND (ch.status IS NULL OR ch.status NOT IN ('bounced','cancelled'))
                             THEN p.amount ELSE 0 END), 0)::numeric AS received_today
         FROM payments p
+        LEFT JOIN cheques ch ON ch.payment_id = p.id
         WHERE (${dateFrom}::date IS NULL OR p.received_date >= ${dateFrom ?? '1970-01-01'}::date)
           AND (${dateTo}::date   IS NULL OR p.received_date <= ${dateTo   ?? '9999-12-31'}::date)
           AND (${mode}::text     IS NULL OR p.mode = ${mode ?? 'cash'})

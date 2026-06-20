@@ -5,7 +5,6 @@ import PageHeader, {
   FilterBar,
   Field,
   StatCard,
-  StatusPill,
   EmptyState,
   fmtINR,
   fmtDate,
@@ -24,6 +23,7 @@ import {
   fetchInvoicesForCustomer,
   type PaymentMode,
   type PaymentRow,
+  type PaymentStatus,
 } from "@/services/api";
 
 const MODE_LABELS: Record<PaymentMode, string> = {
@@ -35,6 +35,30 @@ const MODE_LABELS: Record<PaymentMode, string> = {
   credit: "Credit",
   wallet: "Wallet",
 };
+
+// Display status for a payment. For cheques this is the live cheque-register
+// lifecycle (so a cancel/bounce there reflects here); other modes are one-shot.
+const STATUS_META: Record<PaymentStatus, { label: string; cls: string }> = {
+  completed: { label: "Completed", cls: "bg-success/15 text-success" },
+  received:  { label: "In hand",   cls: "bg-info/15 text-info" },
+  deposited: { label: "Deposited", cls: "bg-warning/15 text-warning" },
+  cleared:   { label: "Cleared",   cls: "bg-success/15 text-success" },
+  bounced:   { label: "Bounced",   cls: "bg-destructive/15 text-destructive" },
+  cancelled: { label: "Cancelled", cls: "bg-muted text-muted-foreground" },
+};
+
+function PaymentStatusBadge({ status }: { status: PaymentStatus }) {
+  const m = STATUS_META[status] ?? STATUS_META.completed;
+  return (
+    <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${m.cls}`}>
+      {m.label}
+    </span>
+  );
+}
+
+// Cheque cancel/bounce reverses the ledger but keeps the payment row for audit;
+// these rows no longer represent money received, so they're struck through.
+const isReversed = (s: PaymentStatus) => s === "bounced" || s === "cancelled";
 
 const MODE_OPTIONS: F9Option[] = (Object.keys(MODE_LABELS) as PaymentMode[]).map(m => ({
   value: m, label: MODE_LABELS[m],
@@ -54,8 +78,8 @@ export default function PaymentsOverviewPage() {
   const { data: customers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
   const customerOptions: F9Option[] = useMemo(
     () => (customers as any[]).map((c: any) => ({
-      value: String(c.customerId),
-      label: c.customerName,
+      value: String(c.customerId ?? c.id),
+      label: c.customerName ?? c.name,
       sublabel: c.code,
     })),
     [customers]
@@ -142,22 +166,27 @@ export default function PaymentsOverviewPage() {
                   <th>Received Date</th>
                   <th>Customer</th>
                   <th>Mode</th>
+                  <th>Status</th>
                   <th>Reference</th>
                   <th className="num" style={{ textAlign: "right", width: 130 }}>Amount ₹</th>
                   <th>Invoice</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((p: any) => (
-                  <tr key={p.id}>
-                    <td>{fmtDate(p.receivedAt ?? p.received_date ?? p.createdAt)}</td>
-                    <td className="font-medium">{p.customerName ?? p.dealerName ?? "—"}</td>
-                    <td><StatusPill status={p.mode === "cash" ? "confirmed" : p.mode === "credit" ? "pending" : "active"} /></td>
-                    <td className="font-mono text-[12px] text-muted-foreground">{p.reference ?? "—"}</td>
-                    <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtINR(p.amount)}</td>
-                    <td className="font-mono text-[12px]">{p.invoiceNumber ?? "—"}</td>
-                  </tr>
-                ))}
+                {rows.map((p: any) => {
+                  const reversed = isReversed(p.status);
+                  return (
+                    <tr key={p.id} className={reversed ? "bg-destructive/5" : ""}>
+                      <td>{fmtDate(p.receivedAt ?? p.received_date ?? p.createdAt)}</td>
+                      <td className="font-medium">{p.customerName ?? p.dealerName ?? "—"}</td>
+                      <td>{MODE_LABELS[p.mode as PaymentMode] ?? p.mode}</td>
+                      <td><PaymentStatusBadge status={p.status} /></td>
+                      <td className="font-mono text-[12px] text-muted-foreground">{p.reference ?? "—"}</td>
+                      <td className={`num font-semibold ${reversed ? "text-muted-foreground line-through" : ""}`} style={{ textAlign: "right" }}>{fmtINR(p.amount)}</td>
+                      <td className="font-mono text-[12px]">{p.invoiceNumber ?? "—"}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

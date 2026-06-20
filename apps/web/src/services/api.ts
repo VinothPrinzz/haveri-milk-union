@@ -1786,6 +1786,14 @@ export const fetchInvoiceById = async (id: string) => {
 export type PaymentMode =
   | "cash" | "upi" | "cheque" | "neft" | "rtgs" | "credit" | "wallet";
  
+export type PaymentStatus =
+  | "completed"   // cash/upi/neft/rtgs/wallet/credit — one-shot receipt
+  | "received"    // cheque in hand
+  | "deposited"   // cheque deposited, awaiting clearance
+  | "cleared"     // cheque cleared
+  | "bounced"     // cheque returned by bank (ledger reversed)
+  | "cancelled";  // cheque voided before deposit (ledger reversed)
+
 export interface PaymentRow {
   id:              string;
   receivedDate:    string;
@@ -1794,6 +1802,8 @@ export interface PaymentRow {
   dealerName:      string;
   dealerCode:      string | null;
   mode:            PaymentMode;
+  chequeStatus:    string | null;   // raw cheque lifecycle status, null for non-cheque
+  status:          PaymentStatus;    // derived display status (cheque-aware)
   reference:       string | null;
   amount:          string;
   invoiceId:       string | null;
