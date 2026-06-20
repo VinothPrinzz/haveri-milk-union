@@ -6,10 +6,10 @@ import {
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
   ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
   Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows,
-  ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee
+  ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ModuleKey } from "@/components/AppLayout";
+import { MODULES, moduleOfPath, type ModuleKey } from "@/components/AppLayout";
 import { useAuth } from "@/lib/auth";
 import { allowedBucketsForRole } from "@/lib/stock-buckets";
 
@@ -119,11 +119,18 @@ const MODULE_LABEL: Record<ModuleKey, string> = {
 };
 
 export function AppSidebar({
-  module, collapsed, onToggle,
-}: { module: ModuleKey; collapsed: boolean; onToggle: () => void }) {
+  module, collapsed, onToggle, mobileOpen = false, onMobileClose,
+}: {
+  module: ModuleKey;
+  collapsed: boolean;
+  onToggle: () => void;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
+}) {
   const { pathname } = useLocation();
   const { user } = useAuth();
   const allowedBuckets = allowedBucketsForRole(user?.role);
+  const activeModule = moduleOfPath(pathname);
 
   // Hide the Stock Entry link for a bucket the current user can't access.
   const items = (SIDEBAR_NAV[module] ?? []).filter(item => {
@@ -131,53 +138,115 @@ export function AppSidebar({
     return !bucket || allowedBuckets.includes(bucket);
   });
 
-  if (items.length === 0) return null;
+  const navItemClass = (active: boolean) =>
+    cn(
+      "flex items-center gap-2 px-3 py-1.5 text-[12.5px] border-l-2 transition-colors",
+      active
+        ? "bg-sidebar-accent text-sidebar-accent-foreground border-sidebar-primary font-medium"
+        : "border-transparent text-sidebar-foreground hover:bg-sidebar-accent/60"
+    );
 
   return (
-    <aside
-      className={cn(
-        "erp-sidebar bg-sidebar border-r border-sidebar-border flex flex-col transition-all no-print shrink-0",
-        collapsed ? "w-12" : "w-56"
+    <>
+      {/* Mobile drawer backdrop */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden no-print"
+          onClick={onMobileClose}
+          aria-hidden
+        />
       )}
-    >
-      <div className="px-3 py-2 border-b border-sidebar-border flex items-center justify-between h-9">
-        {!collapsed && (
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/70 truncate">
+
+      <aside
+        className={cn(
+          "erp-sidebar bg-sidebar border-r border-sidebar-border flex flex-col transition-all no-print shrink-0",
+          // Mobile: off-canvas drawer (full-width labels), slides in over content
+          "fixed inset-y-0 left-0 z-50 w-64 lg:static lg:z-auto lg:translate-x-0",
+          mobileOpen ? "translate-x-0" : "-translate-x-full",
+          // Desktop: in-flow column with collapse support
+          collapsed ? "lg:w-12" : "lg:w-56",
+          // Desktop only: no submenu (e.g. Dashboard) → no sidebar column
+          items.length === 0 && "lg:hidden"
+        )}
+      >
+        <div className="px-3 py-2 border-b border-sidebar-border flex items-center justify-between h-9">
+          {/* Desktop: current module label */}
+          <span
+            className={cn(
+              "text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/70 truncate",
+              collapsed ? "hidden" : "hidden lg:block"
+            )}
+          >
             {MODULE_LABEL[module]}
           </span>
-        )}
-        <button
-          onClick={onToggle}
-          className="p-1 hover:bg-sidebar-accent rounded-sm text-sidebar-foreground"
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        >
-          {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronLeft className="w-3.5 h-3.5" />}
-        </button>
-      </div>
-      <nav data-kbd-region="sidebar" className="flex-1 overflow-y-auto py-1">
-        {items.map(item => {
-          const Icon = item.icon;
-          const active =
-            pathname === item.path ||
-            (item.path !== "/" && pathname.startsWith(item.path + "/"));
-          return (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              title={item.label}
-              className={cn(
-                "flex items-center gap-2 px-3 py-1.5 text-[12.5px] border-l-2 transition-colors",
-                active
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground border-sidebar-primary font-medium"
-                  : "border-transparent text-sidebar-foreground hover:bg-sidebar-accent/60"
-              )}
-            >
-              <Icon className="w-3.5 h-3.5 shrink-0" />
-              {!collapsed && <span className="truncate">{item.label}</span>}
-            </NavLink>
-          );
-        })}
-      </nav>
-    </aside>
+          {/* Mobile: drawer title */}
+          <span className="lg:hidden text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/70">
+            Menu
+          </span>
+          {/* Desktop collapse/expand toggle */}
+          <button
+            onClick={onToggle}
+            className="hidden lg:block p-1 hover:bg-sidebar-accent rounded-sm text-sidebar-foreground"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronLeft className="w-3.5 h-3.5" />}
+          </button>
+          {/* Mobile close */}
+          <button
+            onClick={onMobileClose}
+            className="lg:hidden p-1 hover:bg-sidebar-accent rounded-sm text-sidebar-foreground"
+            aria-label="Close menu"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <nav data-kbd-region="sidebar" className="flex-1 overflow-y-auto py-1">
+          {/* Mobile only: main module switcher (the former top navigation) */}
+          <div className="lg:hidden">
+            {MODULES.map(m => {
+              const Icon = m.icon;
+              const active = activeModule === m.key;
+              return (
+                <NavLink
+                  key={m.key}
+                  to={m.path}
+                  title={m.label}
+                  onClick={onMobileClose}
+                  className={navItemClass(active)}
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{m.label}</span>
+                </NavLink>
+              );
+            })}
+            {items.length > 0 && (
+              <div className="mt-2 px-3 pt-2 pb-1 border-t border-sidebar-border text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/50">
+                {MODULE_LABEL[module]}
+              </div>
+            )}
+          </div>
+
+          {/* Active module's sub-pages */}
+          {items.map(item => {
+            const Icon = item.icon;
+            const active =
+              pathname === item.path ||
+              (item.path !== "/" && pathname.startsWith(item.path + "/"));
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                title={item.label}
+                onClick={onMobileClose}
+                className={navItemClass(active)}
+              >
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span className={cn("truncate", collapsed && "lg:hidden")}>{item.label}</span>
+              </NavLink>
+            );
+          })}
+        </nav>
+      </aside>
+    </>
   );
 }

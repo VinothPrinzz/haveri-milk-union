@@ -152,6 +152,30 @@
   .erp-table tbody tr.row-pending { background: hsl(var(--row-pending)); }
   .erp-table tbody tr.row-confirmed { background: hsl(var(--row-confirmed)); }
   .erp-table tbody tr.row-cancelled { background: hsl(var(--row-cancelled)); }
+
+  /* Mobile: wide tables become their own horizontal scroll container so they
+     can be swiped sideways instead of pushing the whole page off-screen.
+     Making the <table> itself display:block + overflow-x:auto keeps the
+     surrounding page (cards, headers) fixed while only the grid scrolls. */
+  @media (max-width: 1023px) {
+    .erp-table {
+      display: block;
+      overflow-x: auto;
+      white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+    }
+  }
+
+  /* Phones: tighten dense primitives so they don't render at desktop scale. */
+  @media (max-width: 639px) {
+    .erp-table            { font-size: 12px; }
+    .erp-table thead th   { padding: 0.3rem 0.4rem; font-size: 10.5px; }
+    .erp-table tbody td   { padding: 0.3rem 0.4rem; }
+    .erp-input            { height: 2rem; font-size: 12.5px; }
+    .erp-section-title    { font-size: 11px; }
+    .status-pill          { font-size: 10px; }
+  }
+
   .erp-panel {
     @apply bg-panel border border-border rounded-sm shadow-sm;
   }

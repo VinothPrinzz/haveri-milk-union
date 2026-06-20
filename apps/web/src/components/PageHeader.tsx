@@ -35,15 +35,15 @@ export default function PageHeader({
   return (
     <div
       className={cn(
-        "erp-page-header flex items-center justify-between px-4 py-3 border-b border-border bg-panel",
+        "erp-page-header flex items-center justify-between px-3 py-2 sm:px-4 sm:py-3 border-b border-border bg-panel",
         className
       )}
     >
       <div className="min-w-0">
-        <h1 className="text-[16px] font-semibold text-foreground leading-tight truncate">{title}</h1>
-        {sub && <div className="text-[13px] text-muted-foreground mt-0.5 truncate">{sub}</div>}
+        <h1 className="text-[14px] sm:text-[16px] font-semibold text-foreground leading-tight truncate">{title}</h1>
+        {sub && <div className="text-[11.5px] sm:text-[13px] text-muted-foreground mt-0.5 truncate">{sub}</div>}
       </div>
-      {acts && <div className="erp-page-actions flex items-center gap-2 shrink-0">{acts}</div>}
+      {acts && <div className="erp-page-actions flex items-center gap-1.5 sm:gap-2 shrink-0">{acts}</div>}
     </div>
   );
 }
@@ -161,7 +161,7 @@ export function FilterBar({ children, className }: { children: ReactNode; classN
   return (
     <div
       className={cn(
-        "erp-filterbar flex flex-wrap items-end gap-2 px-4 py-2.5 bg-panel border-b border-border",
+        "erp-filterbar flex flex-wrap items-end gap-2 px-3 py-2 sm:px-4 sm:py-2.5 bg-panel border-b border-border",
         className
       )}
     >
@@ -263,14 +263,14 @@ export function StatCard({
   }[tone];
 
   return (
-    <div className={cn("erp-panel p-3 border-l-4", toneClass, className)}>
+    <div className={cn("erp-panel p-2.5 sm:p-3 border-l-4", toneClass, className)}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium truncate">
+          <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-muted-foreground font-medium truncate">
             {label}
           </div>
-          <div className="text-[20px] font-semibold mt-1 num truncate">{value}</div>
-          {hint && <div className="text-[11px] text-muted-foreground mt-0.5 truncate">{hint}</div>}
+          <div className="text-[16px] sm:text-[20px] font-semibold mt-0.5 sm:mt-1 num truncate">{value}</div>
+          {hint && <div className="text-[10px] sm:text-[11px] text-muted-foreground mt-0.5 truncate">{hint}</div>}
         </div>
         {icon && <div className="text-muted-foreground/60 shrink-0">{icon}</div>}
       </div>

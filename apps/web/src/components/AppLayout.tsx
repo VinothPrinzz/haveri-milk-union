@@ -3,7 +3,7 @@ import { useLocation, useNavigate, Outlet } from "react-router-dom";
 import {
   LayoutDashboard, Database, ShoppingCart, Truck, Boxes,
   BookOpenCheck, FileBarChart2, ShieldCheck, Search, Bell,
-  ChevronDown, LogOut, Keyboard, Wallet, KeyRound,
+  ChevronDown, LogOut, Keyboard, Wallet, KeyRound, Menu,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -156,8 +156,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const [cmdOpen, setCmdOpen] = useState(false);
   const [changePwdOpen, setChangePwdOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   useKeyboardNav();
+
+  // Close the mobile sidebar drawer whenever the route changes.
+  useEffect(() => { setMobileSidebarOpen(false); }, [pathname]);
 
   const activeModule = useMemo(() => moduleOfPath(pathname), [pathname]);
   const breadcrumb = useBreadcrumb();
@@ -214,9 +218,19 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const initials = displayName.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase() || "A";
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="flex flex-col h-screen bg-background overflow-x-hidden">
       {/* TOP BAR */}
-      <header className="erp-topbar bg-topbar text-topbar-foreground flex items-center h-12 px-3 gap-3 shadow-md no-print shrink-0">
+      <header className="erp-topbar bg-topbar text-topbar-foreground flex items-center h-12 px-2 sm:px-3 gap-2 sm:gap-3 shadow-md no-print shrink-0">
+        {/* Mobile: hamburger opens the navigation drawer (module switcher
+            + the active module's sub-pages). Always available, incl. Dashboard. */}
+        <button
+          onClick={() => setMobileSidebarOpen(true)}
+          className="lg:hidden p-1.5 hover:bg-white/10 rounded-sm shrink-0"
+          aria-label="Open menu"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+
         <div className="flex items-center gap-2 pr-3 border-r border-white/10">
           <div className="w-7 h-7 rounded-sm bg-white text-topbar grid place-items-center font-bold text-sm">H</div>
           <div className="leading-tight">
@@ -225,10 +239,10 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           </div>
         </div>
 
-        {/* Module tabs */}
+        {/* Module tabs — desktop only; on mobile these live in the drawer */}
         <nav
           data-kbd-region="topbar"
-          className="flex items-center gap-0.5 overflow-x-auto flex-1 min-w-0"
+          className="hidden lg:flex items-center gap-0.5 overflow-x-auto flex-1 min-w-0"
         >
           {MODULES.map(m => {
             const Icon = m.icon;
@@ -248,6 +262,10 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             );
           })}
         </nav>
+
+        {/* Mobile spacer — pushes the bell / user menu to the right when the
+            module tabs are hidden. */}
+        <div className="flex-1 lg:hidden" />
 
         {/* Search trigger (Ctrl+K) */}
         <button
@@ -309,19 +327,20 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
 
       {/* BODY */}
       <div className="flex flex-1 min-h-0">
-        {/* Contextual sidebar — hidden on Dashboard (no submenu) */}
-        {activeModule !== "dashboard" && (
-          <AppSidebar
-            module={activeModule}
-            collapsed={sidebarCollapsed}
-            onToggle={() => setSidebarCollapsed(c => !c)}
-          />
-        )}
+        {/* Contextual sidebar. On desktop it's hidden when a module has no
+            submenu (e.g. Dashboard); on mobile it's always the nav drawer. */}
+        <AppSidebar
+          module={activeModule}
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(c => !c)}
+          mobileOpen={mobileSidebarOpen}
+          onMobileClose={() => setMobileSidebarOpen(false)}
+        />
 
         {/* MAIN */}
         <main className="erp-main flex-1 min-w-0 flex flex-col">
           {/* Breadcrumb */}
-          <div className="erp-breadcrumb px-4 py-2 border-b border-border bg-panel flex items-center text-[13px] text-muted-foreground gap-1.5 no-print shrink-0">
+          <div className="erp-breadcrumb px-3 py-1.5 sm:px-4 sm:py-2 border-b border-border bg-panel flex items-center text-[11.5px] sm:text-[13px] text-muted-foreground gap-1.5 no-print shrink-0">
             {breadcrumb.map((b, i) => (
               <span key={i} className="flex items-center gap-1.5">
                 {i > 0 && <span className="opacity-50">›</span>}
