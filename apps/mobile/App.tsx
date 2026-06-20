@@ -39,6 +39,7 @@ import ProfileScreen from "./src/screens/ProfileScreen";
 import NotificationsScreen from "./src/screens/NotificationsScreen";
 import ManageStandingIndentScreen from "./src/screens/ManageStandingIndentScreen";
 import IndentCheckoutScreen from "./src/screens/IndentCheckoutScreen";
+import PriceChartScreen from "./src/screens/PriceChartScreen";
 
 /**
  * App.tsx — v2 navigation shell.
@@ -121,7 +122,8 @@ type PushedScreen =
   | "invoices"
   | "notifications"
   | "manage-standing"
-  | "indent-checkout";
+  | "indent-checkout"
+  | "price-chart";
 
 function AppContent() {
   const insets = useSafeAreaInsets();
@@ -211,6 +213,9 @@ function AppContent() {
   const handleOpenProfile = useCallback(() => {
     setScreen("profile");
   }, []);
+  const handleOpenPriceChart = useCallback(() => {
+    setScreen("price-chart");
+  }, []);
 
   // ── Loading (auth hydration) ──
   if (isLoading) {
@@ -268,6 +273,10 @@ function AppContent() {
     return <ProfileScreen onBack={goToTabs} />;
   }
 
+  if (screen === "price-chart") {
+    return <PriceChartScreen onBack={goToTabs} />;
+  }
+
   if (screen === "invoices") {
     return <InvoicesScreen onBack={goToTabs} />;
   }
@@ -301,12 +310,14 @@ function AppContent() {
             onOpenIndentForDate={() => setActiveTab("indent")}
             onOpenNotifications={handleOpenNotifications}
             onOpenProfile={handleOpenProfile}
+            onOpenPriceChart={handleOpenPriceChart}
           />
         )}
         {activeTab === "indent" && (
           <IndentScreen
             onOpenNotifications={handleOpenNotifications}
             onOpenProfile={handleOpenProfile}
+            onOpenPriceChart={handleOpenPriceChart}
             onOpenManageStanding={() => setScreen("manage-standing")}
             onOpenCheckout={() => setScreen("indent-checkout")}
           />
@@ -315,6 +326,7 @@ function AppContent() {
           <OrdersScreen
             onOpenNotifications={handleOpenNotifications}
             onOpenProfile={handleOpenProfile}
+            onOpenPriceChart={handleOpenPriceChart}
             onOpenInvoices={() => setScreen("invoices")}
           />
         )}
@@ -324,6 +336,7 @@ function AppContent() {
             onOpenIndentForDate={() => setActiveTab("indent")}
             onOpenNotifications={handleOpenNotifications}
             onOpenProfile={handleOpenProfile}
+            onOpenPriceChart={handleOpenPriceChart}
           />
         )}
       </View>

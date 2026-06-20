@@ -42,6 +42,8 @@ interface AppHeaderProps {
   unreadNotifications?: boolean;
   onBellPress: () => void;
   onProfilePress: () => void;
+  /** Opens the product price chart. When omitted, the chart button is hidden. */
+  onPriceChartPress?: () => void;
 }
 
 function initialsFromName(name?: string): string {
@@ -56,6 +58,7 @@ export default function AppHeader({
   unreadNotifications = false,
   onBellPress,
   onProfilePress,
+  onPriceChartPress,
 }: AppHeaderProps) {
   const insets = useSafeAreaInsets();
   const dealer = useAuthStore((s) => s.dealer);
@@ -87,6 +90,18 @@ export default function AppHeader({
       </View>
 
       <View style={styles.right}>
+        {onPriceChartPress ? (
+          <TouchableOpacity
+            onPress={onPriceChartPress}
+            activeOpacity={0.6}
+            style={styles.iconBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Price chart"
+          >
+            <Text style={styles.chartIcon}>🏷️</Text>
+          </TouchableOpacity>
+        ) : null}
+
         <TouchableOpacity
           onPress={onBellPress}
           activeOpacity={0.6}
@@ -150,6 +165,9 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   bellIcon: {
+    fontSize: 18,
+  },
+  chartIcon: {
     fontSize: 18,
   },
   unreadDot: {

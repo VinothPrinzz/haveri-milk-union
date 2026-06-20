@@ -7,10 +7,12 @@ import type { Product, Category } from "../lib/types";
 
 interface ProductsResponse {
   products: Array<
-    Omit<Product, "basePrice" | "gstPercent" | "stock" | "sortOrder"
+    Omit<Product, "basePrice" | "dealerPrice" | "mrp" | "gstPercent" | "stock" | "sortOrder"
       | "retailDealerPrice" | "creditInstMrpPrice" | "creditInstDealerPrice" | "parlourDealerPrice"
       | "packetsCrate"> & {
       basePrice: string;
+      dealerPrice?: string;   // Dealer-Price (gross) — postgres returns numeric as string
+      mrp?: string;
       gstPercent: string;
       stock: number;
       sortOrder: number;
@@ -27,6 +29,9 @@ function normalizeProduct(p: ProductsResponse["products"][number]): Product {
   return {
     ...p,
     basePrice:  parseFloat(p.basePrice),
+    // Dealer-Price (gross) is what the dealer app shows + is billed at.
+    dealerPrice: p.dealerPrice != null ? parseFloat(p.dealerPrice) : undefined,
+    mrp:        p.mrp != null ? parseFloat(p.mrp) : 0,
     gstPercent: parseFloat(p.gstPercent),
     retailDealerPrice:      p.retailDealerPrice      ? parseFloat(p.retailDealerPrice)      : undefined,
     creditInstMrpPrice:     p.creditInstMrpPrice     ? parseFloat(p.creditInstMrpPrice)     : undefined,

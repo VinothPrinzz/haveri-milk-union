@@ -79,12 +79,14 @@ const FILTERS: ReadonlyArray<FilterDef> = [
 interface OrdersScreenProps {
   onOpenNotifications: () => void;
   onOpenProfile: () => void;
+  onOpenPriceChart: () => void;
   onOpenInvoices: () => void;
 }
 
 export default function OrdersScreen({
   onOpenNotifications,
   onOpenProfile,
+  onOpenPriceChart,
   onOpenInvoices,
 }: OrdersScreenProps) {
   const insets = useSafeAreaInsets();
@@ -179,6 +181,7 @@ export default function OrdersScreen({
             icon: product.icon ?? "📦",
             unit: product.unit,
             basePrice: product.basePrice,
+            dealerPrice: product.dealerPrice,
             mrp: product.mrp ?? product.basePrice,
             gstPercent: product.gstPercent,
           });
@@ -284,6 +287,7 @@ export default function OrdersScreen({
         title="My Orders"
         onBellPress={onOpenNotifications}
         onProfilePress={onOpenProfile}
+        onPriceChartPress={onOpenPriceChart}
       />
 
       {/* Status Filter Pills */}

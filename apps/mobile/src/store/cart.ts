@@ -6,6 +6,7 @@ interface CartProduct {
   icon: string;
   unit: string;
   basePrice: number;
+  dealerPrice?: number;   // Dealer-Price (gross) — shown to the dealer
   mrp: number;
   gstPercent: number;
 }
