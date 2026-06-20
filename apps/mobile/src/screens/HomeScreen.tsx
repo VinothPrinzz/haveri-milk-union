@@ -47,6 +47,7 @@ interface HomeScreenProps {
   onOpenIndentForDate: () => void;
   onOpenNotifications: () => void;
   onOpenProfile: () => void;
+  onOpenPriceChart: () => void;
 }
 
 const ALL_CATEGORY_ID = "all";
@@ -56,6 +57,7 @@ export default function HomeScreen({
   onOpenIndentForDate,
   onOpenNotifications,
   onOpenProfile,
+  onOpenPriceChart,
 }: HomeScreenProps) {
   const dealer = useAuthStore((s) => s.dealer);
   const refreshProfile = useAuthStore((s) => s.refreshProfile);
@@ -158,6 +160,7 @@ export default function HomeScreen({
     icon: p.icon ?? "📦",
     unit: p.unit,
     basePrice: p.basePrice,
+    dealerPrice: p.dealerPrice,
     mrp: p.mrp,
     gstPercent: p.gstPercent,
   });
@@ -242,6 +245,7 @@ export default function HomeScreen({
         unreadNotifications={unreadNotifications}
         onBellPress={onOpenNotifications}
         onProfilePress={onOpenProfile}
+        onPriceChartPress={onOpenPriceChart}
       />
 
       {/* Search bar — pinned ABOVE the list (keeps TextInput focus stable) */}

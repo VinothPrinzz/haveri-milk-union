@@ -250,7 +250,9 @@ export default function IndentCart({
 
       {/* Item rows */}
       {items.map((item) => {
-        const displayedUnitPrice = Math.round(item.mrp ?? item.basePrice ?? 0); // ← C.3: Show MRP
+        const displayedUnitPrice = Math.round(
+          item.dealerPrice ?? item.mrp ?? item.basePrice ?? 0
+        ); // Dealers see the Dealer-Price (gross) they're billed at
         return (
           <View key={item.id} style={styles.cartItem}>
             <View style={styles.ciEmo}>

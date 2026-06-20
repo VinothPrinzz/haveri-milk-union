@@ -46,6 +46,7 @@ interface CategoriesScreenProps {
   onOpenIndentForDate: () => void;
   onOpenNotifications: () => void;
   onOpenProfile: () => void;
+  onOpenPriceChart: () => void;
 }
 
 export default function CategoriesScreen({
@@ -53,6 +54,7 @@ export default function CategoriesScreen({
   onOpenIndentForDate,
   onOpenNotifications,
   onOpenProfile,
+  onOpenPriceChart,
 }: CategoriesScreenProps) {
   const dealer = useAuthStore((s) => s.dealer);
   const cartItems = useCartStore((s) => s.items);
@@ -104,6 +106,7 @@ export default function CategoriesScreen({
     icon: p.icon ?? "📦",
     unit: p.unit,
     basePrice: p.basePrice,
+    dealerPrice: p.dealerPrice,
     mrp: p.mrp,
     gstPercent: p.gstPercent,
   });
@@ -135,6 +138,7 @@ export default function CategoriesScreen({
           unreadNotifications={unreadNotifications}
           onBellPress={onOpenNotifications}
           onProfilePress={onOpenProfile}
+          onPriceChartPress={onOpenPriceChart}
         />
 
         <ScrollView
@@ -202,6 +206,7 @@ export default function CategoriesScreen({
         unreadNotifications={unreadNotifications}
         onBellPress={onOpenNotifications}
         onProfilePress={onOpenProfile}
+        onPriceChartPress={onOpenPriceChart}
       />
 
       <ScrollView

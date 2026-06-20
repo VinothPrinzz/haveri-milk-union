@@ -90,9 +90,11 @@ export default function ProductCard({
   const hasImage = !!product.imageUrl && !imageError;
   const fallbackEmoji = product.icon ?? "📦";
 
-  // Price display: prefer MRP, fall back to basePrice. Whole rupees
-  // get no decimals; fractional show 2dp.
-  const rawPrice = Number(product.mrp ?? product.basePrice ?? 0) || 0;
+  // Price display: dealers see the Dealer-Price (gross) — the same price
+  // they're billed at. Fall back to MRP / basePrice only if it's missing.
+  // Whole rupees get no decimals; fractional show 2dp.
+  const rawPrice =
+    Number(product.dealerPrice ?? product.mrp ?? product.basePrice ?? 0) || 0;
   const displayedPrice = Number.isInteger(rawPrice)
     ? String(rawPrice)
     : rawPrice.toFixed(2);

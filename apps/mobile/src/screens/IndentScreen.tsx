@@ -60,6 +60,7 @@ import type { DraftItem, OrderStatus } from "../lib/types";
 interface IndentScreenProps {
   onOpenNotifications: () => void;
   onOpenProfile: () => void;
+  onOpenPriceChart: () => void;
   onOpenManageStanding: () => void;
   /**
    * Open the indent checkout screen for the currently selected date.
@@ -72,6 +73,7 @@ interface IndentScreenProps {
 export default function IndentScreen({
   onOpenNotifications,
   onOpenProfile,
+  onOpenPriceChart,
   onOpenManageStanding,
   onOpenCheckout,
 }: IndentScreenProps) {
@@ -148,7 +150,16 @@ export default function IndentScreen({
     draftStatus === "confirmed" ||
     draftStatus === "dispatched" ||
     draftStatus === "delivered";
+  // Today's ordering window has closed → lock editing + review/confirm for
+  // TODAY only. Future dates stay editable anytime (they auto-confirm at
+  // their own window close on that date). Guarded on a real "closed" reading
+  // (not the loading default of "closed") so a slow/failed window fetch can't
+  // lock the dealer out while the window is actually still open.
+  const windowClosedToday = isToday && windowQuery.data?.state === "closed";
+
   const isEditable = !isPaused && !isPlaced && !isPaymentRequired;
+  // Editable AND the window still allows changes (future dates always do).
+  const canModify = isEditable && !windowClosedToday;
 
   // ── Status banner ──
   const statusBanner = useMemo(() => {
@@ -207,8 +218,9 @@ export default function IndentScreen({
   // Absolute-quantity setter — used by the editable stepper input (and +/-).
   // Lets the dealer type a quantity directly instead of tapping +.
   const setItemQty = (productId: string, qty: number) => {
-    // Only a true draft / preview can be edited.
-    if (!isEditable) return;
+    // Only a true draft / preview can be edited — and only while the window
+    // still allows changes (today's window not yet closed).
+    if (!canModify) return;
     const current = items.find((i) => i.productId === productId);
     const newQty = Math.max(0, qty);
     const nextItems = items
@@ -247,6 +259,7 @@ export default function IndentScreen({
         unreadNotifications={unreadNotifications}
         onBellPress={onOpenNotifications}
         onProfilePress={onOpenProfile}
+        onPriceChartPress={onOpenPriceChart}
       />
 
       {/* ── Date strip — fixed row, no scroll ── */}
@@ -352,8 +365,8 @@ export default function IndentScreen({
                     key={it.productId}
                     item={it}
                     isLast={idx === items.length - 1}
-                    // Steppers only when the order is still an editable draft.
-                    disabled={!isEditable}
+                    // Steppers only when editable AND the window is still open.
+                    disabled={!canModify}
                     onSetQty={(qty) => setItemQty(it.productId, qty)}
                   />
                 ))}
@@ -389,7 +402,7 @@ export default function IndentScreen({
                 </View>
 
                 {/* ── EDITABLE: review → checkout (pick payment) ── */}
-                {isEditable && (
+                {canModify && (
                   <>
                     <View style={styles.payCard}>
                       <View style={styles.payHeader}>
@@ -410,6 +423,11 @@ export default function IndentScreen({
                       </Text>
                     </TouchableOpacity>
                   </>
+                )}
+
+                {/* ── WINDOW CLOSED (today): locked, no review/confirm ── */}
+                {isEditable && windowClosedToday && (
+                  <WindowClosedCard willAutoConfirm={draft.exists ?? false} />
                 )}
 
                 {/* ── PLACED: read-only confirmation ── */}
@@ -543,6 +561,22 @@ function PlacedCard({ status }: { status: OrderStatus }) {
         <Text style={styles.placedSub}>
           {sub} Track it in the Orders tab. To change it, request a
           cancellation from Orders.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/** Shown for today's draft once the ordering window has closed. */
+function WindowClosedCard({ willAutoConfirm }: { willAutoConfirm: boolean }) {
+  return (
+    <View style={styles.windowClosedCard}>
+      <Text style={styles.windowClosedIcon}>🔒</Text>
+      <View style={styles.windowClosedTextCol}>
+        <Text style={styles.windowClosedTitle}>Ordering window closed</Text>
+        <Text style={styles.windowClosedSub}>
+          Today's window has closed, so this indent can no longer be edited or
+          confirmed.{willAutoConfirm ? " It will be auto-confirmed shortly." : ""}
         </Text>
       </View>
     </View>
@@ -906,6 +940,33 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: fonts.medium,
     color: "#166534",
+    marginTop: 2,
+    lineHeight: 16,
+  },
+
+  // Window-closed (today) card
+  windowClosedCard: {
+    flexDirection: "row",
+    gap: 10,
+    marginHorizontal: 12,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    backgroundColor: "#FEE2E2",
+    borderColor: "#F7C1C1",
+  },
+  windowClosedIcon: { fontSize: 16 },
+  windowClosedTextCol: { flex: 1 },
+  windowClosedTitle: {
+    fontSize: 13,
+    fontFamily: fonts.bold,
+    color: "#A32D2D",
+  },
+  windowClosedSub: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    color: "#A32D2D",
     marginTop: 2,
     lineHeight: 16,
   },
