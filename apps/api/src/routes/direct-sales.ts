@@ -469,7 +469,7 @@ export async function directSalesRoutes(app: FastifyInstance) {
         routeId:     z.string().uuid().optional(),
         batchId:     z.string().uuid().optional(),
         saleDate:    z.string().optional(),
-        paymentMode: z.enum(["cash", "upi"]).default("cash"),
+        paymentMode: z.enum(["cash", "upi", "credit"]).default("cash"),
         paymentRef:  z.string().optional(),
         notes:       z.string().optional(),
         items:       z.array(saleItemSchema).min(1),
@@ -548,38 +548,76 @@ export async function directSalesRoutes(app: FastifyInstance) {
         .map(li => `${li.productName}: MRP ₹${li.mrpReference} − ${li.subsidyPercent}% subsidy = ₹${li.unitPrice}`)
         .join("; ");
 
-      const [sale] = await pgClient`
-        INSERT INTO direct_sales (
-          customer_type, customer_id, recipient_name, route_id, officer_id, batch_id,
-          sale_date, payment_mode, payment_ref,
-          subtotal, total_gst, grand_total, notes
-        )
-        VALUES (
-          'employee_subsidy', ${body.customerId}, ${employee.name},
-          ${effectiveRouteId}, ${request.admin!.userId}, ${body.batchId ?? null},
-          ${saleDate}::date, ${body.paymentMode}::payment_mode, ${body.paymentRef ?? null},
-          ${subtotal}, ${totalGst}, ${grandTotal},
-          ${body.notes ? `${body.notes} | ${subsidyNote}` : subsidyNote}
-        )
-        RETURNING *
-      `;
-      if (!sale) return reply.status(500).send({ error: "Failed to create sale" });
+      const performedBy = request.admin!.userId;
 
-      for (const it of lineItems) {
-        await pgClient`
-          INSERT INTO direct_sale_items (
-            direct_sale_id, product_id, product_name, quantity,
-            unit_price, gst_percent, gst_amount, line_total
-          ) VALUES (
-            ${sale.id}, ${it.productId}, ${it.productName}, ${it.quantity},
-            ${it.unitPrice}, ${it.gstPercent}, ${it.gstAmount}, ${it.lineTotal}
+      let sale: any;
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+
+        [sale] = await tx`
+          INSERT INTO direct_sales (
+            customer_type, customer_id, recipient_name, route_id, officer_id, batch_id,
+            sale_date, payment_mode, payment_ref,
+            subtotal, total_gst, grand_total, notes
           )
+          VALUES (
+            'employee_subsidy', ${body.customerId}, ${employee.name},
+            ${effectiveRouteId}, ${performedBy}, ${body.batchId ?? null},
+            ${saleDate}::date, ${body.paymentMode}::payment_mode, ${body.paymentRef ?? null},
+            ${subtotal}, ${totalGst}, ${grandTotal},
+            ${body.notes ? `${body.notes} | ${subsidyNote}` : subsidyNote}
+          )
+          RETURNING *
         `;
-        await pgClient`
-          UPDATE products SET stock = GREATEST(stock - ${it.quantity}, 0), updated_at = now()
-          WHERE id = ${it.productId}
-        `;
-      }
+        if (!sale) throw new Error("Failed to create sale");
+
+        for (const it of lineItems) {
+          await tx`
+            INSERT INTO direct_sale_items (
+              direct_sale_id, product_id, product_name, quantity,
+              unit_price, gst_percent, gst_amount, line_total
+            ) VALUES (
+              ${sale.id}, ${it.productId}, ${it.productName}, ${it.quantity},
+              ${it.unitPrice}, ${it.gstPercent}, ${it.gstAmount}, ${it.lineTotal}
+            )
+          `;
+          await tx`
+            UPDATE products SET stock = GREATEST(stock - ${it.quantity}, 0), updated_at = now()
+            WHERE id = ${it.productId}
+          `;
+        }
+
+        // Credit sale → debit the employee_ledger so the balance is reflected
+        // in Finance → Employee Credit (same maths as the indent-release flow).
+        if (body.paymentMode === "credit") {
+          const [bal] = await tx`
+            SELECT
+              COALESCE(e.opening_balance, 0)
+              + COALESCE((SELECT SUM(CASE WHEN el.type = 'credit'
+                                           AND COALESCE(el.voucher_type,'') <> 'Opening'
+                                          THEN el.amount ELSE 0 END)
+                            FROM employee_ledger el WHERE el.employee_id = e.id), 0)
+              - COALESCE((SELECT SUM(CASE WHEN el.type = 'debit'
+                                           AND COALESCE(el.voucher_type,'') <> 'Opening'
+                                          THEN el.amount ELSE 0 END)
+                            FROM employee_ledger el WHERE el.employee_id = e.id), 0)
+              AS bal
+            FROM employees e WHERE e.id = ${body.customerId}
+          `;
+          const balanceAfter = parseFloat(bal!.bal) - grandTotal;
+
+          await tx`
+            INSERT INTO employee_ledger
+              (employee_id, type, amount, reference_id, reference_type,
+               voucher_type, voucher_date, description, balance_after, performed_by)
+            VALUES
+              (${body.customerId}, 'debit', ${grandTotal.toFixed(2)}::numeric,
+               ${sale.id}, 'direct_sale', 'Invoice', ${saleDate}::date,
+               ${"Employee subsidy credit sale " + sale.id},
+               ${balanceAfter.toFixed(2)}::numeric, ${performedBy})
+          `;
+        }
+      });
 
       return reply.status(201).send({ sale, items: lineItems });
     }

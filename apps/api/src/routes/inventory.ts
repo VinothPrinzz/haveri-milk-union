@@ -4,30 +4,12 @@ import { eq, sql, and, lt } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
 import { products, fgsStockLog, categories } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
-
-type StockBucket = "milk-curd" | "others";
-
-// Keep in sync with apps/web/src/lib/stock-buckets.ts MILK_CURD_CATEGORIES.
-const MILK_CURD_CATEGORIES = ["milk", "curd", "lassi", "buttermilk"];
-
-const bucketOfCategory = (category: string | null | undefined): StockBucket =>
-  MILK_CURD_CATEGORIES.includes(String(category ?? "").trim().toLowerCase())
-    ? "milk-curd"
-    : "others";
-
-/**
- * Which stock buckets a role may view/edit. The two bucket-scoped FGS roles
- * (the SKA milk & curd diary vs. the other-products diary) are limited to a
- * single bucket; everyone else with inventory access sees both.
- * Keep in sync with apps/web/src/lib/stock-buckets.ts allowedBucketsForRole().
- */
-function bucketsForRole(role: string): StockBucket[] {
-  switch (role) {
-    case "fgs_milk_curd": return ["milk-curd"];
-    case "fgs_others":    return ["others"];
-    default:              return ["milk-curd", "others"];
-  }
-}
+import {
+  type StockBucket,
+  MILK_CURD_CATEGORIES,
+  bucketOfCategory,
+  bucketsForRole,
+} from "../lib/stock-buckets.js";
 
 export async function inventoryRoutes(app: FastifyInstance) {
   // GET /api/v1/fgs/overview — current stock for all products
@@ -79,7 +61,23 @@ export async function inventoryRoutes(app: FastifyInstance) {
                    WHEN COALESCE(fsl.closing, p.stock) <= p.critical_stock_threshold THEN 'critical'
                    WHEN COALESCE(fsl.closing, p.stock) <= p.low_stock_threshold THEN 'low'
                    ELSE 'healthy'
-                 END AS stock_status
+                 END AS stock_status,
+                 -- GRN receipt lines for this product on this day (who supplied
+                 -- the received stock + cost). Empty array when none recorded.
+                 COALESCE(
+                   (SELECT json_agg(json_build_object(
+                       'id',           sr.id,
+                       'supplierId',   sr.supplier_id,
+                       'supplierName', sup.name,
+                       'quantity',     sr.quantity,
+                       'unitCost',     sr.unit_cost,
+                       'totalCost',    sr.total_cost
+                     ) ORDER BY sr.created_at)
+                    FROM stock_receipts sr
+                    LEFT JOIN suppliers sup ON sup.id = sr.supplier_id
+                    WHERE sr.product_id = p.id AND sr.date = ${date}::date),
+                   '[]'::json
+                 ) AS receipts
           FROM products p
           JOIN categories c ON c.id = p.category_id
           LEFT JOIN fgs_stock_log fsl ON fsl.product_id = p.id AND fsl.date = ${date}::date
@@ -147,6 +145,19 @@ export async function inventoryRoutes(app: FastifyInstance) {
             received: z.number().int().min(0),
             dispatched: z.number().int().min(0),
             wastage: z.number().int().min(0),
+            // Optional GRN receipt lines — who the received stock was purchased
+            // from + at what cost. When present, `received` is DERIVED as the
+            // sum of line quantities (the client's `received` is ignored) and
+            // the day's stock_receipts for this product are replaced with these
+            // lines. Omit the field entirely to leave receipts untouched
+            // (backward-compatible with callers that only send aggregates).
+            receipts: z.array(
+              z.object({
+                supplierId: z.string().uuid().nullable().optional(),
+                quantity: z.number().int().min(0),
+                unitCost: z.union([z.string(), z.number()]).nullable().optional(),
+              })
+            ).optional(),
           })
         ),
       });
@@ -184,30 +195,70 @@ export async function inventoryRoutes(app: FastifyInstance) {
       const results = [];
 
       for (const entry of body.entries) {
+        // When the client sent receipt lines, the received total is their sum
+        // (the lines are the source of truth); otherwise fall back to the
+        // aggregate `received` the client typed.
+        const hasReceipts = entry.receipts !== undefined;
+        const received = hasReceipts
+          ? entry.receipts!.reduce((sum, r) => sum + r.quantity, 0)
+          : entry.received;
+
         const closing =
-          entry.opening + entry.received - entry.dispatched - entry.wastage;
+          entry.opening + received - entry.dispatched - entry.wastage;
 
-        // Upsert — one entry per product per date
-        const [row] = await pgClient`
-          INSERT INTO fgs_stock_log (product_id, date, opening, received, dispatched, wastage, closing, entered_by)
-          VALUES (${entry.productId}, ${body.date}::date, ${entry.opening}, ${entry.received},
-                  ${entry.dispatched}, ${entry.wastage}, ${closing}, ${request.admin!.userId})
-          ON CONFLICT (product_id, date) DO UPDATE SET
-            opening = EXCLUDED.opening,
-            received = EXCLUDED.received,
-            dispatched = EXCLUDED.dispatched,
-            wastage = EXCLUDED.wastage,
-            closing = EXCLUDED.closing,
-            entered_by = EXCLUDED.entered_by,
-            updated_at = now()
-          RETURNING *
-        `;
+        // Each product's log upsert + receipt replacement + stock update is one
+        // atomic unit — a failed receipt insert must not leave the rolled-up
+        // `received` out of sync with the receipt rows.
+        const row = await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
 
-        // Also update the product's current stock to match closing
-        await pgClient`
-          UPDATE products SET stock = ${closing}, updated_at = now()
-          WHERE id = ${entry.productId}
-        `;
+          // Upsert — one entry per product per date
+          const [logRow] = await tx`
+            INSERT INTO fgs_stock_log (product_id, date, opening, received, dispatched, wastage, closing, entered_by)
+            VALUES (${entry.productId}, ${body.date}::date, ${entry.opening}, ${received},
+                    ${entry.dispatched}, ${entry.wastage}, ${closing}, ${request.admin!.userId})
+            ON CONFLICT (product_id, date) DO UPDATE SET
+              opening = EXCLUDED.opening,
+              received = EXCLUDED.received,
+              dispatched = EXCLUDED.dispatched,
+              wastage = EXCLUDED.wastage,
+              closing = EXCLUDED.closing,
+              entered_by = EXCLUDED.entered_by,
+              updated_at = now()
+            RETURNING *
+          `;
+
+          // Replace this product/day's receipt lines with the submitted set.
+          if (hasReceipts) {
+            await tx`
+              DELETE FROM stock_receipts
+              WHERE product_id = ${entry.productId} AND date = ${body.date}::date
+            `;
+            for (const r of entry.receipts!) {
+              // Skip blank rows (a dialog row left entirely empty).
+              const hasCost = r.unitCost !== null && r.unitCost !== undefined && r.unitCost !== "";
+              if (r.quantity <= 0 && r.supplierId == null && !hasCost) continue;
+              const unitCost = hasCost ? String(r.unitCost) : null;
+              const totalCost = unitCost != null ? String(Number(unitCost) * r.quantity) : null;
+              await tx`
+                INSERT INTO stock_receipts
+                  (product_id, supplier_id, date, quantity, unit_cost, total_cost, entered_by)
+                VALUES (
+                  ${entry.productId}, ${r.supplierId ?? null}, ${body.date}::date, ${r.quantity},
+                  ${unitCost}::numeric, ${totalCost}::numeric, ${request.admin!.userId}
+                )
+              `;
+            }
+          }
+
+          // Also update the product's current stock to match closing
+          await tx`
+            UPDATE products SET stock = ${closing}, updated_at = now()
+            WHERE id = ${entry.productId}
+          `;
+
+          return logRow;
+        });
 
         results.push(row);
       }

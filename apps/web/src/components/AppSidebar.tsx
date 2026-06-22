@@ -2,22 +2,24 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Users, UserPlus, MapPin, Map, ClipboardList, Package, PackagePlus, Tags,
   TrendingUp, History, FileText, ClipboardCheck, ScrollText, CreditCard,
-  Receipt, XCircle, Warehouse, BarChart3, FileSpreadsheet, Plus, Truck,
+  Receipt, Warehouse, BarChart3, FileSpreadsheet, Plus, Truck,
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
   ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
   Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows,
-  ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X
+  ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X, Factory
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MODULES, moduleOfPath, type ModuleKey } from "@/components/AppLayout";
 import { useAuth } from "@/lib/auth";
 import { allowedBucketsForRole } from "@/lib/stock-buckets";
 
-// Stock Entry sidebar links that are gated to a specific stock bucket. A
-// bucket-scoped FGS operator only sees the link for their own SK diary.
+// Sidebar links gated to a specific stock bucket. A bucket-scoped FGS operator
+// only sees the Stock Entry / Dispatch Sheet links for their own SK diary.
 const BUCKET_PATHS: Record<string, "milk-curd" | "others"> = {
-  "/fgs/stock-entry/milk-curd": "milk-curd",
-  "/fgs/stock-entry/others":    "others",
+  "/fgs/stock-entry/milk-curd":    "milk-curd",
+  "/fgs/stock-entry/others":       "others",
+  "/fgs/dispatch-sheet/milk-curd": "milk-curd",
+  "/fgs/dispatch-sheet/others":    "others",
 };
 
 interface NavItem { label: string; path: string; icon: React.ComponentType<{ className?: string }>; }
@@ -30,6 +32,8 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Assign Route",     path: "/masters/customers/assign-route", icon: MapPin },
     { label: "All Contractors",  path: "/masters/contractors",       icon: Truck },
     { label: "New Contractor",   path: "/masters/contractors/new",   icon: UserPlus },
+    { label: "All Suppliers",    path: "/masters/suppliers",         icon: Factory },
+    { label: "New Supplier",     path: "/masters/suppliers/new",     icon: UserPlus },
     { label: "All Routes",       path: "/masters/routes",            icon: Map },
     { label: "New Route",        path: "/masters/routes/new",        icon: MapPin },
     { label: "All Batches",      path: "/masters/batches",           icon: ClipboardList },
@@ -40,11 +44,12 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Price Revisions",  path: "/masters/price-revisions",   icon: History },
     { label: "VIP Contacts",     path: "/masters/vip-contacts",      icon: Star      /* or Users */ },
     { label: "Employees",        path: "/masters/employees",         icon: Briefcase /* or IdCard */ },
+    { label: "All Officers",     path: "/masters/officers",          icon: UserCog },
+    { label: "New Officer",      path: "/masters/officers/new",      icon: UserPlus },
   ],
   sales: [
     { label: "Record Indents",   path: "/sales/record-indents",                  icon: FileText },
     { label: "Dealer Indents", path: "/sales/dealer-indents", icon: CalendarClock },
-    { label: "Employee Indents", path: "/sales/employee-indents", icon: CalendarClock },
     { label: "All Indents",      path: "/sales/all-indents",                     icon: ClipboardCheck },
     { label: "Direct - Gate Pass", path: "/sales/direct-sales/gate-pass",        icon: ScrollText },
     { label: "Direct - Cash",    path: "/sales/direct-sales/cash-customer",      icon: CreditCard },
@@ -53,14 +58,14 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Indent Modify",    path: "/sales/direct-sales/modify",         icon: ClipboardList },
     { label: "Recent Sales",     path: "/sales/direct-sales/recent",             icon: Receipt },
     { label: "All Invoices",     path: "/sales/invoices",                        icon: Receipt },
-    { label: "Cancellations",    path: "/sales/cancellations",                   icon: XCircle },
   ],
   fgs: [
     { label: "Stock Overview",   path: "/fgs/dashboard",            icon: BarChart3 },
     { label: "Stock Entry - Milk & Curd",     path: "/fgs/stock-entry/milk-curd", icon: Warehouse },
     { label: "Stock Entry - Other Products", path: "/fgs/stock-entry/others",    icon: Warehouse },
     { label: "Stock Reports",    path: "/fgs/reports",              icon: FileSpreadsheet },
-    { label: "Dispatch Sheet",   path: "/fgs/dispatch-sheet",       icon: ClipboardList },
+    { label: "Dispatch Sheet - Milk & Curd",     path: "/fgs/dispatch-sheet/milk-curd", icon: ClipboardList },
+    { label: "Dispatch Sheet - Other Products", path: "/fgs/dispatch-sheet/others",    icon: ClipboardList },
     { label: "Create Dispatch",  path: "/fgs/dispatch/create",      icon: Plus },
   ],
   finance: [
@@ -84,6 +89,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
   ],
   "sales-reports": [
     { label: "Daily Sales Report",        path: "/sales-reports/daily-sales-report", icon: FileSpreadsheet },
+    { label: "Monthly Sales Report",      path: "/sales-reports/monthly-sales-report", icon: FileSpreadsheet },
     { label: "Daily Sales Statement",     path: "/sales-reports/daily-statement", icon: FileSpreadsheet },
     { label: "Day/Route Wise Cash",       path: "/sales-reports/day-route-cash",  icon: FileSpreadsheet },
     { label: "Officer Wise Sales",        path: "/sales-reports/officer-wise",    icon: FileSpreadsheet },
@@ -91,6 +97,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Credit Sales",              path: "/sales-reports/credit-sales",    icon: FileSpreadsheet },
     { label: "Sales Register",            path: "/sales-reports/register",        icon: BookOpen },
     { label: "Taluka/Agent Wise",         path: "/sales-reports/taluka-agent",    icon: FileSpreadsheet },
+    { label: "Taluka Wise Report",        path: "/sales-reports/taluka-wise",     icon: FileSpreadsheet },
     { label: "Adhoc Sales",               path: "/sales-reports/adhoc",           icon: FileSpreadsheet },
     { label: "GST Statement",             path: "/sales-reports/gst",             icon: FileBarChart2 },
     { label: "Employee Subsidy",          path: "/sales-reports/employee-subsidy", icon: BadgePercent },

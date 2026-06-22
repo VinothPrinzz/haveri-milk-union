@@ -164,6 +164,12 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "contractors.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
   "contractors.manage": ["super_admin", "manager"],
 
+  // Suppliers (Masters → Suppliers) — stock vendors. FGS/dispatch roles need
+  // view so they can pick a supplier when recording received stock; only
+  // masters staff manage the list.
+  "suppliers.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  "suppliers.manage": ["super_admin", "manager"],
+
   // Batches (Masters → Batches)
   "batches.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
   "batches.manage": ["super_admin", "manager", "dispatch_officer", "fgs_milk_curd", "fgs_others"],
@@ -179,6 +185,10 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // Employees (HR-ish master)
   "employees.view":   ["super_admin", "manager", "call_desk", "officer", "accountant", "viewer"],
   "employees.manage": ["super_admin", "manager"],
+
+  // Officers (Masters → Officers) — field sales officers ↔ talukas
+  "officers.view":   ["super_admin", "manager", "call_desk", "officer", "accountant", "viewer"],
+  "officers.manage": ["super_admin", "manager"],
 
   // Price Chart (Masters → Price Chart)
   "price_chart.view":   ["super_admin", "manager", "accountant", "officer", "viewer"],

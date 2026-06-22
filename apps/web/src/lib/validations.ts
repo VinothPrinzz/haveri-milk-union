@@ -58,7 +58,6 @@ export const contractorSchema = z.object({
   // Business
   bankName:      z.string().default(""),
   accountNo:     z.string().default(""),
-  ratePerKm:     z.coerce.number().min(0).default(0),
   vehicleNumber: z.string().default(""),
 
   // Period
@@ -74,12 +73,30 @@ export const contractorSchema = z.object({
   street:        z.string().default(""),
   address:       z.string().default(""),
 
-  // Assignment
-  routeIds:      z.array(z.string()).default([]),
+  // Assignment — per-route pay (rate per km/trip + total km/day differ per route)
+  routeRates:    z.array(z.object({
+    routeId:       z.string(),
+    totalKmPerDay: z.coerce.number().min(0).default(0),
+    ratePerTrip:   z.coerce.number().min(0).default(0),
+  })).default([]),
   active:        z.boolean().default(true),
 });
 
 export type ContractorFormData = z.infer<typeof contractorSchema>;
+
+// ══════════════════════════════════════════════════════════════════
+// Supplier schema — stock vendors master (Masters → Suppliers)
+// ══════════════════════════════════════════════════════════════════
+export const supplierSchema = z.object({
+  name:      z.string().min(2, "Name required").default(""),
+  phone:     z.string().default(""),
+  gstNo:     z.string().default(""),
+  accountNo: z.string().default(""),
+  address:   z.string().default(""),
+  active:    z.boolean().default(true),
+});
+
+export type SupplierFormData = z.infer<typeof supplierSchema>;
 
 // ══════════════════════════════════════════════════════════════════
 // Route schema — Marketing v1.4

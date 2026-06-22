@@ -36,6 +36,11 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
+import {
+  type StockBucket,
+  MILK_CURD_CATEGORIES,
+  bucketsForRole,
+} from "../lib/stock-buckets.js";
 
 // Statuses that should appear on the loading checklist.
 // 'pending' = newly placed, not yet posted to a route assignment.
@@ -58,12 +63,21 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         routeId: z.string().uuid().optional(),
         batchId: z.string().uuid().optional(),
+        bucket: z.enum(["milk-curd", "others"]).optional(),
       });
       const q = querySchema.parse(request.query);
 
       const targetDate = q.date ?? new Date().toISOString().slice(0, 10);
       const routeId = q.routeId ?? null;
       const batchId = q.batchId ?? null;
+
+      // Bucket scoping mirrors inventory.ts: the two FGS diary roles can only
+      // ever see their own product bucket — force it, ignoring any wider query
+      // param. Unrestricted roles honour the requested bucket (undefined → all).
+      // The split-by-category SQL below loads each diary's own dispatch sheet.
+      const allowedBuckets = bucketsForRole(request.admin!.role);
+      const effectiveBucket: StockBucket | null =
+        allowedBuckets.length === 1 ? allowedBuckets[0]! : (q.bucket ?? null);
 
       // ── Routes that have at least one dispatchable order on this
       // date, with route metadata + per-route totals + assignment
@@ -74,13 +88,21 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
       // its batches matches the filter).
       const routes = await pgClient`
         WITH route_orders AS (
+          -- Joined down to order_items so the bucket filter (by product
+          -- category) and the per-route header totals (dealers / items /
+          -- amount) all reflect ONLY the products in the requested bucket.
+          -- line_total is GST-inclusive (orders.ts), so SUM(line_total) per
+          -- order == grand_total — the unbucketed total matches the old query.
           SELECT
             d.route_id,
             COUNT(DISTINCT o.id)::int AS order_count,
-            COALESCE(SUM(o.item_count), 0)::int AS line_count,
-            COALESCE(SUM(o.grand_total), 0)::numeric AS total_amount
+            COUNT(oi.id)::int AS line_count,
+            COALESCE(SUM(oi.line_total), 0)::numeric AS total_amount
           FROM orders o
-          JOIN dealers d ON d.id = o.dealer_id AND d.deleted_at IS NULL
+          JOIN dealers d        ON d.id = o.dealer_id AND d.deleted_at IS NULL
+          JOIN order_items oi   ON oi.order_id = o.id
+          JOIN products p       ON p.id = oi.product_id AND p.deleted_at IS NULL
+          LEFT JOIN categories c ON c.id = p.category_id
           WHERE o.delivery_date = ${targetDate}::date
             AND o.status::text = ANY(${DISPATCHABLE_STATUSES as unknown as string[]}::text[])
             AND d.route_id IS NOT NULL
@@ -90,6 +112,11 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
                  OR EXISTS (SELECT 1 FROM batch_routes br
                             WHERE br.route_id = d.route_id
                               AND br.batch_id = ${batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
+            AND (
+              ${effectiveBucket}::text IS NULL
+              OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
+              OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
+            )
           GROUP BY d.route_id
         )
         SELECT
@@ -159,6 +186,11 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
                OR EXISTS (SELECT 1 FROM batch_routes br
                           WHERE br.route_id = d.route_id
                             AND br.batch_id = ${batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
+          AND (
+            ${effectiveBucket}::text IS NULL
+            OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
+            OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
+          )
         GROUP BY d.route_id, p.id, p.report_alias, p.name, c.name,
                  p.unit, p.pack_size, p.packets_crate, p.sort_order
         ORDER BY d.route_id, p.sort_order, p.name

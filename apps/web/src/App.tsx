@@ -10,6 +10,7 @@ import LoginPage from "@/pages/LoginPage";
 import Dashboard from "@/pages/Dashboard";
 import CustomersPage from "@/pages/masters/CustomersPage";
 import ContractorsPage from "@/pages/masters/ContractorsPage";
+import SuppliersPage from "@/pages/masters/SuppliersPage";
 import RoutesPage from "@/pages/masters/RoutesPage";
 import BatchesPage from "@/pages/masters/BatchesPage";
 import ProductsPage from "@/pages/masters/ProductsPage";
@@ -19,15 +20,16 @@ import AllIndentsPage from "@/pages/sales/AllIndentsPage";
 import DirectSalesPage from "@/pages/sales/DirectSalesPage";
 import VipContactsPage from "@/pages/masters/VipContactsPage";
 import EmployeesPage   from "@/pages/masters/EmployeesPage";
+import OfficersPage    from "@/pages/masters/OfficersPage";
 import RecentSalesPage from "@/pages/sales/RecentSalesPage";
-import CancellationRequestsPage from "@/pages/sales/CancellationRequestsPage";
 import StockDashboard from "@/pages/fgs/StockDashboard";
 import StockEntryMilkCurdPage from "@/pages/fgs/StockEntryMilkCurdPage";
 import StockEntryOthersPage   from "@/pages/fgs/StockEntryOthersPage";
 import { allowedBucketsForRole } from "@/lib/stock-buckets";
 import StockReportsPage from "@/pages/fgs/StockReportsPage";
 import DispatchPage from "@/pages/fgs/DispatchPage";
-import DispatchSheetPage from "@/pages/fgs/DispatchSheetPage";
+import DispatchSheetMilkCurdPage from "@/pages/fgs/DispatchSheetMilkCurdPage";
+import DispatchSheetOthersPage   from "@/pages/fgs/DispatchSheetOthersPage";
 import CreateDispatchPage from "@/pages/fgs/CreateDispatchPage";
 import RouteSheetPage from "@/pages/reports/RouteSheetPage";
 import GatePassReportPage from "@/pages/reports/GatePassReportPage";
@@ -48,15 +50,16 @@ import ChequesPage                from "@/pages/finance/ChequesPage";
 import AdjustmentsPage            from "@/pages/finance/AdjustmentsPage";
 import DayBookPage                from "@/pages/finance/DayBookPage";
 import DealerIndentsPage from "@/pages/sales/DealerIndentsPage";
-import EmployeeIndentsPage from "@/pages/sales/EmployeeIndentsPage";
 // import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
 import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
   TalukaAgentSales, AdhocSalesReport, GSTStatement, VipSalesReport,
+  TalukaWiseReport,
 } from "@/pages/sales-reports/SalesReports";
 import EmployeeSubsidyReportPage from "@/pages/sales-reports/EmployeeSubsidyReport";
 import DailySalesReport from "@/pages/sales-reports/DailySalesReport";
+import MonthlySalesReport from "@/pages/sales-reports/MonthlySalesReport";
 import {
   TimeWindowsPage, NotificationsPage, DealerNotificationsPage,
   BannerManagementPage, RolesPage, UserManagementPage,
@@ -109,8 +112,12 @@ function AppInner() {
           <Route path="/masters/customers/assign-route" element={<CustomersPage tab="assign-route" />} />
           <Route path="/masters/contractors" element={<ContractorsPage tab="list" />} />
           <Route path="/masters/contractors/new" element={<ContractorsPage tab="new" />} />
+          <Route path="/masters/suppliers" element={<SuppliersPage tab="list" />} />
+          <Route path="/masters/suppliers/new" element={<SuppliersPage tab="new" />} />
           <Route path="/masters/vip-contacts" element={<VipContactsPage />} />
           <Route path="/masters/employees"    element={<EmployeesPage />} />
+          <Route path="/masters/officers"     element={<OfficersPage tab="list" />} />
+          <Route path="/masters/officers/new" element={<OfficersPage tab="new" />} />
           <Route path="/masters/routes" element={<RoutesPage tab="list" />} />
           <Route path="/masters/routes/new" element={<RoutesPage tab="new" />} />
           <Route path="/masters/batches" element={<BatchesPage tab="list" />} />
@@ -123,14 +130,12 @@ function AppInner() {
           <Route path="/sales/record-indents" element={<RecordIndentsPage />} />
           <Route path="/sales/all-indents" element={<AllIndentsPage />} />
           <Route path="/sales/dealer-indents" element={<DealerIndentsPage />} />
-          <Route path="/sales/employee-indents" element={<EmployeeIndentsPage />} />
           <Route path="/sales/direct-sales/gate-pass" element={<DirectSalesPage tab="gate-pass" />} />
           <Route path="/sales/direct-sales/cash-customer" element={<DirectSalesPage tab="cash-customer" />} />
           <Route path="/sales/direct-sales/modify" element={<DirectSalesPage tab="modify" />} />
           <Route path="/sales/direct-sales/recent" element={<RecentSalesPage />} />
           <Route path="/sales/direct-sales/vip-sample"        element={<DirectSalesPage tab="vip-sample" />} />
           <Route path="/sales/direct-sales/employee-subsidy"  element={<DirectSalesPage tab="employee-subsidy" />} />
-          <Route path="/sales/cancellations" element={<CancellationRequestsPage />} />
           <Route path="/sales/invoices"      element={<InvoicesListPage />} />
           <Route path="/sales/invoices/:id"  element={<InvoiceDetailPage />} />
           {/* FGS */}
@@ -150,7 +155,21 @@ function AppInner() {
           />
           <Route path="/fgs/reports" element={<StockReportsPage />} />
           <Route path="/fgs/dispatch" element={<DispatchPage />} />
-          <Route path="/fgs/dispatch-sheet" element={<DispatchSheetPage />} />
+          {/* Dispatch Sheet split per SK diary, gated by the same bucket roles
+              as Stock Entry — each FGS login only loads its own products. */}
+          <Route path="/fgs/dispatch-sheet"            element={<Navigate to={`/fgs/dispatch-sheet/${defaultStockBucket}`} replace />} />
+          <Route
+            path="/fgs/dispatch-sheet/milk-curd"
+            element={stockBuckets.includes("milk-curd")
+              ? <DispatchSheetMilkCurdPage />
+              : <Navigate to={`/fgs/dispatch-sheet/${defaultStockBucket}`} replace />}
+          />
+          <Route
+            path="/fgs/dispatch-sheet/others"
+            element={stockBuckets.includes("others")
+              ? <DispatchSheetOthersPage />
+              : <Navigate to={`/fgs/dispatch-sheet/${defaultStockBucket}`} replace />}
+          />
           <Route path="/fgs/dispatch/create" element={<CreateDispatchPage />} />
           {/* Finance */}
           <Route path="/finance/dashboard" element={<FinanceDashboardPage />} />
@@ -171,6 +190,7 @@ function AppInner() {
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />
           {/* Sales Reports */}
           <Route path="/sales-reports/daily-sales-report" element={<DailySalesReport />} />
+          <Route path="/sales-reports/monthly-sales-report" element={<MonthlySalesReport />} />
           <Route path="/sales-reports/daily-statement" element={<DailySalesStatement />} />
           <Route path="/sales-reports/day-route-cash" element={<DayRouteCashSales />} />
           <Route path="/sales-reports/officer-wise" element={<OfficerWiseSales />} />
@@ -178,6 +198,7 @@ function AppInner() {
           <Route path="/sales-reports/credit-sales" element={<CreditSalesReport />} />
           <Route path="/sales-reports/register" element={<SalesRegister />} />
           <Route path="/sales-reports/taluka-agent" element={<TalukaAgentSales />} />
+          <Route path="/sales-reports/taluka-wise" element={<TalukaWiseReport />} />
           <Route path="/sales-reports/adhoc" element={<AdhocSalesReport />} />
           <Route path="/sales-reports/gst" element={<GSTStatement />} />
           <Route path="/sales-reports/employee-subsidy" element={<EmployeeSubsidyReportPage />} />

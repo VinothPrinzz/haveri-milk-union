@@ -19,38 +19,74 @@ import {
   fonts,
   gradients,
 } from "../lib/theme";
-import { useAuthStore } from "../store/auth";
-import { ApiError } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 
-interface LoginScreenProps {
-  onSuccess: () => void;
+interface ChangePasswordScreenProps {
+  /** Called after a successful change (and on the back arrow). */
   onBack: () => void;
-  onChangePassword: () => void;
 }
 
-export default function LoginScreen({ onSuccess, onBack, onChangePassword }: LoginScreenProps) {
+/**
+ * ChangePasswordScreen — replaces the old "Forgot Password" flow.
+ *
+ * The dealer proves they know their current password (no OTP / SMS), so the
+ * screen collects username + current password + new password and calls
+ * POST /api/v1/auth/dealer/change-password. It is reached from the login
+ * screen, so it does not assume an authenticated session.
+ */
+export default function ChangePasswordScreen({ onBack }: ChangePasswordScreenProps) {
   const insets = useSafeAreaInsets();
-  const login = useAuthStore((s) => s.login);   // ← Make sure your auth store has this method
 
   const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [usernameFocused, setUsernameFocused] = useState(false);
-  const [passwordFocused, setPasswordFocused] = useState(false);
+  const [focused, setFocused] = useState<string | null>(null);
 
-  const handleLogin = async () => {
-    if (!username || !password || loading) return;
+  const canSubmit =
+    !!username &&
+    !!currentPassword &&
+    !!newPassword &&
+    !!confirmPassword &&
+    !loading;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+
+    if (newPassword.length < 6) {
+      Alert.alert("Weak Password", "New password must be at least 6 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert("Mismatch", "New password and confirmation do not match.");
+      return;
+    }
+    if (newPassword === currentPassword) {
+      Alert.alert(
+        "Same Password",
+        "New password must be different from your current password."
+      );
+      return;
+    }
 
     setLoading(true);
     try {
-      const success = await login(username, password);
-      if (success) {
-        onSuccess();
-      } else {
-        Alert.alert("Login Failed", "Invalid username or password.");
-      }
+      await api.post("/api/v1/auth/dealer/change-password", {
+        username,
+        currentPassword,
+        newPassword,
+      });
+      Alert.alert(
+        "Password Changed",
+        "Your password has been updated. Please log in with your new password.",
+        [{ text: "OK", onPress: onBack }]
+      );
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : "Login failed. Please try again.";
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : "Could not change password. Please try again.";
       Alert.alert("Error", msg);
     } finally {
       setLoading(false);
@@ -59,6 +95,32 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
 
   const { colors: gradColors, angle } = gradients.otpHeader;
   const { start, end } = cssAngleToPoints(angle);
+
+  const field = (
+    key: string,
+    label: string,
+    value: string,
+    onChange: (t: string) => void,
+    opts: { placeholder: string; secure?: boolean } = { placeholder: "" }
+  ) => (
+    <View style={styles.formGroup}>
+      <Text style={styles.formLabel}>{label}</Text>
+      <View style={[styles.formInput, focused === key && styles.formInputFocused]}>
+        <TextInput
+          style={styles.fiInput}
+          value={value}
+          onChangeText={onChange}
+          onFocus={() => setFocused(key)}
+          onBlur={() => setFocused(null)}
+          placeholder={opts.placeholder}
+          placeholderTextColor={colors.ink4}
+          secureTextEntry={opts.secure}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+      </View>
+    </View>
+  );
 
   return (
     <KeyboardAvoidingView
@@ -76,9 +138,9 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
 
-        <Text style={styles.headerTitle}>Dealer Login 👋</Text>
+        <Text style={styles.headerTitle}>Change Password 🔒</Text>
         <Text style={styles.headerSub}>
-          Sign in with your username and password
+          Verify your current password to set a new one
         </Text>
       </LinearGradient>
 
@@ -87,64 +149,39 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Username */}
-        <View style={styles.formGroup}>
-          <Text style={styles.formLabel}>Username / Phone</Text>
-          <View style={[styles.formInput, usernameFocused && styles.formInputFocused]}>
-            <TextInput
-              style={styles.fiInput}
-              value={username}
-              onChangeText={setUsername}
-              onFocus={() => setUsernameFocused(true)}
-              onBlur={() => setUsernameFocused(false)}
-              placeholder="Enter username or phone"
-              placeholderTextColor={colors.ink4}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-        </View>
+        {field("username", "Username / Phone", username, setUsername, {
+          placeholder: "Enter username or phone",
+        })}
+        {field(
+          "current",
+          "Current Password",
+          currentPassword,
+          setCurrentPassword,
+          { placeholder: "Enter current password", secure: true }
+        )}
+        {field("new", "New Password", newPassword, setNewPassword, {
+          placeholder: "At least 6 characters",
+          secure: true,
+        })}
+        {field(
+          "confirm",
+          "Confirm New Password",
+          confirmPassword,
+          setConfirmPassword,
+          { placeholder: "Re-enter new password", secure: true }
+        )}
 
-        {/* Password */}
-        <View style={styles.formGroup}>
-          <Text style={styles.formLabel}>Password</Text>
-          <View style={[styles.formInput, passwordFocused && styles.formInputFocused]}>
-            <TextInput
-              style={styles.fiInput}
-              value={password}
-              onChangeText={setPassword}
-              onFocus={() => setPasswordFocused(true)}
-              onBlur={() => setPasswordFocused(false)}
-              placeholder="Enter password"
-              placeholderTextColor={colors.ink4}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-        </View>
-
-        {/* Login Button */}
         <TouchableOpacity
-          style={[styles.btnBrand, (!username || !password || loading) && styles.btnBrandDisabled]}
+          style={[styles.btnBrand, !canSubmit && styles.btnBrandDisabled]}
           activeOpacity={0.85}
-          onPress={handleLogin}
-          disabled={!username || !password || loading}
+          onPress={handleSubmit}
+          disabled={!canSubmit}
         >
           {loading ? (
             <ActivityIndicator color={colors.primaryForeground} />
           ) : (
-            <Text style={styles.btnBrandText}>Login</Text>
+            <Text style={styles.btnBrandText}>Update Password</Text>
           )}
-        </TouchableOpacity>
-
-        {/* Change Password — verify current password to set a new one */}
-        <TouchableOpacity
-          style={styles.forgotContainer}
-          activeOpacity={0.7}
-          onPress={onChangePassword}
-        >
-          <Text style={styles.forgotText}>Change Password</Text>
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -152,15 +189,13 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// Styles (kept consistent with your original design)
+// Styles (mirrors LoginScreen for a consistent look)
 // ════════════════════════════════════════════════════════════════════════
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: colors.card,
   },
-
   header: {
     paddingHorizontal: 22,
     paddingBottom: 28,
@@ -194,12 +229,10 @@ const styles = StyleSheet.create({
     marginTop: 5,
     lineHeight: 16.5,
   },
-
   bodyContent: {
     padding: 20,
     paddingBottom: 40,
   },
-
   formGroup: {
     marginBottom: 16,
   },
@@ -232,7 +265,6 @@ const styles = StyleSheet.create({
     color: colors.foreground,
     padding: 0,
   },
-
   btnBrand: {
     width: "100%",
     backgroundColor: colors.primary,
@@ -250,15 +282,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: fonts.extrabold,
     color: colors.primaryForeground,
-  },
-
-  forgotContainer: {
-    alignItems: "center",
-    marginTop: 20,
-  },
-  forgotText: {
-    fontSize: 11,
-    fontFamily: fonts.medium,
-    color: colors.primary,
   },
 });

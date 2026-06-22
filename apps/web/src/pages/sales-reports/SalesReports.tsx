@@ -12,10 +12,12 @@ import {
   fetchDailyStatement, fetchDayRouteCash, fetchOfficerWise,
   fetchCashSales, fetchSalesRegister, fetchCreditSales,
   fetchTalukaAgent, fetchAdhocSales, fetchGstStatement, fetchVipSales,
+  fetchTalukaWise,
   type DailyStatementResponse, type DayRouteCashResponse,
   type OfficerWiseResponse, type SalesGridResponse, type SalesGridRoute,
   type CreditSalesResponse, type TalukaAgentResponse,
   type AdhocResponse, type GstStatementResponse, type VipSalesResponse,
+  type TalukaWiseResponse, type TalukaWiseRow,
   type ProductLite,
 } from "@/services/report";
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
@@ -713,6 +715,136 @@ export const TalukaAgentSales = () => (
           t.summaryTotals.milkTotalQty, t.summaryTotals.curdTotalQty, t.summaryTotals.totalAmount,
         ]);
       });
+      return out;
+    }}
+  />
+);
+
+// ─── B7b. Taluka Wise Report ────────────────────────────────────
+// Three pages for a chosen period: milk sales (In Ltrs) per taluka ×
+// milk product, the same for curd (In Kgs), and a per-taluka summary
+// of Total / Avg Milk + Total / Avg Curd. Volumes come from the API
+// (packets × pack_size), so this only formats + paginates them.
+export const TalukaWiseReport = () => (
+  <SalesReportShell<TalukaWiseResponse>
+    title="Taluka Wise Report"
+    description="Taluka wise milk (Ltrs) & curd (Kgs) sales with totals & averages"
+    printOrientation="landscape"
+    fetcher={(from, to) => fetchTalukaWise({ from, to })}
+    renderPages={(from, to, d) => {
+      if (!d) return [];
+
+      const fmtVol = (n: number) =>
+        Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      // Cap product columns/page so a landscape A4 fits. Tune after print test.
+      const COLS_PER_PAGE = 12;
+      const taluka = { label: "Taluka", accessor: (r: TalukaWiseRow) => r.taluka, width: "180px" };
+      const pages: ReactNode[] = [];
+
+      // ── Page 1: Milk sales (In Ltrs) — taluka × milk product ──
+      const milkChunks = paginateColumns(d.milkProducts, COLS_PER_PAGE);
+      milkChunks.forEach((chunk, pi) => {
+        const isLast = pi === milkChunks.length - 1;
+        pages.push(
+          <ColumnPagedTable
+            key={`milk-${pi}`}
+            title={`Taluka Wise Milk Sales (In Ltrs) · Period ${from} to ${to}${milkChunks.length > 1 ? ` · Products ${pi + 1}/${milkChunks.length}` : ""}`}
+            fixedLayout
+            productColWidth="78px"
+            fixedHead={[taluka]}
+            productCols={chunk}
+            productCellRender={(row, p) => {
+              const v = row.milkQty[p.id] ?? 0;
+              return v ? fmtVol(v) : "";
+            }}
+            trailingHead={isLast ? [{ label: "Total Milk (Ltrs)", accessor: (r) => fmtVol(r.totalMilk), num: true, width: "110px" }] : undefined}
+            rows={d.rows}
+            rowKey={(r) => r.taluka}
+            totalRow={{
+              fixedCells: ["TOTAL"],
+              productCell: (p) => fmtVol(d.totals.milkQty[p.id] ?? 0),
+              trailingCells: isLast ? [fmtVol(d.totals.totalMilk)] : undefined,
+            }}
+          />
+        );
+      });
+
+      // ── Page 2: Curd sales (In Kgs) — taluka × curd product ──
+      const curdChunks = paginateColumns(d.curdProducts, COLS_PER_PAGE);
+      curdChunks.forEach((chunk, pi) => {
+        const isLast = pi === curdChunks.length - 1;
+        pages.push(
+          <ColumnPagedTable
+            key={`curd-${pi}`}
+            title={`Taluka Wise Curd Sales (In Kgs) · Period ${from} to ${to}${curdChunks.length > 1 ? ` · Products ${pi + 1}/${curdChunks.length}` : ""}`}
+            fixedLayout
+            productColWidth="78px"
+            fixedHead={[taluka]}
+            productCols={chunk}
+            productCellRender={(row, p) => {
+              const v = row.curdQty[p.id] ?? 0;
+              return v ? fmtVol(v) : "";
+            }}
+            trailingHead={isLast ? [{ label: "Total Curd (Kgs)", accessor: (r) => fmtVol(r.totalCurd), num: true, width: "110px" }] : undefined}
+            rows={d.rows}
+            rowKey={(r) => r.taluka}
+            totalRow={{
+              fixedCells: ["TOTAL"],
+              productCell: (p) => fmtVol(d.totals.curdQty[p.id] ?? 0),
+              trailingCells: isLast ? [fmtVol(d.totals.totalCurd)] : undefined,
+            }}
+          />
+        );
+      });
+
+      // ── Page 3: Summary — Total / Avg Milk + Total / Avg Curd per taluka ──
+      pages.push(
+        <ColumnPagedTable
+          key="summary"
+          title={`Taluka Wise Summary · Period ${from} to ${to} · ${d.numDays} day(s)`}
+          fixedHead={[{ ...taluka, width: "220px" }]}
+          productCols={[] as ProductLite[]}
+          productCellRender={() => null}
+          trailingHead={[
+            { label: "Total Milk (Ltrs)", accessor: (r) => fmtVol(r.totalMilk), num: true, width: "130px" },
+            { label: "Avg Milk (Ltrs)",   accessor: (r) => fmtVol(r.avgMilk),   num: true, width: "130px" },
+            { label: "Total Curd (Kgs)",  accessor: (r) => fmtVol(r.totalCurd), num: true, width: "130px" },
+            { label: "Avg Curd (Kgs)",    accessor: (r) => fmtVol(r.avgCurd),   num: true, width: "130px" },
+          ]}
+          rows={d.rows}
+          rowKey={(r) => r.taluka}
+          totalRow={{
+            fixedCells: ["TOTAL"],
+            productCell: () => null,
+            trailingCells: [
+              fmtVol(d.totals.totalMilk), fmtVol(d.totals.avgMilk),
+              fmtVol(d.totals.totalCurd), fmtVol(d.totals.avgCurd),
+            ],
+          }}
+        />
+      );
+
+      return pages;
+    }}
+    buildCsv={(from, to, d) => {
+      const out: (string | number)[][] = [];
+      // Milk (In Ltrs)
+      out.push([`Taluka Wise Milk Sales (In Ltrs) — ${from} to ${to}`]);
+      out.push(["Taluka", ...d.milkProducts.map((p) => p.reportAlias), "Total Milk (Ltrs)"]);
+      d.rows.forEach((r) => out.push([r.taluka, ...d.milkProducts.map((p) => r.milkQty[p.id] ?? 0), r.totalMilk]));
+      out.push(["TOTAL", ...d.milkProducts.map((p) => d.totals.milkQty[p.id] ?? 0), d.totals.totalMilk]);
+      out.push([]);
+      // Curd (In Kgs)
+      out.push([`Taluka Wise Curd Sales (In Kgs) — ${from} to ${to}`]);
+      out.push(["Taluka", ...d.curdProducts.map((p) => p.reportAlias), "Total Curd (Kgs)"]);
+      d.rows.forEach((r) => out.push([r.taluka, ...d.curdProducts.map((p) => r.curdQty[p.id] ?? 0), r.totalCurd]));
+      out.push(["TOTAL", ...d.curdProducts.map((p) => d.totals.curdQty[p.id] ?? 0), d.totals.totalCurd]);
+      out.push([]);
+      // Summary
+      out.push([`Taluka Wise Summary — ${from} to ${to} (${d.numDays} days)`]);
+      out.push(["Taluka", "Total Milk (Ltrs)", "Avg Milk (Ltrs)", "Total Curd (Kgs)", "Avg Curd (Kgs)"]);
+      d.rows.forEach((r) => out.push([r.taluka, r.totalMilk, r.avgMilk, r.totalCurd, r.avgCurd]));
+      out.push(["TOTAL", d.totals.totalMilk, d.totals.avgMilk, d.totals.totalCurd, d.totals.avgCurd]);
       return out;
     }}
   />

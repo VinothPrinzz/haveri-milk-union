@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import {
   Animated,
   Easing,
@@ -36,9 +36,6 @@ import {
  * .splash-bottom : padding 0 22px 32px, gap 9px
  * btn-white : white bg, brand text, 14r, 14p, 14/800
  * btn-ghost : rgba(255,255,255,0.1), 1.5px border 0.2 white, 14r, 12p, 12/700
- * lang-row : gap 7, center, mt 3
- * lang-btn : 10/700 rgba(255,255,255,0.5), padding 3/7, 5r
- * lang-btn.active : color 0.9 white, bg rgba(255,255,255,0.1)
  *
  * Animation: scale-in entry on logo + truck (per spec 5.1 "scale 0.9 -> 1, 600ms ease-out").
  */
@@ -46,11 +43,8 @@ interface SplashScreenProps {
   onLogin: () => void;
 }
 
-type Lang = "en" | "kn";
-
 export default function SplashScreen({ onLogin }: SplashScreenProps) {
   const insets = useSafeAreaInsets();
-  const [lang, setLang] = useState<Lang>("en");
 
   // Scale-in animation for the logo ring + truck (spec 5.1)
   const scaleAnim = useRef(new Animated.Value(0.9)).current;
@@ -122,7 +116,7 @@ export default function SplashScreen({ onLogin }: SplashScreenProps) {
         </Text>
       </View>
 
-      {/* BOTTOM - CTAs + Language toggle */}
+      {/* BOTTOM - CTA */}
       <View
         style={[
           styles.bottom,
@@ -137,31 +131,6 @@ export default function SplashScreen({ onLogin }: SplashScreenProps) {
         >
           <Text style={styles.btnWhiteText}>Login as Dealer →</Text>
         </TouchableOpacity>
-
-        <View style={styles.langRow}>
-          <TouchableOpacity
-            onPress={() => setLang("en")}
-            activeOpacity={0.7}
-            style={[styles.langBtn, lang === "en" && styles.langBtnActive]}
-          >
-            <Text
-              style={[styles.langText, lang === "en" && styles.langTextActive]}
-            >
-              English
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => setLang("kn")}
-            activeOpacity={0.7}
-            style={[styles.langBtn, lang === "kn" && styles.langBtnActive]}
-          >
-            <Text
-              style={[styles.langText, lang === "kn" && styles.langTextActive]}
-            >
-              ಕನ್ನಡ
-            </Text>
-          </TouchableOpacity>
-        </View>
       </View>
     </LinearGradient>
   );
@@ -275,28 +244,5 @@ const styles = StyleSheet.create({
     fontFamily: fonts.extrabold,
     color: colors.primary,
     letterSpacing: -0.2,
-  },
-  // Language toggle
-  langRow: {
-    flexDirection: "row",
-    gap: 7,
-    justifyContent: "center",
-    marginTop: 3,
-  },
-  langBtn: {
-    paddingVertical: 3,
-    paddingHorizontal: 7,
-    borderRadius: 5,
-  },
-  langBtnActive: {
-    backgroundColor: "rgba(255,255,255,0.1)",
-  },
-  langText: {
-    fontSize: 10,
-    fontFamily: fonts.bold,
-    color: "rgba(255,255,255,0.5)",
-  },
-  langTextActive: {
-    color: "rgba(255,255,255,0.9)",
   },
 });

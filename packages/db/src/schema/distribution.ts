@@ -24,6 +24,10 @@ export const routes = pgTable("routes", {
   distanceKm: numeric("distance_km", { precision: 6, scale: 1 }),
   stopDetails: text("stop_details"), // JSONB stored as text for Drizzle compatibility (added in 0002)
   contractorId: uuid("contractor_id"), // Phase 2: FK to contractors (no inline ref to avoid circular import)
+  // Per-route contractor pay (0052): each route has its own rate & daily km,
+  // because a contractor on 2+ routes is paid differently per route.
+  ratePerTrip: numeric("rate_per_trip", { precision: 10, scale: 2 }),
+  totalKmPerDay: numeric("total_km_per_day", { precision: 10, scale: 2 }),
   primaryBatchId: uuid("primary_batch_id"),
   dispatchTime: time("dispatch_time"),  
   active: boolean("active").notNull().default(true),

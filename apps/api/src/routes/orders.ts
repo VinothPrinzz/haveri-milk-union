@@ -6,7 +6,6 @@ import {
   orderItems,
   products,
   dealerWallets,
-  cancellationRequests,
 } from "@hmu/db/schema";
 import { dealerAuth } from "../middleware/dealer-auth.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
@@ -14,7 +13,7 @@ import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/paginat
 import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { signInvoicePdfToken, verifyInvoicePdfToken } from "../lib/auth.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
-import { cancelOrderWithReversal } from "../lib/cancel-order.js";
+import { adminCancelOrder, RefundError } from "../lib/cancel-order.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
 
@@ -243,13 +242,16 @@ export async function orderRoutes(app: FastifyInstance) {
           for (const item of body.items) {
             const updated = await tx`
               UPDATE products SET stock = stock - ${item.quantity}, updated_at = now()
-              WHERE id = ${item.productId} AND stock >= ${item.quantity}                                                                         
+              WHERE id = ${item.productId} AND stock >= ${item.quantity}
               RETURNING id
             `;
-            if (updated.length === 0) {                                     
-              throw Object.assign(new Error("Stock depleted"), { statusCode: 409, productId: item.productId });                                  
+            if (updated.length === 0) {
+              throw Object.assign(new Error("Stock depleted"), { statusCode: 409, productId: item.productId });
             }
           }
+          // Latch the deduction so a later cancel restores exactly once
+          // (and a pay-now completion won't re-deduct). See migration 0049.
+          await tx`UPDATE orders SET stock_deducted = true WHERE id = ${order!.id}`;
 
           // Deduct wallet atomically — balance check is inside the same transaction 
           if (body.paymentMode === "wallet") {
@@ -422,6 +424,15 @@ export async function orderRoutes(app: FastifyInstance) {
                r.code  AS route_code,
                r.name  AS route_name,
                z.name  AS zone_name,
+               -- Cancellation is only allowed while the order's delivery
+               -- window is still open: now() < (delivery_date + route
+               -- close_time). Today-not-yet-closed and future dates are
+               -- true; past orders (window already shut) are false. Falls
+               -- back to end of the delivery day when no window is set.
+               (COALESCE(
+                  (o.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                  ((o.delivery_date + 1)::timestamp) AT TIME ZONE 'Asia/Kolkata'
+                ) > now()) AS window_open,
                COALESCE(
                 (SELECT json_agg(json_build_object(
                     'product_id',   oi.product_id,
@@ -437,6 +448,11 @@ export async function orderRoutes(app: FastifyInstance) {
         JOIN dealers d ON d.id = o.dealer_id
         LEFT JOIN routes r ON r.id = d.route_id
         LEFT JOIN zones  z ON z.id = o.zone_id
+        LEFT JOIN LATERAL (
+          SELECT close_time FROM time_windows tw
+           WHERE tw.route_id = d.route_id
+           ORDER BY close_time DESC LIMIT 1
+        ) tw ON true
         WHERE (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
           AND (${q.dealerId ?? null}::uuid IS NULL OR o.dealer_id = ${q.dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.zoneId   ?? null}::uuid IS NULL OR o.zone_id   = ${q.zoneId   ?? '00000000-0000-0000-0000-000000000000'}::uuid)
@@ -497,9 +513,6 @@ export async function orderRoutes(app: FastifyInstance) {
           o.subtotal, o.total_gst, o.grand_total, o.item_count,
           o.created_at AS created_at,
           o.confirmed_at AS confirmed_at,
-          o.cancel_window_ends_at AS cancel_window_ends_at,
-          cr.status  AS cancellation_status,
-          cr.req_at  AS cancellation_requested_at,
           COALESCE(
             (SELECT json_agg(json_build_object(
                 'product_id',   oi.product_id,
@@ -514,12 +527,6 @@ export async function orderRoutes(app: FastifyInstance) {
             '[]'::json
           ) AS items
         FROM orders o
-        LEFT JOIN LATERAL (
-          SELECT status, created_at AS req_at
-          FROM cancellation_requests
-          WHERE order_id = o.id
-          ORDER BY created_at DESC LIMIT 1
-        ) cr ON true
         WHERE o.dealer_id = ${dealerId}
           AND (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
           AND (${q.from ?? null}::date IS NULL OR o.delivery_date >= ${q.from ?? '1970-01-01'}::date)
@@ -676,52 +683,62 @@ export async function orderRoutes(app: FastifyInstance) {
     },
   );
 
-  // POST /api/v1/orders/:id/cancel
+  // POST /api/v1/orders/:id/admin-cancel
+  // Admin-only indent cancellation with auto-refund by payment mode
+  // (wallet → wallet credit, credit → ledger reversal, upi → Razorpay
+  // refund). Cancellation is no longer dealer-initiated; the dealer app
+  // has no cancel path.
   app.post(
-    "/api/v1/orders/:id/cancel",
-    { preHandler: [dealerAuth] },
+    "/api/v1/orders/:id/admin-cancel",
+    { preHandler: [adminAuth, requireRole("orders.cancel")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const body = z.object({ reason: z.string().min(1) }).parse(request.body);
-  
+      const body = z
+        .object({ reason: z.string().min(1, "A cancellation reason is required") })
+        .parse(request.body);
+
       const [order] = await pgClient`
-        SELECT id, status, dealer_id, cancel_window_ends_at
-          FROM orders WHERE id = ${id} LIMIT 1
+        SELECT o.id, o.status,
+               (COALESCE(
+                  (o.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                  ((o.delivery_date + 1)::timestamp) AT TIME ZONE 'Asia/Kolkata'
+                ) > now()) AS window_open
+          FROM orders o
+          JOIN dealers d ON d.id = o.dealer_id
+          LEFT JOIN LATERAL (
+            SELECT close_time FROM time_windows tw
+             WHERE tw.route_id = d.route_id
+             ORDER BY close_time DESC LIMIT 1
+          ) tw ON true
+         WHERE o.id = ${id}
+         LIMIT 1
       `;
       if (!order) return reply.status(404).send({ error: "Order not found" });
-      if (order.dealer_id !== request.dealer!.dealerId)
-        return reply.status(403).send({ error: "Not your order" });
-      if (order.status !== "confirmed")
+      if (order.status === "cancelled")
+        return reply.status(400).send({ error: "Order is already cancelled" });
+      if (order.status === "delivered")
+        return reply.status(400).send({ error: "A delivered order cannot be cancelled" });
+      if (!["confirmed", "dispatched", "payment_required"].includes(order.status))
         return reply.status(400).send({
           error: "Cannot cancel",
-          message: `Order is already ${order.status}`,
+          message: `An order in '${order.status}' state cannot be cancelled`,
         });
-  
-      // ── Inside the 30-min window → cancel directly, no admin approval ──
-      const withinWindow =
-        order.cancel_window_ends_at != null &&
-        new Date() < new Date(order.cancel_window_ends_at);
-  
-      if (withinWindow) {
-        await pgClient.begin(async (_tx) => {
-          const tx = _tx as unknown as typeof pgClient;
-          await cancelOrderWithReversal(tx, id, body.reason, request.dealer!.dealerId);
+      // Only cancellable while the delivery window is still open — today
+      // (not yet closed) and future dates. Past orders cannot be cancelled.
+      if (!order.window_open)
+        return reply.status(400).send({
+          error: "Window closed",
+          message: "This order's cancellation window has closed — past orders cannot be cancelled.",
         });
-        return reply.status(200).send({
-          message: "Order cancelled", cancelled: true, orderId: id,
-        });
+
+      try {
+        const summary = await adminCancelOrder(id, body.reason, request.admin!.userId);
+        return reply.send({ message: "Order cancelled", orderId: id, ...summary });
+      } catch (err) {
+        if (err instanceof RefundError)
+          return reply.status(err.statusCode).send({ error: err.message });
+        throw err;
       }
-  
-      // ── Past the window → admin-approval request (existing behaviour) ──
-      const [cr] = await db
-        .insert(cancellationRequests)
-        .values({ orderId: id, dealerId: request.dealer!.dealerId, reason: body.reason })
-        .returning();
-      return reply.status(201).send({
-        message: "Cancellation request submitted",
-        cancelled: false,
-        cancellationRequest: cr,
-      });
     }
   );
 

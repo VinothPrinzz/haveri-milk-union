@@ -14,6 +14,7 @@ export async function distributionRoutes(app: FastifyInstance) {
       const allRoutes = await pgClient`
         SELECT r.id, r.code, r.name, r.stops, r.distance_km, r.active,
                r.contractor_id, r.primary_batch_id,
+               r.rate_per_trip, r.total_km_per_day,
                r.dispatch_time::text AS dispatch_time,
                ct.name AS contractor_name, 
                b.name AS batch_name,

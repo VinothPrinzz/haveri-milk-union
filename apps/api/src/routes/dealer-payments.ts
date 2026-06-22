@@ -28,6 +28,7 @@ import {
   captureRazorpayPayment,
 } from "../lib/razorpay-client.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { deductOrderStockCapped, describeShortfalls } from "../lib/stock-check.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -277,6 +278,19 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
            AND orders.dealer_id = d.id
            AND orders.status IN ('draft', 'payment_required')
       `;
+
+      // Move physical stock now that the order is confirmed. Money is
+      // already captured, so we never block here — deduct capped at 0
+      // (never negative) and log any oversell for ops. Idempotent: the
+      // cart path that deducted at creation already set the latch, so a
+      // cart-UPI order is a no-op here (no double-deduct).
+      const oversold = await deductOrderStockCapped(tx, row.orderId);
+      if (oversold.length > 0) {
+        console.warn(
+          `[pay-now] order ${row.orderId} oversold (paid, stock capped at 0): ` +
+            describeShortfalls(oversold)
+        );
+      }
     }
 
     return {

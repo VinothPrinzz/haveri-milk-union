@@ -15,7 +15,6 @@ export type {
   IndentItem,
   StockEntry,
   DirectSale,
-  CancellationRequest,
   TimeWindow,
   NotificationSetting,
   Banner,
@@ -80,9 +79,13 @@ function normalizeCustomer(d: Record<string, unknown>) {
 }
 
 function normalizeContractor(d: Record<string, unknown>) {
-  const assignedRoutes = ((d.assignedRoutes as Record<string, unknown>[]) ?? []).map(
-    (r) => (r.id ?? r.route_id) as string
-  );
+  const rawRoutes = ((d.assigned_routes ?? d.assignedRoutes) as Record<string, unknown>[]) ?? [];
+  const routeRates = rawRoutes.map((r) => ({
+    routeId:       (r.id ?? r.route_id) as string,
+    totalKmPerDay: parseFloat(String(r.total_km_per_day ?? r.totalKmPerDay ?? 0)) || 0,
+    ratePerTrip:   parseFloat(String(r.rate_per_trip   ?? r.ratePerTrip   ?? 0)) || 0,
+  }));
+  const assignedRoutes = routeRates.map((r) => r.routeId);
   return {
     id:            d.id as string,
     code:          (d.code ?? "") as string,
@@ -93,6 +96,7 @@ function normalizeContractor(d: Record<string, unknown>) {
     address:       (d.address ?? "") as string,
     vehicleNumber: (d.vehicle_number ?? d.vehicleNumber ?? "") as string,
     routeIds:      ((d.route_ids ?? d.routeIds ?? assignedRoutes) as string[]) ?? [],
+    routeRates,
 
     // v1.4 additions
     bankName:    (d.bank_name ?? d.bankName ?? "") as string,
@@ -111,6 +115,30 @@ function normalizeContractor(d: Record<string, unknown>) {
   };
 }
 
+export interface Supplier {
+  id: string;
+  code: string;
+  name: string;
+  phone: string;
+  gstNo: string;
+  accountNo: string;
+  address: string;
+  status: "Active" | "Inactive";
+}
+
+function normalizeSupplier(d: Record<string, unknown>): Supplier {
+  return {
+    id:        d.id as string,
+    code:      (d.code ?? "") as string,
+    name:      d.name as string,
+    phone:     (d.phone ?? "") as string,
+    gstNo:     (d.gst_no ?? d.gstNo ?? "") as string,
+    accountNo: (d.account_no ?? d.accountNo ?? "") as string,
+    address:   (d.address ?? "") as string,
+    status:    d.active !== false ? "Active" : "Inactive",
+  };
+}
+
 function normalizeRoute(d: Record<string, unknown>) {
   // Postgres returns "HH:MM:SS"; the time input wants "HH:MM"
   const rawDispatch = (d.dispatch_time ?? d.dispatchTime ?? "") as string;
@@ -122,6 +150,8 @@ function normalizeRoute(d: Record<string, unknown>) {
     contractorId:   (d.contractor_id ?? d.contractorId ?? "") as string,
     contractorName: (d.contractor_name ?? "") as string,
     dealerCount:    parseInt(String(d.dealer_count ?? 0)),
+    ratePerTrip:    parseFloat(String(d.rate_per_trip ?? d.ratePerTrip ?? 0)) || 0,
+    totalKmPerDay:  parseFloat(String(d.total_km_per_day ?? d.totalKmPerDay ?? 0)) || 0,
     dispatchTime,
     primaryBatchId: (d.primary_batch_id ?? d.primaryBatchId ?? null) as string | null,
     status: d.active !== false ? ("Active" as const) : ("Inactive" as const),
@@ -250,6 +280,10 @@ function normalizeIndent(d: Record<string, unknown>) {
     rawDate: String(rawDate).split("T")[0],
     agentCode: (d.agent_code ?? d.agentCode ?? "") as string,
     status: statusMap[rawStatus] ?? "Confirmed",
+    paymentMode: (d.payment_mode ?? d.paymentMode ?? "") as string,
+    // True only while the delivery window is still open (today-not-yet-closed
+    // or future dates). Drives whether the admin Cancel action is offered.
+    windowOpen: Boolean(d.window_open ?? d.windowOpen ?? false),
     items,
     total: parseFloat(String(d.grand_total ?? d.total ?? 0)) || 0,
     totalAmount: parseFloat(String(d.grand_total ?? d.total ?? 0)) || 0,
@@ -275,6 +309,15 @@ function normalizeStockEntry(d: Record<string, unknown>) {
     batchRef: "" as string,
     notes: "" as string,
     modifiedBy: "" as string,
+    // GRN receipt lines for this product/day (supplier + cost). [] when none.
+    receipts: ((d.receipts as Record<string, unknown>[]) ?? []).map((r) => ({
+      id:           (r.id ?? "") as string,
+      supplierId:   (r.supplierId ?? r.supplier_id ?? null) as string | null,
+      supplierName: (r.supplierName ?? r.supplier_name ?? "") as string,
+      quantity:     Number(r.quantity ?? 0),
+      unitCost:     r.unitCost ?? r.unit_cost ?? null,
+      totalCost:    r.totalCost ?? r.total_cost ?? null,
+    })),
   };
 }
 
@@ -302,77 +345,6 @@ function normalizeDirectSale(d: Record<string, unknown>) {
     items,
     total: parseFloat(String(d.grand_total ?? d.total ?? 0)),
     payMode: (d.payment_mode === "credit" ? "Credit" : "Cash") as "Cash" | "Credit",
-  };
-}
-
-function normalizeCancellation(d: Record<string, unknown>) {
-  const rawId = (d.id ?? "") as string;
-  const rawOrderId = (d.order_id ?? d.indentId ?? "") as string;
-  const cancellationId = rawId ? `#CR-${rawId.slice(-4).toUpperCase()}` : "";
-  const indentId = rawOrderId
-    ? `#HMU-${rawOrderId.slice(-4).toUpperCase()}`
-    : "";
-
-  const rawTime = d.created_at ?? d.requestTime ?? "";
-  const formattedTime = rawTime
-    ? (() => {
-        const dt = new Date(String(rawTime));
-        if (isNaN(dt.getTime())) return String(rawTime);
-        const dd = String(dt.getDate()).padStart(2, "0");
-        const mm = String(dt.getMonth() + 1).padStart(2, "0");
-        const yyyy = dt.getFullYear();
-        let hours = dt.getHours();
-        const mins = String(dt.getMinutes()).padStart(2, "0");
-        const ampm = hours >= 12 ? "PM" : "AM";
-        hours = hours % 12 || 12;
-        return `${dd}/${mm}/${yyyy} ${String(hours).padStart(2, "0")}:${mins} ${ampm}`;
-      })()
-    : "";
-
-  const items = ((d.items as Record<string, unknown>[]) ?? []).map((i) => ({
-    productId: (i.product_id ?? i.productId ?? "") as string,
-    productName: (i.product_name ?? i.productName ?? "") as string,
-    quantity: Number(i.quantity ?? 0),
-    unitPrice: parseFloat(String(i.unit_price ?? 0)) || 0,
-    lineTotal: parseFloat(String(i.line_total ?? 0)) || 0,
-    icon: (i.icon ?? "📦") as string,
-    unit: (i.unit ?? "") as string,
-  }));
-
-  const rawStatus = String(d.status ?? "pending").toLowerCase();
-  const statusMap: Record<string, "Pending" | "Approved" | "Rejected"> = {
-    pending: "Pending",
-    approved: "Approved",
-    rejected: "Rejected",
-  };
-
-  const reasonText = String(d.reason ?? "").toLowerCase();
-  const type: "Cancel" | "Modify" =
-    reasonText.includes("modif") ||
-    reasonText.includes("reduce") ||
-    reasonText.includes("change")
-      ? "Modify"
-      : "Cancel";
-
-  return {
-    id: rawId,
-    cancellationId,
-    indentId,
-    orderId: rawOrderId,
-    customerId: (d.dealer_id ?? d.customerId ?? "") as string,
-    customerName: (d.dealer_name ?? d.customer_name ?? "") as string,
-    agentCode: (d.agent_code ?? d.agentCode ?? "") as string,
-    routeId: (d.route_id ?? d.routeId ?? "") as string,
-    routeCode: (d.route_code ?? d.routeCode ?? "") as string,
-    routeName: (d.route_name ?? d.routeName ?? "") as string, // Issue #13
-    items,
-    totalAmount: parseFloat(String(d.grand_total ?? d.totalAmount ?? 0)) || 0,
-    requestTime: formattedTime,
-    rawRequestTime: String(rawTime),
-    type,
-    reason: (d.reason ?? "") as string,
-    status: statusMap[rawStatus] ?? "Pending",
-    rejectionReason: (d.review_note ?? d.rejectionReason ?? "") as string,
   };
 }
 
@@ -556,7 +528,6 @@ export const createContractor = async (body: Record<string, unknown>) => {
     licenseNumber: body.licenseNumber || undefined,
     bankName: body.bankName || undefined,
     accountNo: body.accountNo || undefined,
-    ratePerKm: body.ratePerKm,
     vehicleNumber: body.vehicleNumber || undefined,
     periodFrom: body.periodFrom || undefined,
     periodTo: body.periodTo || undefined,
@@ -568,7 +539,8 @@ export const createContractor = async (body: Record<string, unknown>) => {
     street: body.street || undefined,
     address: body.address || undefined,
     code: body.code,
-    routeIds: body.routeIds ?? [],
+    routeRates: body.routeRates ?? [],
+    routeIds: ((body.routeRates as any[]) ?? []).map((r) => r.routeId),
     active: body.active !== false,
   });
   return normalizeContractor(data.contractor);
@@ -583,7 +555,6 @@ export const updateContractor = async (id: string, body: Record<string, unknown>
     licenseNumber: body.licenseNumber || null,
     bankName: body.bankName || null,
     accountNo: body.accountNo || null,
-    ratePerKm: body.ratePerKm,
     vehicleNumber: body.vehicleNumber || null,
     periodFrom: body.periodFrom || null,
     periodTo: body.periodTo || null,
@@ -594,7 +565,8 @@ export const updateContractor = async (id: string, body: Record<string, unknown>
     houseNo: body.houseNo || null,
     street: body.street || null,
     address: body.address || null,
-    routeIds: body.routeIds ?? [],
+    routeRates: body.routeRates ?? [],
+    routeIds: ((body.routeRates as any[]) ?? []).map((r) => r.routeId),
     active: body.active !== false,
   });
   return normalizeContractor(data.contractor);
@@ -602,6 +574,44 @@ export const updateContractor = async (id: string, body: Record<string, unknown>
 
 export const deleteContractor = async (id: string) => {
   await del(`/contractors/${id}`);
+};
+
+// ══════════════════════════════════════
+// SUPPLIERS (stock vendors master)
+// ══════════════════════════════════════
+export const fetchSuppliers = async () => {
+  const data = await get<{ data: Record<string, unknown>[] }>("/suppliers", {
+    limit: 100,
+  });
+  return (data.data ?? []).map(normalizeSupplier);
+};
+
+export const createSupplier = async (body: Record<string, unknown>) => {
+  const data = await post<{ supplier: Record<string, unknown> }>("/suppliers", {
+    name: body.name,
+    phone: body.phone || undefined,
+    gstNo: body.gstNo || undefined,
+    accountNo: body.accountNo || undefined,
+    address: body.address || undefined,
+    active: body.active !== false,
+  });
+  return normalizeSupplier(data.supplier);
+};
+
+export const updateSupplier = async (id: string, body: Record<string, unknown>) => {
+  const data = await patch<{ supplier: Record<string, unknown> }>(`/suppliers/${id}`, {
+    name: body.name,
+    phone: body.phone || null,
+    gstNo: body.gstNo || null,
+    accountNo: body.accountNo || null,
+    address: body.address || null,
+    active: body.active !== false,
+  });
+  return normalizeSupplier(data.supplier);
+};
+
+export const deleteSupplier = async (id: string) => {
+  await del(`/suppliers/${id}`);
 };
 
 // ══════════════════════════════════════
@@ -624,6 +634,62 @@ export const fetchZones = async () => {
     }));
   }
   return [];
+};
+
+// ══════════════════════════════════════
+// OFFICERS (Masters → Officers)
+// Field sales officers assigned to talukas (zones).
+// ══════════════════════════════════════
+export interface OfficerTaluka { id: string; name: string; slug: string; }
+export interface Officer {
+  id: string;
+  name: string;
+  phone: string;
+  active: boolean;
+  talukas: OfficerTaluka[];
+}
+
+function normalizeOfficer(d: Record<string, unknown>): Officer {
+  return {
+    id: d.id as string,
+    name: (d.name ?? "") as string,
+    phone: (d.phone ?? "") as string,
+    active: d.active !== false,
+    talukas: ((d.talukas as Record<string, unknown>[]) ?? []).map((t) => ({
+      id: t.id as string,
+      name: (t.name ?? "") as string,
+      slug: (t.slug ?? "") as string,
+    })),
+  };
+}
+
+export const fetchOfficers = async (): Promise<Officer[]> => {
+  const data = await get<{ officers?: Record<string, unknown>[] }>("/officers");
+  return (data.officers ?? []).map(normalizeOfficer);
+};
+
+export const createOfficer = async (body: {
+  name: string; phone?: string; active?: boolean; talukaIds?: string[];
+}) => {
+  const data = await post<{ officer: Record<string, unknown> }>("/officers", {
+    name: body.name,
+    phone: body.phone || null,
+    active: body.active !== false,
+    talukaIds: body.talukaIds ?? [],
+  });
+  return data.officer;
+};
+
+export const updateOfficer = async (id: string, body: {
+  name?: string; phone?: string; active?: boolean; talukaIds?: string[];
+}) => {
+  const data = await patch<{ officer: Record<string, unknown> }>(`/officers/${id}`, {
+    name: body.name,
+    phone: body.phone ?? null,
+    active: body.active,
+    talukaIds: body.talukaIds,
+  });
+  return data.officer;
 };
 
 export const createRoute = async (body: Record<string, unknown>) => {
@@ -836,9 +902,22 @@ export const createIndent = async (b: {
   });
 };
 
-export const cancelIndent = async (id: string, reason: string) => {
-  await post(`/orders/${id}/cancel`, { reason });
-};
+export interface CancelIndentResult {
+  message: string;
+  orderId: string;
+  paymentMode: string;
+  refund: {
+    method: "wallet" | "credit" | "razorpay" | "none";
+    amount: number;
+    razorpayRefundId?: string;
+    status?: string;
+  };
+}
+
+// Admin cancels an indent. The backend auto-refunds by payment mode:
+// wallet → wallet credit, credit → ledger reversal, upi → Razorpay refund.
+export const cancelIndent = async (id: string, reason: string) =>
+  post<CancelIndentResult>(`/orders/${id}/admin-cancel`, { reason });
 
 export const resetIndents = async () => {};
 
@@ -978,6 +1057,15 @@ export const deleteEmployee = async (id: string) => {
   await del(`/employees/${id}`);
 };
 
+export const fetchEmployeeCredit = async (employeeId: string) => {
+  return get<{
+    creditLimit: number;
+    closingBalance: number;
+    outstanding: number;
+    availableCredit: number;
+  }>(`/employees/${employeeId}/credit`);
+};
+
 export const fetchEmployeeSubsidyRules = async () => {
   const data = await get<{ data: Array<{
     id: string; product_id: string; subsidy_percent: string; active: boolean;
@@ -1020,7 +1108,7 @@ export const createEmployeeSubsidySale = async (body: {
   routeId?: string;
   batchId?: string;
   saleDate?: string;
-  paymentMode: "cash" | "upi";
+  paymentMode: "cash" | "upi" | "credit";
   paymentRef?: string;
   notes?: string;
   items: Array<{ productId: string; quantity: number }>;
@@ -1033,26 +1121,19 @@ export const createEmployeeSubsidySale = async (body: {
 };
 
 // ══════════════════════════════════════
-// CANCELLATION REQUESTS
-// ══════════════════════════════════════
-export const fetchCancellationRequests = async () => {
-  const data = await get<{ data: Record<string, unknown>[] }>("/cancellations");
-  return (data.data ?? []).map(normalizeCancellation);
-};
-
-export const approveCancellation = async (id: string) => {
-  await patch(`/cancellations/${id}/approve`);
-};
-
-export const rejectCancellation = async (id: string, reason: string) => {
-  await patch(`/cancellations/${id}/reject`, { reason });
-};
-
-// ══════════════════════════════════════
 // FGS STOCK
 // ══════════════════════════════════════
 
+// A single GRN receipt line — who the received stock was purchased from + cost.
+export interface StockReceiptLine {
+  supplierId?: string | null;
+  quantity: number;
+  unitCost?: number | null;
+}
+
 // Accepts an array of entries — matches backend Zod schema { date, entries: [...] }
+// `receipts` (optional) carries the supplier/cost breakdown of `received`; when
+// present the backend derives `received` from the line quantities.
 export const updateStockEntries = async (
   date: string,
   entries: Array<{
@@ -1061,6 +1142,7 @@ export const updateStockEntries = async (
     received: number;
     dispatched: number;
     wastage: number;
+    receipts?: StockReceiptLine[];
   }>,
 ) => {
   return await post<{ message: string; entries: unknown[] }>("/fgs/update", {
@@ -1530,11 +1612,13 @@ export const fetchDispatchSheet = async (filters?: {
   date?: string;
   routeId?: string;
   batchId?: string;
+  bucket?: StockBucket;
 }): Promise<DispatchSheetResponse> => {
   const params: Record<string, string | undefined> = {};
   if (filters?.date)    params.date    = filters.date;
   if (filters?.routeId) params.routeId = filters.routeId;
   if (filters?.batchId) params.batchId = filters.batchId;
+  if (filters?.bucket)  params.bucket  = filters.bucket;
   return await get<DispatchSheetResponse>("/dispatch-sheet", params);
 };
  

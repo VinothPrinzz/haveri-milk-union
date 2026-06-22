@@ -3,17 +3,21 @@
 // Route preserved: /sales/all-indents
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import PageHeader, {
   FilterBar, Field, EmptyState, StatusPill, fmtINR, fmtDate,
 } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
-import { Printer, X } from "lucide-react";
-import { fetchIndents, fetchRoutes } from "@/services/api";
+import { Printer, X, Ban } from "lucide-react";
+import { fetchIndents, fetchRoutes, cancelIndent, type CancelIndentResult } from "@/services/api";
 
 const STATUS_OPTS: F9Option[] = [
   { value: "confirmed",  label: "Confirmed" },
@@ -24,8 +28,20 @@ const STATUS_OPTS: F9Option[] = [
 
 const formatIndentId = (id: string) => id ? `#HMU-${String(id).slice(-4).toUpperCase()}` : "—";
 
+// One-line description of what the auto-refund did, for the success toast.
+function refundLine(r: CancelIndentResult): string {
+  const amt = fmtINR(r.refund.amount || 0);
+  switch (r.refund.method) {
+    case "wallet":   return `Refunded ${amt} to the dealer's wallet.`;
+    case "credit":   return `Reversed ${amt} on the dealer's credit ledger.`;
+    case "razorpay": return `Razorpay refund of ${amt} initiated (${r.refund.status ?? "pending"}).`;
+    default:         return `No auto-refund applies for a ${r.paymentMode || "—"} order.`;
+  }
+}
+
 export default function AllIndentsPage() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const today = new Date().toISOString().slice(0, 10);
 
   const [from, setFrom] = useState(today);
@@ -33,6 +49,21 @@ export default function AllIndentsPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [routeId, setRouteId] = useState<string | null>(null);
   const [q, setQ] = useState("");
+
+  // Cancel dialog: the indent being cancelled + the operator's reason.
+  const [cancelFor, setCancelFor] = useState<any | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+
+  const cancelMut = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) => cancelIndent(id, reason),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["indents"] });
+      toast.success("Indent cancelled", { description: refundLine(res) });
+      setCancelFor(null);
+      setCancelReason("");
+    },
+    onError: (e: any) => toast.error(e?.message || "Cancellation failed"),
+  });
 
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
 
@@ -111,7 +142,7 @@ export default function AllIndentsPage() {
                     <th style={{ width: "30%" }}>Items</th>
                     <th className="num" style={{ width: 130, textAlign: "right" }}>Total ₹</th>
                     <th style={{ width: 110 }}>Status</th>
-                    <th style={{ width: 90, textAlign: "center" }}>Update</th>
+                    <th style={{ width: 170, textAlign: "center" }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -138,13 +169,25 @@ export default function AllIndentsPage() {
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(parseFloat(String(i.grand_total ?? i.total ?? 0)) || 0)}</td>
                       <td><StatusPill status={i.status} /></td>
                       <td style={{ textAlign: "center" }}>
-                        <Button
-                          size="sm" 
-                          className="h-7 px-2.5 text-[12px]"
-                          onClick={() => navigate(`/sales/direct-sales/modify?indentId=${i.id}&type=order`)}
-                        >
-                          Update
-                        </Button>
+                        <div className="flex items-center justify-center gap-1.5">
+                          <Button
+                            size="sm"
+                            className="h-7 px-2.5 text-[12px]"
+                            onClick={() => navigate(`/sales/direct-sales/modify?indentId=${i.id}&type=order`)}
+                          >
+                            Update
+                          </Button>
+                          {i.status === "Confirmed" && i.windowOpen && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2.5 text-[12px] text-destructive"
+                              onClick={() => { setCancelFor(i); setCancelReason(""); }}
+                            >
+                              <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
+                            </Button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -161,6 +204,63 @@ export default function AllIndentsPage() {
           </div>
         </div>
       </div>
+
+      {/* Cancel Indent dialog — reason + auto-refund by payment mode */}
+      <Dialog open={!!cancelFor} onOpenChange={o => { if (!o) { setCancelFor(null); setCancelReason(""); } }}>
+        <DialogContent className="max-w-md rounded-sm">
+          <DialogHeader>
+            <DialogTitle className="text-[15px] font-semibold">Cancel Indent</DialogTitle>
+          </DialogHeader>
+          {cancelFor && (
+            <div className="py-2 space-y-3">
+              <div className="text-[12.5px] text-muted-foreground space-y-1">
+                <div>
+                  <span className="font-mono">{formatIndentId(cancelFor.id)}</span>
+                  {" · "}
+                  <span className="font-medium text-foreground">
+                    {cancelFor.dealer_name ?? cancelFor.customerName ?? "—"}
+                  </span>
+                </div>
+                <div>
+                  Total <span className="num font-medium text-foreground">{fmtINR(parseFloat(String(cancelFor.grand_total ?? cancelFor.total ?? 0)) || 0)}</span>
+                  {" · "}
+                  Payment mode <span className="font-medium text-foreground uppercase">{cancelFor.paymentMode || "—"}</span>
+                </div>
+                <div className="text-[11.5px]">
+                  Cancelling restores stock and auto-refunds the dealer per the
+                  payment mode (wallet → wallet, credit → ledger, UPI → Razorpay).
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
+                  Reason <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  className="erp-input"
+                  value={cancelReason}
+                  onChange={e => setCancelReason(e.target.value)}
+                  placeholder="Why is this indent being cancelled?"
+                  autoFocus
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" className="h-8" onClick={() => { setCancelFor(null); setCancelReason(""); }}>
+              Keep Indent
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              className="h-8"
+              disabled={!cancelReason.trim() || cancelMut.isPending}
+              onClick={() => cancelFor && cancelMut.mutate({ id: cancelFor.id, reason: cancelReason.trim() })}
+            >
+              {cancelMut.isPending ? "Cancelling…" : "Cancel Indent"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
