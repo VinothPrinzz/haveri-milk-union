@@ -26,8 +26,6 @@ import ProfileFinanceCard from "../components/ProfileFinanceCard";
 import PaymentHistoryList from "../components/PaymentHistoryList";
 import BackButton from "../components/BackButton";
 
-type Lang = "en" | "kn";
-
 interface ProfileScreenProps {
   onBack: () => void;
 }
@@ -41,7 +39,6 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
   const invQuery = useMyInvoices();
   const dealerRoutesQuery = useDealerRoutes();
   const switchRoute = useSwitchRoute();
-  const [lang, setLang] = useState<Lang>(dealer?.languagePref ?? "en");
   const [notifEnabled, setNotifEnabled] = useState(
     dealer?.notificationsEnabled ?? false
   );
@@ -86,10 +83,6 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
     };
   }, [ordersQuery.data, invQuery.data, dealer?.memberSince]);
 
-  const handleLangChange = (l: Lang) => {
-    setLang(l);
-    patchDealer({ languagePref: l });
-  };
   const handleNotifToggle = (v: boolean) => {
     setNotifEnabled(v);
     patchDealer({ notificationsEnabled: v });
@@ -292,13 +285,6 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
           {/* Group 2: Preferences */}
           <View style={styles.group}>
             <ProfileItem
-              icon="🌐"
-              tint="gray"
-              title="Language"
-              sub="App display language"
-              right={<LangSwitch value={lang} onChange={handleLangChange} />}
-            />
-            <ProfileItem
               icon="🔔"
               tint="blue"
               title="Morning Reminder"
@@ -444,37 +430,6 @@ function ProfileItem({
       </View>
       {right ? right : showArrow ? <Text style={itemStyles.arrow}>›</Text> : null}
     </Wrapper>
-  );
-}
-
-function LangSwitch({
-  value,
-  onChange,
-}: {
-  value: Lang;
-  onChange: (l: Lang) => void;
-}) {
-  return (
-    <View style={langStyles.wrap}>
-      <TouchableOpacity
-        onPress={() => onChange("en")}
-        activeOpacity={0.7}
-        style={[langStyles.opt, value === "en" && langStyles.optActive]}
-      >
-        <Text style={[langStyles.text, value === "en" && langStyles.textActive]}>
-          EN
-        </Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        onPress={() => onChange("kn")}
-        activeOpacity={0.7}
-        style={[langStyles.opt, value === "kn" && langStyles.optActive]}
-      >
-        <Text style={[langStyles.text, value === "kn" && langStyles.textActive]}>
-          ಕನ್ನ
-        </Text>
-      </TouchableOpacity>
-    </View>
   );
 }
 
@@ -680,32 +635,5 @@ const itemStyles = StyleSheet.create({
     fontSize: 13,
     color: colors.ink5,
     fontFamily: fonts.bold,
-  },
-});
-
-const langStyles = StyleSheet.create({
-  wrap: {
-    flexDirection: "row",
-    gap: 5,
-  },
-  opt: {
-    paddingVertical: 3,
-    paddingHorizontal: 9,
-    borderRadius: 7,
-    backgroundColor: colors.background,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  optActive: {
-    backgroundColor: colors.primaryLight,
-    borderColor: colors.primaryLight2,
-  },
-  text: {
-    fontSize: 10,
-    fontFamily: fonts.bold,
-    color: colors.mutedForeground,
-  },
-  textActive: {
-    color: colors.primary,
   },
 });

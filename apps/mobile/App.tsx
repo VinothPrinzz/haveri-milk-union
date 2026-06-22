@@ -28,6 +28,7 @@ import { useAppFonts } from "./src/lib/fonts";
 
 import SplashScreen from "./src/screens/SplashScreen";
 import LoginScreen from "./src/screens/LoginScreen";
+import ChangePasswordScreen from "./src/screens/ChangePasswordScreen";
 import HomeScreen from "./src/screens/HomeScreen";
 import IndentScreen from "./src/screens/IndentScreen";
 import CategoriesScreen from "./src/screens/CategoriesScreen";
@@ -115,6 +116,7 @@ type Tab = "home" | "indent" | "orders" | "categories";
 type PushedScreen =
   | "splash"
   | "login"
+  | "change-password"
   | "tabs"
   | "cart"
   | "confirmed"
@@ -154,7 +156,12 @@ function AppContent() {
     if (isAuthenticated && (screen === "splash" || screen === "login")) {
       setScreen("tabs");
       setActiveTab("home");
-    } else if (!isAuthenticated && screen !== "splash" && screen !== "login") {
+    } else if (
+      !isAuthenticated &&
+      screen !== "splash" &&
+      screen !== "login" &&
+      screen !== "change-password"
+    ) {
       setScreen("splash");
     }
   }, [isAuthenticated, isLoading]);
@@ -168,8 +175,18 @@ function AppContent() {
   // Returning `false` = "we didn't handle it, let the OS exit/background".
   useEffect(() => {
     const onBackPress = (): boolean => {
-      // Auth flow — login returns to splash; splash lets the OS exit.
-      if (!isAuthenticated || screen === "splash") {
+      // Auth flow — change-password returns to login; login returns to
+      // splash; splash lets the OS exit.
+      if (
+        !isAuthenticated ||
+        screen === "splash" ||
+        screen === "login" ||
+        screen === "change-password"
+      ) {
+        if (screen === "change-password") {
+          setScreen("login");
+          return true;
+        }
         if (screen === "login") {
           setScreen("splash");
           return true;
@@ -228,12 +245,21 @@ function AppContent() {
   }
 
   // ── Auth flow ──
-  if (!isAuthenticated || screen === "splash") {
+  if (
+    !isAuthenticated ||
+    screen === "splash" ||
+    screen === "login" ||
+    screen === "change-password"
+  ) {
+    if (screen === "change-password") {
+      return <ChangePasswordScreen onBack={() => setScreen("login")} />;
+    }
     if (screen === "login") {
       return (
         <LoginScreen
           onBack={() => setScreen("splash")}
           onSuccess={handleLoginSuccess}
+          onChangePassword={() => setScreen("change-password")}
         />
       );
     }

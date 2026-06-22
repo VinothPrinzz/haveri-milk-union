@@ -39,7 +39,9 @@ export async function contractorRoutes(app: FastifyInstance) {
           c.*,
           z.name AS zone_name, z.slug AS zone_slug,
           COALESCE(
-            (SELECT json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name))
+            (SELECT json_agg(json_build_object(
+                'id', r.id, 'code', r.code, 'name', r.name,
+                'rate_per_trip', r.rate_per_trip, 'total_km_per_day', r.total_km_per_day))
             FROM routes r
             WHERE r.contractor_id = c.id AND r.deleted_at IS NULL),
             '[]'::json
@@ -109,8 +111,8 @@ export async function contractorRoutes(app: FastifyInstance) {
       if (!contractor) return reply.status(404).send({ error: "Contractor not found" });
 
       const assignedRoutes = await pgClient`
-        SELECT r.id, r.code, r.name, r.active
-        FROM routes r 
+        SELECT r.id, r.code, r.name, r.active, r.rate_per_trip, r.total_km_per_day
+        FROM routes r
         WHERE r.contractor_id = ${id} AND r.deleted_at IS NULL
         ORDER BY r.code
       `;
@@ -145,6 +147,12 @@ export async function contractorRoutes(app: FastifyInstance) {
         zoneId: z.string().uuid().optional(), // kept for backward compat
         code: z.string().optional(),
         routeIds: z.array(z.string().uuid()).optional(),
+        // Per-route pay (0052). Preferred over routeIds; routeIds kept as fallback.
+        routeRates: z.array(z.object({
+          routeId: z.string().uuid(),
+          totalKmPerDay: z.union([z.string(), z.number()]).optional().nullable(),
+          ratePerTrip:   z.union([z.string(), z.number()]).optional().nullable(),
+        })).optional(),
         active: z.boolean().optional(),
       });
       const body = schema.parse(request.body);
@@ -184,11 +192,19 @@ export async function contractorRoutes(app: FastifyInstance) {
 
         if (!contractor) throw new Error("Failed to create contractor");
 
-        if (body.routeIds && body.routeIds.length > 0) {
+        // Normalize selection: prefer routeRates, fall back to bare routeIds.
+        const assignments = body.routeRates?.length
+          ? body.routeRates
+          : (body.routeIds ?? []).map((routeId) => ({ routeId, totalKmPerDay: null, ratePerTrip: null }));
+
+        for (const a of assignments) {
           await tx`
-            UPDATE routes
-            SET contractor_id = ${contractor.id}, updated_at = now()
-            WHERE id = ANY(${body.routeIds}::uuid[]) AND deleted_at IS NULL
+            UPDATE routes SET
+              contractor_id    = ${contractor.id},
+              rate_per_trip    = ${a.ratePerTrip   != null ? String(a.ratePerTrip)   : null}::numeric,
+              total_km_per_day = ${a.totalKmPerDay != null ? String(a.totalKmPerDay) : null}::numeric,
+              updated_at = now()
+            WHERE id = ${a.routeId}::uuid AND deleted_at IS NULL
           `;
         }
         return contractor;
@@ -226,6 +242,12 @@ export async function contractorRoutes(app: FastifyInstance) {
         code: z.string().optional(),
         active: z.boolean().optional(),
         routeIds: z.array(z.string().uuid()).optional(),
+        // Per-route pay (0052). Preferred over routeIds; routeIds kept as fallback.
+        routeRates: z.array(z.object({
+          routeId: z.string().uuid(),
+          totalKmPerDay: z.union([z.string(), z.number()]).optional().nullable(),
+          ratePerTrip:   z.union([z.string(), z.number()]).optional().nullable(),
+        })).optional(),
       });
       const body = schema.parse(request.body);
 
@@ -259,12 +281,26 @@ export async function contractorRoutes(app: FastifyInstance) {
 
         if (!updated) return null;
 
-        if (body.routeIds !== undefined) {
-          await tx`UPDATE routes SET contractor_id = NULL, updated_at = now() WHERE contractor_id = ${id}`;
-          if (body.routeIds.length > 0) {
+        if (body.routeRates !== undefined || body.routeIds !== undefined) {
+          // Clear previous assignments incl. their per-route rates.
+          await tx`
+            UPDATE routes
+            SET contractor_id = NULL, rate_per_trip = NULL, total_km_per_day = NULL, updated_at = now()
+            WHERE contractor_id = ${id}
+          `;
+
+          const assignments = body.routeRates?.length
+            ? body.routeRates
+            : (body.routeIds ?? []).map((routeId) => ({ routeId, totalKmPerDay: null, ratePerTrip: null }));
+
+          for (const a of assignments) {
             await tx`
-              UPDATE routes SET contractor_id = ${id}, updated_at = now()
-              WHERE id = ANY(${body.routeIds}::uuid[]) AND deleted_at IS NULL
+              UPDATE routes SET
+                contractor_id    = ${id},
+                rate_per_trip    = ${a.ratePerTrip   != null ? String(a.ratePerTrip)   : null}::numeric,
+                total_km_per_day = ${a.totalKmPerDay != null ? String(a.totalKmPerDay) : null}::numeric,
+                updated_at = now()
+              WHERE id = ${a.routeId}::uuid AND deleted_at IS NULL
             `;
           }
         }

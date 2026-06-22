@@ -6,6 +6,7 @@ import {
   numeric,
   integer,
   date,
+  boolean,
   index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
@@ -38,6 +39,10 @@ export const orders = pgTable("orders", {
   totalGst: numeric("total_gst", { precision: 10, scale: 2 }).notNull(),
   grandTotal: numeric("grand_total", { precision: 10, scale: 2 }).notNull(), // subtotal + totalGst
   itemCount: integer("item_count").notNull().default(0),
+  // True once this order's lines have been subtracted from products.stock
+  // (cleared on cancel). Keeps deduct/restore idempotent across every
+  // confirm entry point — see apps/api/src/lib/stock-check.ts (migration 0049).
+  stockDeducted: boolean("stock_deducted").notNull().default(false),
   notes: text("notes"), // dealer's order notes
   placedBy: uuid("placed_by"), // null = dealer placed it; set to admin user ID if Call Desk placed
   officerId: uuid("officer_id"), // Phase 2: sales officer who processed this order (no FK on partitioned table)

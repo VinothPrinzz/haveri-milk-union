@@ -19,6 +19,12 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { dealerAuth } from "../middleware/dealer-auth.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
+import {
+  getOrderStockShortfalls,
+  deductOrderStock,
+  describeShortfalls,
+  StockConflictError,
+} from "../lib/stock-check.js";
 import { enqueuePDFInvoice } from "../lib/queue.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -663,7 +669,20 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           message: "Use the dedicated pay-now endpoint for Razorpay payment.",
         });
       }
- 
+
+      // ── Stock gate ── never confirm what we can't physically deliver.
+      // Leave the order a draft so it stays editable; the dealer can trim
+      // quantities or wait for the day's stock entry, then re-confirm.
+      const shortfalls = await getOrderStockShortfalls(pgClient, order.id);
+      if (shortfalls.length > 0) {
+        return reply.status(409).send({
+          error: "Insufficient stock",
+          message: `Not enough stock for: ${describeShortfalls(shortfalls)}`,
+          orderId: order.id,
+          shortfalls,
+        });
+      }
+
       const credit = await checkDealerCredit(dealerId, grandTotal);
  
       if (!credit.sufficient) {
@@ -682,12 +701,14 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         });
       }
  
-      // ── Place the order AND post the finance ledger debit atomically.
-      //    (This INSERT is the fix — without it the order never reaches
-      //    the books.)
+      // ── Place the order, deduct stock, AND post the finance ledger
+      //    debit atomically. If stock was drained by a concurrent order
+      //    between the gate above and here, the guarded deduction throws
+      //    and the whole confirm rolls back (order stays a draft).
+      try {
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
- 
+
         // cancel_window_ends_at = LEAST(now + 30 min, route's close_time for today).
         // Uses the dealer's route_id from the dealers table. If no route or no
         // time_window is configured for that route, falls back to now + 30 min.
@@ -739,8 +760,22 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
              ${"Standing-indent order " + order.id},
              ${balanceAfter.toFixed(2)}::numeric)
         `;
+
+        // Move physical stock last — its guard is what can abort the confirm.
+        await deductOrderStock(tx, order.id);
       });
- 
+      } catch (err) {
+        if (err instanceof StockConflictError) {
+          return reply.status(409).send({
+            error: "Insufficient stock",
+            message: `Not enough stock for: ${describeShortfalls(err.shortfalls)}`,
+            orderId: order.id,
+            shortfalls: err.shortfalls,
+          });
+        }
+        throw err;
+      }
+
       // Generate invoice in the background (same queue as direct orders).
       await enqueuePDFInvoice(order.id);
 

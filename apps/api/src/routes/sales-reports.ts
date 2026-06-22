@@ -797,6 +797,115 @@ export async function salesReportRoutes(app: FastifyInstance) {
   );
 
   // ════════════════════════════════════════════
+  // B7b. Taluka Wise Report — 3 pages
+  //   1. Milk sales (In Ltrs) — taluka × milk product
+  //   2. Curd sales (In Kgs)  — taluka × curd product
+  //   3. Summary — Total Milk / Avg Milk / Total Curd / Avg Curd per taluka
+  //
+  //   Volume per (taluka, product) = Σ packets × pack_size / 1000, so milk
+  //   reads in litres and curd in kilograms (pack_size is ml for milk, g for
+  //   curd). Averages divide by the number of days in the period. Sales are
+  //   attributed to the order's zone (taluka), like the Taluka/Agent report.
+  // ════════════════════════════════════════════
+  app.get(
+    "/api/v1/reports/sales-reports/taluka-wise",
+    { preHandler: [adminAuth, requireRole("sales_reports.view")] },
+    async (request, reply) => {
+      const q = dateRangeSchema.parse(request.query);
+      const cfg = await loadReportConfig();
+
+      // Case-insensitive: config uses capitalized names, DB stores lowercase.
+      const milkCatSet = new Set(cfg.categoryGroups.milk.map(c => c.toLowerCase()));
+      const curdCatSet = new Set(cfg.categoryGroups.curd.map(c => c.toLowerCase()));
+      const catOf = (n: string) => (n ?? "").toLowerCase();
+
+      // Milk + curd products = the report's columns. Pulled once so the columns
+      // stay stable across talukas (even products with zero sales appear).
+      const products = await pgClient`
+        SELECT p.id, p.report_alias, p.name, p.sort_order,
+               COALESCE(p.pack_size, 0)::numeric AS pack_size,
+               c.name AS category_name
+        FROM products p
+        JOIN categories c ON c.id = p.category_id
+        WHERE p.deleted_at IS NULL AND p.available = true
+        ORDER BY p.sort_order, p.name
+      `;
+      const milkProducts = (products as any[]).filter(p => milkCatSet.has(catOf(p.category_name)));
+      const curdProducts = (products as any[]).filter(p => curdCatSet.has(catOf(p.category_name)));
+      const milkIds = new Set(milkProducts.map(p => p.id));
+      const curdIds = new Set(curdProducts.map(p => p.id));
+      const packSizeById = new Map((products as any[]).map(p => [p.id, parseFloat(p.pack_size) || 0]));
+
+      // Per (taluka = zone, product) qty from orders in range.
+      const rows = await pgClient`
+        SELECT z.name AS taluka, oi.product_id, SUM(oi.quantity)::int AS qty
+        FROM orders o
+        JOIN zones z ON z.id = o.zone_id
+        JOIN order_items oi ON oi.order_id = o.id
+        WHERE o.created_at::date >= ${q.from}::date
+          AND o.created_at::date <= ${q.to}::date
+          AND o.status != 'cancelled'
+        GROUP BY z.name, oi.product_id
+      `;
+
+      const numDays = Math.max(
+        1,
+        Math.round((new Date(q.to).getTime() - new Date(q.from).getTime()) / 86_400_000) + 1
+      );
+
+      // taluka → { productId → volume } (raw; rounded only on the way out)
+      const talukaMap = new Map<string, { milkVol: Record<string, number>; curdVol: Record<string, number> }>();
+      for (const r of rows as any[]) {
+        if (!talukaMap.has(r.taluka)) talukaMap.set(r.taluka, { milkVol: {}, curdVol: {} });
+        const t = talukaMap.get(r.taluka)!;
+        const vol = (Number(r.qty) || 0) * (packSizeById.get(r.product_id) ?? 0) / 1000;
+        if (milkIds.has(r.product_id)) t.milkVol[r.product_id] = (t.milkVol[r.product_id] ?? 0) + vol;
+        else if (curdIds.has(r.product_id)) t.curdVol[r.product_id] = (t.curdVol[r.product_id] ?? 0) + vol;
+      }
+
+      const talukaRows = Array.from(talukaMap.keys())
+        .sort((a, b) => a.localeCompare(b))
+        .map(taluka => {
+          const t = talukaMap.get(taluka)!;
+          const totalMilk = milkProducts.reduce((s, p) => s + (t.milkVol[p.id] ?? 0), 0);
+          const totalCurd = curdProducts.reduce((s, p) => s + (t.curdVol[p.id] ?? 0), 0);
+          return {
+            taluka,
+            milkQty: Object.fromEntries(milkProducts.map(p => [p.id, round2(t.milkVol[p.id] ?? 0)])),
+            curdQty: Object.fromEntries(curdProducts.map(p => [p.id, round2(t.curdVol[p.id] ?? 0)])),
+            totalMilk: round2(totalMilk),
+            avgMilk: round2(totalMilk / numDays),
+            totalCurd: round2(totalCurd),
+            avgCurd: round2(totalCurd / numDays),
+          };
+        });
+
+      // Column + grand totals (summed across talukas).
+      const colTotal = (sel: (r: typeof talukaRows[number]) => Record<string, number>, id: string) =>
+        round2(talukaRows.reduce((s, r) => s + (sel(r)[id] ?? 0), 0));
+      const totalMilk = round2(talukaRows.reduce((s, r) => s + r.totalMilk, 0));
+      const totalCurd = round2(talukaRows.reduce((s, r) => s + r.totalCurd, 0));
+
+      return reply.send({
+        from: q.from,
+        to: q.to,
+        numDays,
+        milkProducts: milkProducts.map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
+        curdProducts: curdProducts.map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
+        rows: talukaRows,
+        totals: {
+          milkQty: Object.fromEntries(milkProducts.map(p => [p.id, colTotal(r => r.milkQty, p.id)])),
+          curdQty: Object.fromEntries(curdProducts.map(p => [p.id, colTotal(r => r.curdQty, p.id)])),
+          totalMilk,
+          avgMilk: round2(totalMilk / numDays),
+          totalCurd,
+          avgCurd: round2(totalCurd / numDays),
+        },
+      });
+    }
+  );
+
+  // ════════════════════════════════════════════
   // B8. Adhoc Sales Abstract — 1 page paginated
   // ════════════════════════════════════════════
   app.get(
@@ -1173,80 +1282,10 @@ export async function salesReportRoutes(app: FastifyInstance) {
         .toISOString()
         .slice(0, 10);
 
-      // Fixed column layout (DSR_COLUMNS / MILK_COLS / CURD_COLS) is defined at
-      // module scope and shared with the Taluka/Agent milk-sales summary.
-
-      // ── 1. Products: resolve the fixed columns + the G/L set by name ──
-      const products = await pgClient`
-        SELECT p.id, p.code, p.name, p.report_alias
-        FROM products p
-        WHERE p.deleted_at IS NULL
-      `;
-
-      // Loose key: uppercase + strip every non-alphanumeric char, so
-      // "HTM 1000ML" / "HTM-1000ML" / "htm1000ml" all collapse to the same
-      // token. Makes column matching resilient to spacing/punctuation drift.
-      const norm = (s: unknown) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-
-      const glIds = new Set<string>();
-      // Separate indexes so an authoritative code/name never loses to a
-      // (often messy) report_alias collision.
-      const byCode = new Map<string, string>();
-      const byName = new Map<string, string>();
-      const byAlias = new Map<string, string>();
-
-      for (const p of products as any[]) {
-        const nm = (p.name ?? "").toUpperCase().trim();
-        if (nm.startsWith("G/L") || nm.startsWith("GOOD LIFE")) glIds.add(p.id);
-        const kc = norm(p.code);
-        const kn = norm(p.name);
-        const ka = norm(p.report_alias);
-        if (kc && !byCode.has(kc)) byCode.set(kc, p.id);
-        if (kn && !byName.has(kn)) byName.set(kn, p.id);
-        if (ka && !byAlias.has(ka)) byAlias.set(ka, p.id);
-      }
-
-      // productId → column key (code → name → alias fallback)
-      const colKeyByProductId = new Map<string, string>();
-      for (const col of DSR_COLUMNS) {
-        const pid =
-          byCode.get(norm(col.code)) ??
-          byName.get(norm(col.name)) ??
-          byAlias.get(norm(col.name));
-        if (pid) colKeyByProductId.set(pid, col.key);
-      }
-
-      // ── 2. Active routes + their session (Night / Afternoon) ──
-      //     which_batch comes from the route's primary batch; if it has none
-      //     set, fall back to any batch linked via batch_routes.
-      const routes = await pgClient`
-        SELECT r.id, r.code, r.name,
-               COALESCE(
-                 pb.which_batch,
-                 (SELECT b2.which_batch
-                    FROM batch_routes br
-                    JOIN batches b2 ON b2.id = br.batch_id AND b2.deleted_at IS NULL
-                   WHERE br.route_id = r.id
-                   ORDER BY b2.which_batch
-                   LIMIT 1),
-                 ''
-               ) AS which_batch
-        FROM routes r
-        LEFT JOIN batches pb ON pb.id = r.primary_batch_id AND pb.deleted_at IS NULL
-        WHERE r.deleted_at IS NULL AND r.active = true
-        ORDER BY r.code
-      `;
-      // Two sales shifts: Night and Afternoon. which_batch text is matched
-      // loosely; anything that isn't a night/evening batch (including no
-      // batch) falls into the afternoon group.
-      const sessionOf = (wb: string): "night" | "afternoon" => {
-        const w = (wb ?? "").toLowerCase();
-        return w.includes("night") || w.includes("evening") ? "night" : "afternoon";
-      };
-
-      // ── 3. Combined qty per (route, date, product) for prev + selected day ──
-      //     orders.route via dealers.route_id; direct_sales.route_id direct.
-      //     route_id NULL → ADHOC bucket.
+      // Combined qty per (route, product) for the selected day + the previous
+      // day, each row tagged cur / prev for the shared cross-tab builder.
+      // orders.route via dealers.route_id; direct_sales.route_id direct;
+      // route_id NULL → ADHOC bucket.
       const salesRows = await pgClient`
         WITH combined AS (
           SELECT d.route_id AS route_id, o.created_at::date AS sale_date,
@@ -1262,106 +1301,81 @@ export async function salesReportRoutes(app: FastifyInstance) {
           JOIN direct_sale_items dsi ON dsi.direct_sale_id = ds.id
           WHERE ds.sale_date IN (${prevDate}::date, ${q.date}::date)
         )
-        SELECT route_id, to_char(sale_date, 'YYYY-MM-DD') AS date,
+        SELECT route_id,
+               CASE WHEN sale_date = ${q.date}::date THEN 'cur' ELSE 'prev' END AS period,
                product_id, SUM(qty)::int AS qty
         FROM combined
-        GROUP BY route_id, sale_date, product_id
+        GROUP BY route_id, period, product_id
       `;
 
-      // Per route we keep the column packet counts for the selected day and
-      // the previous day, plus today's G/L count. The Ltr/Kg totals are then
-      // derived from these columns × each SKU's qtyToUnit factor — so the
-      // printed columns and the totals can never disagree.
-      // Date columns = TOTAL SALES QTY (packets across every product) for the
-      // day; qty / prevQty hold those. cols = per-column packet counts (today).
-      // Only TOTAL MILK / TOTAL CURD convert to Ltr / Kg.
-      type Acc = {
-        qty: number;                       // selected-day total packets (all products)
-        prevQty: number;                   // previous-day total packets (all products)
-        cols: Record<string, number>;      // selected-day packet count per column
-        prevCols: Record<string, number>;  // previous-day packet count per column
-        totalGL: number;                   // selected-day G/L packet count
-      };
-      const newAcc = (): Acc => ({ qty: 0, prevQty: 0, cols: {}, prevCols: {}, totalGL: 0 });
-      const accByRoute = new Map<string, Acc>();
-      for (const r of routes as any[]) accByRoute.set(r.id, newAcc());
-      const adhocAcc = newAcc();
+      const { columns, groups, total } = await buildMilkCurdCrossTab(salesRows as any[]);
+      return reply.send({ date: q.date, prevDate, columns, groups, total });
+    }
+  );
 
-      for (const row of salesRows as any[]) {
-        const acc = row.route_id == null ? adhocAcc : accByRoute.get(row.route_id);
-        if (!acc) continue; // sale on an inactive/deleted route — skip
-        const qty = Number(row.qty) || 0;
-        const colKey = colKeyByProductId.get(row.product_id);
+  // ════════════════════════════════════════════════════════════════
+  // Monthly Sales Report — "MILK & CURD SALES REPORT" (whole month)
+  //   Same route × product cross-tab as the Daily Sales Report, but the
+  //   figures are summed across a whole calendar month and the two
+  //   comparison columns hold the selected month vs the previous month.
+  // ════════════════════════════════════════════════════════════════
+  app.get(
+    "/api/v1/reports/sales-reports/monthly-sales-report",
+    { preHandler: [adminAuth, requireRole("sales_reports.view")] },
+    async (request, reply) => {
+      const q = z.object({ month: z.string().regex(/^\d{4}-\d{2}$/) }).parse(request.query);
 
-        if (row.date === q.date) {
-          acc.qty += qty;
-          if (colKey) acc.cols[colKey] = (acc.cols[colKey] ?? 0) + qty;
-          if (glIds.has(row.product_id)) acc.totalGL += qty;
-        } else if (row.date === prevDate) {
-          acc.prevQty += qty;
-          if (colKey) acc.prevCols[colKey] = (acc.prevCols[colKey] ?? 0) + qty;
-        }
-      }
+      // Selected-month + previous-month bounds (UTC, inclusive). Date.UTC with
+      // day 0 yields the last day of the preceding month, so these stay correct
+      // across year boundaries (e.g. Jan → previous Dec).
+      const monthStart = `${q.month}-01`;
+      const startObj = new Date(`${monthStart}T00:00:00Z`);
+      const y = startObj.getUTCFullYear();
+      const m = startObj.getUTCMonth();
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      const monthEnd = iso(new Date(Date.UTC(y, m + 1, 0)));     // last day of selected month
+      const prevMonthStart = iso(new Date(Date.UTC(y, m - 1, 1)));
+      const prevMonthEnd = iso(new Date(Date.UTC(y, m, 0)));     // last day of previous month
+      const prevMonth = prevMonthStart.slice(0, 7);              // "YYYY-MM"
 
-      const milkLtr = (cmap: Record<string, number>) =>
-        MILK_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
-      const curdKg = (cmap: Record<string, number>) =>
-        CURD_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
-      // Combined sales volume across every fixed column (milk Ltr + curd Kg +
-      // lassi Ltr) — drives the day-over-day comparison columns so they read
-      // in volume units like the rest of the sheet.
-      const totalVol = (cmap: Record<string, number>) =>
-        DSR_COLUMNS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
+      // Combined qty per (route, product) across both months, each row tagged
+      // cur / prev. The previous month immediately precedes the selected one,
+      // so one continuous range covers both and the CASE splits them.
+      const salesRows = await pgClient`
+        WITH combined AS (
+          SELECT d.route_id AS route_id, o.created_at::date AS sale_date,
+                 oi.product_id, oi.quantity::int AS qty
+          FROM orders o
+          JOIN dealers d      ON d.id = o.dealer_id
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.created_at::date >= ${prevMonthStart}::date
+            AND o.created_at::date <= ${monthEnd}::date
+            AND o.status != 'cancelled'
+          UNION ALL
+          SELECT ds.route_id, ds.sale_date, dsi.product_id, dsi.quantity::int AS qty
+          FROM direct_sales ds
+          JOIN direct_sale_items dsi ON dsi.direct_sale_id = ds.id
+          WHERE ds.sale_date >= ${prevMonthStart}::date
+            AND ds.sale_date <= ${monthEnd}::date
+        )
+        SELECT route_id,
+               CASE WHEN sale_date >= ${monthStart}::date THEN 'cur' ELSE 'prev' END AS period,
+               product_id, SUM(qty)::int AS qty
+        FROM combined
+        GROUP BY route_id, period, product_id
+      `;
 
-      const mkRow = (id: string | null, code: string, name: string, acc: Acc) => ({
-        id, code, name,
-        // Day-over-day comparison columns, in combined sales volume (milk Ltr
-        // + curd Kg + lassi Ltr) so they read in volume units like the rest.
-        prevQty: round1(totalVol(acc.prevCols)),                    // previous day
-        todayQty: round1(totalVol(acc.cols)),                       // selected day
-        diff: round1(totalVol(acc.cols) - totalVol(acc.prevCols)),  // difference
-        cols: Object.fromEntries(DSR_COLUMNS.map(c => [c.key, acc.cols[c.key] ?? 0])),
-        totalMilk: round1(milkLtr(acc.cols)),  // Ltr
-        totalCurd: round1(curdKg(acc.cols)),   // Kg
-        totalGL: acc.totalGL,                  // qty
-      });
-      type DSRRow = ReturnType<typeof mkRow>;
-
-      const nightRows: DSRRow[] = [];
-      const afternoonRows: DSRRow[] = [];
-      for (const r of routes as any[]) {
-        const row = mkRow(r.id, r.code ?? "", r.name, accByRoute.get(r.id)!);
-        (sessionOf(r.which_batch) === "night" ? nightRows : afternoonRows).push(row);
-      }
-      // ADHOC row — only when it carries data (night group, like the sheet).
-      const adhocHasData =
-        adhocAcc.qty || adhocAcc.prevQty || adhocAcc.totalGL ||
-        Object.keys(adhocAcc.cols).length > 0;
-      if (adhocHasData) nightRows.push(mkRow(null, "", "ADHOC SALES", adhocAcc));
-
-      const sumRows = (rows: DSRRow[], name: string) => {
-        const cols: Record<string, number> = {};
-        for (const c of DSR_COLUMNS) cols[c.key] = rows.reduce((s, r) => s + (r.cols[c.key] ?? 0), 0);
-        const prevQty = round1(rows.reduce((s, r) => s + r.prevQty, 0));
-        const todayQty = round1(rows.reduce((s, r) => s + r.todayQty, 0));
-        return {
-          id: null, code: "", name,
-          prevQty, todayQty, diff: round1(todayQty - prevQty), cols,
-          totalMilk: round1(rows.reduce((s, r) => s + r.totalMilk, 0)),
-          totalCurd: round1(rows.reduce((s, r) => s + r.totalCurd, 0)),
-          totalGL: rows.reduce((s, r) => s + r.totalGL, 0),
-        };
-      };
-
+      const { columns, groups, total } = await buildMilkCurdCrossTab(salesRows as any[]);
       return reply.send({
-        date: q.date,
-        prevDate,
-        columns: DSR_COLUMNS,
-        groups: [
-          { key: "night", label: "Night Sales", rows: nightRows, subtotal: sumRows(nightRows, "Total Night Sales") },
-          { key: "afternoon", label: "Afternoon Sales", rows: afternoonRows, subtotal: sumRows(afternoonRows, "Total Afternoon Sales") },
-        ],
-        total: sumRows([...nightRows, ...afternoonRows], "HVR TOTAL (IN LTRS)"),
+        month: q.month,
+        prevMonth,
+        monthStart,
+        monthEnd,
+        prevMonthStart,
+        prevMonthEnd,
+        columns,
+        groups,
+        total,
       });
     }
   );
@@ -1473,6 +1487,179 @@ async function buildSalesGrid(opts: { q: { from: string; to: string }; cfg: Repo
     products: (products as any[]).map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
     routes: routesOut,
     totals,
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Shared "MILK & CURD SALES REPORT" cross-tab builder.
+//
+// Both the Daily and Monthly Sales Reports render the same route × product
+// cross-tab (Night / Afternoon groups, a previous-period comparison + diff,
+// milk / curd / G-L totals and a grand "HVR TOTAL"). They differ only in the
+// period each sale falls into, so callers pre-tag every (route, product) sales
+// row as 'cur' (selected period) or 'prev' (comparison period) and this helper
+// produces the identical { columns, groups, total } payload.
+// ════════════════════════════════════════════════════════════════════
+async function buildMilkCurdCrossTab(
+  salesRows: Array<{ route_id: string | null; period: string; product_id: string; qty: number | string }>,
+) {
+  // ── 1. Products: resolve the fixed columns + the G/L set by name ──
+  const products = await pgClient`
+    SELECT p.id, p.code, p.name, p.report_alias
+    FROM products p
+    WHERE p.deleted_at IS NULL
+  `;
+
+  // Loose key: uppercase + strip every non-alphanumeric char, so
+  // "HTM 1000ML" / "HTM-1000ML" / "htm1000ml" all collapse to the same
+  // token. Makes column matching resilient to spacing/punctuation drift.
+  const norm = (s: unknown) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  const glIds = new Set<string>();
+  // Separate indexes so an authoritative code/name never loses to a
+  // (often messy) report_alias collision.
+  const byCode = new Map<string, string>();
+  const byName = new Map<string, string>();
+  const byAlias = new Map<string, string>();
+
+  for (const p of products as any[]) {
+    const nm = (p.name ?? "").toUpperCase().trim();
+    if (nm.startsWith("G/L") || nm.startsWith("GOOD LIFE")) glIds.add(p.id);
+    const kc = norm(p.code);
+    const kn = norm(p.name);
+    const ka = norm(p.report_alias);
+    if (kc && !byCode.has(kc)) byCode.set(kc, p.id);
+    if (kn && !byName.has(kn)) byName.set(kn, p.id);
+    if (ka && !byAlias.has(ka)) byAlias.set(ka, p.id);
+  }
+
+  // productId → column key (code → name → alias fallback)
+  const colKeyByProductId = new Map<string, string>();
+  for (const col of DSR_COLUMNS) {
+    const pid =
+      byCode.get(norm(col.code)) ??
+      byName.get(norm(col.name)) ??
+      byAlias.get(norm(col.name));
+    if (pid) colKeyByProductId.set(pid, col.key);
+  }
+
+  // ── 2. Active routes + their session (Night / Afternoon) ──
+  //     which_batch comes from the route's primary batch; if it has none
+  //     set, fall back to any batch linked via batch_routes.
+  const routes = await pgClient`
+    SELECT r.id, r.code, r.name,
+           COALESCE(
+             pb.which_batch,
+             (SELECT b2.which_batch
+                FROM batch_routes br
+                JOIN batches b2 ON b2.id = br.batch_id AND b2.deleted_at IS NULL
+               WHERE br.route_id = r.id
+               ORDER BY b2.which_batch
+               LIMIT 1),
+             ''
+           ) AS which_batch
+    FROM routes r
+    LEFT JOIN batches pb ON pb.id = r.primary_batch_id AND pb.deleted_at IS NULL
+    WHERE r.deleted_at IS NULL AND r.active = true
+    ORDER BY r.code
+  `;
+  // Two sales shifts: Night and Afternoon. which_batch text is matched
+  // loosely; anything that isn't a night/evening batch (including no
+  // batch) falls into the afternoon group.
+  const sessionOf = (wb: string): "night" | "afternoon" => {
+    const w = (wb ?? "").toLowerCase();
+    return w.includes("night") || w.includes("evening") ? "night" : "afternoon";
+  };
+
+  // ── 3. Accumulate per-route packet counts, split by period ──
+  //     cols / prevCols hold the selected- and comparison-period packet
+  //     counts per column; the Ltr/Kg totals are derived from these ×
+  //     qtyToUnit so the printed columns and the totals can never disagree.
+  type Acc = {
+    qty: number;                       // selected-period total packets (all products)
+    prevQty: number;                   // comparison-period total packets (all products)
+    cols: Record<string, number>;      // selected-period packet count per column
+    prevCols: Record<string, number>;  // comparison-period packet count per column
+    totalGL: number;                   // selected-period G/L packet count
+  };
+  const newAcc = (): Acc => ({ qty: 0, prevQty: 0, cols: {}, prevCols: {}, totalGL: 0 });
+  const accByRoute = new Map<string, Acc>();
+  for (const r of routes as any[]) accByRoute.set(r.id, newAcc());
+  const adhocAcc = newAcc();
+
+  for (const row of salesRows) {
+    const acc = row.route_id == null ? adhocAcc : accByRoute.get(row.route_id);
+    if (!acc) continue; // sale on an inactive/deleted route — skip
+    const qty = Number(row.qty) || 0;
+    const colKey = colKeyByProductId.get(row.product_id);
+
+    if (row.period === "cur") {
+      acc.qty += qty;
+      if (colKey) acc.cols[colKey] = (acc.cols[colKey] ?? 0) + qty;
+      if (glIds.has(row.product_id)) acc.totalGL += qty;
+    } else {
+      acc.prevQty += qty;
+      if (colKey) acc.prevCols[colKey] = (acc.prevCols[colKey] ?? 0) + qty;
+    }
+  }
+
+  const milkLtr = (cmap: Record<string, number>) =>
+    MILK_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
+  const curdKg = (cmap: Record<string, number>) =>
+    CURD_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
+  // Combined sales volume across every fixed column (milk Ltr + curd Kg +
+  // lassi Ltr) — drives the period-over-period comparison columns so they
+  // read in volume units like the rest of the sheet.
+  const totalVol = (cmap: Record<string, number>) =>
+    DSR_COLUMNS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
+
+  const mkRow = (id: string | null, code: string, name: string, acc: Acc) => ({
+    id, code, name,
+    // Period-over-period comparison columns, in combined sales volume (milk
+    // Ltr + curd Kg + lassi Ltr) so they read in volume units like the rest.
+    prevQty: round1(totalVol(acc.prevCols)),                    // comparison period
+    todayQty: round1(totalVol(acc.cols)),                       // selected period
+    diff: round1(totalVol(acc.cols) - totalVol(acc.prevCols)),  // difference
+    cols: Object.fromEntries(DSR_COLUMNS.map(c => [c.key, acc.cols[c.key] ?? 0])),
+    totalMilk: round1(milkLtr(acc.cols)),  // Ltr
+    totalCurd: round1(curdKg(acc.cols)),   // Kg
+    totalGL: acc.totalGL,                  // qty
+  });
+  type DSRRow = ReturnType<typeof mkRow>;
+
+  const nightRows: DSRRow[] = [];
+  const afternoonRows: DSRRow[] = [];
+  for (const r of routes as any[]) {
+    const row = mkRow(r.id, r.code ?? "", r.name, accByRoute.get(r.id)!);
+    (sessionOf(r.which_batch) === "night" ? nightRows : afternoonRows).push(row);
+  }
+  // ADHOC row — only when it carries data (night group, like the sheet).
+  const adhocHasData =
+    adhocAcc.qty || adhocAcc.prevQty || adhocAcc.totalGL ||
+    Object.keys(adhocAcc.cols).length > 0;
+  if (adhocHasData) nightRows.push(mkRow(null, "", "ADHOC SALES", adhocAcc));
+
+  const sumRows = (rows: DSRRow[], name: string) => {
+    const cols: Record<string, number> = {};
+    for (const c of DSR_COLUMNS) cols[c.key] = rows.reduce((s, r) => s + (r.cols[c.key] ?? 0), 0);
+    const prevQty = round1(rows.reduce((s, r) => s + r.prevQty, 0));
+    const todayQty = round1(rows.reduce((s, r) => s + r.todayQty, 0));
+    return {
+      id: null, code: "", name,
+      prevQty, todayQty, diff: round1(todayQty - prevQty), cols,
+      totalMilk: round1(rows.reduce((s, r) => s + r.totalMilk, 0)),
+      totalCurd: round1(rows.reduce((s, r) => s + r.totalCurd, 0)),
+      totalGL: rows.reduce((s, r) => s + r.totalGL, 0),
+    };
+  };
+
+  return {
+    columns: DSR_COLUMNS,
+    groups: [
+      { key: "night", label: "Night Sales", rows: nightRows, subtotal: sumRows(nightRows, "Total Night Sales") },
+      { key: "afternoon", label: "Afternoon Sales", rows: afternoonRows, subtotal: sumRows(afternoonRows, "Total Afternoon Sales") },
+    ],
+    total: sumRows([...nightRows, ...afternoonRows], "HVR TOTAL (IN LTRS)"),
   };
 }
 

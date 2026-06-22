@@ -504,6 +504,8 @@ export async function financeRoutes(app: FastifyInstance) {
           for (const item of body.items) {
             await tx`UPDATE products SET stock = stock - ${item.quantity}, updated_at = now() WHERE id = ${item.productId}`;
           }
+          // Latch the deduction so a later cancel restores exactly once. See migration 0049.
+          await tx`UPDATE orders SET stock_deducted = true WHERE id = ${order!.id}`;
 
           // ... rest of the transaction (ledger, etc.) remains unchanged
           if (body.paymentMode === "wallet") {

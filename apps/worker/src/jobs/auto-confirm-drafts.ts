@@ -56,6 +56,10 @@ function round2(n: number): number {
 }
 
 // ── Credit check (in-worker copy of apps/api/src/lib/credit-check.ts) ─
+// Ledger-based, IDENTICAL maths to checkDealerCredit() so an auto-confirm
+// and a manual confirm agree on whether a dealer is over their line:
+//   closing   = opening_balance + Σ(credit) − Σ(debit)   [non-'Opening' rows]
+//   available = max(0, credit_limit + closing)
 async function workerCreditCheck(
   dealerId: string,
   orderTotal: number
@@ -63,24 +67,92 @@ async function workerCreditCheck(
   const [row] = await sql`
     SELECT
       COALESCE(d.credit_limit, 0)::numeric AS credit_limit,
-      COALESCE((
-        SELECT SUM(o.grand_total) FROM orders o
-         WHERE o.dealer_id = d.id
-           AND o.payment_mode = 'credit'
-           AND o.status NOT IN ('cancelled', 'delivered',
-                                'draft', 'payment_required')
-      ), 0)::numeric AS outstanding
+      (
+        COALESCE(d.opening_balance, 0)
+        + COALESCE((
+            SELECT SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
+                            WHEN dl.type = 'debit'  THEN -dl.amount END)
+              FROM dealer_ledger dl
+             WHERE dl.dealer_id = d.id
+               AND COALESCE(dl.voucher_type, '') <> 'Opening'
+          ), 0)
+      )::numeric AS closing_balance
     FROM dealers d
     WHERE d.id = ${dealerId}::uuid
       AND d.deleted_at IS NULL
   `;
   if (!row) throw new Error(`Dealer ${dealerId} not found`);
   const creditLimit = parseFloat(row.credit_limit);
-  const outstanding = parseFloat(row.outstanding);
-  const available = Math.max(0, creditLimit - outstanding);
+  const closing = parseFloat(row.closing_balance);
+  const available = Math.max(0, creditLimit + closing);
   const sufficient = orderTotal <= available;
   const shortfall = sufficient ? 0 : round2(orderTotal - available);
   return { available: round2(available), sufficient, shortfall };
+}
+
+// ── Stock check / deduction (in-worker copy of apps/api/src/lib/stock-check.ts) ─
+interface WorkerStockShortfall {
+  productName: string;
+  ordered: number;
+  available: number;
+}
+
+/** Pure read — order lines whose quantity exceeds current product stock. */
+async function workerStockShortfalls(
+  orderId: string
+): Promise<WorkerStockShortfall[]> {
+  const rows = await sql`
+    SELECT oi.product_name AS product_name,
+           oi.quantity     AS ordered,
+           p.stock         AS available
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+     WHERE oi.order_id = ${orderId}::uuid
+       AND oi.quantity > p.stock
+  `;
+  return rows.map((r: any) => ({
+    productName: r.product_name,
+    ordered: Number(r.ordered),
+    available: Number(r.available),
+  }));
+}
+
+// Thrown when a line can't be satisfied during the guarded deduction
+// (a concurrent confirm drained stock). Rolls the confirm transaction back.
+class WorkerStockConflict extends Error {
+  constructor() {
+    super("Insufficient stock");
+    this.name = "WorkerStockConflict";
+  }
+}
+
+/** Guarded, idempotent deduction inside the confirm tx — stock can never
+ *  go negative. Claims the orders.stock_deducted latch first (mirror of
+ *  apps/api/src/lib/stock-check.ts) so a re-run never double-deducts. */
+async function deductOrderStockWorker(
+  tx: typeof sql,
+  orderId: string
+): Promise<void> {
+  const claimed = await tx`
+    UPDATE orders SET stock_deducted = true, updated_at = now()
+     WHERE id = ${orderId}::uuid AND stock_deducted = false
+    RETURNING id
+  `;
+  if (claimed.count === 0) return; // already deducted
+  const items = await tx`
+    SELECT product_id::text AS product_id, quantity AS quantity
+      FROM order_items WHERE order_id = ${orderId}::uuid
+  `;
+  for (const it of items as any[]) {
+    const updated = await tx`
+      UPDATE products
+         SET stock = stock - ${it.quantity}, updated_at = now()
+       WHERE id = ${it.product_id}::uuid
+         AND stock >= ${it.quantity}
+      RETURNING id
+    `;
+    if (updated.count === 0) throw new WorkerStockConflict();
+  }
 }
 
 // ── Employee credit check (ledger-based; mirror of checkEmployeeCredit) ─
@@ -175,10 +247,18 @@ export async function processAutoConfirmDrafts(_job: Job) {
 
   let confirmed = 0;
   let paymentRequired = 0;
+  let stockBlocked = 0;
   let materialized = 0;
   let cancelledEmpty = 0;
   let skipped = 0;
   let failed = 0;
+
+  // Tally a confirm outcome into the right counter.
+  const tally = (outcome: "confirmed" | "payment_required" | "stock_blocked") => {
+    if (outcome === "confirmed") confirmed++;
+    else if (outcome === "payment_required") paymentRequired++;
+    else stockBlocked++;
+  };
 
   // ── Build a draft order from the dealer's standing indent ──────────
   // Returns { orderId, grandTotal, itemCount } or null if the template
@@ -269,7 +349,39 @@ export async function processAutoConfirmDrafts(_job: Job) {
     dealer: DealerRow,
     orderId: string,
     grandTotal: number
-  ): Promise<"confirmed" | "payment_required"> {
+  ): Promise<"confirmed" | "payment_required" | "stock_blocked"> {
+    // Notify the dealer their indent is on hold (best-effort).
+    const sendStockBlockedNotice = async (names: string) => {
+      if (dealer.notifications_enabled && dealer.fcm_token) {
+        await notifQueue
+          .add("stock-blocked", {
+            event: "custom" as const,
+            dealerId: dealer.dealer_id,
+            orderId,
+            title: "Indent on hold — out of stock ⚠️",
+            body: `Out of stock: ${names}. Our team will sort it out shortly.`,
+          })
+          .catch((e) =>
+            console.warn(`[AutoConfirm] notif failed for ${orderId}:`, e?.message)
+          );
+      }
+    };
+
+    // ── Stock gate ── never auto-confirm what we can't physically deliver.
+    // Leave the order a draft for manual resolution (a stock entry or a
+    // quantity trim, then it re-confirms on a later tick / manually).
+    const shortfalls = await workerStockShortfalls(orderId);
+    if (shortfalls.length > 0) {
+      console.warn(
+        `[AutoConfirm] stock-blocked order=${orderId} dealer=${dealer.dealer_id}: ` +
+          shortfalls
+            .map((s) => `${s.productName}(need ${s.ordered}, have ${s.available})`)
+            .join(", ")
+      );
+      await sendStockBlockedNotice(shortfalls.map((s) => s.productName).join(", "));
+      return "stock_blocked";
+    }
+
     const credit = await workerCreditCheck(dealer.dealer_id, grandTotal);
 
     if (!credit.sufficient) {
@@ -295,8 +407,12 @@ export async function processAutoConfirmDrafts(_job: Job) {
       return "payment_required";
     }
 
-    // Sufficient credit → confirm + ledger debit, atomically.
-    const applied = await sql.begin(async (tx) => {
+    // Sufficient credit → confirm + ledger debit + stock deduction,
+    // atomically. A concurrent order draining stock since the gate above
+    // makes the guarded deduction throw → full rollback, order stays draft.
+    let applied = false;
+    try {
+    applied = await sql.begin(async (tx) => {
       // Auto-confirmed at close time → zero cancel grace (window is shut).
       const upd = await tx`
         UPDATE orders
@@ -339,8 +455,21 @@ export async function processAutoConfirmDrafts(_job: Job) {
            ${"Auto-confirmed standing-indent order " + orderId},
            ${balanceAfter.toFixed(2)}::numeric)
       `;
+
+      // Move physical stock last — its guard is what can abort the confirm.
+      await deductOrderStockWorker(tx as unknown as typeof sql, orderId);
       return true;
     });
+    } catch (err) {
+      if (err instanceof WorkerStockConflict) {
+        console.warn(
+          `[AutoConfirm] stock-blocked (race) order=${orderId} dealer=${dealer.dealer_id}`
+        );
+        await sendStockBlockedNotice("some items");
+        return "stock_blocked";
+      }
+      throw err;
+    }
 
     if (!applied) return "confirmed"; // already handled by a prior tick
 
@@ -446,7 +575,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
             dealer.order_id,
             grandTotal
           );
-          outcome === "confirmed" ? confirmed++ : paymentRequired++;
+          tally(outcome);
           continue;
         }
 
@@ -472,7 +601,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
           built.orderId,
           built.grandTotal
         );
-        outcome === "confirmed" ? confirmed++ : paymentRequired++;
+        tally(outcome);
       } catch (err: any) {
         failed++;
         console.error(
@@ -700,6 +829,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
     routesMatched: routesWithClosedWindows.length,
     confirmed,
     paymentRequired,
+    stockBlocked,
     materialized,
     cancelledEmpty,
     skipped,

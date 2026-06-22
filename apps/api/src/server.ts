@@ -12,7 +12,6 @@ import { orderRoutes } from "./routes/orders.js";
 import { dealerRoutes } from "./routes/dealers.js";
 import { inventoryRoutes } from "./routes/inventory.js";
 import { distributionRoutes } from "./routes/distribution.js";
-import { cancellationRoutes } from "./routes/cancellations.js";
 import { financeRoutes } from "./routes/finance.js";
 import { crudRoutes } from "./routes/crud.js";
 import { systemRoutes } from "./routes/system.js";
@@ -22,6 +21,7 @@ import { dealerNotificationsRoutes } from "./routes/dealer-notifications.js";
 // Phase 2
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { contractorRoutes } from "./routes/contractors.js";
+import { supplierRoutes } from "./routes/suppliers.js";
 import { batchRoutes } from "./routes/batches.js";
 import { priceChartRoutes } from "./routes/price-chart.js";
 import { directSalesRoutes } from "./routes/direct-sales.js";
@@ -32,6 +32,7 @@ import { zoneRoutes } from "./routes/zones.js";
 import { reportsRoutes } from "./routes/reports.js";
 import { vipContactsRoutes } from "./routes/vip-contacts.js";
 import { employeesRoutes }    from "./routes/employees.js";
+import { officerRoutes }      from "./routes/officers.js";
 import { financeRazorpayRoutes } from "./routes/finance-razorpay.js";
 import { financeCreditControlRoutes } from "./routes/finance-credit-control.js";
 import { financeRefundsRoutes } from "./routes/finance-refunds.js";
@@ -175,7 +176,6 @@ await app.register(inventoryRoutes);
 await app.register(distributionRoutes);
 
 // Phase 1 Additions
-await app.register(cancellationRoutes);
 await app.register(financeRoutes);
 await app.register(financeRazorpayRoutes);
 await app.register(financeCreditControlRoutes);
@@ -193,6 +193,7 @@ await app.register(dealerAppRoutes);
 // Phase 2
 await app.register(dashboardRoutes);
 await app.register(contractorRoutes);
+await app.register(supplierRoutes);
 await app.register(batchRoutes);
 await app.register(priceChartRoutes);
 await app.register(directSalesRoutes);
@@ -204,6 +205,7 @@ await app.register(zoneRoutes);
 await app.register(reportsRoutes);
 await app.register(vipContactsRoutes);
 await app.register(employeesRoutes);
+await app.register(officerRoutes);
 
 await app.register(dealerIndentsRoutes);
 await app.register(dealerPaymentsRoutes);

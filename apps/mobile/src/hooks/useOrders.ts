@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQueryClient, type QueryKey } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import type {
@@ -29,9 +29,7 @@ interface RawOrder {
   item_count: number;
   created_at: string;           // ← always string from backend
   confirmed_at?: string | null;
-  cancel_window_ends_at?: string | null;
   items?: RawOrderItem[];
-  cancellation_status?: "pending" | "approved" | "rejected" | null;
 }
 
 interface PaginatedRawOrders {
@@ -40,11 +38,6 @@ interface PaginatedRawOrders {
   page: number;
   limit: number;
   totalPages: number;
-}
-
-// Context type for optimistic update
-interface CancelOrderContext {
-  prev: [QueryKey, { data: Order[] } | undefined][];
 }
 
 function toIsoString(v: unknown): string {
@@ -65,8 +58,6 @@ function normalizeOrder(o: RawOrder): Order {
     itemCount:   Number(o.item_count) || 0,
     createdAt:   toIsoString(o.created_at),
     confirmedAt: o.confirmed_at ? toIsoString(o.confirmed_at) : null,
-    cancelWindowEndsAt: o.cancel_window_ends_at ? toIsoString(o.cancel_window_ends_at) : null,
-    cancellationStatus: o.cancellation_status ?? null,
     items: (o.items ?? []).map((i) => ({
       productId:  i.product_id,
       productName: i.product_name,
@@ -146,54 +137,6 @@ export function usePlaceOrder() {
       qc.invalidateQueries({ queryKey: qk.invoices.all });
       qc.invalidateQueries({ queryKey: qk.profile });
       qc.invalidateQueries({ queryKey: qk.products });
-    },
-  });
-}
-
-// ── POST /orders/:id/cancel — dealer cancellation request ──────────────
-export function useCancelOrder() {
-  const qc = useQueryClient();
-
-  return useMutation<
-    { message: string; cancellationRequest: unknown },
-    Error,
-    { orderId: string; reason: string },
-    CancelOrderContext          // ← Explicit context type
-  >({
-    mutationFn: ({ orderId, reason }) =>
-      api.post(`/api/v1/orders/${orderId}/cancel`, { reason }),
-
-    onMutate: async ({ orderId }) => {
-      await qc.cancelQueries({ queryKey: qk.orders.all });
-
-      const prev = qc.getQueriesData<{ data: Order[] }>({ queryKey: qk.orders.all });
-
-      for (const [key, data] of prev) {
-        if (!data?.data) continue;
-        qc.setQueryData(key, {
-          ...data,
-          data: data.data.map((o) =>
-            o.id === orderId
-              ? { ...o, cancellationStatus: "pending" as const }
-              : o
-          ),
-        });
-      }
-
-      return { prev };   // ← Now properly typed
-    },
-
-    onError: (_err, _vars, ctx) => {
-      // Fixed: ctx is now typed as CancelOrderContext | undefined
-      if (ctx?.prev) {
-        for (const [key, data] of ctx.prev) {
-          qc.setQueryData(key, data);
-        }
-      }
-    },
-
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: qk.orders.all });
     },
   });
 }

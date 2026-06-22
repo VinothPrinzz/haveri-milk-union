@@ -44,10 +44,13 @@ export interface Contractor {
   address: string;
   vehicleNumber: string;
   routeIds: string[];
+  // Per-route pay: each assigned route has its own total km/day & rate per km/trip.
+  routeRates?: { routeId: string; totalKmPerDay: number; ratePerTrip: number }[];
   status: "Active" | "Inactive";
   // v1.4 additions
   bankName?: string;
   accountNo?: string;
+  /** @deprecated superseded by per-route routeRates[].ratePerTrip */
   ratePerKm?: number;
   periodFrom?: string | null;  // ISO date
   periodTo?: string | null;    // ISO date
@@ -69,6 +72,8 @@ export interface Route {
   contractorId?: string;
   contractorName?: string;
   dealerCount?: number;
+  ratePerTrip?: number;          // per-route contractor pay (0052)
+  totalKmPerDay?: number;        // per-route daily distance (0052)
   dispatchTime: string;          // resolved: batch's if set, else route's own
   primaryBatchId?: string | null;   // v1.4
   status: "Active" | "Inactive";

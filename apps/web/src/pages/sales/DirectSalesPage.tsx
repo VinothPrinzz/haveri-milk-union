@@ -31,6 +31,7 @@ import {
   createGatePassSale, createCashSale,
   fetchVipContacts, createVipContact, createVipSampleSale,
   fetchEmployees, fetchEmployeeSubsidyRules, createEmployeeSubsidySale,
+  fetchEmployeeCredit,
   type Product,
 } from "@/services/api";
 import {
@@ -919,9 +920,17 @@ function EmployeeSubsidyTab() {
 
   const today = new Date().toISOString().slice(0, 10);
   const [empId, setEmpId]             = useState<string | null>(null);
+
+  // Selected employee's live credit position (limit / available / outstanding)
+  const { data: credit } = useQuery({
+    queryKey: ["employee-credit", empId],
+    queryFn: () => fetchEmployeeCredit(empId!),
+    enabled: !!empId,
+  });
+
   const [productId, setProductId]     = useState<string | null>(null);
   const [qty, setQty] = useState<number | undefined>(undefined);
-  const [paymentMode, setPaymentMode] = useState<"cash" | "upi">("cash");
+  const [paymentMode, setPaymentMode] = useState<"cash" | "upi" | "credit">("cash");
   const [paymentRef, setPaymentRef]   = useState("");
   const [notes, setNotes]             = useState("");
 
@@ -973,6 +982,7 @@ function EmployeeSubsidyTab() {
     onSuccess: () => {
       toast.success("Employee subsidy sale recorded");
       qc.invalidateQueries({ queryKey: ["direct-sales"] });
+      qc.invalidateQueries({ queryKey: ["employee-credit"] });
       navigate("/sales/direct-sales/recent");
       setEmpId(null); setProductId(null); setQty(1);
       setPaymentMode("cash"); setPaymentRef(""); setNotes("");
@@ -982,7 +992,7 @@ function EmployeeSubsidyTab() {
 
   const canSubmit =
     !!empId && !!productId && (qty ?? 0) > 0 && !submit.isPending &&
-    (paymentMode === "cash" || paymentRef.trim().length > 0);
+    (paymentMode !== "upi" || paymentRef.trim().length > 0);
 
   // Keyboard: Ctrl+S to submit
   useEffect(() => {
@@ -1020,9 +1030,28 @@ function EmployeeSubsidyTab() {
               <SelectContent>
                 <SelectItem value="cash">Cash</SelectItem>
                 <SelectItem value="upi">UPI</SelectItem>
+                <SelectItem value="credit">Credit</SelectItem>
               </SelectContent>
             </Select>
           </Field>
+          {empId && (
+            <Field label="Available Credit">
+              <div className="flex items-baseline gap-2 h-8 px-2 rounded-sm border bg-muted/30">
+                {credit ? (
+                  <>
+                    <span className={`num text-[14px] font-semibold ${credit.availableCredit <= 0 ? "text-destructive" : ""}`}>
+                      {fmtINR(credit.availableCredit)}
+                    </span>
+                    <span className="text-[10.5px] text-muted-foreground whitespace-nowrap">
+                      of {fmtINR(credit.creditLimit)} limit
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground text-[12px] self-center">Loading…</span>
+                )}
+              </div>
+            </Field>
+          )}
           {paymentMode === "upi" && (
             <Field label="UPI Reference / Txn ID" required>
               <Input

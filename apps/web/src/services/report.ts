@@ -375,6 +375,41 @@ export const fetchTalukaAgent = (params: { from: string; to: string }) =>
   get<TalukaAgentResponse>("/reports/sales-reports/taluka-agent", params);
 
 // ═══════════════════════════════════════════════════════════════
+// B7b. Taluka Wise Report — milk (Ltrs) & curd (Kgs) by taluka
+//   3 pages: milk product matrix, curd product matrix, and a
+//   Total/Avg Milk + Total/Avg Curd summary per taluka.
+// ═══════════════════════════════════════════════════════════════
+export interface TalukaWiseRow {
+  taluka: string;
+  milkQty: Record<string, number>; // productId → litres
+  curdQty: Record<string, number>; // productId → kilograms
+  totalMilk: number; // Ltrs
+  avgMilk: number;   // Ltrs / day
+  totalCurd: number; // Kgs
+  avgCurd: number;   // Kgs / day
+}
+
+export interface TalukaWiseResponse {
+  from: string;
+  to: string;
+  numDays: number;
+  milkProducts: ProductLite[];
+  curdProducts: ProductLite[];
+  rows: TalukaWiseRow[];
+  totals: {
+    milkQty: Record<string, number>;
+    curdQty: Record<string, number>;
+    totalMilk: number;
+    avgMilk: number;
+    totalCurd: number;
+    avgCurd: number;
+  };
+}
+
+export const fetchTalukaWise = (params: { from: string; to: string }) =>
+  get<TalukaWiseResponse>("/reports/sales-reports/taluka-wise", params);
+
+// ═══════════════════════════════════════════════════════════════
 // B8. Adhoc Sales Abstract
 // ═══════════════════════════════════════════════════════════════
 export interface AdhocRow {
@@ -545,3 +580,24 @@ export interface DailySalesReportResponse {
 
 export const fetchDailySalesReport = (params: { date: string }) =>
   get<DailySalesReportResponse>("/reports/sales-reports/daily-sales-report", params);
+
+// ═══════════════════════════════════════════════════════════════
+// Monthly Sales Report — "MILK & CURD SALES REPORT" (whole month)
+// Same route × product cross-tab as the Daily Sales Report, but summed
+// across a calendar month with the previous month as the comparison.
+// Reuses the Daily column / row / group shapes.
+// ═══════════════════════════════════════════════════════════════
+export interface MonthlySalesReportResponse {
+  month: string;          // "YYYY-MM"
+  prevMonth: string;      // "YYYY-MM"
+  monthStart: string;     // ISO YYYY-MM-DD
+  monthEnd: string;       // ISO YYYY-MM-DD
+  prevMonthStart: string; // ISO YYYY-MM-DD
+  prevMonthEnd: string;   // ISO YYYY-MM-DD
+  columns: DailySalesReportColumn[];
+  groups: DailySalesReportGroup[];
+  total: DailySalesReportRow; // HVR grand total
+}
+
+export const fetchMonthlySalesReport = (params: { month: string }) =>
+  get<MonthlySalesReportResponse>("/reports/sales-reports/monthly-sales-report", params);

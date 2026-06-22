@@ -35,8 +35,46 @@ export async function employeesRoutes(app: FastifyInstance) {
       return reply.send({ data: rows });
     }
   );
- 
- 
+
+  // GET /api/v1/employees/:id/credit — single employee's credit snapshot.
+  // Same maths as Finance → Employee Credit, exposed to the Direct - Employee
+  // sale screen (employees.view) so staff can see available credit inline.
+  app.get(
+    "/api/v1/employees/:id/credit",
+    { preHandler: [adminAuth, requireRole("employees.view")] },
+    async (request, reply) => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+
+      const [row] = await pgClient`
+        SELECT
+          COALESCE(e.credit_limit, 0)::float8 AS "creditLimit",
+          (
+            COALESCE(e.opening_balance, 0)
+            + COALESCE((
+                SELECT SUM(CASE WHEN el.type = 'credit' THEN el.amount
+                                WHEN el.type = 'debit'  THEN -el.amount END)
+                  FROM employee_ledger el
+                 WHERE el.employee_id = e.id
+                   AND COALESCE(el.voucher_type, '') <> 'Opening'
+              ), 0)
+          )::float8 AS "closingBalance"
+        FROM employees e
+        WHERE e.id = ${id} AND e.deleted_at IS NULL
+      `;
+      if (!row) return reply.status(404).send({ error: "Employee not found" });
+
+      const creditLimit    = row.creditLimit as number;
+      const closingBalance = row.closingBalance as number;
+      return reply.send({
+        creditLimit,
+        closingBalance,
+        outstanding:     Math.max(0, -closingBalance),
+        availableCredit: Math.max(0, creditLimit + closingBalance),
+      });
+    }
+  );
+
+
   // ── NEW ───────────────────────────────────────────────────────────
   // POST /api/v1/employees/:id/route — assign employee to a route
   // Body: { routeId }

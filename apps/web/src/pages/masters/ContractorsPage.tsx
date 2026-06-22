@@ -283,10 +283,16 @@ function ContractorListTab({
                         <div className="flex flex-col gap-0.5">
                           {(c.routeIds ?? []).map(rid => {
                             const r = routeMap.get(rid);
+                            const rr = (c.routeRates ?? []).find(x => x.routeId === rid);
                             return (
                               <span key={rid} className="text-[12px]">
                                 <span className="font-mono">{r?.code ?? "?"}</span>
                                 {r?.name ? ` — ${r.name}` : ""}
+                                {rr && (rr.ratePerTrip > 0 || rr.totalKmPerDay > 0) && (
+                                  <span className="text-muted-foreground">
+                                    {" "}· ₹{rr.ratePerTrip}/trip · {rr.totalKmPerDay} km
+                                  </span>
+                                )}
                               </span>
                             );
                           })}
@@ -371,7 +377,23 @@ function ContractorListTab({
                 <Row label="Address" value={(viewing as any).address} />
                 <Row label="Routes" value={
                   ((viewing as any).routeIds ?? []).length
-                    ? ((viewing as any).routeIds as string[]).map(id => routeMap.get(id)?.code ?? id.slice(0, 6)).join(", ")
+                    ? (
+                        <div className="flex flex-col gap-0.5">
+                          {((viewing as any).routeIds as string[]).map(id => {
+                            const rr = ((viewing as any).routeRates ?? []).find((x: any) => x.routeId === id);
+                            return (
+                              <span key={id} className="text-[12.5px]">
+                                <span className="font-mono">{routeMap.get(id)?.code ?? id.slice(0, 6)}</span>
+                                {rr && (rr.ratePerTrip > 0 || rr.totalKmPerDay > 0) && (
+                                  <span className="text-muted-foreground">
+                                    {" "}· ₹{rr.ratePerTrip}/trip · {rr.totalKmPerDay} km
+                                  </span>
+                                )}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )
                     : "—"
                 } />
               </div>

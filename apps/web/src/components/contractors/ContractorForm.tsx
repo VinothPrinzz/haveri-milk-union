@@ -46,6 +46,11 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
     () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
     [routes]
   );
+  const routeById = useMemo(() => {
+    const m = new Map<string, { code: string; name: string }>();
+    routes.forEach((r: any) => m.set(r.id, { code: r.code, name: r.name }));
+    return m;
+  }, [routes]);
   const stateOptions: F9Option[] = useMemo(
     () => (mkt?.states ?? ["Karnataka"]).map(s => ({ value: s, label: s })),
     [mkt]
@@ -69,7 +74,6 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
           licenseNumber: initialData.licenseNumber ?? "",
           bankName: initialData.bankName ?? "",
           accountNo: initialData.accountNo ?? "",
-          ratePerKm: initialData.ratePerKm ?? 0,
           vehicleNumber: initialData.vehicleNumber ?? "",
           periodFrom: initialData.periodFrom ?? "",
           periodTo: initialData.periodTo ?? "",
@@ -80,14 +84,19 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
           houseNo: initialData.houseNo ?? "",
           street: initialData.street ?? "",
           address: initialData.address ?? "",
-          routeIds: initialData.routeIds ?? [],
+          routeRates:
+            initialData.routeRates ??
+            (initialData.routeIds ?? []).map(routeId => ({
+              routeId,
+              totalKmPerDay: 0,
+              ratePerTrip: 0,
+            })),
           active: initialData.status === "Active",
         }
       : {
           active: true,
           state: "Karnataka",
-          ratePerKm: 0,
-          routeIds: [],
+          routeRates: [],
         },
   });
 
@@ -106,6 +115,32 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
   );
 
   useSaveShortcut(() => submit(), !isSubmitting);
+
+  // ── Per-route pay editor ──
+  const routeRates = form.watch("routeRates") ?? [];
+
+  const handleRoutesChange = (newIds: string[]) => {
+    const byId = new Map((form.getValues("routeRates") ?? []).map(r => [r.routeId, r]));
+    form.setValue(
+      "routeRates",
+      newIds.map(id => byId.get(id) ?? { routeId: id, totalKmPerDay: 0, ratePerTrip: 0 }),
+      { shouldDirty: true }
+    );
+  };
+
+  const updateRouteRate = (
+    routeId: string,
+    key: "totalKmPerDay" | "ratePerTrip",
+    value: number
+  ) => {
+    form.setValue(
+      "routeRates",
+      (form.getValues("routeRates") ?? []).map(r =>
+        r.routeId === routeId ? { ...r, [key]: value } : r
+      ),
+      { shouldDirty: true }
+    );
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -208,27 +243,6 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
                   <FormItem>
                     <FormControl>
                       <Input className="erp-input" placeholder="Bank account number" {...field} />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-            </Field>
-
-            <Field label="Rate per Km (₹)" error={form.formState.errors.ratePerKm?.message}>
-              <FormField
-                control={form.control}
-                name="ratePerKm"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormControl>
-                      <Input
-                        className="erp-input"
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        {...field}
-                        onChange={e => field.onChange(parseFloat(e.target.value) || 0)}
-                      />
                     </FormControl>
                   </FormItem>
                 )}
@@ -398,26 +412,72 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
             </Field>
           </FormSection>
 
-          {/* Assign Routes + Active */}
+          {/* Assign Routes + per-route pay + Active */}
           <FormSection title="Assignment" cols={1}>
-            <Field label="Assign Routes" error={form.formState.errors.routeIds?.message}>
-              <FormField
-                control={form.control}
-                name="routeIds"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormControl>
-                      <F9SearchMultiSelect
-                        values={field.value ?? []}
-                        onChange={field.onChange}
-                        options={routeOptions}
-                        placeholder={isEdit ? "Click to manage routes" : "Press F9 to select routes"}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
+            <Field
+              label="Assign Routes"
+              error={(form.formState.errors.routeRates as any)?.message}
+            >
+              <F9SearchMultiSelect
+                values={routeRates.map(r => r.routeId)}
+                onChange={handleRoutesChange}
+                options={routeOptions}
+                placeholder={isEdit ? "Click to manage routes" : "Press F9 to select routes"}
               />
             </Field>
+
+            {routeRates.length > 0 && (
+              <Field label="Per-Route Pay">
+                <div className="erp-panel overflow-hidden">
+                  <table className="erp-table">
+                    <thead>
+                      <tr>
+                        <th>Route</th>
+                        <th style={{ width: 150 }}>Total Km/Day</th>
+                        <th style={{ width: 170 }}>Rate per Km/Trip (₹)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {routeRates.map(rr => {
+                        const r = routeById.get(rr.routeId);
+                        return (
+                          <tr key={rr.routeId}>
+                            <td className="text-[12.5px]">
+                              <span className="font-mono">{r?.code ?? rr.routeId.slice(0, 6)}</span>
+                              {r?.name ? ` — ${r.name}` : ""}
+                            </td>
+                            <td>
+                              <Input
+                                className="erp-input"
+                                type="number"
+                                min={0}
+                                step="0.1"
+                                value={rr.totalKmPerDay}
+                                onChange={e =>
+                                  updateRouteRate(rr.routeId, "totalKmPerDay", parseFloat(e.target.value) || 0)
+                                }
+                              />
+                            </td>
+                            <td>
+                              <Input
+                                className="erp-input"
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={rr.ratePerTrip}
+                                onChange={e =>
+                                  updateRouteRate(rr.routeId, "ratePerTrip", parseFloat(e.target.value) || 0)
+                                }
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Field>
+            )}
 
             <Field label="Active">
               <FormField

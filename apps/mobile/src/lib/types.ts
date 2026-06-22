@@ -162,11 +162,8 @@ export interface Order {
   grandTotal: number;
   itemCount: number;
   createdAt: string;
-  /** When the order was confirmed/placed — the anchor for the 30-min cancel window. */
+  /** When the order was confirmed/placed. */
   confirmedAt?: string | null;
-  cancellationStatus?: "pending" | "approved" | "rejected" | null;  // ← ADD
-  /** ISO timestamp until which the dealer can self-cancel without admin approval. */
-  cancelWindowEndsAt?: string | null;
   items: OrderItem[];
 }
 

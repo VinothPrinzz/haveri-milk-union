@@ -173,6 +173,83 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.send({ accessToken: newAccessToken, refreshToken: newRefreshToken });
   });
 
+  // POST /api/v1/auth/dealer/change-password
+  // Self-service: a dealer changes their OWN password from the login screen
+  // after proving they know their current one. No OTP / SMS — the dealer
+  // supplies username + current password + new password. This replaces the
+  // old "Forgot Password" link in the dealer app. Unauthenticated by design
+  // (the dealer isn't signed in when they use it); the current-password
+  // check is what authorises the change.
+  app.post("/api/v1/auth/dealer/change-password", async (request, reply) => {
+    const schema = z.object({
+      username: z.string().min(1),
+      currentPassword: z.string().min(1),
+      newPassword: z
+        .string()
+        .min(6, "New password must be at least 6 characters"),
+    });
+    const { username, currentPassword, newPassword } = schema.parse(
+      request.body
+    );
+
+    const [dealer] = await db
+      .select({
+        id: dealers.id,
+        passwordHash: dealers.passwordHash,
+        active: dealers.active,
+        deletedAt: dealers.deletedAt,
+      })
+      .from(dealers)
+      .where(and(eq(dealers.username, username), isNull(dealers.deletedAt)))
+      .limit(1);
+
+    // Same generic message as login so we don't leak which usernames exist.
+    if (!dealer || !dealer.active || dealer.deletedAt) {
+      return reply
+        .status(401)
+        .send({ error: "Unauthorized", message: "Invalid username or password" });
+    }
+
+    const valid = await comparePassword(
+      currentPassword,
+      dealer.passwordHash || ""
+    );
+    if (!valid) {
+      return reply
+        .status(401)
+        .send({ error: "Unauthorized", message: "Current password is incorrect" });
+    }
+
+    // Disallow reusing the same password.
+    const same = await comparePassword(newPassword, dealer.passwordHash || "");
+    if (same) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "New password must be different from your current password",
+      });
+    }
+
+    const newHash = await hashPassword(newPassword);
+    await db
+      .update(dealers)
+      .set({ passwordHash: newHash, updatedAt: new Date() })
+      .where(eq(dealers.id, dealer.id));
+
+    // Security: revoke every outstanding refresh token for this dealer so
+    // any device still signed in with the old password must re-authenticate.
+    await db
+      .update(dealerRefreshTokens)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(dealerRefreshTokens.dealerId, dealer.id),
+          isNull(dealerRefreshTokens.revokedAt)
+        )
+      );
+
+    return reply.status(200).send({ message: "Password changed successfully" });
+  });
+
   // ════════════════════════════════════════════
   // ADMIN AUTH — Email + Password, server-side sessions
   // ════════════════════════════════════════════

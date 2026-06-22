@@ -95,11 +95,16 @@ export {
   dealerLedgerRelations,
 } from "./ledger.js";
 
-// ── FGS Stock Log ──
+// ── FGS Stock Log + Stock Receipts ──
 export {
   fgsStockLog,
   fgsStockLogRelations,
+  stockReceipts,
+  stockReceiptsRelations,
 } from "./inventory.js";
+
+// ── Suppliers (stock vendors master) ──
+export { suppliers } from "./suppliers.js";
 
 // ── Distribution: Routes, Vehicles, Route Assignments ──
 export {

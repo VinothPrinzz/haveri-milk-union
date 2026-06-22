@@ -28,6 +28,12 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
+import {
+  getOrderStockShortfalls,
+  deductOrderStock,
+  describeShortfalls,
+  StockConflictError,
+} from "../lib/stock-check.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -562,6 +568,21 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       }
 
       const grandTotal = parseFloat(order.grand_total);
+
+      // ── Stock gate ── a hard physical limit: you can't dispatch milk you
+      // don't have, so this blocks even a forced confirm (force only
+      // overrides the credit line). The draft stays editable for trimming
+      // or a stock top-up, then re-confirm.
+      const shortfalls = await getOrderStockShortfalls(pgClient, order.id);
+      if (shortfalls.length > 0) {
+        return reply.status(409).send({
+          error: "Insufficient stock",
+          message: `Not enough stock for: ${describeShortfalls(shortfalls)}`,
+          orderId: order.id,
+          shortfalls,
+        });
+      }
+
       const credit = await checkDealerCredit(dealerId, grandTotal);
 
       // Over the credit line and not forced → surface the shortfall.
@@ -581,7 +602,11 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // ── Place the order AND post the finance ledger debit atomically.
+      // ── Place the order, deduct stock, AND post the finance ledger
+      //    debit atomically. A concurrent order draining stock after the
+      //    gate above makes the guarded deduction throw → full rollback,
+      //    order stays a draft.
+      try {
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
 
@@ -639,7 +664,21 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
              ${balanceAfter.toFixed(2)}::numeric,
              ${adminUserId(request)})
         `;
+
+        // Move physical stock last — its guard is what can abort the confirm.
+        await deductOrderStock(tx, order.id);
       });
+      } catch (err) {
+        if (err instanceof StockConflictError) {
+          return reply.status(409).send({
+            error: "Insufficient stock",
+            message: `Not enough stock for: ${describeShortfalls(err.shortfalls)}`,
+            orderId: order.id,
+            shortfalls: err.shortfalls,
+          });
+        }
+        throw err;
+      }
 
       return reply.send({
         orderId: order.id,

@@ -23,7 +23,7 @@ import LivePulseDot from "../components/LivePulseDot";
 import AppHeader from "../components/AppHeader";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
-import { useMyOrders, useCancelOrder, useReorder } from "../hooks/useOrders";
+import { useMyOrders, useReorder } from "../hooks/useOrders";
 import { useOrderPayment, RazorpayCancelled, RazorpayFailed } from "../hooks/useOrderPayment";
 import { useProducts } from "../hooks/useProducts";
 import { useMyInvoices, useInvoiceByOrder } from "../hooks/useInvoices";
@@ -97,7 +97,6 @@ export default function OrdersScreen({
   const [activeFilter, setActiveFilter] = useState<FilterId>("all");
   const [range, setRange] = useState<RangeId>("all");
   const [refreshing, setRefreshing] = useState(false);
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const { from, to } = rangeFor(range);
   const apiStatus = FILTERS.find((f) => f.id === activeFilter)?.apiStatus;
@@ -110,7 +109,6 @@ export default function OrdersScreen({
   });
 
   const invoicesQuery = useMyInvoices();
-  const cancelOrder = useCancelOrder();
   const reorder = useReorder();
   const invoiceByOrder = useInvoiceByOrder();
 
@@ -199,35 +197,6 @@ export default function OrdersScreen({
       const msg = err instanceof ApiError ? err.message : "Reorder failed.";
       Alert.alert("Error", msg);
     }
-  };
-
-  const handleCancel = (order: Order) => {
-    Alert.alert(
-      "Cancel Order?",
-      `Are you sure you want to cancel order #${order.id.slice(0, 8).toUpperCase()}?`,
-      [
-        { text: "Keep Order", style: "cancel" },
-        {
-          text: "Yes, Cancel",
-          style: "destructive",
-          onPress: async () => {
-            setCancellingId(order.id);
-            try {
-              await cancelOrder.mutateAsync({
-                orderId: order.id,
-                reason: "Dealer requested cancellation",
-              });
-              Alert.alert("Cancellation Requested", "Awaiting admin approval.");
-            } catch (err) {
-              const msg = err instanceof ApiError ? err.message : "Cancel failed.";
-              Alert.alert("Error", msg);
-            } finally {
-              setCancellingId(null);
-            }
-          },
-        },
-      ]
-    );
   };
 
   const handlePayNow = (orderId: string) => {
@@ -374,11 +343,9 @@ export default function OrdersScreen({
             key={order.id}
             order={order}
             productEmojis={emojiMapForOrder(order, products)}
-            cancelling={cancellingId === order.id}
             paying={payOrderId === order.id}
             onReorder={() => handleReorder(order.id)}
             onInvoice={() => handleViewInvoice(order.id)}
-            onCancel={() => handleCancel(order)}
             onPayNow={() => handlePayNow(order.id)}
           />
         )}
@@ -449,51 +416,23 @@ function ActiveOrderCard({ order, onInvoice }: ActiveOrderCardProps) {
 interface OrderCardProps {
   order: Order;
   productEmojis: Map<string, string>;
-  cancelling: boolean;
   paying?: boolean;
   onReorder: () => void;
   onInvoice: () => void;
-  onCancel: () => void;
   onPayNow?: () => void;
 }
 
 function OrderCard({
   order,
   productEmojis,
-  cancelling,
   paying = false,
   onReorder,
   onInvoice,
-  onCancel,
   onPayNow,
 }: OrderCardProps) {
   const chip = chipForStatus(order);
   const showPayNow = order.status === "payment_required";
 
-  // Cancellation is only offered inside the 30-min window (capped to the
-  // route's close time for same-day orders, server-side). Once the window
-  // lapses the button disappears and cancelling requires admin approval.
-  const eligibleToCancel =
-    order.status === "confirmed" &&
-    order.cancellationStatus !== "pending" &&
-    order.cancellationStatus !== "approved";
-  const deadlineMs = eligibleToCancel ? cancelDeadlineMs(order) : null;
-
-  // Re-render every 30s while the window is open so the button + note
-  // disappear right when it closes — without waiting for a manual refresh.
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (deadlineMs == null || Date.now() >= deadlineMs) return;
-    const id = setInterval(() => {
-      const t = Date.now();
-      setNowMs(t);
-      if (t >= deadlineMs) clearInterval(id);
-    }, 30_000);
-    return () => clearInterval(id);
-  }, [deadlineMs]);
-
-  const showCancel = deadlineMs != null && nowMs < deadlineMs;
-  const cancelDeadline = showCancel ? formatClock(deadlineMs) : null;
   // No invoice exists for unpaid (payment_required) orders yet.
   const showInvoice =
     order.status !== "cancelled" && order.status !== "payment_required";
@@ -571,31 +510,8 @@ function OrderCard({
               )}
             </TouchableOpacity>
           )}
-
-          {/* Updated Cancel Button Logic */}
-          {showCancel && (
-            <TouchableOpacity
-              onPress={onCancel}
-              disabled={cancelling}
-              activeOpacity={0.75}
-              style={[cardStyles.action, cardStyles.actionCancel]}
-            >
-              {cancelling ? (
-                <ActivityIndicator color={colors.destructive} size="small" />
-              ) : (
-                <Text style={[cardStyles.actionText, cardStyles.actionTextCancel]}>✕ Cancel</Text>
-              )}
-            </TouchableOpacity>
-          )}
         </View>
       </View>
-
-      {/* Cancel-window note — tells the dealer the cut-off time */}
-      {showCancel && cancelDeadline && (
-        <Text style={cardStyles.cancelNote}>
-          You can cancel this order until {cancelDeadline}.
-        </Text>
-      )}
     </View>
   );
 }
@@ -633,13 +549,6 @@ function isPaidStatus(o: Order): boolean {
 }
 
 function chipForStatus(order: Order) {   // ← Updated: now takes full Order
-  if (order.cancellationStatus === "pending") {
-    return {
-      label: "⏳ Cancellation Pending",
-      style: cardStyles.chipPending,
-      textStyle: cardStyles.chipTextPending,
-    };
-  }
   if (order.status === "cancelled") {
     return {
       label: "✕ Cancelled",
@@ -715,41 +624,6 @@ function formatRelativeDate(iso: string | null | undefined): string {
   const ampm = h >= 12 ? "PM" : "AM";
   h = h % 12 || 12;
   return `${label} · ${h}:${String(m).padStart(2, "0")} ${ampm}`;
-}
-
-// Dealer self-cancel window: 30 minutes from when the order was placed.
-const CANCEL_WINDOW_MS = 30 * 60 * 1000;
-
-// Effective cancel deadline as epoch ms. Prefers the server's
-// cancel_window_ends_at (which already caps the 30-min window to the
-// route's closing time for same-day orders). Falls back to
-// createdAt + 30 min when the server value is absent. null if neither.
-function cancelDeadlineMs(order: Order): number | null {
-  // Prefer the server's capped window (30 min from confirmation, limited to
-  // the route's close time for same-day orders) when present.
-  const serverWindow = parseServerDate(order.cancelWindowEndsAt);
-  if (serverWindow) return serverWindow.getTime();
-
-  // Fallback anchors on confirmation time — NOT created_at. A dated indent's
-  // row is created when the first item is added (often hours before the
-  // dealer confirms), so created_at + 30 min would already be in the past for
-  // same-day orders and hide Cancel immediately. confirmed_at is when the
-  // order was actually placed, which is what the 30-min window runs from.
-  const anchor =
-    parseServerDate(order.confirmedAt) ?? parseServerDate(order.createdAt);
-  if (anchor) return anchor.getTime() + CANCEL_WINDOW_MS;
-
-  return null;
-}
-
-// Clock time from epoch ms, e.g. "2:45 PM".
-function formatClock(ms: number): string {
-  const d = new Date(ms);
-  let h = d.getHours();
-  const m = d.getMinutes();
-  const ampm = h >= 12 ? "PM" : "AM";
-  h = h % 12 || 12;
-  return `${h}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 function emojiMapForOrder(order: Order, products: { id: string; icon: string | null }[]) {
@@ -1026,18 +900,9 @@ const cardStyles = StyleSheet.create({
   },
   actionReorder:    { backgroundColor: colors.primaryLight },
   actionInvoice:    { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
-  actionCancel:     { backgroundColor: colors.destructiveLight },
   actionPayNow:     { backgroundColor: colors.warningLight, borderWidth: 1, borderColor: colors.warningBorder },
   actionText:       { fontSize: 9, fontFamily: fonts.bold },
   actionTextReorder:{ color: colors.primary },
   actionTextInvoice:{ color: colors.mutedForeground },
-  actionTextCancel: { color: colors.destructive },
   actionTextPayNow: { color: colors.warning },
-  cancelNote: {
-    fontSize: 10,
-    fontFamily: fonts.medium,
-    color: colors.mutedForeground,
-    marginTop: 8,
-    textAlign: "right",
-  },
 });
