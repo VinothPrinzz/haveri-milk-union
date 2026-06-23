@@ -55,6 +55,7 @@ import {
 } from "../hooks/useDailyDraft";
 import { useOrderPayment } from "../hooks/useOrderPayment";
 import { RazorpayCancelled } from "../lib/razorpay";
+import { isMinQtyCategory, minQtyFor, snapQtyToMin } from "../lib/minOrderQty";
 import type { DraftItem, OrderStatus } from "../lib/types";
 
 interface IndentScreenProps {
@@ -222,7 +223,8 @@ export default function IndentScreen({
     // still allows changes (today's window not yet closed).
     if (!canModify) return;
     const current = items.find((i) => i.productId === productId);
-    const newQty = Math.max(0, qty);
+    // Milk/Curd carry a per-line minimum (6): snap 1–5 up to it; 0 removes.
+    const newQty = snapQtyToMin(Math.max(0, qty), current?.categoryName);
     const nextItems = items
       .map((i) => ({
         productId: i.productId,
@@ -506,6 +508,9 @@ function DraftRow({
         </Text>
         <Text style={styles.itemMeta}>
           ₹{item.unitPrice.toFixed(2)} · {item.unit}
+          {isMinQtyCategory(item.categoryName)
+            ? ` · min ${minQtyFor(item.categoryName)}`
+            : ""}
         </Text>
       </View>
       {disabled ? (

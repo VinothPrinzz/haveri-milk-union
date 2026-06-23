@@ -75,6 +75,16 @@ export function useOrderPayment(orderId: string) {
       // Refresh the Zustand profile (credit / outstanding may change).
       useAuthStore.getState().refreshProfile();
     },
+
+    onError: () => {
+      // Starting pay-now marks the order 'payment_required' (online
+      // intent) server-side, so even a CANCELLED or failed attempt has
+      // changed its status. Refetch the draft + orders so the UI shows
+      // "awaiting payment" instead of a stale editable draft (which would
+      // 409 on the next edit).
+      qc.invalidateQueries({ queryKey: qk.draft.all });
+      qc.invalidateQueries({ queryKey: qk.orders.all });
+    },
   });
 }
 

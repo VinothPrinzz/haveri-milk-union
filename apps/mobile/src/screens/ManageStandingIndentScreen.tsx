@@ -19,6 +19,7 @@ import {
   useEligibleProducts,
   useUpdateStandingIndent,
 } from "../hooks/useStandingIndent";
+import { isMinQtyCategory, minQtyFor, snapQtyToMin } from "../lib/minOrderQty";
 import type { EligibleProduct } from "../lib/types";
 
 /**
@@ -121,7 +122,14 @@ export default function ManageStandingIndentScreen({
   // so the dealer can type a default quantity directly instead of tapping +.
   const handleQtySet = (productId: string, qty: number) => {
     const cur = edits.get(productId);
-    const newQty = Math.max(0, Math.min(10_000, qty));
+    const categoryName = products.find(
+      (p) => p.productId === productId
+    )?.categoryName;
+    // Milk/Curd carry a per-line minimum (6): snap 1–5 up to it; 0 stays 0.
+    const newQty = snapQtyToMin(
+      Math.max(0, Math.min(10_000, qty)),
+      categoryName
+    );
     // Auto-flip active=true when qty goes from 0 → positive
     const wasZero = (cur?.defaultQty ?? 0) === 0;
     const isPositive = newQty > 0;
@@ -348,6 +356,9 @@ function ProductRow({
         </Text>
         <Text style={styles.rowMeta}>
           ₹{product.basePrice.toFixed(2)} · {product.unit}
+          {isMinQtyCategory(product.categoryName)
+            ? ` · min ${minQtyFor(product.categoryName)}`
+            : ""}
         </Text>
       </View>
 

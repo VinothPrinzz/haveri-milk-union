@@ -29,6 +29,7 @@ import {
 } from "../lib/razorpay-client.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 import { deductOrderStockCapped, describeShortfalls } from "../lib/stock-check.js";
+import { enqueuePDFInvoice } from "../lib/queue.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -139,7 +140,7 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
   amount: number;
   orderId: string | null;
 }> {
-  return await pgClient.begin(async (_tx) => {
+  const result = await pgClient.begin(async (_tx) => {
     const tx = _tx as unknown as typeof pgClient;
 
     const [row] = await tx`
@@ -301,6 +302,20 @@ async function applyPaidPayment(rzpRowId: string): Promise<{
       orderId: row.orderId,
     };
   });
+
+  // Online-paid orders need an invoice row so they appear in the admin
+  // "all invoices" list — the credit-confirm and cart paths already
+  // enqueue one. Fire after commit; a failure here must never fail the
+  // payment (the on-demand /invoices/by-order path is still a fallback).
+  if (!result.alreadyApplied && result.kind === "order_payment" && result.orderId) {
+    try {
+      await enqueuePDFInvoice(result.orderId);
+    } catch (err) {
+      console.warn("[pay-now] invoice enqueue failed:", err);
+    }
+  }
+
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -510,6 +525,24 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
           ${params.id}::uuid,
           ${JSON.stringify({ deliveryDate: order.deliveryDate })}::jsonb
         )
+      `;
+
+      // Mark the order as awaiting online payment the moment checkout
+      // starts. This is what stops an ABANDONED Razorpay sheet from
+      // leaving a plain credit 'draft' that the window-close auto-confirm
+      // would silently place on credit. Now an unfinished payment stays
+      // 'payment_required' (+ 'upi') — the dealer can retry from the
+      // Orders screen, and if it's still unpaid at window close the
+      // worker discards it. A successful pay flips it to 'confirmed'.
+      // Only a still-editable order (draft / already payment_required)
+      // is touched — never a confirmed one.
+      await pgClient`
+        UPDATE orders
+           SET status = 'payment_required',
+               payment_mode = 'upi',
+               updated_at = now()
+         WHERE id = ${params.id}::uuid
+           AND status IN ('draft', 'payment_required')
       `;
 
       return reply.status(201).send({

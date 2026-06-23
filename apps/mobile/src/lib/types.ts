@@ -240,6 +240,7 @@ export interface EligibleProduct {
   imageUrl: string | null;
   basePrice: number;
   gstPercent: number;
+  categoryName?: string | null;  // drives the Milk/Curd minimum-order-qty rule
   /** What's currently in the dealer's standing indent for this product (0 = not in) */
   currentDefaultQty: number;
   currentActive: boolean;
@@ -258,6 +259,7 @@ export interface DraftItem {
   icon: string | null;
   imageUrl: string | null;
   unit: string;
+  categoryName?: string | null;  // drives the Milk/Curd minimum-order-qty rule
 }
  
 export interface DraftTotals {

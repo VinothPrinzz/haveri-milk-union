@@ -18,6 +18,9 @@ import { Trash2, Plus, Send } from "lucide-react";
 import {
   fetchCustomers, fetchProducts, fetchRoutes, createIndent,
 } from "@/services/api";
+import {
+  violatesMinQty, findMinQtyViolations, minQtyMessage, MIN_ORDER_QTY,
+} from "@/lib/minOrderQty";
 
 interface Line {
   id: string;
@@ -148,6 +151,29 @@ export default function RecordIndentsPage() {
     };
   }, [lines, products, customer]);
 
+  const productById = useMemo(
+    () => new Map(products.map((p: any) => [p.id, p])),
+    [products]
+  );
+
+  // Lines that break the per-line Milk/Curd minimum (qty 1–5).
+  const minQtyViolations = useMemo(
+    () =>
+      findMinQtyViolations(
+        lines
+          .filter((l) => l.productId && (l.qty ?? 0) > 0)
+          .map((l) => {
+            const p: any = productById.get(l.productId);
+            return {
+              name: p?.name ?? "Item",
+              categoryName: p?.category,
+              quantity: l.qty ?? 0,
+            };
+          })
+      ),
+    [lines, productById]
+  );
+
   const addLine = () => setLines(ls => [...ls, { id: rid(), productId: "", qty: undefined }]);
   const removeLine = (id: string) => setLines(ls => ls.length === 1 ? ls : ls.filter(l => l.id !== id));
   const setLineProduct = (id: string, productId: string | null) =>
@@ -164,6 +190,11 @@ export default function RecordIndentsPage() {
         .map(l => ({ productId: l.productId, quantity: l.qty ?? 0 }));
 
       if (items.length === 0) throw new Error("Add at least one line");
+
+      // Per-line minimum order qty for Milk/Curd.
+      if (minQtyViolations.length > 0) {
+        throw new Error(minQtyMessage(minQtyViolations));
+      }
 
       // UPI Reference validation
       if (paymentMode === "upi" && !paymentRef.trim()) {
@@ -326,6 +357,8 @@ export default function RecordIndentsPage() {
               <tbody>
                 {lines.map((l, i) => {
                   const c = lineCalc(l);
+                  const p: any = productById.get(l.productId);
+                  const badQty = violatesMinQty(p?.category, l.qty ?? 0);
                   return (
                     <tr key={l.id}>
                       <td className="num">{i + 1}</td>
@@ -339,10 +372,11 @@ export default function RecordIndentsPage() {
                       </td>
                       <td>
                         <Input
-                          className="erp-input num text-right"
+                          className={`erp-input num text-right ${badQty ? "border-destructive text-destructive" : ""}`}
                           type="number" min="0" step="1"
+                          title={badQty ? `Milk & Curd require a minimum quantity of ${MIN_ORDER_QTY}` : undefined}
                           value={l.qty ?? ""}
-                          onChange={e => setLineQty(l.id, e.target.value === "" ? 
+                          onChange={e => setLineQty(l.id, e.target.value === "" ?
                             undefined : Math.max(0, parseInt(e.target.value) || 0))}
                         />
                       </td>
@@ -393,8 +427,13 @@ export default function RecordIndentsPage() {
       </div>
 
       <FormFooter>
+        {minQtyViolations.length > 0 && (
+          <span className="text-[12px] text-destructive mr-auto">
+            Milk &amp; Curd items must be ordered in {MIN_ORDER_QTY} or more.
+          </span>
+        )}
         <Button variant="outline" size="sm" className="h-8" onClick={() => navigate(-1)}>Cancel</Button>
-        <Button size="sm" className="h-8" disabled={submit.isPending} onClick={() => submit.mutate()}>
+        <Button size="sm" className="h-8" disabled={submit.isPending || minQtyViolations.length > 0} onClick={() => submit.mutate()}>
           {submit.isPending ? "Saving…" : (
             <span className="inline-flex items-center gap-1.5">
               <Send className="h-3.5 w-3.5" />

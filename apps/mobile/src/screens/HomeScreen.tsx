@@ -163,6 +163,7 @@ export default function HomeScreen({
     dealerPrice: p.dealerPrice,
     mrp: p.mrp,
     gstPercent: p.gstPercent,
+    categoryName: p.categoryName,
   });
 
   // Absolute-quantity setter — used by the ProductCard stepper's editable

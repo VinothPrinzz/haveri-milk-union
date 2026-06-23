@@ -32,6 +32,7 @@ import {
   patchDealerDraft,
   confirmDealerDraft,
 } from "@/services/api";
+import { violatesMinQty, MIN_ORDER_QTY } from "@/lib/minOrderQty";
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -40,10 +41,12 @@ function QtyStepper({
   value,
   onChange,
   disabled,
+  invalid,
 }: {
   value: number | undefined;
   onChange: (n: number | undefined) => void;
   disabled?: boolean;
+  invalid?: boolean;
 }) {
   return (
     <Input
@@ -51,10 +54,11 @@ function QtyStepper({
       min={0}
       value={value ?? ""}
       disabled={disabled}
+      title={invalid ? `Milk & Curd require a minimum quantity of ${MIN_ORDER_QTY}` : undefined}
       onChange={(e) =>
         onChange(e.target.value === "" ? undefined : Math.max(0, parseInt(e.target.value) || 0))
       }
-      className="erp-input num h-6 w-16 text-center px-1"
+      className={`erp-input num h-6 w-16 text-center px-1 ${invalid ? "border-destructive text-destructive" : ""}`}
       placeholder="—"
     />
   );
@@ -174,6 +178,26 @@ export default function DealerIndentsPage() {
   const credit = draft?.credit;
   const editable = draft?.editable ?? false;
 
+  // ── Per-line Milk/Curd minimum (6) guards ──
+  // Template: only ACTIVE lines auto-place, so only those are blocked.
+  const templateHasMinQtyViolation = useMemo(
+    () =>
+      (templateQuery.data?.items ?? []).some((it: any) => {
+        const row = template[it.productId];
+        return !!row?.active && violatesMinQty(it.categoryName, row.qty);
+      }),
+    [templateQuery.data, template]
+  );
+  // Draft: a draft can be saved with any qty, but it can't be CONFIRMED
+  // while a Milk/Curd line sits at 1–5.
+  const draftHasMinQtyViolation = useMemo(
+    () =>
+      (draft?.items ?? []).some((it: any) =>
+        violatesMinQty(it.categoryName, draftQty[it.productId] ?? 0)
+      ),
+    [draft, draftQty]
+  );
+
   const draftTotal = useMemo(() => {
     const items = draft?.items ?? [];
     let subtotal = 0;
@@ -268,7 +292,12 @@ export default function DealerIndentsPage() {
                 <Button
                   size="sm"
                   className="h-7"
-                  disabled={saveTemplate.isPending}
+                  disabled={saveTemplate.isPending || templateHasMinQtyViolation}
+                  title={
+                    templateHasMinQtyViolation
+                      ? `Milk & Curd require a minimum quantity of ${MIN_ORDER_QTY}`
+                      : undefined
+                  }
                   onClick={() => saveTemplate.mutate()}
                 >
                   <Save className="h-3.5 w-3.5 mr-1.5" />
@@ -313,6 +342,7 @@ export default function DealerIndentsPage() {
                             <div className="flex justify-center">
                               <QtyStepper
                                 value={row.qty}
+                                invalid={!!row.active && violatesMinQty(it.categoryName, row.qty)}
                                 onChange={(qty) =>
                                   setTemplate((p) => ({
                                     ...p,
@@ -377,7 +407,13 @@ export default function DealerIndentsPage() {
                     disabled={
                       !editable ||
                       confirmDraft.isPending ||
-                      draftTotal.grand <= 0
+                      draftTotal.grand <= 0 ||
+                      draftHasMinQtyViolation
+                    }
+                    title={
+                      draftHasMinQtyViolation
+                        ? `Milk & Curd require a minimum quantity of ${MIN_ORDER_QTY}`
+                        : undefined
                     }
                     onClick={() => confirmDraft.mutate(false)}
                   >
@@ -435,6 +471,7 @@ export default function DealerIndentsPage() {
                                 <QtyStepper
                                   value={q}
                                   disabled={!editable}
+                                  invalid={violatesMinQty(it.categoryName, q)}
                                   onChange={(quantity) =>
                                     setDraftQty((p) => ({
                                       ...p,

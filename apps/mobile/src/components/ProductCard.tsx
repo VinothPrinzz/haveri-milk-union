@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import { colors, fonts } from "../lib/theme";
 import type { Product } from "../lib/types";
+import { minQtyFor, snapQtyToMin } from "../lib/minOrderQty";
 import QtyStepper from "./QtyStepper";
 
 /**
@@ -101,6 +102,11 @@ export default function ProductCard({
 
   const imageTint = TINT_BY_CATEGORY[product.categoryName] ?? colors.background;
 
+  // Milk/Curd carry a per-line minimum order quantity (6). ADD jumps
+  // straight to the minimum, and the stepper snaps 1–5 back up to it.
+  const minQty = minQtyFor(product.categoryName);
+  const hasMinQty = minQty > 1;
+
   return (
     <View style={[styles.card, outOfStock && styles.cardDimmed]}>
       {/* Image block — full-width, tinted, takes the top of the card */}
@@ -144,11 +150,16 @@ export default function ProductCard({
         <View style={styles.bottomRow}>
           <View style={styles.priceCol}>
             <Text style={styles.price}>₹{displayedPrice}</Text>
+            {hasMinQty && (
+              <Text style={styles.minQtyHint}>Min {minQty}</Text>
+            )}
           </View>
 
           {quantity === 0 ? (
             <TouchableOpacity
-              onPress={onAdd}
+              onPress={() =>
+                hasMinQty && onSetQuantity ? onSetQuantity(minQty) : onAdd()
+              }
               disabled={outOfStock}
               activeOpacity={0.7}
               style={[styles.addBtn, outOfStock && styles.addBtnDisabled]}
@@ -168,13 +179,13 @@ export default function ProductCard({
             <QtyStepper
               value={quantity}
               max={product.stock}
-              onSet={(q) =>
-                onSetQuantity
-                  ? onSetQuantity(q)
-                  : q > quantity
-                  ? onAdd()
-                  : onRemove()
-              }
+              onSet={(q) => {
+                // Snap 1–5 up to the Milk/Curd minimum; 0 still removes.
+                const next = snapQtyToMin(q, product.categoryName);
+                if (onSetQuantity) onSetQuantity(next);
+                else if (next > quantity) onAdd();
+                else onRemove();
+              }}
               accessibilityLabel={`quantity for ${product.name}`}
             />
           )}
@@ -281,6 +292,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: fonts.bold,
     color: colors.foreground,
+  },
+  minQtyHint: {
+    fontSize: 9,
+    fontFamily: fonts.bold,
+    color: colors.mutedForeground,
+    marginTop: 1,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
   },
 
   // ── ADD button (outlined) ──

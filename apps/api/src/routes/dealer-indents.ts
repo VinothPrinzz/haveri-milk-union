@@ -25,6 +25,11 @@ import {
   describeShortfalls,
   StockConflictError,
 } from "../lib/stock-check.js";
+import {
+  findMinQtyViolations,
+  findOrderMinQtyViolations,
+  minQtyErrorMessage,
+} from "../lib/min-order-qty.js";
 import { enqueuePDFInvoice } from "../lib/queue.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -196,12 +201,14 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           p.image_url               AS "imageUrl",
           p.base_price::numeric     AS "basePrice",
           p.gst_percent::numeric    AS "gstPercent",
+          c.name                    AS "categoryName",
           COALESCE(dsi.default_qty, 0)  AS "currentDefaultQty",
           COALESCE(dsi.active, false)   AS "currentActive"
         FROM products p
         LEFT JOIN dealer_standing_indents dsi
                ON dsi.product_id = p.id
               AND dsi.dealer_id = ${dealerId}
+        LEFT JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
           AND p.available = true
           AND p.make_zero_in_indents = false
@@ -245,6 +252,22 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           error: "Ineligible products",
           message: "Some products are not eligible for the standing indent",
           ineligibleProductIds: ineligible,
+        });
+      }
+
+      // Per-line minimum order qty for Milk/Curd. Only ACTIVE lines with a
+      // positive default get auto-placed, so only those are checked — a 1–5
+      // default would auto-confirm into an order that breaks the rule.
+      const minQtyViolations = await findMinQtyViolations(
+        body.items
+          .filter((i) => i.active)
+          .map((i) => ({ productId: i.productId, quantity: i.defaultQty }))
+      );
+      if (minQtyViolations.length > 0) {
+        return reply.status(400).send({
+          error: "Minimum order quantity",
+          message: minQtyErrorMessage(minQtyViolations),
+          violations: minQtyViolations,
         });
       }
 
@@ -338,9 +361,11 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
             oi.line_total::numeric  AS "lineTotal",
             p.icon                  AS "icon",
             p.image_url             AS "imageUrl",
-            p.unit                  AS "unit"
+            p.unit                  AS "unit",
+            c.name                  AS "categoryName"
           FROM order_items oi
           JOIN products p ON p.id = oi.product_id
+          LEFT JOIN categories c ON c.id = p.category_id
           WHERE oi.order_id = ${order.id}::uuid
           ORDER BY p.sort_order, p.name
         `;
@@ -364,6 +389,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           icon: r.icon,
           imageUrl: r.imageUrl,
           unit: r.unit,
+          categoryName: r.categoryName ?? null,
         }));
         return reply.send({
           deliveryDate: params.date,
@@ -391,17 +417,19 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           p.icon                  AS "icon",
           p.image_url             AS "imageUrl",
           p.base_price::numeric   AS "unitPrice",
-          p.gst_percent::numeric  AS "gstPercent"
+          p.gst_percent::numeric  AS "gstPercent",
+          c.name                  AS "categoryName"
         FROM dealer_standing_indents dsi
         JOIN products p ON p.id = dsi.product_id
                        AND p.deleted_at IS NULL
                        AND p.available = true
+        LEFT JOIN categories c ON c.id = p.category_id
         WHERE dsi.dealer_id = ${dealerId}
           AND dsi.active = true
           AND dsi.default_qty > 0
         ORDER BY p.sort_order, p.name
       `;
-   
+
       let subtotal = 0;
       let totalGst = 0;
       const items = standing.map((r: any) => {
@@ -421,6 +449,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           icon: r.icon,
           imageUrl: r.imageUrl,
           unit: r.unit,
+          categoryName: r.categoryName ?? null,
         };
       });
    
@@ -667,6 +696,18 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         return reply.status(501).send({
           error: "Not implemented",
           message: "Use the dedicated pay-now endpoint for Razorpay payment.",
+        });
+      }
+
+      // ── Per-line minimum order qty gate (Milk/Curd) ── leave the order a
+      // draft so the dealer can bump the quantity to ≥6, then re-confirm.
+      const minQtyViolations = await findOrderMinQtyViolations(order.id);
+      if (minQtyViolations.length > 0) {
+        return reply.status(400).send({
+          error: "Minimum order quantity",
+          message: minQtyErrorMessage(minQtyViolations),
+          orderId: order.id,
+          violations: minQtyViolations,
         });
       }
 

@@ -36,6 +36,7 @@ function normalizeDailyDraft(raw: any): DailyDraft {
         icon: it?.icon ?? null,
         imageUrl: it?.imageUrl ?? null,
         unit: String(it?.unit ?? ""),
+        categoryName: it?.categoryName ?? null,
       }))
     : [];
   const t = raw?.totals ?? {};
