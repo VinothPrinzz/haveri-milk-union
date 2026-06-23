@@ -2196,6 +2196,7 @@ export interface AdminStandingIndentItem {
   basePrice: number;
   gstPercent: number;
   productAvailable: boolean;
+  categoryName?: string | null;
   defaultQty: number;
   active: boolean;
   inTemplate: boolean;
@@ -2211,6 +2212,7 @@ export interface AdminDraftItem {
   unit: string;
   icon: string | null;
   imageUrl: string | null;
+  categoryName?: string | null;
 }
 
 export interface CreditSnapshot {

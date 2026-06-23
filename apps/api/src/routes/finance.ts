@@ -5,6 +5,10 @@ import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
+import {
+  findMinQtyViolations,
+  minQtyErrorMessage,
+} from "../lib/min-order-qty.js";
 
 export async function financeRoutes(app: FastifyInstance) {
   // ═══ INVOICES ═══
@@ -466,6 +470,16 @@ export async function financeRoutes(app: FastifyInstance) {
       }
 
       const grandTotal = subtotal + totalGst;
+
+      // Per-line minimum order qty for Milk/Curd.
+      const minQtyViolations = await findMinQtyViolations(body.items);
+      if (minQtyViolations.length > 0) {
+        return reply.status(400).send({
+          error: "Minimum order quantity",
+          message: minQtyErrorMessage(minQtyViolations),
+          violations: minQtyViolations,
+        });
+      }
 
       // UPI Reference validation
       if (body.paymentMode === "upi" && !body.paymentReference?.trim()) {

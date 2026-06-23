@@ -1,10 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════════
 // apps/worker/src/jobs/auto-confirm-drafts.ts
 //
-// Runs every 5 minutes. For each route whose ordering window has just
-// closed, AUTO-PLACE today's indent for every active dealer on that
-// route — driven by the dealer's standing indent, not by whether a
-// draft row happens to exist yet.
+// Runs every 5 minutes. For each route that has reached the WARNING
+// point of its ordering window (close_time − warning_minutes), AUTO-PLACE
+// today's indent for every active dealer on that route — driven by the
+// dealer's standing indent, not by whether a draft row happens to exist
+// yet. It keeps re-checking each tick through ~15 min past close.
+//
+// An order the dealer started paying online for (payment_required +
+// payment_mode='upi') is NEVER placed on credit; if it's still unpaid
+// once close_time has passed, it is discarded (cancelled). The dealer
+// had until window close to complete payment.
 //
 // WHY THIS IS STANDING-INDENT-DRIVEN (and not "confirm existing drafts"):
 //   The old version only confirmed orders that were already
@@ -17,12 +23,13 @@
 //   materialises-then-confirms when a row is missing.
 //
 // Per dealer, for today's delivery_date:
-//   • Most-recent order is 'draft'        → credit-check → confirm / payment_required
-//   • Most-recent order is already placed → skip (confirmed/payment_required/…)
-//   • Most-recent order is 'cancelled'    → skip (respect the cancellation)
-//   • No order at all + active standing    → materialise from standing → confirm
-//   • No order + no standing indent        → skip (nothing to place)
-//   • Dealer paused for today              → skip
+//   • Most-recent order is 'draft'            → stock+credit-check → confirm / payment_required
+//   • payment_required + 'upi' & past close   → discard (online pay never completed)
+//   • Most-recent order is already placed     → skip (confirmed/dispatched/…)
+//   • Most-recent order is 'cancelled'        → skip (respect the cancellation)
+//   • No order at all + active standing       → materialise from standing → confirm
+//   • No order + no standing indent           → skip (nothing to place)
+//   • Dealer paused for today                 → skip
 //
 // Confirm logic mirrors POST /drafts/:date/confirm in dealer-indents.ts
 // EXACTLY, including the dealer_ledger debit — so an auto-placed order
@@ -117,6 +124,27 @@ async function workerStockShortfalls(
   }));
 }
 
+// Per-line minimum order quantity for restricted categories (Milk/Curd).
+// Mirror of apps/api/src/lib/min-order-qty.ts — kept in sync because the
+// worker is its own package. An order line is a violation when its product
+// is in a restricted category AND 0 < quantity < 6.
+const WORKER_MIN_ORDER_QTY = 6;
+
+/** Names (lowercased) of order lines that break the per-line Milk/Curd minimum. */
+async function workerMinQtyViolations(orderId: string): Promise<string[]> {
+  const rows = await sql`
+    SELECT oi.product_name AS name
+      FROM order_items oi
+      JOIN products p   ON p.id = oi.product_id
+      JOIN categories c ON c.id = p.category_id
+     WHERE oi.order_id = ${orderId}::uuid
+       AND oi.quantity > 0
+       AND oi.quantity < ${WORKER_MIN_ORDER_QTY}
+       AND lower(c.name) IN ('milk', 'curd')
+  `;
+  return (rows as any[]).map((r) => r.name as string);
+}
+
 // Thrown when a line can't be satisfied during the guarded deduction
 // (a concurrent confirm drained stock). Rolls the confirm transaction back.
 class WorkerStockConflict extends Error {
@@ -191,6 +219,7 @@ interface RouteRow {
   id: string;
   name: string;
   close_time: string; // "HH:MM:SS"
+  window_closed: boolean; // now() is at/after close_time (vs. only warning)
 }
 
 interface DealerRow {
@@ -201,6 +230,7 @@ interface DealerRow {
   notifications_enabled: boolean;
   order_id: string | null;
   order_status: string | null;
+  payment_mode: string | null; // 'credit' | 'upi' | … — 'upi' = online-pay intent
   grand_total: string | null; // numeric → string
   item_count: number | null;
   paused: boolean;
@@ -221,42 +251,57 @@ export async function processAutoConfirmDrafts(_job: Job) {
   const todayIso = istTodayIso();
   const nowIstTime = istNow().toISOString().slice(11, 19); // "HH:MM:SS"
 
-  // Routes whose close_time elapsed within the last ~15 minutes.
-  // Lower bound is inclusive and generous so a close_time on the cron
-  // boundary (e.g. 08:00 with a */5 cron) is never missed.
-  const routesWithClosedWindows: RouteRow[] = await sql`
+  // Routes that have reached the WARNING point of their window
+  // (close_time − warning_minutes) and up to ~15 min past close.
+  // Standing-indent auto-confirm fires from the warning time so today's
+  // indents are locked in at the warning point — not only at close.
+  // Re-processing on each 5-min tick through close+15 is safe: every
+  // write is status-guarded, so a dealer confirms at most once.
+  //   • window_closed = false → warning reached, window still open:
+  //     confirm standing-indent drafts only.
+  //   • window_closed = true  → past close: also discard still-unpaid
+  //     online-payment (payment_required + 'upi') orders.
+  const dueRoutes: RouteRow[] = await sql`
     SELECT
       r.id::text          AS id,
       r.name              AS name,
-      tw.close_time::text AS close_time
+      tw.close_time::text AS close_time,
+      (${nowIstTime}::time >= tw.close_time) AS window_closed
     FROM routes r
     JOIN time_windows tw ON tw.route_id = r.id
     WHERE tw.active = true
-      AND tw.close_time <= ${nowIstTime}::time
-      AND tw.close_time >  (${nowIstTime}::time - interval '15 minutes')
+      AND (tw.close_time - make_interval(mins => tw.warning_minutes)) <= ${nowIstTime}::time
+      AND ${nowIstTime}::time < (tw.close_time + interval '15 minutes')
   `;
 
-  if (routesWithClosedWindows.length === 0) {
+  if (dueRoutes.length === 0) {
     return { routesMatched: 0, confirmed: 0, paymentRequired: 0, materialized: 0 };
   }
 
   console.log(
-    `[AutoConfirm] ${routesWithClosedWindows.length} route(s) just closed:`,
-    routesWithClosedWindows.map((r) => `${r.name}@${r.close_time}`).join(", ")
+    `[AutoConfirm] ${dueRoutes.length} route(s) due (warning→close):`,
+    dueRoutes
+      .map((r) => `${r.name}@${r.close_time}${r.window_closed ? "(closed)" : "(warning)"}`)
+      .join(", ")
   );
 
   let confirmed = 0;
   let paymentRequired = 0;
   let stockBlocked = 0;
+  let minQtyBlocked = 0;
   let materialized = 0;
   let cancelledEmpty = 0;
+  let discardedUnpaid = 0;
   let skipped = 0;
   let failed = 0;
 
   // Tally a confirm outcome into the right counter.
-  const tally = (outcome: "confirmed" | "payment_required" | "stock_blocked") => {
+  const tally = (
+    outcome: "confirmed" | "payment_required" | "stock_blocked" | "min_qty_blocked"
+  ) => {
     if (outcome === "confirmed") confirmed++;
     else if (outcome === "payment_required") paymentRequired++;
+    else if (outcome === "min_qty_blocked") minQtyBlocked++;
     else stockBlocked++;
   };
 
@@ -349,7 +394,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
     dealer: DealerRow,
     orderId: string,
     grandTotal: number
-  ): Promise<"confirmed" | "payment_required" | "stock_blocked"> {
+  ): Promise<"confirmed" | "payment_required" | "stock_blocked" | "min_qty_blocked"> {
     // Notify the dealer their indent is on hold (best-effort).
     const sendStockBlockedNotice = async (names: string) => {
       if (dealer.notifications_enabled && dealer.fcm_token) {
@@ -366,6 +411,18 @@ export async function processAutoConfirmDrafts(_job: Job) {
           );
       }
     };
+
+    // ── Min-qty gate ── never auto-confirm a Milk/Curd line below the
+    // minimum (6). Leave the order a draft so the dealer/admin can bump
+    // the standing-indent default to ≥6, then it re-confirms.
+    const minQtyNames = await workerMinQtyViolations(orderId);
+    if (minQtyNames.length > 0) {
+      console.warn(
+        `[AutoConfirm] min-qty-blocked order=${orderId} dealer=${dealer.dealer_id}: ` +
+          `${minQtyNames.join(", ")} below ${WORKER_MIN_ORDER_QTY}`
+      );
+      return "min_qty_blocked";
+    }
 
     // ── Stock gate ── never auto-confirm what we can't physically deliver.
     // Leave the order a draft for manual resolution (a stock entry or a
@@ -501,7 +558,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
   }
 
   // ── Per-route → per-dealer ─────────────────────────────────────────
-  for (const route of routesWithClosedWindows) {
+  for (const route of dueRoutes) {
     // Every active dealer on this route, with their most-recent order
     // for today (any status), pause flag, and whether they have an
     // active standing indent. One pass, no N+1 for the decision.
@@ -514,6 +571,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
         d.notifications_enabled AS notifications_enabled,
         o.id::text              AS order_id,
         o.status::text          AS order_status,
+        o.payment_mode::text    AS payment_mode,
         o.grand_total::numeric::text AS grand_total,
         o.item_count            AS item_count,
         (pause.dealer_id IS NOT NULL) AS paused,
@@ -525,7 +583,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
         ) AS has_standing
       FROM dealers d
       LEFT JOIN LATERAL (
-        SELECT o2.id, o2.status, o2.grand_total, o2.item_count
+        SELECT o2.id, o2.status, o2.payment_mode, o2.grand_total, o2.item_count
           FROM orders o2
          WHERE o2.dealer_id = d.id
            AND o2.delivery_date = ${todayIso}::date
@@ -579,7 +637,47 @@ export async function processAutoConfirmDrafts(_job: Job) {
           continue;
         }
 
-        // ── Already placed / cancelled → leave it alone ──────────────
+        // ── Unpaid online-payment intent at/after close → discard ────
+        // The dealer hit "Pay online" (so the order is payment_required
+        // + 'upi') but never completed payment. They had until close to
+        // pay; now the window has shut, so discard it instead of ever
+        // placing it on credit. Only fires once close_time has passed.
+        if (
+          status === "payment_required" &&
+          dealer.payment_mode === "upi" &&
+          route.window_closed &&
+          dealer.order_id
+        ) {
+          const cancelled = await sql`
+            UPDATE orders
+               SET status = 'cancelled',
+                   cancellation_reason = 'Online payment not completed before window close',
+                   cancelled_at = now(),
+                   updated_at = now()
+             WHERE id = ${dealer.order_id}::uuid
+               AND status = 'payment_required'
+               AND payment_mode = 'upi'
+          `;
+          if (cancelled.count > 0) {
+            discardedUnpaid++;
+            if (dealer.notifications_enabled && dealer.fcm_token) {
+              await notifQueue
+                .add("indent-discarded", {
+                  event: "custom" as const,
+                  dealerId: dealer.dealer_id,
+                  orderId: dealer.order_id,
+                  title: "Indent not placed — payment incomplete",
+                  body: "Your online payment wasn't completed before the window closed, so today's indent wasn't placed.",
+                })
+                .catch((e) =>
+                  console.warn(`[AutoConfirm] notif failed for ${dealer.order_id}:`, e?.message)
+                );
+            }
+          }
+          continue;
+        }
+
+        // ── Already placed / cancelled / awaiting payment → leave alone ─
         if (status !== null) {
           skipped++;
           continue;
@@ -753,7 +851,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
     return "confirmed";
   }
 
-  for (const route of routesWithClosedWindows) {
+  for (const route of dueRoutes) {
     const emps: Array<{
       employee_id: string; order_id: string | null; order_status: string | null;
       grand_total: string | null; item_count: number | null; has_standing: boolean;
@@ -826,12 +924,14 @@ export async function processAutoConfirmDrafts(_job: Job) {
   // Shared queues are long-lived — closed once on worker shutdown.
 
   const summary = {
-    routesMatched: routesWithClosedWindows.length,
+    routesMatched: dueRoutes.length,
     confirmed,
     paymentRequired,
     stockBlocked,
+    minQtyBlocked,
     materialized,
     cancelledEmpty,
+    discardedUnpaid,
     skipped,
     failed,
     employees: {

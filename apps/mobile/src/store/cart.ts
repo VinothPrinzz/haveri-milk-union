@@ -9,6 +9,7 @@ interface CartProduct {
   dealerPrice?: number;   // Dealer-Price (gross) — shown to the dealer
   mrp: number;
   gstPercent: number;
+  categoryName?: string;  // drives the Milk/Curd minimum-order-qty rule
 }
 
 interface CartItem extends CartProduct {

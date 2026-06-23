@@ -16,6 +16,12 @@ import { useOrderPayment } from "../hooks/useOrderPayment";
 import { RazorpayCancelled, RazorpayFailed } from "../lib/razorpay";
 import { uiPaymentToBackend, type UiPaymentMethod } from "../lib/types";
 import { ApiError } from "../lib/api";
+import {
+  isMinQtyCategory,
+  MIN_ORDER_QTY,
+  findMinQtyViolations,
+  minQtyMessage,
+} from "../lib/minOrderQty";
 
 /**
  * IndentCart - the full cart review screen (spec section 6.8).
@@ -89,6 +95,7 @@ export default function IndentCart({
   const grandTotal  = useCartStore((s) => s.getGrandTotal());
   const addItem     = useCartStore((s) => s.addItem);
   const removeItem  = useCartStore((s) => s.removeItem);
+  const setQuantity = useCartStore((s) => s.setQuantity);
   const clearCart   = useCartStore((s) => s.clearCart);
 
   const placeOrder = usePlaceOrder();
@@ -111,6 +118,19 @@ export default function IndentCart({
   // ── Submit ────────────────────────────────────────────────────────
   const handleSubmit = async () => {
     if (isEmpty || submitting) return;
+
+    // Per-line minimum order qty (Milk/Curd) — block before hitting the API.
+    const minQtyViolations = findMinQtyViolations(
+      items.map((i) => ({
+        name: i.name,
+        categoryName: i.categoryName,
+        quantity: i.quantity,
+      }))
+    );
+    if (minQtyViolations.length > 0) {
+      Alert.alert("Minimum order quantity", minQtyMessage(minQtyViolations));
+      return;
+    }
 
     const backendMode = uiPaymentToBackend(selectedPay);
 
@@ -277,7 +297,18 @@ export default function IndentCart({
               <TouchableOpacity
                 style={[styles.ciBtn, styles.ciBtnActive]}
                 activeOpacity={0.6}
-                onPress={() => removeItem(item.id)}
+                onPress={() => {
+                  // Milk/Curd can't sit at 1–5: stepping below the minimum
+                  // removes the item rather than leaving an invalid quantity.
+                  if (
+                    isMinQtyCategory(item.categoryName) &&
+                    item.quantity <= MIN_ORDER_QTY
+                  ) {
+                    setQuantity(item.id, 0);
+                  } else {
+                    removeItem(item.id);
+                  }
+                }}
                 accessibilityLabel={`Decrease ${item.name}`}
               >
                 <Text style={styles.ciBtnIconActive}>−</Text>

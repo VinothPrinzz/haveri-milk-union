@@ -14,6 +14,10 @@ import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { signInvoicePdfToken, verifyInvoicePdfToken } from "../lib/auth.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
 import { adminCancelOrder, RefundError } from "../lib/cancel-order.js";
+import {
+  findMinQtyViolations,
+  minQtyErrorMessage,
+} from "../lib/min-order-qty.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
 
@@ -119,6 +123,16 @@ export async function orderRoutes(app: FastifyInstance) {
             message: `${product.name} has only ${product.stock} units available`,
           });
         }
+      }
+
+      // ── 2b. Enforce per-line minimum order qty for Milk/Curd ──
+      const minQtyViolations = await findMinQtyViolations(body.items);
+      if (minQtyViolations.length > 0) {
+        return reply.status(400).send({
+          error: "Minimum order quantity",
+          message: minQtyErrorMessage(minQtyViolations),
+          violations: minQtyViolations,
+        });
       }
 
       // ── 3. Calculate totals with GST ──
@@ -765,6 +779,18 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(409).send({ error: `Cannot modify ${existing.status} order` });
       }
 
+      // Per-line minimum order qty for Milk/Curd (only lines being kept).
+      const modMinQtyViolations = await findMinQtyViolations(
+        body.items.filter((i) => i.quantity > 0)
+      );
+      if (modMinQtyViolations.length > 0) {
+        return reply.status(400).send({
+          error: "Minimum order quantity",
+          message: minQtyErrorMessage(modMinQtyViolations),
+          violations: modMinQtyViolations,
+        });
+      }
+
       const productIds = body.items.filter(i => i.quantity > 0).map(i => i.productId);
       const productRows = productIds.length
         ? await pgClient`SELECT id, name, base_price, gst_percent, stock FROM products WHERE id = ANY(${productIds}::uuid[])`
@@ -1102,11 +1128,16 @@ export async function orderRoutes(app: FastifyInstance) {
     "/api/v1/admin/invoices/backfill",
     { preHandler: [adminAuth, requireRole("orders.update")] },
     async (_request, reply) => {
+      // Every confirmed/dispatched/delivered order should have an invoice
+      // — including online (upi) ones, which only reach 'confirmed' AFTER
+      // payment is captured, so they're genuinely paid. (The old query
+      // excluded upi back when online invoices were on-demand only; pay-now
+      // now enqueues one at capture, so a missing-upi invoice is just a
+      // pre-fix gap to recover here.)
       const missing = await pgClient`
         SELECT o.id::text AS id
         FROM orders o
         WHERE o.status IN ('confirmed', 'dispatched', 'delivered')
-          AND o.payment_mode != 'upi'
           AND NOT EXISTS (
             SELECT 1 FROM invoices i WHERE i.order_id = o.id
           )

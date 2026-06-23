@@ -8,6 +8,7 @@
 import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   SectionList,
   StyleSheet,
   Text,
@@ -29,6 +30,11 @@ function dealerPriceOf(p: Product): number {
   return Number(p.dealerPrice ?? p.mrp ?? p.basePrice ?? 0) || 0;
 }
 
+/** MRP (sticker price). 0 when the backend doesn't supply one. */
+function mrpOf(p: Product): number {
+  return Number(p.mrp ?? 0) || 0;
+}
+
 /** Whole rupees → no decimals; fractional → 2dp. */
 function formatPrice(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
@@ -37,6 +43,51 @@ function formatPrice(value: number): string {
 interface Section {
   title: string;
   data: Product[];
+}
+
+/**
+ * A single product row. Extracted into its own component so each row can
+ * own the image-load-error state needed to fall back to the emoji icon.
+ */
+function PriceRow({ item, isLast }: { item: Product; isLast: boolean }) {
+  const [imageError, setImageError] = useState(false);
+
+  const dealerPrice = dealerPriceOf(item);
+  const mrp = mrpOf(item);
+  // Only surface the MRP when it's meaningfully above the dealer price —
+  // showing "MRP ₹100 / ₹100" would just be noise.
+  const showMrp = mrp > 0 && mrp > dealerPrice;
+  const hasImage = !!item.imageUrl && !imageError;
+
+  return (
+    <View style={[styles.row, isLast && styles.rowLast]}>
+      <View style={styles.rowThumb}>
+        {hasImage ? (
+          <Image
+            source={{ uri: item.imageUrl! }}
+            style={styles.rowThumbImage}
+            resizeMode="contain"
+            onError={() => setImageError(true)}
+            accessibilityIgnoresInvertColors
+          />
+        ) : (
+          <Text style={styles.rowEmoji}>{item.icon ?? "📦"}</Text>
+        )}
+      </View>
+      <View style={styles.rowBody}>
+        <Text style={styles.rowName} numberOfLines={2}>
+          {item.name}
+        </Text>
+        <Text style={styles.rowUnit}>{item.unit}</Text>
+      </View>
+      <View style={styles.priceCol}>
+        {showMrp ? (
+          <Text style={styles.rowMrp}>MRP ₹{formatPrice(mrp)}</Text>
+        ) : null}
+        <Text style={styles.rowPrice}>₹{formatPrice(dealerPrice)}</Text>
+      </View>
+    </View>
+  );
 }
 
 export default function PriceChartScreen({ onBack }: PriceChartScreenProps) {
@@ -160,23 +211,7 @@ export default function PriceChartScreen({ onBack }: PriceChartScreenProps) {
             </View>
           )}
           renderItem={({ item, index, section }) => (
-            <View
-              style={[
-                styles.row,
-                index === section.data.length - 1 && styles.rowLast,
-              ]}
-            >
-              <View style={styles.rowThumb}>
-                <Text style={styles.rowEmoji}>{item.icon ?? "📦"}</Text>
-              </View>
-              <View style={styles.rowBody}>
-                <Text style={styles.rowName} numberOfLines={2}>
-                  {item.name}
-                </Text>
-                <Text style={styles.rowUnit}>{item.unit}</Text>
-              </View>
-              <Text style={styles.rowPrice}>₹{formatPrice(dealerPriceOf(item))}</Text>
-            </View>
+            <PriceRow item={item} isLast={index === section.data.length - 1} />
           )}
           ListEmptyComponent={
             <View style={styles.center}>
@@ -294,7 +329,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
+  rowThumbImage: { width: "100%", height: "100%" },
   rowEmoji: { fontSize: 18 },
   rowBody: { flex: 1 },
   rowName: {
@@ -308,6 +345,14 @@ const styles = StyleSheet.create({
     fontFamily: fonts.medium,
     color: colors.mutedForeground,
     marginTop: 1,
+  },
+  priceCol: { alignItems: "flex-end" },
+  rowMrp: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    color: colors.mutedForeground,
+    textDecorationLine: "line-through",
+    marginBottom: 1,
   },
   rowPrice: {
     fontSize: 14,
