@@ -729,7 +729,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
   ): Promise<{ orderId: string; grandTotal: number } | null> {
     const items: Array<{
       product_id: string; default_qty: number; name: string;
-      base_price: string; gst_percent: string; subsidy_percent: string;
+      base_price: string; gst_percent: string; subsidy_price: string;
     }> = await sql`
       SELECT
         esi.product_id::text         AS product_id,
@@ -737,7 +737,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
         p.name                       AS name,
         p.base_price::numeric::text  AS base_price,
         p.gst_percent::numeric::text AS gst_percent,
-        r.subsidy_percent::numeric::text AS subsidy_percent
+        r.subsidy_price::numeric::text AS subsidy_price
       FROM employee_standing_indents esi
       JOIN products p ON p.id = esi.product_id
                      AND p.deleted_at IS NULL AND p.available = true
@@ -752,19 +752,21 @@ export async function processAutoConfirmDrafts(_job: Job) {
     let itemCount = 0;
     const lines = items.map((it) => {
       const mrp = parseFloat(it.base_price);
-      const subsidyPct = parseFloat(it.subsidy_percent);
+      const empPrice = parseFloat(it.subsidy_price);   // GST-inclusive employee price
       const gstPct = parseFloat(it.gst_percent);
-      const unitPrice = round2(mrp * (1 - subsidyPct / 100));
-      const lineSub = unitPrice * it.default_qty;
-      const lineGst = lineSub * (gstPct / 100);
+      const unitPrice = round2(empPrice / (1 + gstPct / 100));
+      const lineTotal = round2(empPrice * it.default_qty);
+      const lineSub = round2(unitPrice * it.default_qty);
+      const lineGst = round2(lineTotal - lineSub);
+      const effPct = mrp > 0 ? round2((1 - unitPrice / mrp) * 100) : 0;
       subtotal += lineSub;
       totalGst += lineGst;
       itemCount += it.default_qty;
       return {
         product_id: it.product_id, name: it.name, default_qty: it.default_qty,
         unitPrice: unitPrice.toFixed(2), gst_percent: gstPct.toFixed(2),
-        gstAmount: lineGst.toFixed(2), lineTotal: (lineSub + lineGst).toFixed(2),
-        subsidy_percent: subsidyPct.toFixed(2), mrp_reference: mrp.toFixed(2),
+        gstAmount: lineGst.toFixed(2), lineTotal: lineTotal.toFixed(2),
+        subsidy_percent: effPct.toFixed(2), mrp_reference: mrp.toFixed(2),
       };
     });
     const grandTotal = round2(subtotal + totalGst);

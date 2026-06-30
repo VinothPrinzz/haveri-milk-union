@@ -67,10 +67,22 @@ function fmtCratePkts(crates: number, pktPlus: number, pktMinus: number): string
   return `${crates}`;
 }
 
-// ── Helper: convert packets × pack_size → Kg or Ltr ───────────────
-// pack_size is seeded (migration 0006) from the leading number of the
-// unit text: "500ml Pouch"→500 (÷1000), "5KG Bucket"→5 (×1).
-function computeKgLtr(packets: number, packSize: number, unit: string): number {
+// ── Helper: convert packets × pack size → Kg or Ltr ───────────────
+// The per-pack size is read from the product name (alias) when it carries
+// an explicit size token — e.g. "HTM 1000ML" → 1 L/pack, "100 GM" → 0.1
+// Kg/pack. This is the source of truth because products.pack_size is stored
+// inconsistently (ml/g for some, already Kg/Ltr for others). ml/g convert
+// ÷1000; Kg/Ltr/L are used as-is. Falls back to the legacy pack_size +
+// unit-keyword heuristic only when the name has no size token.
+function computeKgLtr(packets: number, packSize: number, unit: string, alias = ""): number {
+  const m = alias.match(/(\d+(?:\.\d+)?)\s*(kg|kilogram|ltr|litre|liter|ml|gm|g|l)\b/i);
+  if (m) {
+    const size = parseFloat(m[1]);
+    const u = m[2].toLowerCase();
+    const perPack = (u === "ml" || u === "g" || u === "gm") ? size / 1000 : size;
+    return packets * perPack;
+  }
+  // Legacy fallback: pack_size with unit-keyword macro detection.
   const u = unit.toLowerCase();
   const alreadyMacro = /kg/.test(u) || /ltr|litre|liter/.test(u);
   return alreadyMacro ? packets * packSize : packets * packSize / 1000;
@@ -340,7 +352,21 @@ function GatePassRowsPage({
               ))}
               <td className="others-cell">
                 {(c.othersText ?? "")
-                  .split(",").map(s => s.trim()).filter(Boolean).join("\n")}
+                  .split(",").map(s => s.trim()).filter(Boolean)
+                  .map((line, li) => {
+                    const [namePart, qtyPart] = line.split("→");
+                    return (
+                      <div key={li}>
+                        {namePart?.trim()}
+                        {qtyPart !== undefined && (
+                          <>
+                            <span className="others-arrow">→</span>
+                            {qtyPart.trim()}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
               </td>
               <td className="num">{fmtNum(c.crates)}</td>
               <td className="num">{fmtINR(c.netAmount)}</td>
@@ -404,7 +430,7 @@ function AbstractPage({
   const items = route.abstract.items;
   const t = route.abstract.totals;
 
-  const totalKgLtr = items.reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit), 0);
+  const totalKgLtr = items.reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit, i.alias), 0);
 
   return (
     <div className="rs-page rs-abstract-page">
@@ -436,7 +462,7 @@ function AbstractPage({
         </thead>
         <tbody>
           {items.map(i => {
-            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit);
+            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit, i.alias);
             return (
               <tr key={i.productId}>
                 <td>{i.alias}</td>

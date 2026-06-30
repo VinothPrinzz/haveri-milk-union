@@ -46,12 +46,16 @@ index("idx_employees_active").on(table.active),
 ]);
 
 // ── Employee Subsidy Rules ──
-// Per-product subsidy %. Only `active = true` rules apply.
+// Per-product employee price. Only `active = true` rules apply.
+// `subsidyPrice` is the GST-INCLUSIVE unit price the employee pays — the
+// source of truth (a hand-set UTP rate, not a % off MRP). `subsidyPercent`
+// is kept nullable for history only and is no longer used for pricing.
 // Server clamps employee-subsidy direct sales to these products.
 export const employeeSubsidyRules = pgTable("employee_subsidy_rules", {
 id:             uuid("id").defaultRandom().primaryKey(),
 productId:      uuid("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
-subsidyPercent: numeric("subsidy_percent", { precision: 5, scale: 2 }).notNull(),
+subsidyPrice:   numeric("subsidy_price", { precision: 12, scale: 2 }).notNull(),
+subsidyPercent: numeric("subsidy_percent", { precision: 5, scale: 2 }),
 active:         boolean("active").notNull().default(true),
 createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 updatedAt:      timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

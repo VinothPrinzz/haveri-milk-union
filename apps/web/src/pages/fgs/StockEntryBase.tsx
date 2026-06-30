@@ -110,11 +110,11 @@ export default function StockEntryBase({ bucket }: Props) {
         const s = rowById.get(productId) ?? {};
         const e = edits[productId] ?? {};
         const re = receiptEdits[productId];
-        // Opening is NOT editable — it's the previous day's closing (auto-filled
-        // by the server). Persist that displayed value, never an edit.
+        // Opening defaults to the previous day's closing but is editable
+        // (single-route testing) — persist the typed value when present.
         const entry: any = {
           productId,
-          opening:    Number(s.opening ?? 0),
+          opening:    Number(e.opening ?? s.opening ?? 0),
           received:   re ? re.reduce((sum, l) => sum + (l.quantity || 0), 0) : Number(s.received ?? 0),
           dispatched: Number(e.dispatched ?? s.dispatched ?? 0),
           wastage:    Number(e.wastage    ?? s.wastage    ?? 0),
@@ -150,8 +150,8 @@ export default function StockEntryBase({ bucket }: Props) {
 
   const computeClosing = (s: any) => {
     const e = edits[s.productId] ?? {};
-    // Opening is read-only (previous day's closing) — always use the row value.
-    const opening    = s.opening    ?? 0;
+    // Opening is editable; default to the row value (previous day's closing).
+    const opening    = e.opening    ?? s.opening    ?? 0;
     const received   = computeReceived(s);
     const dispatched = e.dispatched ?? s.dispatched ?? 0;
     const wastage    = e.wastage    ?? s.wastage    ?? 0;
@@ -254,12 +254,11 @@ export default function StockEntryBase({ bucket }: Props) {
                         <tr key={s.productId}>
                           <td className="font-medium">{s.productName}</td>
                           <td className="text-muted-foreground uppercase">{s.category ?? "—"}</td>
-                          <td
-                            className="num text-muted-foreground"
-                            style={{ textAlign: "right" }}
-                            title="Auto-filled from the previous day's closing"
-                          >
-                            {fmtNum(s.opening ?? 0)}
+                          <td style={{ textAlign: "right" }}>
+                            <StockInput
+                              value={edits[s.productId]?.opening ?? s.opening ?? 0}
+                              onChange={v => setEdit(s.productId, "opening", v)}
+                            />
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <ReceivedButton
