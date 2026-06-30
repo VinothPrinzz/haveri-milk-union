@@ -34,7 +34,7 @@ export async function generateInvoicePdfSync(
   const [order] = await pgClient`
     SELECT
       o.id, o.subtotal, o.total_gst, o.grand_total, o.payment_mode,
-      o.created_at,
+      o.status, o.created_at,
       -- delivery_date is the date the indent is FOR (migration 0031);
       -- fall back to created_at for any historical row missing it.
       COALESCE(o.delivery_date, (o.created_at AT TIME ZONE 'Asia/Kolkata')::date)
@@ -104,12 +104,18 @@ export async function generateInvoicePdfSync(
   const netAmount = Math.round(grand);
 
   // ── Render ─────────────────────────────────────────────────────────
+  // A placed order is settled — whether by wallet/UPI/cash up front or on
+  // the dealer's credit ledger (incl. auto-confirm). All such invoices carry
+  // a "PAID" mark; an unplaced order never reaches invoice generation.
+  const paid = ["confirmed", "dispatched", "delivered"].includes(order.status);
+
   const pdfBytes = await renderInvoicePdf({
     invoiceNumber,
     issueDate,
     deliveryDate,
     orderId,
     paymentMode: order.payment_mode || "Wallet",
+    paid,
     dealer: {
       name: order.dealer_name,
       code: order.dealer_code,

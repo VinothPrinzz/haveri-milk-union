@@ -253,16 +253,27 @@ function normalizeIndent(d: Record<string, unknown>) {
       })()
     : "";
 
-  const rawStatus = String(d.status ?? "confirmed").toLowerCase();
-  const statusMap: Record<
-    string,
-    "Confirmed" | "Dispatched" | "Cancelled"
-  > = {
+  // Display label for every order_status. Previously only confirmed /
+  // dispatched / delivered / cancelled were mapped and every other state
+  // (draft / pending / payment_required) fell through to the "Confirmed"
+  // default below — which made every indent read "Confirmed". Map the full
+  // lifecycle so the list shows the TRUE status, and title-case any unknown
+  // value rather than masking it as Confirmed.
+  const rawStatus = String(d.status ?? "").toLowerCase();
+  const statusMap: Record<string, string> = {
+    draft: "Draft",
+    pending: "Pending",
+    payment_required: "Payment Required",
     confirmed: "Confirmed",
     dispatched: "Dispatched",
-    delivered: "Dispatched",
+    delivered: "Delivered",
     cancelled: "Cancelled",
   };
+  const statusLabel =
+    statusMap[rawStatus] ??
+    (rawStatus
+      ? rawStatus.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+      : "Confirmed");
 
   return {
     id: rawId,
@@ -279,7 +290,8 @@ function normalizeIndent(d: Record<string, unknown>) {
     date: formattedDate,
     rawDate: String(rawDate).split("T")[0],
     agentCode: (d.agent_code ?? d.agentCode ?? "") as string,
-    status: statusMap[rawStatus] ?? "Confirmed",
+    status: statusLabel,
+    rawStatus,
     paymentMode: (d.payment_mode ?? d.paymentMode ?? "") as string,
     // True only while the delivery window is still open (today-not-yet-closed
     // or future dates). Drives whether the admin Cancel action is offered.

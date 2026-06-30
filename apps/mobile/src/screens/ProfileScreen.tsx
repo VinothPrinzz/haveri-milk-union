@@ -93,7 +93,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
   };
   const handleContact = () => {
     Alert.alert(
-      "Contact Haveri Milk Union",
+      "Contact Havemul",
       "Choose how you'd like to reach us:",
       [
         { text: "Cancel", style: "cancel" },
@@ -112,7 +112,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
   const handleAppInfo = () => {
     Alert.alert(
       "App Information",
-      "HMU Dealer App v2.1.4\n\nLicensed to Haveri District Co-operative Milk Producers' Union",
+      "Havemul Dealer App v2.1.4\n\nLicensed to Haveri District Co-operative Milk Producers' Union",
       [{ text: "OK" }]
     );
   };

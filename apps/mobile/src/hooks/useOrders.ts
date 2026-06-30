@@ -29,6 +29,8 @@ interface RawOrder {
   item_count: number;
   created_at: string;           // ← always string from backend
   confirmed_at?: string | null;
+  delivery_date?: string | null;
+  awaiting_payment_open?: boolean;
   items?: RawOrderItem[];
 }
 
@@ -58,6 +60,10 @@ function normalizeOrder(o: RawOrder): Order {
     itemCount:   Number(o.item_count) || 0,
     createdAt:   toIsoString(o.created_at),
     confirmedAt: o.confirmed_at ? toIsoString(o.confirmed_at) : null,
+    deliveryDate: o.delivery_date ?? null,
+    // Preserve undefined when the API predates the field so the UI can treat
+    // "missing" as still-open rather than forcing "Not placed".
+    awaitingPaymentOpen: o.awaiting_payment_open,
     items: (o.items ?? []).map((i) => ({
       productId:  i.product_id,
       productName: i.product_name,

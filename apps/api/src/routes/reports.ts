@@ -133,7 +133,11 @@ export async function reportsRoutes(app: FastifyInstance) {
                  FROM orders o
                  JOIN dealers d ON d.id = o.dealer_id
                 WHERE o.delivery_date = ${q.date}::date
-                  AND o.status != 'cancelled'
+                  -- Only orders actually placed for dispatch belong on the
+                  -- route sheet. Drafts (pre-confirm carts), pending and
+                  -- payment_required orders are NOT dispatched, so exclude
+                  -- everything except confirmed/dispatched/delivered.
+                  AND o.status IN ('confirmed', 'dispatched', 'delivered')
                   AND d.route_id = r.id
              )
              OR EXISTS (
@@ -187,7 +191,10 @@ export async function reportsRoutes(app: FastifyInstance) {
           JOIN dealers d      ON d.id = o.dealer_id
           JOIN order_items oi ON oi.order_id = o.id
          WHERE o.delivery_date = ${q.date}::date
-           AND o.status != 'cancelled'
+           -- Match the route-selection filter above: only placed-for-dispatch
+           -- orders contribute line items; drafts/pending/payment_required
+           -- are excluded so unconfirmed carts never reach the route sheet.
+           AND o.status IN ('confirmed', 'dispatched', 'delivered')
            AND d.route_id = ANY(${routeIds}::uuid[])
       `;
  

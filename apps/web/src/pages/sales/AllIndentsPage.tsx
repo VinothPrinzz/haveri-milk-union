@@ -20,11 +20,17 @@ import { Printer, X, Ban } from "lucide-react";
 import { fetchIndents, fetchRoutes, cancelIndent, type CancelIndentResult } from "@/services/api";
 
 const STATUS_OPTS: F9Option[] = [
-  { value: "confirmed",  label: "Confirmed" },
-  { value: "dispatched", label: "Dispatched" },
-  { value: "delivered",  label: "Delivered" },
-  { value: "cancelled",  label: "Cancelled" },
+  { value: "draft",            label: "Draft" },
+  { value: "payment_required", label: "Payment Required" },
+  { value: "confirmed",        label: "Confirmed" },
+  { value: "dispatched",       label: "Dispatched" },
+  { value: "delivered",        label: "Delivered" },
+  { value: "cancelled",        label: "Cancelled" },
 ];
+
+// Payment mode → short uppercase label for the Payment column.
+const fmtPaymentMode = (m?: string) =>
+  m ? m.replace(/_/g, " ").toUpperCase() : "—";
 
 const formatIndentId = (id: string) => id ? `#HMU-${String(id).slice(-4).toUpperCase()}` : "—";
 
@@ -141,6 +147,7 @@ export default function AllIndentsPage() {
                     <th>Route</th>
                     <th style={{ width: "30%" }}>Items</th>
                     <th className="num" style={{ width: 130, textAlign: "right" }}>Total ₹</th>
+                    <th style={{ width: 120 }}>Payment</th>
                     <th style={{ width: 110 }}>Status</th>
                     <th style={{ width: 170, textAlign: "center" }}>Actions</th>
                   </tr>
@@ -167,7 +174,8 @@ export default function AllIndentsPage() {
                         )}
                       </td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(parseFloat(String(i.grand_total ?? i.total ?? 0)) || 0)}</td>
-                      <td><StatusPill status={i.status} /></td>
+                      <td className="text-[12px] font-medium">{fmtPaymentMode(i.payment_mode ?? i.paymentMode)}</td>
+                      <td><StatusPill status={i.rawStatus ?? i.status} /></td>
                       <td style={{ textAlign: "center" }}>
                         <div className="flex items-center justify-center gap-1.5">
                           <Button
@@ -196,7 +204,7 @@ export default function AllIndentsPage() {
                   <tr className="bg-muted/40">
                     <td colSpan={5} className="text-right uppercase text-[12.5px] font-semibold tracking-wide">Grand Total</td>
                     <td className="num font-bold text-[14px]" style={{ textAlign: "right" }}>{fmtINR(grand)}</td>
-                    <td colSpan={2}></td>
+                    <td colSpan={3}></td>
                   </tr>
                 </tfoot>
               </table>

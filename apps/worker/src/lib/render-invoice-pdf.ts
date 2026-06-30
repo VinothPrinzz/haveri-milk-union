@@ -30,6 +30,8 @@ export interface InvoiceRenderParams {
   deliveryDate:  Date;
   orderId:       string;
   paymentMode:   string;
+  /** True when the order is placed/settled — draws a green "PAID" mark. */
+  paid?:         boolean;
   dealer: {
     name:    string;
     code:    string | null;
@@ -66,6 +68,7 @@ const C_GRAY   = rgb(0.5,  0.5,  0.5);
 const C_LGRAY  = rgb(0.85, 0.85, 0.85);
 const C_STRIPE = rgb(0.96, 0.96, 0.96);
 const C_BLUE   = rgb(0.08, 0.28, 0.58);
+const C_GREEN  = rgb(0.13, 0.55, 0.27);
 
 // ── Column layout (total width = 515 pt = A4 - 2×40 margins) ─────────
 const COLS = [
@@ -199,10 +202,12 @@ export async function renderInvoicePdf(p: InvoiceRenderParams): Promise<Uint8Arr
   drawText(p.orderId.slice(0, 16).toUpperCase(), MARGIN + LBL_W, ly, { size: 8 });
   ly -= 13;
   drawText("Payment :", MARGIN + 6, ly, { size: 8, bold: true });
-  drawText(
-    p.paymentMode.charAt(0).toUpperCase() + p.paymentMode.slice(1),
-    MARGIN + LBL_W, ly, { size: 8 }
-  );
+  const payLabel = p.paymentMode.charAt(0).toUpperCase() + p.paymentMode.slice(1);
+  drawText(payLabel, MARGIN + LBL_W, ly, { size: 8 });
+  if (p.paid) {
+    const lw = fontReg.widthOfTextAtSize(payLabel, 8);
+    drawText("PAID", MARGIN + LBL_W + lw + 10, ly, { size: 8, bold: true, color: C_GREEN });
+  }
 
   // Right: Bill To
   let ry = y - 11;

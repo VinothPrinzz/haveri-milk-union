@@ -71,7 +71,7 @@ export async function openRazorpayCheckout(
     order_id: params.orderId,
     amount: params.amountPaise,
     currency: "INR",
-    name: "Haveri Milk Union",
+    name: "Havemul",
     description: params.description,
     image: undefined, // Optional: dealer-app logo URL hosted on a CDN
     prefill: params.prefill ?? {},
