@@ -55,11 +55,11 @@ export default function LoginPage({ onLogin }: Props) {
         />
 
         <div className="relative z-10 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-sm bg-white text-emerald-900 grid place-items-center font-bold text-lg shadow">
-            H
+          <div className="h-10 px-1.5 rounded-sm bg-white grid place-items-center shadow">
+            <img src="/assets/logo.png" alt="Havemul" className="h-7 w-auto object-contain" />
           </div>
           <div>
-            <div className="text-base font-semibold text-white">Haveri Milk Union</div>
+            <div className="text-base font-semibold text-white">Havemul</div>
             <div className="text-[11px] text-white/60">Marketing Module · v1.0</div>
           </div>
         </div>
@@ -95,8 +95,10 @@ export default function LoginPage({ onLogin }: Props) {
           <div className="w-full max-w-sm">
 
             <div className="md:hidden flex items-center gap-2 mb-6">
-              <div className="w-8 h-8 rounded-sm bg-topbar text-topbar-foreground grid place-items-center font-bold">H</div>
-              <span className="font-semibold">Haveri Milk Union</span>
+              <div className="h-8 px-1 rounded-sm bg-white grid place-items-center border border-border">
+                <img src="/assets/logo.png" alt="Havemul" className="h-5 w-auto object-contain" />
+              </div>
+              <span className="font-semibold">Havemul</span>
             </div>
 
             <h1 className="text-[18px] font-semibold">Login</h1>

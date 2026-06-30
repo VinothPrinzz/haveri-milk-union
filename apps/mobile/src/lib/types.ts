@@ -164,6 +164,16 @@ export interface Order {
   createdAt: string;
   /** When the order was confirmed/placed. */
   confirmedAt?: string | null;
+  /** Delivery day this indent is for (YYYY-MM-DD). */
+  deliveryDate?: string | null;
+  /**
+   * True only while an unconfirmed order (draft / payment_required) can still
+   * be acted on — i.e. before its delivery-day ordering window closes. Drives
+   * the "Awaiting Payment" + Pay Now affordance; once it flips false the app
+   * shows "Not placed" instead. Undefined when the API predates this field —
+   * treat that as still-open.
+   */
+  awaitingPaymentOpen?: boolean;
   items: OrderItem[];
 }
 

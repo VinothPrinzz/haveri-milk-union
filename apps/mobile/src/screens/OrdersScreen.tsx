@@ -431,11 +431,18 @@ function OrderCard({
   onPayNow,
 }: OrderCardProps) {
   const chip = chipForStatus(order);
-  const showPayNow = order.status === "payment_required";
+  // Unconfirmed orders (draft / payment_required) are actionable only until
+  // their delivery-day window closes; after that "Pay Now" is pointless.
+  const awaitingOpen = order.awaitingPaymentOpen ?? true;
+  const showPayNow = order.status === "payment_required" && awaitingOpen;
 
-  // No invoice exists for unpaid (payment_required) orders yet.
+  // An invoice exists ONLY for placed orders. Draft / payment_required /
+  // cancelled orders are not a tax document, so never offer the Invoice
+  // action (the backend also refuses to mint one for them).
   const showInvoice =
-    order.status !== "cancelled" && order.status !== "payment_required";
+    order.status === "confirmed" ||
+    order.status === "dispatched" ||
+    order.status === "delivered";
   const isCancelled = order.status === "cancelled";
 
   return (
@@ -556,12 +563,23 @@ function chipForStatus(order: Order) {   // ← Updated: now takes full Order
       textStyle: cardStyles.chipTextCancelled,
     };
   }
-  if (order.status === "payment_required") {
-    return {
-      label: "💳 Awaiting Payment",
-      style: cardStyles.chipPending,
-      textStyle: cardStyles.chipTextPending,
-    };
+  // Unconfirmed: draft or payment_required. While the window is still open the
+  // dealer can still get it placed (pay now / auto-confirm) → "Awaiting
+  // Payment". Once the window has closed its fate is sealed — it was never
+  // placed, so don't dress it up as Paid or offer an invoice.
+  if (order.status === "draft" || order.status === "payment_required") {
+    const open = order.awaitingPaymentOpen ?? true;
+    return open
+      ? {
+          label: "💳 Awaiting Payment",
+          style: cardStyles.chipPending,
+          textStyle: cardStyles.chipTextPending,
+        }
+      : {
+          label: "○ Not placed",
+          style: cardStyles.chipNotPlaced,
+          textStyle: cardStyles.chipTextNotPlaced,
+        };
   }
   // confirmed, dispatched, delivered all show as Paid
   return {
@@ -840,9 +858,11 @@ const cardStyles = StyleSheet.create({
   chipPaid:           { backgroundColor: colors.successLight },
   chipPending:        { backgroundColor: colors.warningLight },
   chipCancelled:      { backgroundColor: colors.destructiveLight },
+  chipNotPlaced:      { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
   chipTextPaid:       { color: colors.success },
   chipTextPending:    { color: colors.warning },
   chipTextCancelled:  { color: colors.destructive },
+  chipTextNotPlaced:  { color: colors.mutedForeground },
 
   itemsRow: {
     flexDirection: "row",

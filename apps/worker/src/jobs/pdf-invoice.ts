@@ -32,7 +32,7 @@ export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
   const [order] = await sql`
     SELECT
       o.id, o.subtotal, o.total_gst, o.grand_total, o.payment_mode,
-      o.created_at,
+      o.status, o.created_at,
       COALESCE(o.delivery_date, (o.created_at AT TIME ZONE 'Asia/Kolkata')::date)
         AS order_date,
       d.id          AS dealer_id,
@@ -99,12 +99,17 @@ export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
   const netAmount = Math.round(grand);
 
   // ── Render via the shared layout ───────────────────────────────────
+  // A placed order is settled — by wallet/UPI/cash up front or on the
+  // dealer's credit ledger (incl. auto-confirm) — so its invoice is "PAID".
+  const paid = ["confirmed", "dispatched", "delivered"].includes(order.status);
+
   const pdfBytes = await renderInvoicePdf({
     invoiceNumber,
     issueDate,
     deliveryDate,
     orderId,
     paymentMode: order.payment_mode || "Wallet",
+    paid,
     dealer: {
       name: order.dealer_name,
       code: order.dealer_code,

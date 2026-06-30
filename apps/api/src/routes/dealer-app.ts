@@ -139,8 +139,12 @@ export async function dealerAppRoutes(app: FastifyInstance) {
         COALESCE(o.status::text, 'unknown') AS order_status,
         o.delivery_date                  AS delivery_date
       FROM invoices i
-      LEFT JOIN orders o ON o.id = i.order_id
+      JOIN orders o ON o.id = i.order_id
       WHERE i.dealer_id = ${dealerId}
+        -- Only surface invoices for PLACED orders. A draft / payment_required
+        -- order is not a real invoice yet, and a cancelled order's invoice
+        -- must not count toward the dealer's GST totals.
+        AND o.status IN ('confirmed', 'dispatched', 'delivered')
       ORDER BY i.invoice_date DESC
       LIMIT 50
       `;
@@ -154,10 +158,16 @@ export async function dealerAppRoutes(app: FastifyInstance) {
         -- Echo back the month the summary was computed for, so the client
         -- can label its card correctly even on the first render.
         to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM') AS current_month_id
-      FROM invoices
-      WHERE dealer_id = ${dealerId}
-        AND date_trunc('month', invoice_date AT TIME ZONE 'Asia/Kolkata') =
+      FROM invoices i
+      WHERE i.dealer_id = ${dealerId}
+        AND date_trunc('month', i.invoice_date AT TIME ZONE 'Asia/Kolkata') =
             date_trunc('month', now() AT TIME ZONE 'Asia/Kolkata')
+        -- Match the list query: count only placed-order invoices.
+        AND EXISTS (
+          SELECT 1 FROM orders o
+           WHERE o.id = i.order_id
+             AND o.status IN ('confirmed', 'dispatched', 'delivered')
+        )
       `;
 
       return reply.send({ invoices, summary });

@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 import {
   Animated,
   Easing,
+  Image,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -90,9 +91,13 @@ export default function SplashScreen({ onLogin }: SplashScreenProps) {
         ]}
       >
         <View style={styles.logoRing}>
-          <Text style={styles.logoEmoji}>🐄</Text>
+          <Image
+            source={require("../../assets/logo.png")}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
         </View>
-        <Text style={styles.org}>Haveri Milk Union</Text>
+        <Text style={styles.org}>Havemul</Text>
         <Text style={styles.sub}>Karnataka · Est. 1984</Text>
       </Animated.View>
 
@@ -168,18 +173,19 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   logoRing: {
-    width: 68,
-    height: 68,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.12)",
+    width: 104,
+    height: 76,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF",
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.2)",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 14,
   },
-  logoEmoji: {
-    fontSize: 32,
+  logoImage: {
+    width: 88,
+    height: 60,
   },
   org: {
     fontFamily: fonts.headingExtra,

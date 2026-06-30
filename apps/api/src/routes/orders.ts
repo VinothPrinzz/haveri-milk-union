@@ -413,7 +413,9 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("orders.view")] },
     async (request, reply) => {
       const querySchema = paginationSchema.extend({
-        status:   z.enum(["confirmed","dispatched","delivered","cancelled"]).optional(),
+        // Admin All-Indents list can filter on any lifecycle state (drafts and
+        // payment_required orders are visible here, just not on route sheets).
+        status:   z.enum(["draft","pending","payment_required","confirmed","dispatched","delivered","cancelled"]).optional(),
         dealerId: z.string().uuid().optional(),
         zoneId:   z.string().uuid().optional(),
         routeId:  z.string().uuid().optional(),
@@ -527,6 +529,17 @@ export async function orderRoutes(app: FastifyInstance) {
           o.subtotal, o.total_gst, o.grand_total, o.item_count,
           o.created_at AS created_at,
           o.confirmed_at AS confirmed_at,
+          o.delivery_date AS delivery_date,
+          -- An unconfirmed order (draft / payment_required) is only still
+          -- actionable until its delivery-day ordering window closes. Once
+          -- past close, the auto-confirm job has resolved its fate, so the
+          -- app should show "Not placed" rather than "Awaiting Payment" +
+          -- Pay Now. Mirrors the window_open logic on the admin list.
+          (o.status IN ('draft','payment_required')
+            AND now() < COALESCE(
+                  (o.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                  ((o.delivery_date + 1)::timestamp) AT TIME ZONE 'Asia/Kolkata'
+                )) AS awaiting_payment_open,
           COALESCE(
             (SELECT json_agg(json_build_object(
                 'product_id',   oi.product_id,
@@ -541,6 +554,12 @@ export async function orderRoutes(app: FastifyInstance) {
             '[]'::json
           ) AS items
         FROM orders o
+        JOIN dealers d ON d.id = o.dealer_id
+        LEFT JOIN LATERAL (
+          SELECT close_time FROM time_windows tw
+           WHERE tw.route_id = d.route_id AND tw.active = true
+           ORDER BY close_time DESC LIMIT 1
+        ) tw ON true
         WHERE o.dealer_id = ${dealerId}
           AND (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
           AND (${q.from ?? null}::date IS NULL OR o.delivery_date >= ${q.from ?? '1970-01-01'}::date)
@@ -935,7 +954,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
       // Verify ownership BEFORE generating
       const [order] = await pgClient`
-        SELECT id, dealer_id FROM orders WHERE id = ${orderId} LIMIT 1
+        SELECT id, dealer_id, status FROM orders WHERE id = ${orderId} LIMIT 1
       `;
       if (!order) return reply.status(404).send({ error: "Order not found" });
       if (order.dealer_id !== dealerId) {
@@ -950,6 +969,16 @@ export async function orderRoutes(app: FastifyInstance) {
       `;
 
       if (!inv) {
+        // No invoice yet. Only a PLACED order (confirmed/dispatched/
+        // delivered) is a tax document — a draft or payment_required order
+        // must never have one minted on demand. (This is also why the
+        // dealer app hides the Invoice action for unconfirmed orders.)
+        if (!["confirmed", "dispatched", "delivered"].includes(order.status)) {
+          return reply.status(409).send({
+            error: "Invoice not available",
+            message: "This order isn't confirmed yet, so it has no invoice.",
+          });
+        }
         try {
           await generateInvoicePdfSync(orderId);
           [inv] = await pgClient`

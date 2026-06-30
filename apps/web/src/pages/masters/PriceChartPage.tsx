@@ -106,7 +106,7 @@ export default function PriceChartPage() {
 
           {/* Footer for print */}
           <div className="print-only print-footer px-3 py-2 text-[9pt] text-muted-foreground border-t mt-2">
-            {filtered.length} product(s) · Haveri Milk Union — System Generated
+            {filtered.length} product(s) · Havemul — System Generated
           </div>
         </div>
       </div>
