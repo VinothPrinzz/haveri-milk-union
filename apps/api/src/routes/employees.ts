@@ -185,13 +185,13 @@ export async function employeesRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /api/v1/employee-subsidy-rules — products + their active subsidy %
+  // GET /api/v1/employee-subsidy-rules — products + their active employee price
   app.get(
     "/api/v1/employee-subsidy-rules",
     { preHandler: [adminAuth, requireRole("employees.view")] },
     async (_request, reply) => {
       const rows = await pgClient`
-        SELECT r.id, r.product_id, r.subsidy_percent, r.active,
+        SELECT r.id, r.product_id, r.subsidy_price, r.subsidy_percent, r.active,
                p.name AS product_name, p.code AS product_code,
                p.base_price, p.gst_percent, p.unit
         FROM employee_subsidy_rules r
@@ -200,6 +200,86 @@ export async function employeesRoutes(app: FastifyInstance) {
         ORDER BY p.name
       `;
       return reply.send({ data: rows });
+    }
+  );
+
+  // POST /api/v1/employee-subsidy-rules — add (or re-activate) a product rule.
+  // subsidyPrice is the GST-INCLUSIVE unit price the employee pays.
+  app.post(
+    "/api/v1/employee-subsidy-rules",
+    { preHandler: [adminAuth, requireRole("employees.manage")] },
+    async (request, reply) => {
+      const body = z.object({
+        productId:    z.string().uuid(),
+        subsidyPrice: z.number().nonnegative(),
+      }).parse(request.body);
+
+      const [product] = await pgClient`
+        SELECT id FROM products WHERE id = ${body.productId} AND deleted_at IS NULL
+      `;
+      if (!product) return reply.status(400).send({ error: "Product not found" });
+
+      // One active rule per product (uq_emp_subsidy_active_product). Upsert by
+      // re-activating + repricing any existing active rule for this product.
+      const [existing] = await pgClient`
+        SELECT id FROM employee_subsidy_rules
+         WHERE product_id = ${body.productId} AND active = true
+      `;
+      if (existing) {
+        const [row] = await pgClient`
+          UPDATE employee_subsidy_rules
+             SET subsidy_price = ${body.subsidyPrice.toFixed(2)}::numeric,
+                 updated_at = now()
+           WHERE id = ${existing.id}
+          RETURNING id, product_id, subsidy_price, subsidy_percent, active
+        `;
+        return reply.send({ rule: row });
+      }
+
+      const [row] = await pgClient`
+        INSERT INTO employee_subsidy_rules (product_id, subsidy_price, active)
+        VALUES (${body.productId}, ${body.subsidyPrice.toFixed(2)}::numeric, true)
+        RETURNING id, product_id, subsidy_price, subsidy_percent, active
+      `;
+      return reply.status(201).send({ rule: row });
+    }
+  );
+
+  // PATCH /api/v1/employee-subsidy-rules/:id — edit price / toggle active.
+  app.patch(
+    "/api/v1/employee-subsidy-rules/:id",
+    { preHandler: [adminAuth, requireRole("employees.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = z.object({
+        subsidyPrice: z.number().nonnegative().optional(),
+        active:       z.boolean().optional(),
+      }).parse(request.body);
+
+      const [row] = await pgClient`
+        UPDATE employee_subsidy_rules SET
+          subsidy_price = COALESCE(${body.subsidyPrice ?? null}::numeric, subsidy_price),
+          active        = COALESCE(${body.active ?? null}::boolean, active),
+          updated_at    = now()
+        WHERE id = ${id}
+        RETURNING id, product_id, subsidy_price, subsidy_percent, active
+      `;
+      if (!row) return reply.status(404).send({ error: "Subsidy rule not found" });
+      return reply.send({ rule: row });
+    }
+  );
+
+  // DELETE /api/v1/employee-subsidy-rules/:id — deactivate (preserve history).
+  app.delete(
+    "/api/v1/employee-subsidy-rules/:id",
+    { preHandler: [adminAuth, requireRole("employees.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      await pgClient`
+        UPDATE employee_subsidy_rules SET active = false, updated_at = now()
+         WHERE id = ${id}
+      `;
+      return reply.send({ ok: true });
     }
   );
 

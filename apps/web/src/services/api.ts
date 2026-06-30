@@ -1068,7 +1068,8 @@ export const fetchEmployeeCredit = async (employeeId: string) => {
 
 export const fetchEmployeeSubsidyRules = async () => {
   const data = await get<{ data: Array<{
-    id: string; product_id: string; subsidy_percent: string; active: boolean;
+    id: string; product_id: string; subsidy_price: string;
+    subsidy_percent: string | null; active: boolean;
     product_name: string; product_code: string;
     base_price: string; gst_percent: string; unit: string;
   }> }>("/employee-subsidy-rules");
@@ -1077,13 +1078,26 @@ export const fetchEmployeeSubsidyRules = async () => {
     productId:      r.product_id,
     productName:    r.product_name,
     productCode:    r.product_code,
-    subsidyPercent: parseFloat(r.subsidy_percent),
+    // GST-inclusive unit price the employee pays (source of truth).
+    subsidyPrice:   parseFloat(r.subsidy_price),
+    subsidyPercent: r.subsidy_percent != null ? parseFloat(r.subsidy_percent) : null,
     basePrice:      parseFloat(r.base_price),
     gstPercent:     parseFloat(r.gst_percent),
     unit:           r.unit,
     active:         r.active,
   }));
 };
+
+export const createEmployeeSubsidyRule = (
+  body: { productId: string; subsidyPrice: number },
+) => post<{ rule: Record<string, unknown> }>("/employee-subsidy-rules", body);
+
+export const updateEmployeeSubsidyRule = (
+  id: string, body: { subsidyPrice?: number; active?: boolean },
+) => patch<{ rule: Record<string, unknown> }>(`/employee-subsidy-rules/${id}`, body);
+
+export const deleteEmployeeSubsidyRule = (id: string) =>
+  del(`/employee-subsidy-rules/${id}`);
 
 // ══════════════════════════════════════════════════════
 // DIRECT SALES — VIP + EMPLOYEE
@@ -2281,8 +2295,9 @@ export interface EmployeeStandingIndentItem {
   icon: string | null;
   imageUrl: string | null;
   basePrice: number;       // MRP reference
-  subsidyPercent: number;
-  unitPrice: number;       // subsidized price the employee pays
+  subsidyPrice: number;    // GST-inclusive employee price (source of truth)
+  subsidyPercent: number;  // effective discount vs MRP (informational)
+  unitPrice: number;       // taxable (pre-GST) unit price
   gstPercent: number;
   productAvailable: boolean;
   defaultQty: number;

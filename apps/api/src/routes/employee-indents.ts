@@ -42,18 +42,26 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
  * Subsidized line maths — mirrors POST /direct-sales/employee-subsidy.
- * `mrp` is the product base_price; the employee pays mrp × (1 − subsidy%).
+ * `empPrice` is the GST-INCLUSIVE unit price the employee pays (the fixed
+ * UTP rate from employee_subsidy_rules). The pre-GST unit price is backed
+ * out so the GST split is recorded; the line total stays empPrice × qty.
  */
-function calcSubsidizedLine(mrp: number, subsidyPct: number, gstPercent: number, qty: number) {
-  const unitPrice = round2(mrp * (1 - subsidyPct / 100));
+function calcSubsidizedLine(empPrice: number, gstPercent: number, qty: number) {
+  const unitPrice = round2(empPrice / (1 + gstPercent / 100));
+  const total = round2(empPrice * qty);
   const subtotal = round2(unitPrice * qty);
-  const gst = round2(subtotal * (gstPercent / 100));
+  const gst = round2(total - subtotal);
   return {
     unitPrice,
     subtotal,
     gst,
-    total: round2(subtotal + gst),
+    total,
   };
+}
+
+/** Effective discount vs MRP (base_price, GST-exclusive) — snapshot only. */
+function effectiveSubsidyPct(unitPrice: number, mrp: number) {
+  return mrp > 0 ? round2((1 - unitPrice / mrp) * 100) : 0;
 }
 
 /** Resolve + validate an employee; throws a 404-shaped error if missing. */
@@ -86,7 +94,7 @@ async function eligibleSubsidyProducts() {
       p.base_price::numeric      AS "basePrice",
       p.gst_percent::numeric     AS "gstPercent",
       p.available                AS "productAvailable",
-      r.subsidy_percent::numeric AS "subsidyPercent"
+      r.subsidy_price::numeric   AS "subsidyPrice"
     FROM employee_subsidy_rules r
     JOIN products p ON p.id = r.product_id AND p.deleted_at IS NULL
     WHERE r.active = true
@@ -122,8 +130,9 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
 
       const items = products.map((p) => {
         const mrp = parseFloat(p.basePrice);
-        const subsidyPct = parseFloat(p.subsidyPercent);
+        const empPrice = parseFloat(p.subsidyPrice);   // GST-inclusive employee price
         const gstPct = parseFloat(p.gstPercent);
+        const unitPrice = round2(empPrice / (1 + gstPct / 100));
         const t = tmpl.get(p.productId);
         return {
           productId: p.productId,
@@ -132,8 +141,9 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
           icon: p.icon,
           imageUrl: p.imageUrl,
           basePrice: round2(mrp),
-          subsidyPercent: subsidyPct,
-          unitPrice: round2(mrp * (1 - subsidyPct / 100)),
+          subsidyPrice: round2(empPrice),
+          subsidyPercent: effectiveSubsidyPct(unitPrice, mrp),
+          unitPrice,
           gstPercent: gstPct,
           productAvailable: p.productAvailable,
           defaultQty: t ? t.defaultQty : 0,
@@ -300,7 +310,7 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
           p.image_url             AS "imageUrl",
           p.base_price::numeric   AS "basePrice",
           p.gst_percent::numeric  AS "gstPercent",
-          r.subsidy_percent::numeric AS "subsidyPercent"
+          r.subsidy_price::numeric AS "subsidyPrice"
         FROM employee_standing_indents esi
         JOIN products p ON p.id = esi.product_id
                        AND p.deleted_at IS NULL
@@ -316,9 +326,9 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
       let totalGst = 0;
       const items = (standing as any[]).map((r) => {
         const mrp = parseFloat(r.basePrice);
-        const subsidyPct = parseFloat(r.subsidyPercent);
+        const empPrice = parseFloat(r.subsidyPrice);
         const gstPct = parseFloat(r.gstPercent);
-        const line = calcSubsidizedLine(mrp, subsidyPct, gstPct, r.quantity);
+        const line = calcSubsidizedLine(empPrice, gstPct, r.quantity);
         subtotal += line.subtotal;
         totalGst += line.gst;
         return {
@@ -327,7 +337,7 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
           quantity: r.quantity,
           unitPrice: line.unitPrice,
           gstPercent: gstPct,
-          subsidyPercent: subsidyPct,
+          subsidyPercent: effectiveSubsidyPct(line.unitPrice, mrp),
           lineTotal: line.total,
           icon: r.icon,
           imageUrl: r.imageUrl,
@@ -401,7 +411,7 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
                 p.base_price::numeric  AS "basePrice",
                 p.gst_percent::numeric AS "gstPercent",
                 p.available            AS "available",
-                r.subsidy_percent::numeric AS "subsidyPercent"
+                r.subsidy_price::numeric AS "subsidyPrice"
               FROM employee_subsidy_rules r
               JOIN products p ON p.id = r.product_id AND p.deleted_at IS NULL
               WHERE r.active = true
@@ -434,9 +444,9 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
       const orderItemsRows = lineItems.map((it) => {
         const p = ruleMap.get(it.productId);
         const mrp = parseFloat(p.basePrice);
-        const subsidyPct = parseFloat(p.subsidyPercent);
+        const empPrice = parseFloat(p.subsidyPrice);
         const gstPct = parseFloat(p.gstPercent);
-        const line = calcSubsidizedLine(mrp, subsidyPct, gstPct, it.quantity);
+        const line = calcSubsidizedLine(empPrice, gstPct, it.quantity);
         subtotal += line.subtotal;
         totalGst += line.gst;
         itemCount += it.quantity;
@@ -448,7 +458,7 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
           gstPercent: gstPct.toFixed(2),
           gstAmount: line.gst.toFixed(2),
           lineTotal: line.total.toFixed(2),
-          subsidyPercent: subsidyPct.toFixed(2),
+          subsidyPercent: effectiveSubsidyPct(line.unitPrice, mrp).toFixed(2),
           mrpReference: mrp.toFixed(2),
         };
       });

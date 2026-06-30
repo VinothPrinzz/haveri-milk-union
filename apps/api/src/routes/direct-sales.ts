@@ -493,10 +493,11 @@ export async function directSalesRoutes(app: FastifyInstance) {
       // standing route (migration 0037). NULL if the employee has none.
       const effectiveRouteId = body.routeId ?? employee.route_id ?? null;
 
-      // Validate every line is in the eligible product list, and resolve subsidy %
+      // Validate every line is in the eligible product list, and resolve the
+      // fixed (GST-inclusive) employee price.
       const productIds = body.items.map(i => i.productId);
       const eligible = await pgClient`
-        SELECT r.product_id, r.subsidy_percent,
+        SELECT r.product_id, r.subsidy_price,
               p.name, p.base_price, p.gst_percent
         FROM employee_subsidy_rules r
         JOIN products p ON p.id = r.product_id
@@ -519,13 +520,15 @@ export async function directSalesRoutes(app: FastifyInstance) {
       for (const it of body.items) {
         const rule = ruleMap.get(it.productId)!;
         const mrp        = parseFloat(rule.base_price);
-        const subsidyPct = parseFloat(rule.subsidy_percent);
+        const empPrice   = parseFloat(rule.subsidy_price);  // GST-inclusive unit price
         const gstPct     = parseFloat(rule.gst_percent);
 
-        const unitPrice  = +(mrp * (1 - subsidyPct / 100)).toFixed(2);
+        // Back out the pre-GST unit price so the GST split is recorded, while
+        // the line total stays exactly the fixed price × qty.
+        const unitPrice  = +(empPrice / (1 + gstPct / 100)).toFixed(2);
+        const lineTotal  = +(empPrice * it.quantity).toFixed(2);
         const lineSub    = +(unitPrice * it.quantity).toFixed(2);
-        const gstAmount  = +(lineSub * gstPct / 100).toFixed(2);
-        const lineTotal  = +(lineSub + gstAmount).toFixed(2);
+        const gstAmount  = +(lineTotal - lineSub).toFixed(2);
 
         subtotal += lineSub;
         totalGst += gstAmount;
@@ -538,14 +541,14 @@ export async function directSalesRoutes(app: FastifyInstance) {
           gstPercent:  gstPct,
           gstAmount,
           lineTotal,
-          subsidyPercent: subsidyPct,
+          empPrice,
           mrpReference:   mrp,
         });
       }
       const grandTotal = +(subtotal + totalGst).toFixed(2);
 
       const subsidyNote = lineItems
-        .map(li => `${li.productName}: MRP ₹${li.mrpReference} − ${li.subsidyPercent}% subsidy = ₹${li.unitPrice}`)
+        .map(li => `${li.productName}: employee price ₹${li.empPrice} (incl. GST) × ${li.quantity}`)
         .join("; ");
 
       const performedBy = request.admin!.userId;

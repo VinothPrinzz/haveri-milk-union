@@ -91,18 +91,25 @@ function fmtCratePkts(crates: number, pktPlus: number, pktMinus: number): string
 //   "1Ltr Pouch"   → pack_size=1   (Ltr → ×1, no division)
 // We detect macro-unit products by scanning the unit string for "kg"
 // or "ltr/litre/liter" keywords (case-insensitive).
-function computeKgLtr(packets: number, packSize: number, unit: string): number {
+function computeKgLtr(packets: number, packSize: number, unit: string, alias = ""): number {
+  // Primary: read the per-pack size from the product name (alias) when it
+  // carries an explicit size token — e.g. "HTM 1000ML" → 1 L/pack,
+  // "HTM 500ML" → 0.5 L/pack, "100 GM" → 0.1 Kg/pack. This is the source of
+  // truth because products.pack_size is stored inconsistently (ml/g for some
+  // products, already Kg/Ltr for others such as HTM). ml/g convert ÷1000;
+  // Kg/Ltr/L are used as-is.
+  const m = alias.match(/(\d+(?:\.\d+)?)\s*(kg|kilogram|ltr|litre|liter|ml|gm|g|l)\b/i);
+  if (m) {
+    const size = parseFloat(m[1]);
+    const tok = m[2].toLowerCase();
+    const perPack = (tok === "ml" || tok === "g" || tok === "gm") ? size / 1000 : size;
+    return packets * perPack;
+  }
+  // Legacy fallback: pack_size with unit-keyword macro detection.
+  //   "500ml Pouch" → 500 (÷1000)   "5KG Bucket" → 5 (×1)   "1Ltr Pouch" → 1 (×1)
+  // NOTE: no \b before "kg" — "5KG" has no whitespace between digit and K.
   const u = unit.toLowerCase();
-  // pack_size extracted from unit text by migration 0006 (leading number):
-  //   "500ml Pouch"  → 500  (ml  → ÷1000)   "200g Block" → 200  (g → ÷1000)
-  //   "5KG Bucket"   → 5    (Kg  → ×1)       "10KG Bucket"→ 10   (Kg → ×1)
-  //   "1Ltr Pouch"   → 1    (Ltr → ×1)
-  //
-  // NOTE: no \b before "kg" — "5KG" has no whitespace between digit and K,
-  // so \bkg\b would NOT match it. Simple substring check is correct here.
-  const alreadyMacro =
-    /kg/.test(u) ||                  // 5KG, 10 KG, 5kg, kilogram…
-    /ltr|litre|liter/.test(u);        // 1Ltr, 1 litre, 1 liter
+  const alreadyMacro = /kg/.test(u) || /ltr|litre|liter/.test(u);
   return alreadyMacro ? packets * packSize : packets * packSize / 1000;
 }
 
@@ -378,7 +385,21 @@ function RouteRowsPage({
               ))}
               <td className="others-cell">
                 {(c.othersText ?? "")
-                  .split(",").map(s => s.trim()).filter(Boolean).join("\n")}
+                  .split(",").map(s => s.trim()).filter(Boolean)
+                  .map((line, li) => {
+                    const [namePart, qtyPart] = line.split("→");
+                    return (
+                      <div key={li}>
+                        {namePart?.trim()}
+                        {qtyPart !== undefined && (
+                          <>
+                            <span className="others-arrow">→</span>
+                            {qtyPart.trim()}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
               </td>
               <td className="num">{fmtNum(c.crates)}</td>
               <td className="num">{fmtINR(c.netAmount)}</td>
@@ -446,7 +467,7 @@ function AbstractPage({
   const t = route.abstract.totals;
 
   // Recompute totals kgLtr correctly using unit-aware helper
-  const totalKgLtr = items.reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit), 0);
+  const totalKgLtr = items.reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit, i.alias), 0);
 
   return (
     <div className="rs-page rs-abstract-page">
@@ -478,7 +499,7 @@ function AbstractPage({
         </thead>
         <tbody>
           {items.map(i => {
-            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit);
+            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit, i.alias);
             return (
               <tr key={i.productId}>
                 <td>{i.alias}</td>

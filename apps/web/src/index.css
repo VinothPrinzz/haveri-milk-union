@@ -634,6 +634,14 @@
     line-height: 1.25;
   }
   @media print { .others-cell { font-size: 9px; } }
+  /* The qty separator (→) in the Others column, rendered a bit bigger. */
+  .others-arrow {
+    font-size: 1.6em;
+    font-weight: 700;
+    line-height: 1;
+    vertical-align: -0.06em;
+    margin: 0 2px;
+  }
   
   
   /* ──────────────────────────────────────────────────────────────────

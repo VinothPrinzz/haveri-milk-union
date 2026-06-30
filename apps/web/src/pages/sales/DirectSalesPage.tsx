@@ -947,7 +947,7 @@ function EmployeeSubsidyTab() {
     () => rules.map(r => ({
       value: r.productId,
       label: `${r.productName}${r.unit ? ` (${r.unit})` : ""}`,
-      sublabel: `MRP ₹${r.basePrice.toFixed(2)} · ${r.subsidyPercent}% subsidy`,
+      sublabel: `Employee price ₹${r.subsidyPrice.toFixed(2)} (incl. GST) · MRP ₹${r.basePrice.toFixed(2)}`,
     })),
     [rules],
   );
@@ -962,12 +962,13 @@ function EmployeeSubsidyTab() {
   const pricing = useMemo(() => {
     if (!rule || !qty) return null;
     const mrp        = rule.basePrice;
-    const unitPrice  = +(mrp * (1 - rule.subsidyPercent / 100)).toFixed(2);
+    const empPrice   = rule.subsidyPrice;                          // GST-inclusive unit price
+    const unitPrice  = +(empPrice / (1 + rule.gstPercent / 100)).toFixed(2);  // taxable
+    const total      = +(empPrice * qty).toFixed(2);
     const lineSub    = +(unitPrice * qty).toFixed(2);
-    const gstAmount  = +(lineSub * rule.gstPercent / 100).toFixed(2);
-    const total      = +(lineSub + gstAmount).toFixed(2);
+    const gstAmount  = +(total - lineSub).toFixed(2);
     const youSave    = +(mrp * qty - lineSub).toFixed(2);
-    return { mrp, unitPrice, lineSub, gstAmount, total, youSave };
+    return { mrp, empPrice, unitPrice, lineSub, gstAmount, total, youSave };
   }, [rule, qty]);
 
   const submit = useMutation({
@@ -1101,16 +1102,15 @@ function EmployeeSubsidyTab() {
 
         {pricing && rule && (
           <div className="erp-panel p-3">
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-[12.5px]">
-              <Cell label="MRP / unit"                     value={fmtINR(pricing.mrp)} />
-              <Cell label={`Subsidy ${rule.subsidyPercent}%`} value={`− ${fmtINR(pricing.mrp - pricing.unitPrice)}`} />
-              <Cell label="Employee price / unit"          value={fmtINR(pricing.unitPrice)} />
-              <Cell label="Subtotal"                       value={fmtINR(pricing.lineSub)} />
-              <Cell label={`GST (${rule.gstPercent}%)`}    value={fmtINR(pricing.gstAmount)} />
-              <Cell label="Total payable"                  value={fmtINR(pricing.total)} strong />
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-[12.5px]">
+              <Cell label="MRP / unit"                         value={fmtINR(pricing.mrp)} />
+              <Cell label="Employee price / unit (incl. GST)"  value={fmtINR(pricing.empPrice)} strong />
+              <Cell label="Taxable subtotal"                   value={fmtINR(pricing.lineSub)} />
+              <Cell label={`GST (${rule.gstPercent}%)`}        value={fmtINR(pricing.gstAmount)} />
+              <Cell label="Total payable"                      value={fmtINR(pricing.total)} strong />
             </div>
             <div className="mt-2 text-[11px] text-muted-foreground">
-              Employee saves <span className="num font-medium">{fmtINR(pricing.youSave)}</span> on this purchase.
+              Employee saves <span className="num font-medium">{fmtINR(pricing.youSave)}</span> vs MRP on this purchase.
             </div>
           </div>
         )}

@@ -6,11 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Plus, Pencil, Trash2, Search } from "lucide-react";
 import {
   fetchEmployees, createEmployee, updateEmployee, deleteEmployee,
-  fetchEmployeeSubsidyRules,
+  fetchEmployeeSubsidyRules, createEmployeeSubsidyRule,
+  updateEmployeeSubsidyRule, deleteEmployeeSubsidyRule,
+  fetchProducts,
 } from "@/services/api";
 
 type Emp = {
@@ -29,10 +32,6 @@ export default function EmployeesPage() {
   const { data: emps = [], isLoading } = useQuery({
     queryKey: ["employees", search, activeOnly],
     queryFn: () => fetchEmployees({ search: search || undefined, activeOnly }),
-  });
-
-  const { data: rules = [] } = useQuery({
-    queryKey: ["emp-subsidy-rules"], queryFn: fetchEmployeeSubsidyRules,
   });
 
   const [openNew, setOpenNew] = useState(false);
@@ -108,13 +107,8 @@ export default function EmployeesPage() {
         </Field>
       </FilterBar>
 
-      {/* Subsidy rules summary banner */}
-      {rules.length > 0 && (
-        <div className="mx-3 mb-2 px-3 py-2 rounded-sm border border-dashed text-[12px] bg-muted/30">
-          <strong>Subsidy rules:</strong>{" "}
-          {rules.map(r => `${r.productName} @ ${r.subsidyPercent}%`).join(" · ")}
-        </div>
-      )}
+      {/* Editable employee subsidy prices (GST-inclusive fixed price per product) */}
+      <SubsidyRulesPanel />
 
       <div className="flex-1 overflow-auto p-3">
         <div className="erp-panel overflow-hidden">
@@ -245,5 +239,200 @@ export default function EmployeesPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Employee Subsidy Prices — editable, GST-inclusive fixed price per product
+// ════════════════════════════════════════════════════════════════════
+function SubsidyRulesPanel() {
+  const qc = useQueryClient();
+  const { data: rules = [], isLoading } = useQuery({
+    queryKey: ["emp-subsidy-rules"], queryFn: fetchEmployeeSubsidyRules,
+  });
+
+  // Per-row price edit buffer (rule id → input string). Falls back to saved value.
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const priceStr = (id: string, saved: number) => draft[id] ?? saved.toFixed(2);
+
+  const [addOpen, setAddOpen] = useState(false);
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["emp-subsidy-rules"] });
+
+  const saveMut = useMutation({
+    mutationFn: ({ id, subsidyPrice }: { id: string; subsidyPrice: number }) =>
+      updateEmployeeSubsidyRule(id, { subsidyPrice }),
+    onSuccess: (_d, v) => {
+      toast.success("Employee price updated");
+      setDraft(d => { const { [v.id]: _omit, ...rest } = d; return rest; });
+      invalidate();
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
+
+  const removeMut = useMutation({
+    mutationFn: (id: string) => deleteEmployeeSubsidyRule(id),
+    onSuccess: () => { toast.success("Product removed from subsidy list"); invalidate(); },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
+
+  return (
+    <div className="mx-3 mb-2 erp-panel overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b">
+        <div className="text-[12px] font-semibold">
+          Employee Subsidy Prices
+          <span className="ml-2 font-normal text-muted-foreground">
+            Fixed price the employee pays per unit (GST-inclusive)
+          </span>
+        </div>
+        <Button size="sm" variant="outline" className="h-7" onClick={() => setAddOpen(true)}>
+          <Plus className="h-3.5 w-3.5 mr-1" /> Add product
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="p-3"><Skeleton className="h-8 w-full" /></div>
+      ) : rules.length === 0 ? (
+        <div className="p-3 text-[12px] text-muted-foreground">
+          No subsidy products yet. Use “Add product” to set an employee price.
+        </div>
+      ) : (
+        <table className="erp-table w-full">
+          <thead>
+            <tr>
+              <th>Product</th><th>Unit</th>
+              <th style={{ textAlign: "right" }}>MRP</th>
+              <th style={{ textAlign: "right" }}>GST %</th>
+              <th style={{ textAlign: "right" }}>Employee price (incl. GST)</th>
+              <th style={{ textAlign: "right" }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.map(r => {
+              const dirty =
+                draft[r.id] !== undefined && parseFloat(draft[r.id]) !== r.subsidyPrice;
+              return (
+                <tr key={r.id}>
+                  <td className="font-medium">{r.productName}</td>
+                  <td>{r.unit || "—"}</td>
+                  <td className="text-right num">₹{r.basePrice.toFixed(2)}</td>
+                  <td className="text-right num">{r.gstPercent}%</td>
+                  <td style={{ textAlign: "right" }}>
+                    <Input
+                      type="number" min={0} step="0.01"
+                      className="erp-input num h-7 w-28 ml-auto"
+                      value={priceStr(r.id, r.subsidyPrice)}
+                      onChange={e => setDraft(d => ({ ...d, [r.id]: e.target.value }))}
+                    />
+                  </td>
+                  <td style={{ textAlign: "right" }}>
+                    <Button
+                      size="sm" className="h-7 px-2"
+                      disabled={!dirty || saveMut.isPending}
+                      onClick={() => {
+                        const v = parseFloat(draft[r.id]);
+                        if (!isFinite(v) || v < 0) { toast.error("Enter a valid price"); return; }
+                        saveMut.mutate({ id: r.id, subsidyPrice: +v.toFixed(2) });
+                      }}
+                    >
+                      Save
+                    </Button>
+                    <Button
+                      variant="outline" size="sm" className="h-7 px-2 ml-1 text-destructive"
+                      onClick={() => {
+                        if (confirm(`Remove "${r.productName}" from the employee subsidy list?`))
+                          removeMut.mutate(r.id);
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      <AddSubsidyRuleDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        existingProductIds={rules.map(r => r.productId)}
+        onSaved={() => { setAddOpen(false); invalidate(); }}
+      />
+    </div>
+  );
+}
+
+function AddSubsidyRuleDialog({
+  open, onOpenChange, existingProductIds, onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  existingProductIds: string[];
+  onSaved: () => void;
+}) {
+  const { data: products = [] } = useQuery({
+    queryKey: ["products-for-subsidy"], queryFn: fetchProducts, enabled: open,
+  });
+  const [productId, setProductId] = useState("");
+  const [price, setPrice] = useState("");
+
+  const options = (products as Array<{ id: string; name: string; unit: string }>)
+    .filter(p => !existingProductIds.includes(p.id));
+
+  const addMut = useMutation({
+    mutationFn: () =>
+      createEmployeeSubsidyRule({ productId, subsidyPrice: +parseFloat(price).toFixed(2) }),
+    onSuccess: () => {
+      toast.success("Product added to subsidy list");
+      setProductId(""); setPrice("");
+      onSaved();
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed"),
+  });
+
+  const priceNum = parseFloat(price);
+  const valid = !!productId && isFinite(priceNum) && priceNum >= 0;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader><DialogTitle>Add Subsidy Product</DialogTitle></DialogHeader>
+        <div className="space-y-3 p-1">
+          <Field label="Product" required>
+            <Select value={productId} onValueChange={setProductId}>
+              <SelectTrigger className="erp-input">
+                <SelectValue placeholder="Select a product" />
+              </SelectTrigger>
+              <SelectContent>
+                {options.length === 0 ? (
+                  <div className="px-2 py-1.5 text-[12px] text-muted-foreground">
+                    All products already have a rule
+                  </div>
+                ) : options.map(p => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}{p.unit ? ` (${p.unit})` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Employee price / unit (incl. GST)" required>
+            <Input
+              type="number" min={0} step="0.01" className="erp-input num"
+              value={price} onChange={e => setPrice(e.target.value)}
+              placeholder="e.g. 150.00"
+            />
+          </Field>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button size="sm" disabled={!valid || addMut.isPending} onClick={() => addMut.mutate()}>
+            {addMut.isPending ? "Saving…" : "Add"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
