@@ -62,7 +62,7 @@ export default function CartScreen({ onBack, onOrderPlaced }: CartScreenProps) {
     windowSubtitle={windowSubtitle}
     locationLabel={locationLabel}
     creditLimit={dealer?.creditLimit ?? 0}
-    creditAvailable={Math.max(0, (dealer?.creditLimit ?? 0) - (dealer?.creditOutstanding ?? 0))}
+    creditAvailable={Math.max(0, dealer?.creditAvailable ?? 0)}
     onBack={onBack}
     onChangeLocation={() => {}}
     onOrderPlaced={onOrderPlaced}

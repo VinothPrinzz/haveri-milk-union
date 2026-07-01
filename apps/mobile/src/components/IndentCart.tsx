@@ -54,8 +54,8 @@ interface IndentCartProps {
   /** Optional bulk-offer savings to display in green. Hide when 0. */
   savingsAmount?: number;
   savingsLabel?: string;
-  creditLimit?: number;       
-  creditAvailable?: number;    // (limit - outstanding)
+  creditLimit?: number;
+  creditAvailable?: number;    // prepaid available balance (no limit)
   onBack: () => void;
   onChangeLocation: () => void;
   onOrderPlaced: (orderId: string) => void;
@@ -66,7 +66,7 @@ const PAYMENT_OPTIONS: ReadonlyArray<{
   icon: string;
   label: string;
 }> = [
-    { id: "credit",  icon: "💳", label: "Credit" },   // <- ADD
+    { id: "credit",  icon: "💳", label: "Balance" },  // pay from prepaid balance
     { id: "upi",     icon: "📱", label: "UPI" },
     { id: "card",    icon: "💳", label: "Card" },
     { id: "netbank", icon: "🏦", label: "Net Bank" },

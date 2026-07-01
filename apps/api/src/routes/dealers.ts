@@ -88,12 +88,11 @@ export async function dealerRoutes(app: FastifyInstance) {
               + COALESCE(lt.credits, 0)
               - COALESCE(lt.debits, 0))
           )::numeric                                                                  AS outstanding,
+          -- Prepaid available balance = positive current balance (no limit).
           GREATEST(0,
-            COALESCE(d.credit_limit, 0)
-            - GREATEST(0,
-                -(COALESCE(d.opening_balance, 0)
-                  + COALESCE(lt.credits, 0)
-                  - COALESCE(lt.debits, 0)))
+            COALESCE(d.opening_balance, 0)
+            + COALESCE(lt.credits, 0)
+            - COALESCE(lt.debits, 0)
           )::numeric                                                                  AS credit_available,
  
           COALESCE(
@@ -187,12 +186,11 @@ export async function dealerRoutes(app: FastifyInstance) {
               + COALESCE(lt.credits, 0)
               - COALESCE(lt.debits, 0))
           )::numeric                              AS outstanding,
+          -- Prepaid available balance = positive current balance (no limit).
           GREATEST(0,
-            COALESCE(d.credit_limit, 0)
-            - GREATEST(0,
-                -(COALESCE(d.opening_balance, 0)
-                  + COALESCE(lt.credits, 0)
-                  - COALESCE(lt.debits, 0)))
+            COALESCE(d.opening_balance, 0)
+            + COALESCE(lt.credits, 0)
+            - COALESCE(lt.debits, 0)
           )::numeric                              AS credit_available,
  
           COALESCE(
@@ -714,11 +712,11 @@ export async function dealerRoutes(app: FastifyInstance) {
       // Closing = opening + (credits - debits) within the range.
       const closingBalance = openingBalance + rangeCredits - rangeDebits;
    
-      // Available credit = credit limit - current outstanding.
+      // Prepaid model: available balance = positive closing balance (no limit).
       // Outstanding = negative closing balance (if closing < 0 the dealer
       // owes us; if closing > 0 we hold a credit for them).
       const outstanding    = closingBalance < 0 ? Math.abs(closingBalance) : 0;
-      const availableCredit = Math.max(0, creditLimit - outstanding);
+      const availableCredit = Math.max(0, closingBalance);   // prepaid balance, no limit
    
       return reply.send({
         dealer: {
@@ -759,7 +757,7 @@ export async function dealerRoutes(app: FastifyInstance) {
                 COALESCE(w.balance, 0) AS wallet_balance,
                 GREATEST(0, -led.closing_balance)::numeric                          AS credit_outstanding,
                 led.closing_balance::numeric                                        AS ledger_balance,
-                GREATEST(0, COALESCE(d.credit_limit, 0) + led.closing_balance)::numeric AS credit_available
+                GREATEST(0, led.closing_balance)::numeric AS credit_available
           FROM dealers d
           JOIN zones z ON z.id = d.zone_id
           LEFT JOIN routes r ON r.id = d.route_id

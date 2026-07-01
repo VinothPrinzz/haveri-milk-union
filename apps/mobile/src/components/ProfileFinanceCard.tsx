@@ -12,11 +12,11 @@ import { useAuthStore } from "../store/auth";
 import TopUpSheet from "./TopUpSheet";
 
 /**
- * ProfileFinanceCard — credit-limit summary + top-up CTA.
+ * ProfileFinanceCard — prepaid available-balance summary + top-up CTA.
  *
- * Reads `creditLimit`, `outstanding`, `availableCredit` from the
- * auth store's dealer record (which should be refreshed via the
- * `/dealer/profile` endpoint regularly).
+ * Reads `creditAvailable` / `creditOutstanding` from the auth store's
+ * dealer record (refreshed via the `/dealer/profile` endpoint). There is
+ * no credit limit — customers spend only what they've topped up.
  *
  * Drop into ProfileScreen at the top, right under the profile header.
  */
@@ -27,25 +27,21 @@ export default function ProfileFinanceCard() {
 
   if (!dealer) return null;
 
-  const limit         = dealer.creditLimit ?? 0;
   const outstanding   = dealer.creditOutstanding ?? 0;
   const ledgerBalance = dealer.ledgerBalance ?? 0;        // + prepaid / − owed
-  const prepaid       = ledgerBalance > 0 ? ledgerBalance : 0;
-  const available     = dealer.creditAvailable ?? Math.max(0, limit + ledgerBalance);
-  const pct = limit > 0 ? Math.min(100, Math.round((outstanding / limit) * 100)) : 0;
+  // Prepaid model: available balance is whatever the customer has topped up
+  // (opening + top-ups − purchases), floored at 0. No credit limit.
+  const available     = dealer.creditAvailable ?? Math.max(0, ledgerBalance);
+  const isEmpty       = available <= 0;
 
-  // Visual variant based on utilization
-  const variant: "ok" | "warning" | "critical" =
-    pct >= 100 ? "critical" : pct >= 80 ? "warning" : "ok";
-
+  const variant: "ok" | "critical" = isEmpty ? "critical" : "ok";
   const stripe = STRIPE_STYLES[variant];
 
   return (
     <>
       <View style={[styles.card, { borderColor: stripe.border }]}>
         <View style={styles.cardHeader}>
-          <Text style={styles.cardTitle}>Credit limit</Text>
-          <Text style={[styles.pct, { color: stripe.label }]}>{pct}% used</Text>
+          <Text style={styles.cardTitle}>Available balance</Text>
         </View>
 
         <Text style={styles.bigAmount}>
@@ -53,32 +49,8 @@ export default function ProfileFinanceCard() {
           <Text style={styles.bigAmountSuffix}> available</Text>
         </Text>
 
-        <View style={styles.barWrap}>
-          <View
-            style={[
-              styles.barFill,
-              { width: `${pct}%`, backgroundColor: stripe.bar },
-            ]}
-          />
-        </View>
-
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>Limit</Text>
-          <Text style={styles.rowValue}>
-            ₹{limit.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-          </Text>
-        </View>
-        
-        {/* Fixed: Show Prepaid or Outstanding based on ledger balance */}
-        {prepaid > 0 ? (
-          <View style={styles.row}>
-            <Text style={styles.rowLabel}>Prepaid balance</Text>
-            <Text style={[styles.rowValue, { color: "#1A7F4B" }]}>
-              ₹{prepaid.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.row}>
+        {outstanding > 0 && (
+          <View style={[styles.row, { marginTop: 10 }]}>
             <Text style={styles.rowLabel}>Outstanding</Text>
             <Text style={styles.rowValue}>
               ₹{outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
@@ -92,16 +64,14 @@ export default function ProfileFinanceCard() {
             onPress={() => setShowTopUp(true)}
             style={styles.topUpBtn}
           >
-            <Text style={styles.topUpBtnText}>Top up credit</Text>
+            <Text style={styles.topUpBtnText}>Top up balance</Text>
           </TouchableOpacity>
         </View>
 
-        {variant !== "ok" && (
+        {isEmpty && (
           <View style={[styles.alertStripe, { backgroundColor: stripe.bg }]}>
             <Text style={[styles.alertText, { color: stripe.label }]}>
-              {variant === "critical"
-                ? "Credit fully used. Top up or pay down to place new orders."
-                : "You're approaching your credit limit. Consider topping up soon."}
+              Balance empty. Top up to place new orders.
             </Text>
           </View>
         )}
@@ -114,7 +84,7 @@ export default function ProfileFinanceCard() {
           setShowTopUp(false);
           Alert.alert(
             "Top-up successful",
-            `₹${paid.toLocaleString("en-IN")} credited. Your available credit will refresh shortly.`
+            `₹${paid.toLocaleString("en-IN")} credited. Your available balance will refresh shortly.`
           );
         }}
       />

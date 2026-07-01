@@ -1,20 +1,19 @@
 // apps/api/src/routes/finance-credit-control.ts
 // ═══════════════════════════════════════════════════════════════════════
-// Finance → Credit Control
+// Finance → Available Balances (formerly Credit Control)
 //
-//   GET   /api/v1/finance/credit-control          — paginated dealer list
-//   GET   /api/v1/finance/credit-control/summary  — KPI tiles
-//   PATCH /api/v1/finance/credit-control/:dealerId/limit — set credit limit
+//   GET /api/v1/finance/credit-control          — paginated customer list
+//   GET /api/v1/finance/credit-control/summary  — KPI tiles
 //
-// One row per dealer: credit limit, closing balance, outstanding,
-// available headroom, utilisation. Uses the SAME closing-balance math
-// as checkDealerCredit() (opening_balance + non-Opening ledger net), so
-// a dealer the system blocks at checkout also shows as over-limit here.
+// One row per customer: their prepaid Available Balance
+//   closing_balance = opening_balance + Σ(top-up receipts) − Σ(purchases)
+//   availableBalance = max(0, closing_balance)
+// There is NO credit limit — customers spend only what they have topped up
+// (same math as checkDealerCredit). A customer whose balance is ≤ 0
+// ("empty") must record a payment before they can place an indent.
 //
-// Reads require finance.view. The ONLY credit-limit mutation in the whole
-// API lives here and requires finance.manage (accountant / super_admin) —
-// the dealer-master endpoints deliberately do NOT accept credit_limit, so
-// managers cannot change it. Credit limits are a finance responsibility.
+// Reads require finance.view. (The old set-credit-limit mutation was removed
+// when limits were dropped in favour of the prepaid balance model.)
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { FastifyInstance } from "fastify";
@@ -34,7 +33,7 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
       const querySchema = paginationSchema.extend({
         routeId:      z.string().uuid().optional(),
         payMode:      z.enum(["Cash", "Credit"]).optional(),
-        statusBucket: z.enum(["over_limit", "critical", "warning", "healthy", "no_limit"]).optional(),
+        statusBucket: z.enum(["empty", "funded"]).optional(),
         search:       z.string().optional(),
       });
       const q = querySchema.parse(request.query);
@@ -48,12 +47,8 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
       const rows = await pgClient`
         WITH dealer_balance AS (
           SELECT
-            d.id,
-            d.code,
-            d.name,
+            d.id, d.code, d.name,
             d.pay_mode::text                    AS pay_mode,
-            COALESCE(d.credit_limit, 0)::numeric AS credit_limit,
-            COALESCE(d.opening_balance, 0)::numeric AS opening_balance,
             r.id   AS route_id,
             r.name AS route_name,
             z.name AS zone_name,
@@ -77,23 +72,10 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
         )
         SELECT
           id, code, name, pay_mode, route_id, route_name, zone_name,
-          credit_limit::float8                                  AS "creditLimit",
-          GREATEST(0, -closing_balance)::float8                 AS outstanding,
-          GREATEST(0,  closing_balance)::float8                 AS prepaid,
-          closing_balance::float8                               AS "closingBalance",
-          GREATEST(0, credit_limit + closing_balance)::float8   AS "availableCredit",
-          CASE
-            WHEN credit_limit > 0
-              THEN ROUND(LEAST(999, GREATEST(0, -closing_balance) / credit_limit * 100))::int
-            ELSE NULL
-          END                                                   AS "utilizationPct",
-          CASE
-            WHEN credit_limit = 0                        THEN 'no_limit'
-            WHEN -closing_balance > credit_limit         THEN 'over_limit'
-            WHEN -closing_balance >= credit_limit * 0.90 THEN 'critical'
-            WHEN -closing_balance >= credit_limit * 0.75 THEN 'warning'
-            ELSE 'healthy'
-          END                                                   AS "statusBucket",
+          GREATEST(0,  closing_balance)::float8 AS "availableBalance",
+          GREATEST(0, -closing_balance)::float8 AS outstanding,
+          closing_balance::float8               AS "closingBalance",
+          CASE WHEN closing_balance > 0 THEN 'funded' ELSE 'empty' END AS "statusBucket",
           last_payment_at AS "lastPaymentAt",
           last_order_at   AS "lastOrderAt",
           CASE WHEN last_payment_at IS NULL THEN NULL
@@ -104,22 +86,8 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
           AND (${payMode}::text IS NULL OR pay_mode = ${payMode}::text)
           AND (${search}::text  IS NULL OR name ILIKE ${search}::text OR code ILIKE ${search}::text)
           AND (${statusBucket}::text IS NULL OR
-               CASE
-                 WHEN credit_limit = 0                        THEN 'no_limit'
-                 WHEN -closing_balance > credit_limit         THEN 'over_limit'
-                 WHEN -closing_balance >= credit_limit * 0.90 THEN 'critical'
-                 WHEN -closing_balance >= credit_limit * 0.75 THEN 'warning'
-                 ELSE 'healthy'
-               END = ${statusBucket}::text)
-        ORDER BY
-          CASE
-            WHEN credit_limit = 0                        THEN 5
-            WHEN -closing_balance > credit_limit         THEN 1
-            WHEN -closing_balance >= credit_limit * 0.90 THEN 2
-            WHEN -closing_balance >= credit_limit * 0.75 THEN 3
-            ELSE 4
-          END,
-          -closing_balance DESC NULLS LAST
+               (CASE WHEN closing_balance > 0 THEN 'funded' ELSE 'empty' END) = ${statusBucket}::text)
+        ORDER BY closing_balance ASC NULLS LAST
         LIMIT ${q.limit} OFFSET ${offset}
       `;
 
@@ -128,7 +96,6 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
           SELECT
             d.pay_mode::text AS pay_mode,
             d.name, d.code,
-            COALESCE(d.credit_limit, 0)::numeric AS credit_limit,
             r.id AS route_id,
             (
               COALESCE(d.opening_balance, 0)
@@ -151,13 +118,7 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
           AND (${payMode}::text IS NULL OR pay_mode = ${payMode}::text)
           AND (${search}::text  IS NULL OR name ILIKE ${search}::text OR code ILIKE ${search}::text)
           AND (${statusBucket}::text IS NULL OR
-               CASE
-                 WHEN credit_limit = 0                        THEN 'no_limit'
-                 WHEN -closing_balance > credit_limit         THEN 'over_limit'
-                 WHEN -closing_balance >= credit_limit * 0.90 THEN 'critical'
-                 WHEN -closing_balance >= credit_limit * 0.75 THEN 'warning'
-                 ELSE 'healthy'
-               END = ${statusBucket}::text)
+               (CASE WHEN closing_balance > 0 THEN 'funded' ELSE 'empty' END) = ${statusBucket}::text)
       `;
 
       return reply.send({
@@ -177,7 +138,6 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
       const [s] = await pgClient`
         WITH dealer_balance AS (
           SELECT
-            COALESCE(d.credit_limit, 0)::numeric AS credit_limit,
             (
               COALESCE(d.opening_balance, 0)
               + COALESCE((
@@ -193,51 +153,16 @@ export async function financeCreditControlRoutes(app: FastifyInstance) {
           WHERE d.deleted_at IS NULL
         )
         SELECT
-          COALESCE(SUM(GREATEST(0, -closing_balance)), 0)::float8 AS "totalExposure",
           COALESCE(SUM(GREATEST(0,  closing_balance)), 0)::float8 AS "totalPrepaid",
-          COALESCE(SUM(GREATEST(0, credit_limit + closing_balance)), 0)::float8 AS "totalAvailable",
-          COALESCE(SUM(credit_limit), 0)::float8 AS "totalLimitSanctioned",
-          COUNT(*) FILTER (WHERE credit_limit > 0 AND -closing_balance > credit_limit)::int AS "overLimitCount",
-          COUNT(*) FILTER (WHERE credit_limit > 0
-                             AND -closing_balance >= credit_limit * 0.90
-                             AND -closing_balance <= credit_limit)::int AS "criticalCount",
-          COUNT(*) FILTER (WHERE credit_limit > 0
-                             AND -closing_balance >= credit_limit * 0.75
-                             AND -closing_balance <  credit_limit * 0.90)::int AS "warningCount",
+          COALESCE(SUM(GREATEST(0, -closing_balance)), 0)::float8 AS "totalExposure",
+          COUNT(*) FILTER (WHERE closing_balance >  0)::int AS "fundedCount",
+          COUNT(*) FILTER (WHERE closing_balance <= 0)::int AS "emptyCount",
+          COUNT(*) FILTER (WHERE closing_balance <  0)::int AS "negativeCount",
           COUNT(*) FILTER (WHERE (last_payment_at IS NULL OR last_payment_at < CURRENT_DATE - 30)
                              AND -closing_balance > 0)::int AS "dormantWithDuesCount"
         FROM dealer_balance
       `;
       return reply.send({ summary: s });
-    }
-  );
-
-  // ┌─────────────────────────────────────────────────────────────────┐
-  // │  PATCH /api/v1/finance/credit-control/:dealerId/limit             │
-  // │  Set a dealer's credit limit. Finance-only (finance.manage).      │
-  // └─────────────────────────────────────────────────────────────────┘
-  app.patch(
-    "/api/v1/finance/credit-control/:dealerId/limit",
-    { preHandler: [adminAuth, requireRole("finance.manage")] },
-    async (request, reply) => {
-      const { dealerId } = z
-        .object({ dealerId: z.string().uuid() })
-        .parse(request.params);
-      const { creditLimit } = z
-        .object({ creditLimit: z.number().min(0).max(100_000_000) })
-        .parse(request.body);
-
-      const [updated] = await pgClient`
-        UPDATE dealers
-           SET credit_limit = ${creditLimit}, updated_at = now()
-         WHERE id = ${dealerId} AND deleted_at IS NULL
-         RETURNING id, name, code, COALESCE(credit_limit, 0)::float8 AS "creditLimit"
-      `;
-
-      if (!updated) {
-        return reply.status(404).send({ error: "Not Found", message: "Dealer not found" });
-      }
-      return reply.send({ dealer: updated });
     }
   );
 }

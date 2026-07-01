@@ -112,7 +112,7 @@ export default function SubsidyIndentsPage() {
       }
       if (paymentMode === "credit" && creditAvailable != null && total > creditAvailable) {
         throw new Error(
-          `Available credit ₹${creditAvailable.toFixed(2)} is less than indent total ₹${total.toFixed(2)}`
+          `Available balance ₹${creditAvailable.toFixed(2)} is less than indent total ₹${total.toFixed(2)}`
         );
       }
       return placeSubsidyIndent({
@@ -195,14 +195,7 @@ export default function SubsidyIndentsPage() {
           <Field label="Phone">
             <Input className="erp-input bg-muted" value={customer?.phone ?? ""} readOnly />
           </Field>
-          <Field label="Credit Limit">
-            <Input
-              className="erp-input bg-muted num"
-              value={customer?.creditLimit != null ? `₹ ${Number(customer.creditLimit).toLocaleString("en-IN")}` : ""}
-              readOnly
-            />
-          </Field>
-          <Field label="Available Credit">
+          <Field label="Available Balance">
             <Input
               className={`erp-input bg-muted num ${creditAvailable != null && creditAvailable < total ? "border-destructive text-destructive" : ""}`}
               value={creditAvailable != null ? `₹ ${creditAvailable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "—"}

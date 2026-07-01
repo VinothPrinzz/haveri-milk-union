@@ -740,11 +740,9 @@ function CustomerViewDialog({
           <Row label="Officer" value={(customer as any).officerName} />
           <Row label="Bank" value={(customer as any).bank} />
           <Row label="Account No." value={(customer as any).accountNo} />
-          <Row label="Credit Limit"     value={customer.creditLimit != null
-            ? `₹${Number(customer.creditLimit).toLocaleString("en-IN")}` : "—"} />
           <Row label="Outstanding"      value={(customer as any).outstanding != null
             ? `₹${Number((customer as any).outstanding).toLocaleString("en-IN")}` : "—"} />
-          <Row label="Credit Available" value={(customer as any).creditAvailable != null
+          <Row label="Available Balance" value={(customer as any).creditAvailable != null
             ? `₹${Number((customer as any).creditAvailable).toLocaleString("en-IN")}` : "—"} />
           <Row label="Wallet / Credit Bal." value={(customer as any).creditBalance != null
             ? `₹${Number((customer as any).creditBalance).toLocaleString("en-IN")}` : "—"} />

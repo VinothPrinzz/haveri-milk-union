@@ -213,7 +213,7 @@ export default function RecordIndentsPage() {
         );
         if (Number.isFinite(available) && totals.total > available) {
           throw new Error(
-            `Available credit ₹${available.toFixed(2)} is less than indent total ₹${totals.total.toFixed(2)}`
+            `Available balance ₹${available.toFixed(2)} is less than indent total ₹${totals.total.toFixed(2)}`
           );
         }
       }
@@ -307,13 +307,6 @@ export default function RecordIndentsPage() {
           <Field label="Phone">
             <Input className="erp-input bg-muted" value={customer?.phone ?? ""} readOnly />
           </Field>
-          <Field label="Credit Limit">
-            <Input
-              className="erp-input bg-muted num"
-              value={customer?.creditLimit != null ? `₹ ${Number(customer.creditLimit).toLocaleString("en-IN")}` : ""}
-              readOnly
-            />
-          </Field>
           <Field label="Outstanding">
             <Input
               className="erp-input bg-muted num"
@@ -325,7 +318,7 @@ export default function RecordIndentsPage() {
               readOnly
             />
           </Field>
-          <Field label="Available Credit">
+          <Field label="Available Balance">
             <Input
               className={`erp-input bg-muted num ${creditAvailable != null && creditAvailable < totals.total ? "border-destructive text-destructive" : ""}`}
               value={creditAvailable != null ? `₹ ${creditAvailable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "—"}

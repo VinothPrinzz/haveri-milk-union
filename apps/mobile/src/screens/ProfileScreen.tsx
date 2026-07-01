@@ -218,7 +218,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
             </View>
           </View>
 
-          {/* Updated Stats Strip - Credit Limit replaces "Member" */}
+          {/* Stats Strip — available balance (prepaid, no limit) */}
           <View style={styles.statsStrip}>
             <StatCell value={String(stats.monthOrders)} label={stats.monthOrdersLabel} />
             <View style={styles.statDivider} />
@@ -226,11 +226,11 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
             <View style={styles.statDivider} />
             <StatCell
               value={
-                dealer.creditLimit && dealer.creditLimit > 0
-                  ? `Rs ${formatCompact(dealer.creditLimit)}`
+                dealer.creditAvailable != null
+                  ? `Rs ${formatCompact(dealer.creditAvailable)}`
                   : "—"
               }
-              label="Credit Limit"
+              label="Balance"
             />
           </View>
         </LinearGradient>
@@ -263,11 +263,11 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
             <ProfileItem
               icon="💳"
               tint="green"
-              title="Credit Limit"
+              title="Available Balance"
               sub={
-                dealer.creditLimit > 0
-                  ? `₹${dealer.creditLimit.toLocaleString("en-IN")} limit · ₹${(dealer.creditAvailable ?? dealer.creditLimit).toLocaleString("en-IN")} available`
-                  : "Not set"
+                dealer.creditAvailable != null
+                  ? `₹${dealer.creditAvailable.toLocaleString("en-IN")} available`
+                  : "—"
               }
               showArrow={false}
             />

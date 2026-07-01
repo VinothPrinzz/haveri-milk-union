@@ -2537,21 +2537,24 @@ async function openPrintWindow(path: string, params?: Record<string, string | un
   setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
 }
 
-// ── Credit Control ──
+// ── Employee credit status buckets (employees still use limits) ──
 export type CreditStatusBucket = "over_limit" | "critical" | "warning" | "healthy" | "no_limit";
+
+// ── Available Balances (customers — prepaid, no limit) ──
+export type BalanceBucket = "empty" | "funded";
 export interface CreditControlRow {
   id: string; code: string; name: string; pay_mode: string;
   route_id: string | null; route_name: string | null; zone_name: string | null;
-  creditLimit: number; outstanding: number; prepaid: number; closingBalance: number;
-  availableCredit: number; utilizationPct: number | null; statusBucket: CreditStatusBucket;
+  availableBalance: number; outstanding: number; closingBalance: number;
+  statusBucket: BalanceBucket;
   lastPaymentAt: string | null; lastOrderAt: string | null; daysSinceLastPayment: number | null;
 }
 export interface CreditControlSummary {
-  totalExposure: number; totalPrepaid: number; totalAvailable: number; totalLimitSanctioned: number;
-  overLimitCount: number; criticalCount: number; warningCount: number; dormantWithDuesCount: number;
+  totalPrepaid: number; totalExposure: number;
+  fundedCount: number; emptyCount: number; negativeCount: number; dormantWithDuesCount: number;
 }
 export const fetchCreditControl = (f?: {
-  routeId?: string; payMode?: "Cash" | "Credit"; statusBucket?: CreditStatusBucket;
+  routeId?: string; payMode?: "Cash" | "Credit"; statusBucket?: BalanceBucket;
   search?: string; page?: number; limit?: number;
 }) => get<Paginated<CreditControlRow>>("/finance/credit-control", {
   page: f?.page ?? 1, limit: f?.limit ?? 50,
@@ -2559,13 +2562,6 @@ export const fetchCreditControl = (f?: {
 });
 export const fetchCreditControlSummary = async () =>
   (await get<{ summary: CreditControlSummary }>("/finance/credit-control/summary")).summary;
-// Set a dealer's credit limit. Finance-only (finance.manage) — the API
-// returns 403 for any other role. This is the ONLY way to change a credit limit.
-export const updateDealerCreditLimit = async (dealerId: string, creditLimit: number) =>
-  (await patch<{ dealer: { id: string; name: string; code: string | null; creditLimit: number } }>(
-    `/finance/credit-control/${dealerId}/limit`,
-    { creditLimit },
-  )).dealer;
 
 // ── Employee Credit Control (finance) ──
 export interface EmployeeCreditRow {

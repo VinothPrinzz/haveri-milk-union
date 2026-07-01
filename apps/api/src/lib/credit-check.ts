@@ -7,18 +7,15 @@
 //   • POST /api/v1/orders                         (existing — same logic)
 //   • Worker auto-confirm                         (Phase 3)
 //
-// Outstanding model (mirrors the admin web's payment-overview math):
-//   outstanding = SUM(grand_total)
-//                 FROM orders
-//                 WHERE dealer_id = $1
-//                   AND payment_mode = 'credit'
-//                   AND status NOT IN ('cancelled', 'delivered')
+// Prepaid balance model (no credit limit):
+//   closing_balance = opening_balance + Σ(credit receipts) − Σ(debit orders)
+//                     over non-'Opening' dealer_ledger rows
+//   available       = max(0, closing_balance)
 //
-//   available   = credit_limit - outstanding
-//
-// We treat 'draft' and 'payment_required' as NOT outstanding — they
-// haven't actually committed to debiting credit yet. Only 'pending',
-// 'confirmed', and 'dispatched' count.
+// A customer can only spend what they have topped up (advance payments,
+// recorded as 'credit' ledger receipts). There is NO credit limit — the
+// `creditLimit`/`outstanding` fields below are kept for response-shape
+// compatibility only and no longer affect availability.
 // ═══════════════════════════════════════════════════════════════════════
 
 import { pgClient } from "./db.js";
@@ -75,7 +72,7 @@ export async function checkDealerCredit(
   const creditLimit = parseFloat(row.credit_limit);
   const closing     = parseFloat(row.closing_balance);
   const outstanding = closing < 0 ? -closing : 0;
-  const available   = Math.max(0, creditLimit + closing);   // was: creditLimit - outstanding
+  const available   = Math.max(0, closing);   // prepaid: balance only, no limit
   const sufficient = orderTotal <= available;
   const shortfall = sufficient ? 0 : Math.round((orderTotal - available) * 100) / 100;
 

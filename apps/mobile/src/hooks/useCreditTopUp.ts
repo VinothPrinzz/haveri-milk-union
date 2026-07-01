@@ -43,7 +43,7 @@ export function useCreditTopUp() {
         keyId: created.keyId,
         amountPaise: created.amountPaise,
         orderId: created.razorpayOrderId,
-        description: `Top up credit limit by ₹${amount}`,
+        description: `Top up balance by ₹${amount}`,
         prefill: prefillFromDealer(),
       });
 

@@ -12,7 +12,7 @@
 // It reads the SAME draft (useDailyDraft for the globally-selected date),
 // shows a read-only review of the items + bill, and lets the dealer pick:
 //
-//   • Use credit limit   → POST /drafts/:date/confirm { paymentMode:"credit" }
+//   • Use available balance → POST /drafts/:date/confirm { paymentMode:"credit" }
 //   • Pay online         → materialise the draft, then Razorpay pay-now
 //                          (UPI / card / netbanking inside the sheet)
 //
@@ -37,7 +37,11 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, fonts } from "../lib/theme";
 import { useAuthStore } from "../store/auth";
-import { relativeLabel, useTargetDateStore } from "../store/targetDate";
+import {
+  istTodayIso,
+  relativeLabel,
+  useTargetDateStore,
+} from "../store/targetDate";
 import {
   useConfirmDraft,
   useDailyDraft,
@@ -66,6 +70,11 @@ export default function IndentCheckoutScreen({
 
   // The date being checked out is the globally-selected indent date.
   const selectedDate = useTargetDateStore((s) => s.selectedDate);
+  // Future dates are never paid in advance — they auto-place at their own
+  // window close, drawn from available balance. IndentScreen no longer opens
+  // checkout for a future date; this guard keeps the payment step from ever
+  // rendering for one even if some other path reaches here.
+  const isFuture = !!selectedDate && selectedDate > istTodayIso();
 
   const draftQuery = useDailyDraft(selectedDate);
   const patchDraft = usePatchDraft(selectedDate);
@@ -87,12 +96,10 @@ export default function IndentCheckoutScreen({
     draftStatus === "dispatched" ||
     draftStatus === "delivered";
 
-  // ── Credit headroom ──
-  const creditLimit = dealer?.creditLimit ?? 0;
-  const creditAvailable = Math.max(
-    0,
-    creditLimit - (dealer?.creditOutstanding ?? 0)
-  );
+  // ── Available balance (prepaid — no credit limit) ──
+  // Whatever the customer has topped up, floored at 0. Comes straight from
+  // the API's credit_available (opening + top-ups − purchases).
+  const creditAvailable = Math.max(0, dealer?.creditAvailable ?? 0);
   const creditOk = creditAvailable >= totals.grandTotal;
 
   // ── Payment selection ──
@@ -137,8 +144,8 @@ export default function IndentCheckoutScreen({
       setBusy(false);
       if (isCreditExceededError(err)) {
         Alert.alert(
-          "Credit limit exceeded",
-          `This indent is over your available credit by ₹${err.body.credit.shortfall.toFixed(
+          "Insufficient balance",
+          `This indent is over your available balance by ₹${err.body.credit.shortfall.toFixed(
             2
           )}. Pay online to place it instead.`,
           [{ text: "Pay online", onPress: () => setMode("online") }]
@@ -264,6 +271,15 @@ export default function IndentCheckoutScreen({
                   in the Orders tab.
                 </Text>
               </View>
+            ) : isFuture ? (
+              <View style={styles.notice}>
+                <Text style={styles.noticeTitle}>Scheduled — no payment now</Text>
+                <Text style={styles.noticeSub}>
+                  Indents for a future date are placed automatically at that
+                  date's window close, using your available balance. Edit the
+                  items from the Indent tab anytime before then.
+                </Text>
+              </View>
             ) : items.length === 0 ? (
               <View style={styles.notice}>
                 <Text style={styles.noticeTitle}>Nothing to confirm</Text>
@@ -312,13 +328,13 @@ export default function IndentCheckoutScreen({
                   selected={effectiveMode === "credit"}
                   disabled={!creditOk}
                   icon="🧾"
-                  title="Use credit limit"
+                  title="Use available balance"
                   subtitle={
                     creditOk
                       ? `₹${creditAvailable.toFixed(0)} available`
                       : `Short by ₹${(
                           totals.grandTotal - creditAvailable
-                        ).toFixed(0)} — not enough credit`
+                        ).toFixed(0)} — not enough balance`
                   }
                   onPress={() => setMode("credit")}
                 />
@@ -344,6 +360,7 @@ export default function IndentCheckoutScreen({
       {!draftQuery.isLoading &&
         !draftQuery.isError &&
         !isPlaced &&
+        !isFuture &&
         items.length > 0 && (
           <View
             style={[
