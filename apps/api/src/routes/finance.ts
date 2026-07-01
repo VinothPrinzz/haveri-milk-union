@@ -154,7 +154,10 @@ export async function financeRoutes(app: FastifyInstance) {
         FROM invoices i
         JOIN dealers d     ON d.id = i.dealer_id
         LEFT JOIN orders o ON o.id = i.order_id
-        LEFT JOIN routes r ON r.id = i.route_id
+        -- Route is derived from the dealer's assigned route (invoices.route_id
+        -- is not populated at creation — mirrors the server-side PDF renderer
+        -- which joins routes via d.route_id).
+        LEFT JOIN routes r ON r.id = d.route_id
         WHERE i.id = ${id}
         LIMIT 1
       `;
