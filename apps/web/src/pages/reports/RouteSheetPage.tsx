@@ -3,7 +3,8 @@
 // Route Sheet — full replacement (per-page letterhead, 3-page split).
 //
 // Per route we emit:
-//   • N customer-rows pages (≤ ROWS_PER_PAGE each), final page carries
+//   • N customer-rows pages (packed by row height, not a fixed count, so a
+//     tall multi-line row never overflows onto a header-less sheet), final page carries
 //     the route TOTAL row and a "Total Crates" row below it (for the
 //     9 across products), showing crates ± leftover packets.
 //   • 1 abstract page  → Route Sheet Abstract table + ₹ summary line.
@@ -114,8 +115,66 @@ function computeKgLtr(packets: number, packSize: number, unit: string, alias = "
   return alreadyMacro ? packets * packSize : packets * packSize / 1000;
 }
 
-// 13 dealer rows per A4 landscape page.
-const ROWS_PER_PAGE = 13;
+// ── Content-aware pagination ────────────────────────────────────────
+// A fixed row-count split orphaned tall rows: 13 rows only fit when they're
+// all single-line, but a row's "Other Products" cell stacks one line per
+// entry (and long dealer names wrap), so a page of multi-line rows overflows
+// its sheet. The browser then continues the table on a second physical sheet
+// — repeating only the <thead>, NOT the letterhead — leaving a header-less
+// "not continuous" page. Instead we measure each row in text-line units and
+// pack rows by height so every chunk fits on one sheet.
+//
+// PAGE_UNIT_BUDGET is calibrated against the tightest sheet (page 1, which
+// also carries the document print-header): ~22 line-units fit there, so 20
+// leaves a safety margin for font/wrap variance.
+const PAGE_UNIT_BUDGET = 20;
+// The final sheet of a route also carries the TOTAL + Total-Crates rows.
+const TOTAL_ROWS_UNITS = 2;
+// Approx. characters that fit on one line of the capped dealer-name column.
+const DEALER_CHARS_PER_LINE = 30;
+
+// Height of a single customer row, in text-line units (min 1). The row is as
+// tall as its tallest cell: either the wrapped dealer name or the stacked
+// "Other Products" lines.
+function rowUnits(c: RouteSheetRoute["customers"][number]): number {
+  const otherLines = (c.othersText ?? "")
+    .split(",").map(s => s.trim()).filter(Boolean).length;
+  const nameLen = `${c.code} - ${c.name}`.length;
+  const nameLines = Math.max(1, Math.ceil(nameLen / DEALER_CHARS_PER_LINE));
+  return Math.max(1, nameLines, otherLines);
+}
+
+// Greedily pack customers into printed sheets so each sheet's rows stay within
+// PAGE_UNIT_BUDGET, keeping the table continuous across headed pages.
+function paginateRows(
+  customers: RouteSheetRoute["customers"],
+): RouteSheetRoute["customers"][] {
+  const chunks: RouteSheetRoute["customers"][] = [];
+  let current: RouteSheetRoute["customers"] = [];
+  let used = 0;
+  for (const c of customers) {
+    const u = rowUnits(c);
+    if (current.length > 0 && used + u > PAGE_UNIT_BUDGET) {
+      chunks.push(current);
+      current = [];
+      used = 0;
+    }
+    current.push(c);
+    used += u;
+  }
+  if (current.length > 0) chunks.push(current);
+
+  // Reserve room on the final sheet for the TOTAL + Total-Crates rows; if they
+  // won't fit alongside the last dealer row, spill that row to a fresh sheet.
+  if (chunks.length > 0) {
+    const last = chunks[chunks.length - 1];
+    const lastUnits = last.reduce((s, c) => s + rowUnits(c), 0);
+    if (last.length > 1 && lastUnits + TOTAL_ROWS_UNITS > PAGE_UNIT_BUDGET) {
+      chunks.push([last.pop()!]);
+    }
+  }
+  return chunks;
+}
 
 export default function RouteSheetPage() {
   const today = new Date().toISOString().split("T")[0];
@@ -173,10 +232,7 @@ export default function RouteSheetPage() {
   const pageLabels: string[] = [];
 
   routesWithData.forEach(route => {
-    const chunks: typeof route.customers[] = [];
-    for (let i = 0; i < route.customers.length; i += ROWS_PER_PAGE) {
-      chunks.push(route.customers.slice(i, i + ROWS_PER_PAGE));
-    }
+    const chunks = paginateRows(route.customers);
     chunks.forEach((rows, idx) => {
       const isLast = idx === chunks.length - 1;
       pages.push(
