@@ -33,7 +33,7 @@
 
 INSERT INTO products (
   name, code, report_alias, category_id, icon, unit, pack_size,
-  base_price, gst_percent, print_direction, packets_crate, sort_order,
+  base_price, dealer_price, mrp, gst_percent, print_direction, packets_crate, sort_order,
   retail_dealer_price, credit_inst_mrp_price, credit_inst_dealer_price, parlour_dealer_price,
   available, make_zero_in_indents
 )
@@ -46,6 +46,8 @@ SELECT
   p.unit,
   p.pack_size,
   ROUND(p.base_price * 0.5, 2),
+  ROUND(COALESCE(p.dealer_price, p.base_price) * 0.5, 2),   -- dealer_price is NOT NULL in-DB
+  ROUND(COALESCE(p.mrp,          p.base_price) * 0.5, 2),   -- mrp is NOT NULL in-DB
   p.gst_percent,
   'Across',
   p.packets_crate,
