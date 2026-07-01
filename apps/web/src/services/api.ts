@@ -933,7 +933,7 @@ export const fetchSubsidyProduct = async () => {
 export const placeSubsidyIndent = async (b: {
   customerId: string;
   routeId?: string | null;
-  paymentMode: "upi" | "credit";
+  paymentMode: "upi" | "credit" | "cash";
   paymentReference?: string;
   notes?: string;
   quantity: number;

@@ -125,7 +125,7 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
         .object({
           customerId: z.string().uuid(),
           routeId: z.string().uuid().nullable().optional(),
-          paymentMode: z.enum(["upi", "credit"]).default("credit"),
+          paymentMode: z.enum(["upi", "credit", "cash"]).default("credit"),
           paymentReference: z.string().optional(),
           notes: z.string().optional(),
           quantity: z.number().int().min(1).max(100_000),
@@ -285,9 +285,9 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
         }
 
         // ── Credit ledger movement for the delta (subsidy portion only) ──
-        // UPI subsidy indents are treated as paid at the counter (reference
-        // captured) and post no ledger row — mirrors the Record Indents UPI
-        // path. Credit indents debit/credit the dealer's line by the delta.
+        // UPI and cash subsidy indents are paid at the counter (UPI captures
+        // a reference; cash needs none) and post no ledger row. Only credit
+        // indents debit/credit the dealer's line by the delta.
         if (body.paymentMode === "credit" && chargeDelta !== 0) {
           const bal = await currentBalance(tx, body.customerId);
           if (chargeDelta > 0) {
