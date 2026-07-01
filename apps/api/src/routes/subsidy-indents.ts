@@ -173,12 +173,26 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
       const deliveryDate = body.deliveryDate ?? String(d!.today);
 
       // ── Existing non-cancelled order for this customer + delivery date? ──
+      // window_open = now() is still before (delivery_date + route close_time),
+      // in IST — the same rule the admin-cancel path uses. Running a route's
+      // dispatch sheet cascades confirmed→dispatched, so gating on status alone
+      // would wrongly lock out subsidy edits while the window is still open.
       const [existing] = await pgClient`
         SELECT o.id, o.status::text AS status,
-               COALESCE(oi.line_total, 0)::numeric AS existing_sub_total
+               COALESCE(oi.line_total, 0)::numeric AS existing_sub_total,
+               (COALESCE(
+                  (o.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                  ((o.delivery_date + 1)::timestamp) AT TIME ZONE 'Asia/Kolkata'
+                ) > now()) AS window_open
           FROM orders o
+          JOIN dealers d ON d.id = o.dealer_id
           LEFT JOIN order_items oi
                  ON oi.order_id = o.id AND oi.product_id = ${product.id}::uuid
+          LEFT JOIN LATERAL (
+            SELECT close_time FROM time_windows tw
+             WHERE tw.route_id = d.route_id
+             ORDER BY close_time DESC LIMIT 1
+          ) tw ON true
          WHERE o.dealer_id = ${body.customerId}
            AND o.delivery_date = ${deliveryDate}::date
            AND o.status <> 'cancelled'
@@ -186,11 +200,22 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
          LIMIT 1
       `;
 
-      if (existing && (existing.status === "dispatched" || existing.status === "delivered")) {
-        return reply.status(409).send({
-          error: "Order already dispatched",
-          message: `This customer's indent for ${deliveryDate} is already ${existing.status} and can no longer be changed.`,
-        });
+      if (existing) {
+        // A delivered order is final — nothing more can be loaded onto it.
+        if (existing.status === "delivered") {
+          return reply.status(409).send({
+            error: "Order already delivered",
+            message: `This customer's indent for ${deliveryDate} is already delivered and can no longer be changed.`,
+          });
+        }
+        // Otherwise the delivery window governs: a dispatched-but-still-in-window
+        // order can still take a subsidy line (the route sheet re-reads it).
+        if (!existing.window_open) {
+          return reply.status(409).send({
+            error: "Delivery window closed",
+            message: `The delivery window for ${deliveryDate} has closed, so this indent can no longer be changed.`,
+          });
+        }
       }
 
       const oldSubTotal = existing ? parseFloat(existing.existing_sub_total) : 0;
