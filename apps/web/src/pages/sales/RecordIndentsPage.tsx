@@ -156,7 +156,7 @@ export default function RecordIndentsPage() {
     [products]
   );
 
-  // Milk/Curd order-minimum shortfalls (total milk < 12 L or curd < 12 kg).
+  // Milk order-minimum shortfalls (total milk < 12 L; curd has no minimum).
   const minQtyViolations = useMemo(
     () =>
       findCategoryMinShortfalls(
@@ -193,7 +193,7 @@ export default function RecordIndentsPage() {
 
       if (items.length === 0) throw new Error("Add at least one line");
 
-      // Milk/Curd order minimums (≥12 L milk, ≥12 kg curd).
+      // Milk order minimum (≥12 L milk; curd has no minimum).
       if (minQtyViolations.length > 0) {
         throw new Error(categoryMinMessage(minQtyViolations));
       }

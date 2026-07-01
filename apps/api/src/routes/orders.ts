@@ -125,7 +125,7 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      // ── 2b. Enforce Milk/Curd order minimums (≥12 L milk, ≥12 kg curd) ──
+      // ── 2b. Enforce Milk order minimum (≥12 L milk; curd has no minimum) ──
       const minQtyViolations = await findMinQtyViolations(body.items);
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
@@ -798,7 +798,7 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(409).send({ error: `Cannot modify ${existing.status} order` });
       }
 
-      // Milk/Curd order minimums (≥12 L / ≥12 kg) over the lines being kept.
+      // Milk order minimum (≥12 L; curd has no minimum) over the lines being kept.
       const modMinQtyViolations = await findMinQtyViolations(
         body.items.filter((i) => i.quantity > 0)
       );

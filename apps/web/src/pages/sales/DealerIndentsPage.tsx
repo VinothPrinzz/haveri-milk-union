@@ -175,7 +175,7 @@ export default function DealerIndentsPage() {
   const credit = draft?.credit;
   const editable = draft?.editable ?? false;
 
-  // ── Milk/Curd order-minimum guards (≥12 L milk, ≥12 kg curd) ──
+  // ── Milk order-minimum guards (≥12 L milk; curd has no minimum) ──
   // Template: only ACTIVE lines auto-place, so the aggregate is over those.
   const templateShortfalls = useMemo(
     () =>
@@ -192,7 +192,7 @@ export default function DealerIndentsPage() {
   );
   const templateHasMinQtyViolation = templateShortfalls.length > 0;
   // Draft: a draft can be saved with any qty, but it can't be CONFIRMED while
-  // its Milk total is below 12 L or Curd total below 12 kg.
+  // its Milk total is below 12 L (curd has no minimum).
   const draftShortfalls = useMemo(
     () =>
       findCategoryMinShortfalls(

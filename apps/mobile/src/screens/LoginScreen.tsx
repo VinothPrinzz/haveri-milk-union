@@ -47,11 +47,24 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
       if (success) {
         onSuccess();
       } else {
+        // login() returns false only for a genuine 401 (bad credentials).
         Alert.alert("Login Failed", "Invalid username or password.");
       }
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : "Login failed. Please try again.";
-      Alert.alert("Error", msg);
+      // Anything thrown here is NOT a credentials problem. ApiError status 0
+      // means the request timed out or the network failed (see lib/api.ts) —
+      // most likely slow/unavailable internet, so tell the user that instead
+      // of implying their username or password is wrong.
+      if (err instanceof ApiError && err.status === 0) {
+        Alert.alert(
+          "Connection Problem",
+          "Your internet seems slow or unavailable. Please check your connection and try again."
+        );
+      } else {
+        const msg =
+          err instanceof ApiError ? err.message : "Login failed. Please try again.";
+        Alert.alert("Login Failed", msg);
+      }
     } finally {
       setLoading(false);
     }

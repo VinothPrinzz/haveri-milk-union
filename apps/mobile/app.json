@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Haveri Milk Union",
+    "name": "Havemul",
     "slug": "haveri-milk-union",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -21,8 +21,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#1448CC"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
       },
       "package": "coop.haverimunion.dealer"
     },

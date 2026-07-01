@@ -200,7 +200,16 @@ export const useAuthStore = create<AuthState>()(
         } catch (err) {
           console.error("Login failed:", err);
           set({ isLoading: false });
-          return false;
+          // Only a genuine 401 means the credentials are wrong — return
+          // false so the screen shows "Invalid username or password".
+          // Every other failure (timeout / network = ApiError status 0, or
+          // a 5xx) is NOT the user's fault, so rethrow and let the screen
+          // surface an accurate "check your connection" message instead of
+          // wrongly blaming their username/password on slow internet.
+          if (err instanceof ApiError && err.status === 401) {
+            return false;
+          }
+          throw err;
         }
       },
 

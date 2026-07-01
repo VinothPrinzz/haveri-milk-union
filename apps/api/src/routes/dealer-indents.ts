@@ -255,7 +255,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // Milk/Curd order minimums (≥12 L milk, ≥12 kg curd). Only ACTIVE lines
+      // Milk order minimum (≥12 L milk; curd has no minimum). Only ACTIVE lines
       // with a positive default get auto-placed, so the aggregate is checked
       // over those — a standing indent that totals under the minimum would
       // otherwise auto-confirm into an order that breaks the rule.
@@ -700,7 +700,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // ── Milk/Curd order-minimum gate (≥12 L / ≥12 kg) ── leave the order a
+      // ── Milk order-minimum gate (≥12 L; curd has no minimum) ── leave the order a
       // draft so the dealer can top up the quantities, then re-confirm.
       const minQtyViolations = await findOrderMinQtyViolations(order.id);
       if (minQtyViolations.length > 0) {

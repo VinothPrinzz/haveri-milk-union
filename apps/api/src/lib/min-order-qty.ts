@@ -1,18 +1,15 @@
 // apps/api/src/lib/min-order-qty.ts
 // ═══════════════════════════════════════════════════════════════════════
-// Order-level minimum for restricted categories (Milk & Curd).
+// Order-level minimum for the restricted category (Milk).
 //
 // Business rule (replaces the old per-line "≥6 units" rule): within a SINGLE
-// order the TOTAL milk must be at least 12 litres and the TOTAL curd at least
-// 12 kilograms. Each minimum applies only when the order actually contains
-// that category — an order with only milk needs no curd, and an order with
-// neither is unrestricted. "At least 12" is inclusive (exactly 12 passes).
+// order the TOTAL milk must be at least 12 litres. It applies only when the
+// order actually contains milk — an order with no milk is unrestricted. "At
+// least 12" is inclusive (exactly 12 passes). Curd has NO minimum.
 //
 // Measure-matched conversion: the Milk category also holds gram-measured items
-// (milk chocolates, paneer, rusk) and the Curd category holds ml-measured
-// lassi/buttermilk. You can't add grams to a litre total, so ONLY
-// volume-measured milk counts toward the litre minimum and ONLY
-// weight-measured curd toward the kg minimum (ml→L, g→kg).
+// (milk chocolates, paneer, rusk). You can't add grams to a litre total, so
+// ONLY volume-measured milk counts toward the litre minimum (ml→L).
 //
 // Single source of truth for the rule on the API side; every order-placement
 // / draft-confirm endpoint calls into it so the guarantee holds no matter
@@ -21,14 +18,13 @@
 
 import { pgClient } from "./db.js";
 
-/** Per-category order minimums, in base units (litres for milk, kg for curd). */
+/** Per-category order minimums, in base units (litres for milk). */
 export const CATEGORY_MIN = {
   milk: { min: 12, unit: "L" },
-  curd: { min: 12, unit: "kg" },
 } as const;
 
 /** Category names (compared case-insensitively) the minimum applies to. */
-export const MIN_QTY_CATEGORY_NAMES = ["milk", "curd"] as const;
+export const MIN_QTY_CATEGORY_NAMES = ["milk"] as const;
 
 export type RestrictedCategory = keyof typeof CATEGORY_MIN;
 
@@ -86,27 +82,21 @@ interface MeasuredLine {
   name?: string | null;
 }
 
-/** Restricted categories present in the order whose L/kg total is below the min. */
+/** Restricted categories present in the order whose L total is below the min. */
 function computeShortfalls(lines: MeasuredLine[]): CategoryMinViolation[] {
   let milkLitres = 0;
-  let curdKg = 0;
   for (const l of lines) {
     if (!(l.quantity > 0)) continue;
     const cat = (l.category ?? "").trim().toLowerCase();
     const m = unitMeasure(l.unit, l.packSize, l.name);
-    // Milk is minimised in litres (volume), curd in kilograms (weight); each
-    // counts only the lines whose unit actually measures that quantity.
+    // Milk is minimised in litres (volume); only lines whose unit actually
+    // measures volume count toward the total. Curd has no minimum.
     if (cat === "milk") milkLitres += l.quantity * m.litres;
-    else if (cat === "curd") curdKg += l.quantity * m.kg;
   }
   const out: CategoryMinViolation[] = [];
   const milk = round3(milkLitres);
   if (milk > 0 && milk < CATEGORY_MIN.milk.min) {
     out.push({ category: "milk", total: milk, min: CATEGORY_MIN.milk.min, unit: CATEGORY_MIN.milk.unit });
-  }
-  const curd = round3(curdKg);
-  if (curd > 0 && curd < CATEGORY_MIN.curd.min) {
-    out.push({ category: "curd", total: curd, min: CATEGORY_MIN.curd.min, unit: CATEGORY_MIN.curd.unit });
   }
   return out;
 }
@@ -117,7 +107,7 @@ export function minQtyErrorMessage(violations: CategoryMinViolation[]): string {
     violations
       .map(
         (v) =>
-          `${v.category === "milk" ? "Milk" : "Curd"} order must total at least ` +
+          `Milk order must total at least ` +
           `${v.min} ${v.unit} (currently ${v.total.toFixed(2)} ${v.unit})`,
       )
       .join("; ") + "."

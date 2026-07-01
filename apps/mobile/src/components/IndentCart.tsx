@@ -116,7 +116,7 @@ export default function IndentCart({
   const handleSubmit = async () => {
     if (isEmpty || submitting) return;
 
-    // Milk/Curd order minimums (≥12 L milk, ≥12 kg curd) — block before the API.
+    // Milk order minimum (≥12 L milk; curd has no minimum) — block before the API.
     const minShortfalls = findCategoryMinShortfalls(
       items.map((i) => ({
         name: i.name,
