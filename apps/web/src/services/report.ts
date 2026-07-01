@@ -24,6 +24,7 @@ export interface RouteSheetAcrossProduct {
   packetsCrate: number;
   packSize: number;
   unit: string;
+  abstractPosition: number;
 }
  
 export interface RouteSheetOtherProduct {
@@ -56,6 +57,7 @@ export interface RouteSheetAbstractItem {
   packetsCrate: number;
   packSize: number;
   unit: string;
+  category: string;
   crates: number;
   packets: number;
   kgLtr: number;

@@ -30,6 +30,9 @@ export const products = pgTable("products", {
   criticalStockThreshold: integer("critical_stock_threshold").notNull().default(10),
   available: boolean("available").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
+  // Position in the Route Sheet across columns + Route Sheet Abstract table.
+  // 0 = unset (sorts after positioned products). Editable from the admin panel.
+  abstractPosition: integer("abstract_position").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }), // soft delete

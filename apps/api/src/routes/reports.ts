@@ -36,7 +36,7 @@ export async function reportsRoutes(app: FastifyInstance) {
       const prodRows = await pgClient`
         SELECT p.id, p.code, p.report_alias, p.name,
                p.print_direction, p.packets_crate,
-               p.pack_size, p.unit, p.sort_order,
+               p.pack_size, p.unit, p.sort_order, p.abstract_position,
                c.name AS category_name
           FROM products p
           JOIN categories c ON c.id = p.category_id
@@ -64,6 +64,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         packetsCrate: Number(p.packets_crate) || 0,
         packSize: parseFloat(p.pack_size) || 0,
         unit: p.unit ?? "",
+        abstractPosition: Number(p.abstract_position) || 0,
       }));
       const acrossIds = new Set(acrossProducts.map(p => p.id));
  
@@ -82,6 +83,7 @@ export async function reportsRoutes(app: FastifyInstance) {
       type ProdMeta = {
         id: string; alias: string; packetsCrate: number;
         packSize: number; unit: string; sortOrder: number;
+        abstractPosition: number; category: string;
       };
       const productMeta = new Map<string, ProdMeta>();
       for (const p of prodRows as any[]) {
@@ -92,6 +94,8 @@ export async function reportsRoutes(app: FastifyInstance) {
           packSize: parseFloat(p.pack_size) || 0,
           unit: p.unit ?? "",
           sortOrder: Number(p.sort_order) || 0,
+          abstractPosition: Number(p.abstract_position) || 0,
+          category: p.category_name ?? "",
         });
       }
  
@@ -420,13 +424,18 @@ export async function reportsRoutes(app: FastifyInstance) {
           } else {
             pktPlus = agg.qty;
           }
+          // Sort key: the client-defined abstract_position leads; products
+          // with no position (0) fall after all positioned rows in sort_order.
+          // Sub lines sit immediately after their base product (+0.5).
+          const basePos = meta.abstractPosition > 0 ? meta.abstractPosition : 1000 + meta.sortOrder;
           abstractItems.push({
             productId:    key,
             alias:        isSub ? `${meta.alias} (Sub)` : meta.alias,
-            sortOrder:    isSub ? meta.sortOrder + 0.5 : meta.sortOrder,
+            sortOrder:    isSub ? basePos + 0.5 : basePos,
             packetsCrate: pc,
             packSize:     meta.packSize,
             unit:         meta.unit,
+            category:     meta.category,
             crates,
             packets:      agg.qty,
             kgLtr:        round2(agg.qty * meta.packSize),
@@ -499,7 +508,7 @@ export async function reportsRoutes(app: FastifyInstance) {
       const prodRows = await pgClient`
         SELECT p.id, p.code, p.report_alias, p.name,
                p.print_direction, p.packets_crate,
-               p.pack_size, p.unit, p.sort_order,
+               p.pack_size, p.unit, p.sort_order, p.abstract_position,
                c.name AS category_name
           FROM products p
           JOIN categories c ON c.id = p.category_id
@@ -526,6 +535,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         packetsCrate: Number(p.packets_crate) || 0,
         packSize: parseFloat(p.pack_size) || 0,
         unit: p.unit ?? "",
+        abstractPosition: Number(p.abstract_position) || 0,
       }));
       const acrossIds = new Set(acrossProducts.map(p => p.id));
  
@@ -544,6 +554,7 @@ export async function reportsRoutes(app: FastifyInstance) {
       type ProdMeta = {
         id: string; alias: string; packetsCrate: number;
         packSize: number; unit: string; sortOrder: number;
+        abstractPosition: number; category: string;
       };
       const productMeta = new Map<string, ProdMeta>();
       for (const p of prodRows as any[]) {
@@ -554,6 +565,8 @@ export async function reportsRoutes(app: FastifyInstance) {
           packSize: parseFloat(p.pack_size) || 0,
           unit: p.unit ?? "",
           sortOrder: Number(p.sort_order) || 0,
+          abstractPosition: Number(p.abstract_position) || 0,
+          category: p.category_name ?? "",
         });
       }
  
@@ -764,13 +777,17 @@ export async function reportsRoutes(app: FastifyInstance) {
           } else {
             pktPlus = agg.qty;
           }
+          // Sort key: client-defined abstract_position leads; unpositioned
+          // products (0) fall after all positioned rows in sort_order.
+          const basePos = meta.abstractPosition > 0 ? meta.abstractPosition : 1000 + meta.sortOrder;
           abstractItems.push({
             productId:    pid,
             alias:        meta.alias,
-            sortOrder:    meta.sortOrder,
+            sortOrder:    basePos,
             packetsCrate: pc,
             packSize:     meta.packSize,
             unit:         meta.unit,
+            category:     meta.category,
             crates,
             packets:      agg.qty,
             kgLtr:        round2(agg.qty * meta.packSize),

@@ -179,7 +179,7 @@ function normalizeProduct(d: Record<string, unknown> | null | undefined) {
       id: "", code: "", name: "", reportAlias: "", category: "",
       packSize: 0, unit: "pcs",
       basePrice: 0, dealerPrice: 0, mrp: 0,   // ← three prices
-      gstPercent: 0, hsnNo: "", stock: 0, sortOrder: 0,
+      gstPercent: 0, hsnNo: "", stock: 0, sortOrder: 0, abstractPosition: 0,
       printDirection: "Across" as const, packetsCrate: 0,
       status: "Inactive" as const, terminated: false,
       rateCategories: {} as Record<string, number>,
@@ -216,6 +216,7 @@ function normalizeProduct(d: Record<string, unknown> | null | undefined) {
     hsnNo: (d.hsnNo ?? d.hsn_no ?? "") as string,
     stock: Number(d.stock ?? 0),
     sortOrder: Number(d.sortOrder ?? d.sort_order ?? 0),
+    abstractPosition: Number(d.abstractPosition ?? d.abstract_position ?? 0),
     printDirection: (d.printDirection ?? d.print_direction ?? "Across") as "Across" | "Down",
     packetsCrate: Number(d.packetsCrate ?? d.packets_crate ?? 0),
     status: d.available !== false ? ("Active" as const) : ("Inactive" as const),
@@ -809,6 +810,7 @@ export const createProduct = async (body: Record<string, unknown>) => {
     packSize: body.packSize !== undefined ? Number(body.packSize) : undefined,
     printDirection: body.printDirection || undefined,
     packetsCrate: body.packetsCrate !== undefined ? Number(body.packetsCrate) : undefined,
+    abstractPosition: body.abstractPosition !== undefined ? Number(body.abstractPosition) : undefined,
     reportAlias: body.reportAlias || body.name || undefined,
     imageUrl: body.imageUrl || null,
   });
