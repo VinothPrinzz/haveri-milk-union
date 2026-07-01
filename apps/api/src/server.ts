@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import sensible from "@fastify/sensible";
+import compress from "@fastify/compress";
 import { env } from "./lib/env.js";
 
 // ── Route Modules ─────────────────────────────────────
@@ -104,6 +105,13 @@ await app.register(cookie, {
 });
 
 await app.register(sensible);
+
+// ── Response compression ──────────────────────────────
+// gzip/deflate responses so payloads travel in far fewer bytes over
+// slow dealer connections — this is what keeps requests (e.g. login)
+// from blowing past the mobile client's network timeout. `threshold`
+// skips tiny bodies where compression overhead isn't worth it.
+await app.register(compress, { global: true, threshold: 1024 });
 
 // ── Global Error Handler ─────────────────────────────
 app.setErrorHandler((error, request, reply) => {

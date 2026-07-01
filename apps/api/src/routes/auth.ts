@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq, and, ne, sql, gt, isNull } from "drizzle-orm";
-import { db, pgClient } from "../lib/db.js";
+import { db } from "../lib/db.js";
 import {
   dealers,
   dealerRefreshTokens,
@@ -84,37 +84,20 @@ export async function authRoutes(app: FastifyInstance) {
       family: "dealer",
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
-   
-    // ── FIX: return the FULL dealer profile, not just { id, phone } ──
-    // Same query as GET /api/v1/dealer/profile, but with LEFT JOIN zones
-    // so a dealer whose zone_id is still NULL can log in (the inner JOIN
-    // version 404s such dealers).
-    const [profile] = await pgClient`
-      SELECT d.*,
-             z.name AS zone_name,
-             r.name AS route_name,
-             r.code AS route_code,
-             COALESCE(w.balance, 0) AS wallet_balance,
-             COALESCE((
-               SELECT SUM(o.grand_total) FROM orders o
-                WHERE o.dealer_id = d.id
-                  AND o.payment_mode = 'credit'
-                  AND o.status NOT IN ('cancelled', 'delivered')
-             ), 0) AS credit_outstanding
-        FROM dealers d
-        LEFT JOIN zones z          ON z.id = d.zone_id
-        LEFT JOIN routes r         ON r.id = d.route_id
-        LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
-       WHERE d.id = ${dealer.id} AND d.deleted_at IS NULL
-       LIMIT 1
-    `;
-   
+
+    // Return a MINIMAL dealer payload only. The app calls
+    // GET /api/v1/dealer/profile immediately after login and treats that
+    // as the source of truth for name/zone/wallet/credit, discarding this
+    // object unless that follow-up fetch fails. Running the full profile
+    // query here (multi-JOIN + correlated SUM-over-orders subquery) just
+    // bloated and slowed the one response that must beat the mobile
+    // client's network timeout on slow connections. zoneId comes free from
+    // the auth lookup above, so we include it to keep the window query
+    // working even in the rare fallback case.
     return reply.send({
       accessToken,
       refreshToken,
-      // profile should always exist here (we just authenticated this row),
-      // but fall back defensively.
-      dealer: profile ?? { id: dealer.id, phone: dealer.phone },
+      dealer: { id: dealer.id, phone: dealer.phone, zone_id: dealer.zoneId },
     });
   });
 
