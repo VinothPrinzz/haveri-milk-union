@@ -230,7 +230,14 @@ export default function DispatchSheetBase({ bucket }: Props) {
                               <td className="num font-semibold" style={{ textAlign: "right" }}>{cp.pktMinus > 0 ? fmtNum(cp.pktMinus) : "—"}</td>
                               <td style={{ textAlign: "center" }}>
                                 <Checkbox
-                                  checked={!!verified[k]}
+                                  // A dispatched/delivered route is verified by
+                                  // definition — its rows tick on by default (and
+                                  // persist across reloads, since it derives from
+                                  // route status). A manual toggle still overrides.
+                                  checked={
+                                    verified[k] ??
+                                    (r.status === "dispatched" || r.status === "delivered")
+                                  }
                                   onCheckedChange={v => setVerified(prev => ({ ...prev, [k]: !!v }))}
                                 />
                               </td>
