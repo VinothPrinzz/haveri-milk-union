@@ -51,6 +51,7 @@ import { toCsv } from "@/lib/exporters";
 // in its original sort_order so we never silently drop data.
 const ACROSS_CODE_ORDER = [
   "HTM-1000ML",
+  "HTM 1000ML (sub)",   // subsidised HTM 1000ML — sits right after its base product
   "HTM-500ML",
   "HCM-500ML",
   "SHBM 1000ML",

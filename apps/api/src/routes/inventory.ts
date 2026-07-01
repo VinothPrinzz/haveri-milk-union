@@ -82,6 +82,8 @@ export async function inventoryRoutes(app: FastifyInstance) {
           JOIN categories c ON c.id = p.category_id
           LEFT JOIN fgs_stock_log fsl ON fsl.product_id = p.id AND fsl.date = ${date}::date
           WHERE p.deleted_at IS NULL
+            -- Subsidy-only SKU (migration 0056) has no stock of its own.
+            AND p.code IS DISTINCT FROM 'PD0191S'
             AND (
               ${effectiveBucket}::text IS NULL
               OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
@@ -113,6 +115,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
         FROM products p
         JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
+        AND p.code IS DISTINCT FROM 'PD0191S'   -- subsidy-only SKU (migration 0056)
         AND (
           ${effectiveBucket}::text IS NULL
           OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
@@ -287,6 +290,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
         FROM products p
         JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
+          AND p.code IS DISTINCT FROM 'PD0191S'   -- subsidy-only SKU (migration 0056)
           AND p.stock <= p.low_stock_threshold
         ORDER BY p.stock ASC
       `;

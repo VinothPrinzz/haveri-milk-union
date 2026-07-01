@@ -16,6 +16,7 @@ import BatchesPage from "@/pages/masters/BatchesPage";
 import ProductsPage from "@/pages/masters/ProductsPage";
 import PriceChartPage from "@/pages/masters/PriceChartPage";
 import RecordIndentsPage from "@/pages/sales/RecordIndentsPage";
+import SubsidyIndentsPage from "@/pages/sales/SubsidyIndentsPage";
 import AllIndentsPage from "@/pages/sales/AllIndentsPage";
 import DirectSalesPage from "@/pages/sales/DirectSalesPage";
 import VipContactsPage from "@/pages/masters/VipContactsPage";
@@ -128,6 +129,7 @@ function AppInner() {
           <Route path="/masters/price-revisions"  element={<PriceRevisionsPage />} />
           {/* Sales */}
           <Route path="/sales/record-indents" element={<RecordIndentsPage />} />
+          <Route path="/sales/subsidy-indents" element={<SubsidyIndentsPage />} />
           <Route path="/sales/all-indents" element={<AllIndentsPage />} />
           <Route path="/sales/dealer-indents" element={<DealerIndentsPage />} />
           <Route path="/sales/direct-sales/gate-pass" element={<DirectSalesPage tab="gate-pass" />} />

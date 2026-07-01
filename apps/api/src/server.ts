@@ -47,6 +47,7 @@ import { financeDayBookRoutes } from "./routes/finance-day-book.js";
 import { dealerIndentsRoutes } from "./routes/dealer-indents.js";
 import { adminIndentsRoutes } from "./routes/admin-indents.js";
 import { employeeIndentsRoutes } from "./routes/employee-indents.js";
+import { subsidyIndentsRoutes } from "./routes/subsidy-indents.js";
 import { financeEmployeeCreditRoutes } from "./routes/finance-employee-credit.js";
 import { dealerPaymentsRoutes } from "./routes/dealer-payments.js";
 
@@ -220,6 +221,7 @@ await app.register(dealerPaymentsRoutes);
 
 await app.register(adminIndentsRoutes);
 await app.register(employeeIndentsRoutes);
+await app.register(subsidyIndentsRoutes);
 await app.register(financeEmployeeCreditRoutes);
 
 // ── Start Server ─────────────────────────────────────
