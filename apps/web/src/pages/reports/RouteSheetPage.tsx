@@ -46,11 +46,18 @@ import {
 } from "@/services/report";
 import { toCsv } from "@/lib/exporters";
 
-// ── Fixed display order for the 9 across-product columns ──────────
-// Products are matched by their `code` field (case-insensitive).
-// Any product whose code is NOT in this list is appended at the end
-// in its original sort_order so we never silently drop data.
-const ACROSS_CODE_ORDER = [
+// ── Display order for the across-product columns ──────────────────
+// Driven by products.abstract_position, set per-product from the admin panel
+// (Products → Behaviour → "Abstract Sheet Position"). Positioned products
+// (position > 0) lead in ascending order; unpositioned products (0) fall to
+// the end, keeping their server sort_order. This is the SAME ordering the API
+// applies to the Route Sheet Abstract table, so columns and abstract rows
+// stay in lock-step.
+//
+// LEGACY_ORDER is a fallback used only for products that still have no
+// abstract_position assigned, so the sheet keeps a sensible order until an
+// admin sets positions. Matched against both code and reportAlias.
+const LEGACY_ORDER = [
   "HTM-1000ML",
   "HTM 1000ML (sub)",   // subsidised HTM 1000ML — sits right after its base product
   "HTM-500ML",
@@ -64,14 +71,15 @@ const ACROSS_CODE_ORDER = [
 ];
 
 function sortAcrossProducts(products: RouteSheetAcrossProduct[]): RouteSheetAcrossProduct[] {
-  const orderMap = new Map(
-    ACROSS_CODE_ORDER.map((code, idx) => [code.toUpperCase(), idx])
-  );
-  return [...products].sort((a, b) => {
-    const ai = orderMap.get(a.code.toUpperCase()) ?? ACROSS_CODE_ORDER.length;
-    const bi = orderMap.get(b.code.toUpperCase()) ?? ACROSS_CODE_ORDER.length;
-    return ai - bi;
-  });
+  const legacy = new Map(LEGACY_ORDER.map((c, i) => [c.toUpperCase(), i + 1]));
+  const key = (p: RouteSheetAcrossProduct): number => {
+    if (p.abstractPosition && p.abstractPosition > 0) return p.abstractPosition;
+    const l =
+      legacy.get(p.code.toUpperCase()) ??
+      legacy.get((p.reportAlias ?? "").toUpperCase());
+    return l !== undefined ? l : Number.MAX_SAFE_INTEGER;
+  };
+  return [...products].sort((a, b) => key(a) - key(b));
 }
 
 // ── Helper: format crates ± leftover packets ───────────────────────
@@ -523,8 +531,13 @@ function AbstractPage({
   const items = route.abstract.items;
   const t = route.abstract.totals;
 
-  // Recompute totals kgLtr correctly using unit-aware helper
-  const totalKgLtr = items.reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit, i.alias), 0);
+  // Qty (Kg/Ltr) total is milk only: it represents total litres of milk
+  // dispatched, so adding curd (measured in Kg) into the same figure would
+  // be meaningless. Per-row Kg/Ltr values still show for every product; only
+  // this grand total is restricted to the Milk category.
+  const totalKgLtr = items
+    .filter(i => (i.category ?? "").trim().toLowerCase() === "milk")
+    .reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit, i.alias), 0);
 
   return (
     <div className="rs-page rs-abstract-page">

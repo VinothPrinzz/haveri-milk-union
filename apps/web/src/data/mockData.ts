@@ -106,6 +106,7 @@ export interface Product {
   hsnNo: string;
   stock: number;
   sortOrder: number;
+  abstractPosition?: number;  // sequence in Route Sheet across cols + Abstract table
   printDirection: "Across" | "Down";
   packetsCrate: number;
   status: "Active" | "Inactive";

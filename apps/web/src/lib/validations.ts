@@ -163,6 +163,7 @@ export const productSchema = z.object({
   indentInBox: z.boolean().default(false),
   boxQty: z.coerce.number().int().min(0).default(0),
   sortPosition: z.coerce.number().int().min(0).default(0),
+  abstractPosition: z.coerce.number().int().min(0).default(0),
   packetsCrate: optionalQty(true), // was z.coerce.number().int().min(0).default(0)
   printDirection: z.enum(["Across", "Down"]).default("Across"),
   makeZeroInIndents: z.boolean().default(false),

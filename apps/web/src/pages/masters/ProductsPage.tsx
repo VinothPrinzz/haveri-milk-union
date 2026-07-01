@@ -270,6 +270,7 @@ function ProductAddTab() {
       packetsCrate: d.packetsCrate,
       printDirection: d.printDirection,
       sortOrder: d.sortPosition,
+      abstractPosition: d.abstractPosition,
       subsidy: d.subsidy,
       makeZeroInIndents: d.makeZeroInIndents,
       terminated: d.terminated,
@@ -415,6 +416,7 @@ function ProductFormBody({
       packetsCrate:  initialData?.packetsCrate  ?? null,
       printDirection: (initialData?.printDirection as "Across" | "Down") ?? "Across",
       sortPosition:  (initialData as any)?.sortPosition ?? initialData?.sortOrder ?? undefined,
+      abstractPosition: initialData?.abstractPosition ?? undefined,
       subsidy: (initialData as any)?.subsidy ?? false,
       makeZeroInIndents: (initialData as any)?.makeZeroInIndents ?? false,
       terminated: initialData?.terminated ?? false,
@@ -719,7 +721,20 @@ function ProductFormBody({
               </SelectContent>
             </Select>
           </Field>
-          <div /> {/* spacer */}
+          <Field label="Abstract Sheet Position">
+            <Input
+              className="erp-input num"
+              type="number"
+              min="0"
+              placeholder="0 = unset"
+              {...form.register("abstractPosition", {
+                setValueAs: v => v === "" || v == null ? undefined : Number(v),
+              })}
+            />
+            <div className="text-[10.5px] text-muted-foreground mt-0.5">
+              Order in Route Sheet columns &amp; Abstract table
+            </div>
+          </Field>
 
           <Field label="Subsidy">
             <div className="flex items-center gap-2 h-10">
