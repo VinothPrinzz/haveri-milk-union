@@ -12,6 +12,7 @@ import { processDispatchPregenerate } from "./jobs/dispatch-pregenerate.js";
 // } from "./polling-replication-bootstrap.js";
 import { processMaterializeDrafts } from "./jobs/materialize-drafts.js";
 import { processAutoConfirmDrafts } from "./jobs/auto-confirm-drafts.js";
+import { processReconcilePayments } from "./jobs/reconcile-payments.js";
 import { closeSharedQueues } from "./lib/queues.js";
 
 console.log("═══════════════════════════════════════");
@@ -44,6 +45,7 @@ const QUEUES = {
   dispatchPregenerate: "dispatch-pregenerate",
   materializeDrafts:   "materialize-drafts",
   autoConfirmDrafts:   "auto-confirm-drafts",
+  reconcilePayments:   "reconcile-payments",
 } as const;
 
 // ── Workers ──
@@ -126,6 +128,17 @@ const autoConfirmWorker = new Worker(
   }
 );
 
+// 8 — Reconcile captured-but-unapplied Razorpay payments (safety net)
+const reconcilePaymentsWorker = new Worker(
+  QUEUES.reconcilePayments,
+  processReconcilePayments,
+  {
+    connection,
+    ...SHARED_WORKER_OPTS,
+    concurrency: 1,
+  }
+);
+
 // ── Start Polling Replicator (Dual-DB) ──
 // await startPollingReplicator();
 
@@ -199,6 +212,17 @@ async function setupSchedules() {
     { name: "auto-confirm-on-close" }
   );
   console.log("📅 Scheduled: Auto-confirm at window close (every 5 min)");
+
+  // Reconcile captured-but-unapplied Razorpay payments — every 10 minutes.
+  // The job filters to rows older than a grace period so in-flight
+  // checkouts are never touched.
+  const reconcileQueue = new Queue(QUEUES.reconcilePayments, { connection });
+  await reconcileQueue.upsertJobScheduler(
+    "reconcile-razorpay-payments",
+    { pattern: "*/10 * * * *" }, // every 10 min
+    { name: "reconcile-stuck-payments" }
+  );
+  console.log("📅 Scheduled: Razorpay payment reconciliation (every 10 min)");
 }
 
 // ── Event Logging ──
@@ -211,6 +235,7 @@ const workers = [
   dispatchWorker,
   materializeWorker,
   autoConfirmWorker,
+  reconcilePaymentsWorker,
 ];
 const names = [
   "Push",
@@ -220,6 +245,7 @@ const names = [
   "Dispatch",
   "Materialize",
   "AutoConfirm",
+  "ReconcilePayments",
 ];
 
 workers.forEach((w, i) => {
@@ -264,6 +290,7 @@ setupSchedules()
     console.log("   • dispatch-pregenerate (concurrency: 1)");
     console.log("   • materialize-drafts   (concurrency: 1)");
     console.log("   • auto-confirm-drafts  (concurrency: 1)");
+    console.log("   • reconcile-payments   (concurrency: 1)");
     console.log("");
     console.log("Waiting for jobs...");
   })

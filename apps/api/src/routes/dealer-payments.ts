@@ -63,7 +63,7 @@ function require503IfUnconfigured(reply: any): boolean {
  * Returns `{ ok: true }` only when the payment is genuinely captured for
  * the right order and amount.
  */
-async function ensureCaptured(opts: {
+export async function ensureCaptured(opts: {
   razorpayOrderId: string;
   razorpayPaymentId: string;
   expectedAmountPaise: number;
@@ -133,7 +133,7 @@ async function ensureCaptured(opts: {
  * Apply a verified Razorpay payment to internal tables. Idempotent —
  * checks the payments table before inserting.
  */
-async function applyPaidPayment(rzpRowId: string): Promise<{
+export async function applyPaidPayment(rzpRowId: string): Promise<{
   alreadyApplied: boolean;
   dealerId: string;
   kind: "credit_topup" | "order_payment";
@@ -450,6 +450,12 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         });
       }
 
+      // Include 'failed' in the guard: a Razorpay order can have multiple
+      // payment attempts. If an earlier attempt's payment.failed webhook
+      // already flipped this (single, per-order) row to 'failed', a later
+      // successful retry must still be able to recover it. Capture is
+      // independently proven by ensureCaptured() above, and we overwrite
+      // razorpay_payment_id with the CAPTURED id, so this is safe.
       await pgClient`
         UPDATE razorpay_payments
            SET status = 'paid',
@@ -458,7 +464,7 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
                paid_at = COALESCE(paid_at, now()),
                updated_at = now()
          WHERE id = ${row.id}::uuid
-           AND status IN ('created', 'attempted')
+           AND status IN ('created', 'attempted', 'failed')
       `;
 
       const applied = await applyPaidPayment(row.id);
@@ -622,6 +628,12 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         });
       }
 
+      // Include 'failed' in the guard: a Razorpay order can have multiple
+      // payment attempts. If an earlier attempt's payment.failed webhook
+      // already flipped this (single, per-order) row to 'failed', a later
+      // successful retry must still be able to recover it. Capture is
+      // independently proven by ensureCaptured() above, and we overwrite
+      // razorpay_payment_id with the CAPTURED id, so this is safe.
       await pgClient`
         UPDATE razorpay_payments
            SET status = 'paid',
@@ -630,7 +642,7 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
                paid_at = COALESCE(paid_at, now()),
                updated_at = now()
          WHERE id = ${row.id}::uuid
-           AND status IN ('created', 'attempted')
+           AND status IN ('created', 'attempted', 'failed')
       `;
 
       const applied = await applyPaidPayment(row.id);
@@ -683,17 +695,25 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
     const sigHeader = request.headers["x-razorpay-signature"];
     const rawBody = (request as any).rawBody as string | undefined;
 
-    // Graceful degradation — if rawBody wasn't captured, the webhook
-    // fallback isn't wired. The synchronous /verify endpoints still
-    // confirm payments. Acknowledge so Razorpay stops retrying.
+    // The webhook is the server-side safety net that applies payments the
+    // synchronous /verify call misses (app closed, network drop, etc.). If
+    // it silently stops working the software quietly stops recording
+    // captured payments — so every failure here is logged at ERROR level so
+    // a broken webhook is visible instead of rotting unnoticed.
     if (!rawBody) {
-      request.log.warn("[razorpay-webhook] rawBody unavailable — skipped");
+      request.log.error(
+        "[razorpay-webhook] rawBody unavailable — the raw-body parser is not wired, so signatures can't be verified. Captured payments will only apply via synchronous /verify or the reconciliation job."
+      );
       return reply.status(200).send({ ok: true, skipped: true });
     }
     if (!sigHeader || typeof sigHeader !== "string") {
+      request.log.error("[razorpay-webhook] missing x-razorpay-signature header");
       return reply.status(400).send({ error: "Missing signature" });
     }
     if (!verifyWebhookSignature(rawBody, sigHeader)) {
+      request.log.error(
+        "[razorpay-webhook] signature verification FAILED — check RAZORPAY_WEBHOOK_SECRET matches the Razorpay dashboard webhook secret. No payments will apply via webhook until this is fixed."
+      );
       return reply.status(400).send({ error: "Invalid signature" });
     }
 
@@ -717,25 +737,51 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       return reply.status(200).send({ ok: true, unknownOrder: true });
     }
 
-    if (event === "payment.captured") {
-      if (row.status === "created" || row.status === "attempted") {
-        await pgClient`
-          UPDATE razorpay_payments
-             SET status = 'paid',
-                 razorpay_payment_id = COALESCE(razorpay_payment_id, ${paymentId}),
-                 paid_at = COALESCE(paid_at, now()),
-                 webhook_received = true,
-                 updated_at = now()
-           WHERE id = ${row.id}::uuid
-             AND status IN ('created', 'attempted')
-        `;
-      } else {
+    // 'payment.captured' fires when money is taken; 'order.paid' is the
+    // most reliable "this order is fully paid" signal. Treat both the same.
+    if (event === "payment.captured" || event === "order.paid") {
+      // Promote created/attempted/failed → paid, pointing the row at the
+      // CAPTURED payment id. 'failed' is included so a prior failed attempt
+      // on the same razorpay order (which set this single per-order row to
+      // 'failed') cannot block the successful capture. Overwrite (not
+      // COALESCE) so the stored reference is the captured id, never a
+      // failed attempt's id.
+      const promoted = paymentId
+        ? await pgClient`
+            UPDATE razorpay_payments
+               SET status = 'paid',
+                   razorpay_payment_id = ${paymentId},
+                   paid_at = COALESCE(paid_at, now()),
+                   webhook_received = true,
+                   updated_at = now()
+             WHERE id = ${row.id}::uuid
+               AND status IN ('created', 'attempted', 'failed')
+            RETURNING id
+          `
+        : [];
+      if (promoted.length === 0) {
+        // Already paid/refunded (idempotent re-delivery), or no paymentId in
+        // the payload — just record that the webhook landed.
         await pgClient`
           UPDATE razorpay_payments SET webhook_received = true, updated_at = now()
            WHERE id = ${row.id}::uuid
         `;
       }
-      await applyPaidPayment(row.id);
+
+      // Apply internal effects only when the row is genuinely paid. Never let
+      // an apply error 500 this handler — Razorpay would retry forever, and
+      // the reconciliation job is the backstop for a transient failure.
+      const paidNow = promoted.length > 0 || row.status === "paid";
+      if (paidNow) {
+        try {
+          await applyPaidPayment(row.id);
+        } catch (err) {
+          request.log.error(
+            { err, rzpRowId: row.id, orderId },
+            "[razorpay-webhook] applyPaidPayment failed after capture — will be retried by the reconciliation job"
+          );
+        }
+      }
       return reply.status(200).send({ ok: true });
     }
 

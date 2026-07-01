@@ -174,6 +174,37 @@ export async function fetchRazorpayPayment(paymentId: string): Promise<{
 }
 
 /**
+ * List every payment attempt made against a Razorpay order. Used by the
+ * reconciliation job to discover the captured payment id for a stuck row
+ * that never received a webhook or a synchronous /verify (the row only
+ * stores the razorpay_order_id, not the winning payment id). Read-only.
+ */
+export async function fetchRazorpayOrderPayments(orderId: string): Promise<
+  Array<{
+    id: string;
+    status: string; // created | authorized | captured | refunded | failed
+    amount: number; // paise
+    currency: string;
+    error_code: string | null;
+    error_description: string | null;
+  }>
+> {
+  const client = await getClient();
+  const res = await client.orders.fetchPayments(orderId);
+  const items = ((res as { items?: unknown[] })?.items ?? []) as Array<
+    Record<string, unknown>
+  >;
+  return items.map((p) => ({
+    id: p.id as string,
+    status: p.status as string,
+    amount: typeof p.amount === "string" ? parseInt(p.amount, 10) : (p.amount as number),
+    currency: p.currency as string,
+    error_code: (p.error_code as string | null) ?? null,
+    error_description: (p.error_description as string | null) ?? null,
+  }));
+}
+
+/**
  * Capture an authorized payment. Required when the account default is
  * manual capture: without this the money stays only authorized and is
  * auto-voided by Razorpay after a few days. `amountPaise` must equal the
