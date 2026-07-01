@@ -4,9 +4,12 @@
 // (StockEntryMilkCurdPage and StockEntryOthersPage).
 //
 // Takes a `bucket` prop. Fetches that bucket's rows from the API and
-// renders the editable opening/received/dispatched/wastage/closing
-// table. Each page is its own route so it can be gated by role
-// independently.
+// renders the opening/received/dispatched/wastage/closing table. Each page
+// is its own route so it can be gated by role independently.
+//
+// Dispatched is NOT editable here — it is auto-derived by the API from the
+// day's dispatched/delivered orders and shown read-only. Closing recomputes
+// from it live (opening + received − dispatched − wastage).
 //
 // The Received column is no longer a bare number: clicking it opens a
 // receipt (GRN) dialog where each incoming batch is attributed to a
@@ -116,7 +119,8 @@ export default function StockEntryBase({ bucket }: Props) {
           productId,
           opening:    Number(e.opening ?? s.opening ?? 0),
           received:   re ? re.reduce((sum, l) => sum + (l.quantity || 0), 0) : Number(s.received ?? 0),
-          dispatched: Number(e.dispatched ?? s.dispatched ?? 0),
+          // Dispatched is auto-derived server-side; sent for shape only, ignored.
+          dispatched: Number(s.dispatched ?? 0),
           wastage:    Number(e.wastage    ?? s.wastage    ?? 0),
         };
         // Only send receipts when they were edited, so untouched rows keep
@@ -153,7 +157,8 @@ export default function StockEntryBase({ bucket }: Props) {
     // Opening is editable; default to the row value (previous day's closing).
     const opening    = e.opening    ?? s.opening    ?? 0;
     const received   = computeReceived(s);
-    const dispatched = e.dispatched ?? s.dispatched ?? 0;
+    // Dispatched is auto (server-derived), never a local edit.
+    const dispatched = s.dispatched ?? 0;
     const wastage    = e.wastage    ?? s.wastage    ?? 0;
     return Number(opening) + Number(received) - Number(dispatched) - Number(wastage);
   };
@@ -239,7 +244,7 @@ export default function StockEntryBase({ bucket }: Props) {
                       <th>Category</th>
                       <th className="num" style={{ textAlign: "right", width: 110 }}>Opening</th>
                       <th className="num" style={{ textAlign: "right", width: 140 }}>Received</th>
-                      <th className="num" style={{ textAlign: "right", width: 110 }}>Dispatched</th>
+                      <th className="num" style={{ textAlign: "right", width: 110 }} title="Auto-updated from dispatched routes">Dispatched</th>
                       <th className="num" style={{ textAlign: "right", width: 110 }}>Wastage</th>
                       <th className="num" style={{ textAlign: "right", width: 100 }}>Closing</th>
                     </tr>
@@ -267,11 +272,12 @@ export default function StockEntryBase({ bucket }: Props) {
                               onClick={() => setDialogProduct(s)}
                             />
                           </td>
-                          <td style={{ textAlign: "right" }}>
-                            <StockInput
-                              value={edits[s.productId]?.dispatched ?? s.dispatched ?? 0}
-                              onChange={v => setEdit(s.productId, "dispatched", v)}
-                            />
+                          <td
+                            className="num text-muted-foreground"
+                            style={{ textAlign: "right" }}
+                            title="Auto-updated from dispatched routes"
+                          >
+                            {fmtNum(s.dispatched ?? 0)}
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <StockInput

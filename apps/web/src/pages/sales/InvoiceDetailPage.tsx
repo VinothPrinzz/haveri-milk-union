@@ -86,6 +86,16 @@ function numToWordsIndian(num: number): string {
 const fmtQty = (q: number): string =>
   q % 1 === 0 ? String(q) : q.toFixed(2);
 
+// ── Payment mode → human label (matches PaymentMode union in api.ts) ─
+const MODE_LABELS: Record<string, string> = {
+  cash: "Cash", upi: "UPI", cheque: "Cheque", neft: "NEFT",
+  rtgs: "RTGS", credit: "Credit", wallet: "Wallet",
+};
+const modeLabel = (m: string | null | undefined): string => {
+  if (!m) return "—";
+  return MODE_LABELS[m.toLowerCase()] ?? m;
+};
+
 // ════════════════════════════════════════════════════════════════════
 // PAGE
 // ════════════════════════════════════════════════════════════════════
@@ -100,6 +110,7 @@ export default function InvoiceDetailPage() {
   });
   const inv = invData?.invoice as any;
   const invLines = (invData?.items ?? []) as any[];
+  const invPayments = (invData?.payments ?? []) as any[];
 
   const send = useMutation({
     mutationFn: () => sendInvoice(id),
@@ -131,11 +142,16 @@ export default function InvoiceDetailPage() {
   }, 0);
   const cgst       = parseFloat(String(inv?.cgst ?? 0)) || 0;
   const sgst       = parseFloat(String(inv?.sgst ?? 0)) || 0;
-  const igst       = parseFloat(String(inv?.igst ?? 0)) || 0;
-  const totalTax   = cgst + sgst + igst;
-  const grandTotal = parseFloat(String(inv?.totalAmount ?? 0)) || (taxable + totalTax);
-  const netAmount  = Math.round(grandTotal);
-  const roundingAdj = +(netAmount - grandTotal).toFixed(2);
+  const totalTax   = cgst + sgst;
+  // Grand total = taxable + GST, computed live so the paise are preserved.
+  // (invoices.total_amount is stored pre-rounded, which zeroed the decimals.)
+  const grandTotal = taxable + totalTax;
+  // Amount in words — include paise since rounding is no longer applied.
+  const rupeesPart = Math.floor(grandTotal);
+  const paisePart  = Math.round((grandTotal - rupeesPart) * 100);
+  const amountWords = paisePart > 0
+    ? `${numToWordsIndian(rupeesPart)} RUPEES AND ${numToWordsIndian(paisePart)} PAISE`
+    : `${numToWordsIndian(rupeesPart)} RUPEES`;
 
   // ── Receiver fields ────────────────────────────────────────────────
   const dealerName    = inv?.dealerName ?? inv?.currentDealerName ?? "—";
@@ -151,6 +167,26 @@ export default function InvoiceDetailPage() {
     ? `${inv.routeName}${inv.routeCode ? `[${inv.routeCode}]` : ""}`
     : "—";
   // const vehicleNo     = inv?.vehicleNumber ?? inv?.contractor?.vehicleNumber ?? "—";
+
+  // ── Payment fields ─────────────────────────────────────────────────
+  // invoices.payment_status defaults to "unpaid" and is never flipped when a
+  // placed order settles, so it wrongly read NOT PAID on every invoice. Mirror
+  // the dealer-facing PDF: a placed order (confirmed/dispatched/delivered) is
+  // settled — whether up front or on the credit ledger — so it counts as PAID.
+  // An explicit "paid"/"partial" on the invoice still takes precedence.
+  const orderStatus   = String(inv?.orderStatus ?? "").toLowerCase();
+  const rawStatus     = String(inv?.paymentStatus ?? "").toLowerCase();
+  const paymentStatus =
+    rawStatus === "paid" || rawStatus === "partial"
+      ? rawStatus
+      : ["confirmed", "dispatched", "delivered"].includes(orderStatus)
+      ? "paid"
+      : "unpaid";
+  const paidLabel     =
+    paymentStatus === "paid"    ? "PAID"
+    : paymentStatus === "partial" ? "PARTIALLY PAID"
+    : "NOT PAID";
+  const paymentMode   = modeLabel(inv?.paymentMode);
 
   return (
     <div className="flex flex-col h-full">
@@ -284,6 +320,27 @@ export default function InvoiceDetailPage() {
                   </td> */}
                 </tr>
                 <tr>
+                  <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">Payment Mode :</span>{" "}
+                    <span className="font-medium">{paymentMode}</span>
+                  </td>
+                  <td className="py-[2px] pr-3 align-top">
+                    <span className="text-muted-foreground">Payment Status :</span>{" "}
+                    <span
+                      className={
+                        "font-semibold " +
+                        (paymentStatus === "paid"
+                          ? "text-emerald-600"
+                          : paymentStatus === "partial"
+                          ? "text-amber-600"
+                          : "text-destructive")
+                      }
+                    >
+                      {paidLabel}
+                    </span>
+                  </td>
+                </tr>
+                <tr>
                   <td className="py-[2px] pr-3 align-top" colSpan={2}>
                     <span className="text-muted-foreground">Fssai Licence Number :</span>{" "}
                     <span className="font-mono">{COMPANY.fssai}</span>
@@ -331,7 +388,6 @@ export default function InvoiceDetailPage() {
                   <th className="num" style={{ width: 42, textAlign: "right" }}>GST %</th>
                   <th className="num" style={{ width: 64, textAlign: "right" }}>CGST Value</th>
                   <th className="num" style={{ width: 64, textAlign: "right" }}>SGST Value</th>
-                  <th className="num" style={{ width: 60, textAlign: "right" }}>IGST Value</th>
                   <th className="num" style={{ width: 78, textAlign: "right" }}>Net Amount</th>
                 </tr>
               </thead>
@@ -343,15 +399,13 @@ export default function InvoiceDetailPage() {
                   const gstPct  = parseFloat(String(l.gstPercent ?? 0)) || 0;
                   const cgstAmt = parseFloat(String(l.cgstAmount ?? 0)) || 0;
                   const sgstAmt = parseFloat(String(l.sgstAmount ?? 0)) || 0;
-                  const igstAmt = parseFloat(String(l.igstAmount ?? 0)) || 0;
-                  const lineTot = parseFloat(String(l.lineTotal ?? "")) || (basicV + cgstAmt + sgstAmt + igstAmt);
+                  const lineTot = parseFloat(String(l.lineTotal ?? "")) || (basicV + cgstAmt + sgstAmt);
                   return (
                     <tr key={i}>
                       <td className="num" style={{ textAlign: "center" }}>{i + 1}</td>
-                      <td>
-                        {l.productName}
-                        {l.packSize ? ` ${l.packSize}` : ""}
-                      </td>
+                      {/* Product name only — the numeric pack_size (e.g. "0.50")
+                          was previously appended and is intentionally dropped. */}
+                      <td>{l.productName}</td>
                       <td className="font-mono">{l.hsnNo ?? "—"}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtQty(qty)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmt2(rate)}</td>
@@ -359,7 +413,6 @@ export default function InvoiceDetailPage() {
                       <td className="num" style={{ textAlign: "right" }}>{gstPct === 0 ? "0" : fmt2(gstPct)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmt2(cgstAmt)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmt2(sgstAmt)}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{fmt2(igstAmt)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmt2(lineTot)}</td>
                     </tr>
                   );
@@ -372,7 +425,6 @@ export default function InvoiceDetailPage() {
                   <td></td>
                   <td className="num" style={{ textAlign: "right" }}>{fmt2(cgst)}</td>
                   <td className="num" style={{ textAlign: "right" }}>{fmt2(sgst)}</td>
-                  <td className="num" style={{ textAlign: "right" }}>{fmt2(igst)}</td>
                   <td className="num" style={{ textAlign: "right" }}>{fmt2(grandTotal)}</td>
                 </tr>
               </tbody>
@@ -382,7 +434,43 @@ export default function InvoiceDetailPage() {
             <div className="grid grid-cols-[1fr_auto] gap-x-6 mb-4 text-[12px]">
               <div>
                 <p className="font-semibold">Invoice Value (In Words) :</p>
-                <p className="italic">(Rs : {numToWordsIndian(netAmount)} RUPEES )</p>
+                <p className="italic">(Rs : {amountWords} )</p>
+
+                {/* ── Payment details ─────────────────────────────── */}
+                <p className="font-semibold mt-3">PAYMENT DETAILS</p>
+                <p>
+                  <span className="text-muted-foreground">Mode :</span> {paymentMode}
+                  {"  ·  "}
+                  <span className="text-muted-foreground">Status :</span>{" "}
+                  <span className="font-semibold">{paidLabel}</span>
+                </p>
+                {invPayments.length > 0 ? (
+                  <table className="text-[11px] mt-1 border-collapse">
+                    <tbody>
+                      {invPayments.map((p, i) => (
+                        <tr key={i}>
+                          <td className="py-[1px] pr-3 align-top text-muted-foreground">
+                            {fmtDate(p.receivedDate)}
+                          </td>
+                          <td className="py-[1px] pr-3 align-top">{modeLabel(p.mode)}</td>
+                          <td className="py-[1px] pr-3 align-top font-mono">
+                            {p.reference ? `Ref ${p.reference}` : ""}
+                          </td>
+                          <td className="py-[1px] align-top num" style={{ textAlign: "right" }}>
+                            {fmt2(p.amount)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground italic">
+                    {paymentStatus === "paid"
+                      ? "Settled — no separate receipt recorded."
+                      : "No payment recorded against this invoice yet."}
+                  </p>
+                )}
+
                 <p className="font-semibold mt-3">REMARKS</p>
               </div>
 
@@ -404,12 +492,6 @@ export default function InvoiceDetailPage() {
                       <td className="num py-[2px]" style={{ textAlign: "right" }}>{fmt2(sgst)}</td>
                     </tr>
                   )}
-                  {igst > 0 && (
-                    <tr>
-                      <td className="text-muted-foreground py-[2px] pr-4">IGST</td>
-                      <td className="num py-[2px]" style={{ textAlign: "right" }}>{fmt2(igst)}</td>
-                    </tr>
-                  )}
                   {totalTax > 0 && (
                     <tr>
                       <td className="text-muted-foreground py-[2px] pr-4">Total GST</td>
@@ -420,15 +502,9 @@ export default function InvoiceDetailPage() {
                     <td className="font-semibold py-[2px] pr-4">Grand Total</td>
                     <td className="num font-semibold py-[2px]" style={{ textAlign: "right" }}>{fmt2(grandTotal)}</td>
                   </tr>
-                  <tr>
-                    <td className="text-muted-foreground py-[2px] pr-4">ROUNDING ADJ</td>
-                    <td className="num py-[2px]" style={{ textAlign: "right" }}>
-                      {roundingAdj < 0 ? "-" : ""}{fmt2(Math.abs(roundingAdj))}
-                    </td>
-                  </tr>
                   <tr className="inv-net-row" style={{ borderTop: "1px solid #000" }}>
                     <td className="font-bold py-1 pr-4">NET AMOUNT</td>
-                    <td className="num font-bold py-1" style={{ textAlign: "right" }}>{netAmount}</td>
+                    <td className="num font-bold py-1" style={{ textAlign: "right" }}>{fmt2(grandTotal)}</td>
                   </tr>
                 </tbody>
               </table>
