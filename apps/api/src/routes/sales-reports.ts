@@ -109,7 +109,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           JOIN order_items oi ON oi.order_id = o.id
           WHERE o.created_at::date >= ${q.from}::date
             AND o.created_at::date <= ${q.to}::date
-            AND o.status != 'cancelled'
+            AND o.status IN ('confirmed', 'dispatched', 'delivered')
           UNION ALL
           SELECT ds.sale_date,
                  dsi.product_id,
@@ -213,7 +213,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
         JOIN dealers d ON d.id = o.dealer_id
         WHERE o.created_at::date >= ${q.from}::date
           AND o.created_at::date <= ${q.to}::date
-          AND o.status != 'cancelled'
+          AND o.status IN ('confirmed', 'dispatched', 'delivered')
           AND o.payment_mode::text = ANY(${cashModes}::text[])
           AND d.route_id IS NOT NULL
         GROUP BY o.created_at::date, d.route_id
@@ -293,7 +293,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           JOIN order_items oi ON oi.order_id = o.id
           WHERE o.created_at::date >= ${q.from}::date
             AND o.created_at::date <= ${q.to}::date
-            AND o.status != 'cancelled'
+            AND o.status IN ('confirmed', 'dispatched', 'delivered')
             AND z.officer_id IS NOT NULL
           UNION ALL
           SELECT z.officer_id, dsi.product_id, dsi.quantity::int AS qty
@@ -421,7 +421,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
         JOIN categories c ON c.id = p.category_id
         WHERE o.created_at::date >= ${q.from}::date
           AND o.created_at::date <= ${q.to}::date
-          AND o.status != 'cancelled'
+          AND o.status IN ('confirmed', 'dispatched', 'delivered')
           AND o.payment_mode = 'credit'
       `;
 
@@ -648,7 +648,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
         JOIN categories c ON c.id = p.category_id
         WHERE o.created_at::date >= ${q.from}::date
           AND o.created_at::date <= ${q.to}::date
-          AND o.status != 'cancelled'
+          AND o.status IN ('confirmed', 'dispatched', 'delivered')
         GROUP BY z.name, d.id, d.code, d.name, oi.product_id, p.category_id, c.name
         ORDER BY z.name, d.code, d.name
       `;
@@ -844,7 +844,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
         JOIN order_items oi ON oi.order_id = o.id
         WHERE o.created_at::date >= ${q.from}::date
           AND o.created_at::date <= ${q.to}::date
-          AND o.status != 'cancelled'
+          AND o.status IN ('confirmed', 'dispatched', 'delivered')
         GROUP BY z.name, oi.product_id
       `;
 
@@ -976,7 +976,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           JOIN order_items oi ON oi.order_id = o.id
           WHERE o.created_at::date >= ${q.from}::date
             AND o.created_at::date <= ${q.to}::date
-            AND o.status != 'cancelled'
+            AND o.status IN ('confirmed', 'dispatched', 'delivered')
           UNION ALL
           SELECT dsi.product_id, dsi.gst_percent, dsi.quantity::int AS qty,
                  dsi.unit_price, dsi.gst_amount, dsi.line_total
@@ -1294,7 +1294,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           JOIN dealers d      ON d.id = o.dealer_id
           JOIN order_items oi ON oi.order_id = o.id
           WHERE o.created_at::date IN (${prevDate}::date, ${q.date}::date)
-            AND o.status != 'cancelled'
+            AND o.status IN ('confirmed', 'dispatched', 'delivered')
           UNION ALL
           SELECT ds.route_id, ds.sale_date, dsi.product_id, dsi.quantity::int AS qty
           FROM direct_sales ds
@@ -1350,7 +1350,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           JOIN order_items oi ON oi.order_id = o.id
           WHERE o.created_at::date >= ${prevMonthStart}::date
             AND o.created_at::date <= ${monthEnd}::date
-            AND o.status != 'cancelled'
+            AND o.status IN ('confirmed', 'dispatched', 'delivered')
           UNION ALL
           SELECT ds.route_id, ds.sale_date, dsi.product_id, dsi.quantity::int AS qty
           FROM direct_sales ds
@@ -1416,7 +1416,7 @@ async function buildSalesGrid(opts: { q: { from: string; to: string }; cfg: Repo
     JOIN categories c ON c.id = p.category_id
     WHERE o.created_at::date >= ${q.from}::date
       AND o.created_at::date <= ${q.to}::date
-      AND o.status != 'cancelled'
+      AND o.status IN ('confirmed', 'dispatched', 'delivered')
       AND d.route_id IS NOT NULL
       AND (${paymentFilter}::text[] IS NULL OR o.payment_mode::text = ANY(${paymentFilter ?? cashModes}::text[]))
     GROUP BY d.route_id, oi.product_id, c.name
