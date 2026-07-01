@@ -32,7 +32,7 @@ export default function SubsidyIndentsPage() {
 
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [routeId, setRouteId] = useState<string | null>(null);
-  const [paymentMode, setPaymentMode] = useState<"upi" | "credit">("credit");
+  const [paymentMode, setPaymentMode] = useState<"upi" | "credit" | "cash">("credit");
   const [paymentRef, setPaymentRef] = useState("");
   const [qty, setQty] = useState<number | undefined>(undefined);
   const [notes, setNotes] = useState("");
@@ -76,10 +76,10 @@ export default function SubsidyIndentsPage() {
         ?? null);
   }, [customer]);
 
-  // Default payment mode by the customer's pay mode.
+  // Default payment mode by the customer's pay mode (Cash customers → cash).
   useEffect(() => {
     if (!customer) return;
-    setPaymentMode(customer.payMode === "Credit" ? "credit" : "upi");
+    setPaymentMode(customer.payMode === "Credit" ? "credit" : "cash");
   }, [customer]);
 
   useEffect(() => {
@@ -168,9 +168,10 @@ export default function SubsidyIndentsPage() {
             <Input className="erp-input bg-muted" value={customer?.rateCategory ?? ""} readOnly />
           </Field>
           <Field label="Pay Mode">
-            <Select value={paymentMode} onValueChange={v => setPaymentMode(v as "upi" | "credit")}>
+            <Select value={paymentMode} onValueChange={v => setPaymentMode(v as "upi" | "credit" | "cash")}>
               <SelectTrigger className="erp-input"><SelectValue /></SelectTrigger>
               <SelectContent>
+                <SelectItem value="cash">Cash</SelectItem>
                 <SelectItem value="upi">UPI</SelectItem>
                 <SelectItem value="credit">Credit</SelectItem>
               </SelectContent>
