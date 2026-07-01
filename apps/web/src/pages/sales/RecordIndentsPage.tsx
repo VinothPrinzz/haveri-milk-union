@@ -19,7 +19,7 @@ import {
   fetchCustomers, fetchProducts, fetchRoutes, createIndent,
 } from "@/services/api";
 import {
-  violatesMinQty, findMinQtyViolations, minQtyMessage, MIN_ORDER_QTY,
+  findCategoryMinShortfalls, categoryMinMessage, MIN_ORDER_RULE_TEXT,
 } from "@/lib/minOrderQty";
 
 interface Line {
@@ -156,10 +156,10 @@ export default function RecordIndentsPage() {
     [products]
   );
 
-  // Lines that break the per-line Milk/Curd minimum (qty 1–5).
+  // Milk/Curd order-minimum shortfalls (total milk < 12 L or curd < 12 kg).
   const minQtyViolations = useMemo(
     () =>
-      findMinQtyViolations(
+      findCategoryMinShortfalls(
         lines
           .filter((l) => l.productId && (l.qty ?? 0) > 0)
           .map((l) => {
@@ -167,6 +167,8 @@ export default function RecordIndentsPage() {
             return {
               name: p?.name ?? "Item",
               categoryName: p?.category,
+              unit: p?.unit,
+              packSize: p?.packSize,
               quantity: l.qty ?? 0,
             };
           })
@@ -191,9 +193,9 @@ export default function RecordIndentsPage() {
 
       if (items.length === 0) throw new Error("Add at least one line");
 
-      // Per-line minimum order qty for Milk/Curd.
+      // Milk/Curd order minimums (≥12 L milk, ≥12 kg curd).
       if (minQtyViolations.length > 0) {
-        throw new Error(minQtyMessage(minQtyViolations));
+        throw new Error(categoryMinMessage(minQtyViolations));
       }
 
       // UPI Reference validation
@@ -357,8 +359,6 @@ export default function RecordIndentsPage() {
               <tbody>
                 {lines.map((l, i) => {
                   const c = lineCalc(l);
-                  const p: any = productById.get(l.productId);
-                  const badQty = violatesMinQty(p?.category, l.qty ?? 0);
                   return (
                     <tr key={l.id}>
                       <td className="num">{i + 1}</td>
@@ -372,9 +372,8 @@ export default function RecordIndentsPage() {
                       </td>
                       <td>
                         <Input
-                          className={`erp-input num text-right ${badQty ? "border-destructive text-destructive" : ""}`}
+                          className="erp-input num text-right"
                           type="number" min="0" step="1"
-                          title={badQty ? `Milk & Curd require a minimum quantity of ${MIN_ORDER_QTY}` : undefined}
                           value={l.qty ?? ""}
                           onChange={e => setLineQty(l.id, e.target.value === "" ?
                             undefined : Math.max(0, parseInt(e.target.value) || 0))}
@@ -427,9 +426,13 @@ export default function RecordIndentsPage() {
       </div>
 
       <FormFooter>
-        {minQtyViolations.length > 0 && (
+        {minQtyViolations.length > 0 ? (
           <span className="text-[12px] text-destructive mr-auto">
-            Milk &amp; Curd items must be ordered in {MIN_ORDER_QTY} or more.
+            {categoryMinMessage(minQtyViolations)}
+          </span>
+        ) : (
+          <span className="text-[11px] text-muted-foreground mr-auto">
+            {MIN_ORDER_RULE_TEXT}
           </span>
         )}
         <Button variant="outline" size="sm" className="h-8" onClick={() => navigate(-1)}>Cancel</Button>

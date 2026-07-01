@@ -1,60 +1,141 @@
 // src/lib/minOrderQty.ts
 //
-// Per-line minimum order quantity for restricted categories (Milk & Curd).
+// Order-level minimum for restricted categories (Milk & Curd).
 //
-// Business rule: a Milk or Curd product can only be ordered in quantities
-// of 6 or more. The dealer can order 0 (not at all) or ≥6 — never 1–5.
-// This mirrors the server guard in apps/api/src/lib/min-order-qty.ts; the
-// server is the source of truth, this is the matching client-side UX so the
-// dealer never builds an order the backend will reject.
+// Business rule (replaces the old per-line "≥6 units" rule): within a single
+// order the TOTAL milk must be at least 12 litres and the TOTAL curd at least
+// 12 kilograms, each applying only when that category is in the order ("at
+// least 12" is inclusive).
+//
+// Measure-matched: the Milk category also holds gram-measured items (milk
+// chocolates, paneer) and Curd holds ml-measured lassi. Only volume-measured
+// milk counts toward the litre minimum and only weight-measured curd toward
+// the kg minimum (ml→L, g→kg).
+//
+// Mirrors apps/api/src/lib/min-order-qty.ts (the server source of truth); this
+// is the matching client guard so the dealer never builds an order the backend
+// will reject.
 
-/** Minimum quantity (inclusive) for a restricted-category line. 6 passes; 1–5 fail. */
-export const MIN_ORDER_QTY = 6;
+/** Per-category order minimums, in base units (litres for milk, kg for curd). */
+export const CATEGORY_MIN = {
+  milk: { min: 12, unit: "L" },
+  curd: { min: 12, unit: "kg" },
+} as const;
 
-/** Category names (compared case-insensitively) the minimum applies to. */
-const RESTRICTED_CATEGORIES = new Set(["milk", "curd"]);
+export type RestrictedCategory = keyof typeof CATEGORY_MIN;
 
-/** True when a product's category is subject to the minimum-order-qty rule. */
+const RESTRICTED = new Set<string>(["milk", "curd"]);
+
+/** True when a product's category is subject to the order minimum (milk/curd). */
 export function isMinQtyCategory(categoryName?: string | null): boolean {
-  return !!categoryName && RESTRICTED_CATEGORIES.has(categoryName.trim().toLowerCase());
+  return !!categoryName && RESTRICTED.has(categoryName.trim().toLowerCase());
 }
 
-/** The minimum quantity for a category: 6 for Milk/Curd, otherwise 1. */
-export function minQtyFor(categoryName?: string | null): number {
-  return isMinQtyCategory(categoryName) ? MIN_ORDER_QTY : 1;
+// ── Per-line helpers ──────────────────────────────────────────────────
+// There is no longer a per-LINE minimum (the rule is now an order-level total),
+// so these are neutral: minQtyFor is always 1 and snapQtyToMin only clamps to a
+// non-negative integer. Kept so quantity steppers keep a single call site.
+
+/** Per-line minimum quantity — always 1 now (no per-line restriction). */
+export function minQtyFor(_categoryName?: string | null): number {
+  return 1;
 }
 
-/**
- * Snap a requested quantity to a legal value for the product's category:
- *   • 0 stays 0 (removes the item)
- *   • for Milk/Curd, 1–5 bumps up to the minimum (6)
- *   • everything else passes through unchanged
- */
-export function snapQtyToMin(qty: number, categoryName?: string | null): number {
-  if (qty <= 0) return 0;
-  const min = minQtyFor(categoryName);
-  return qty < min ? min : qty;
+/** Clamp a requested quantity to a legal value (0 removes; otherwise itself). */
+export function snapQtyToMin(qty: number, _categoryName?: string | null): number {
+  return qty <= 0 ? 0 : qty;
 }
 
-/** A line that breaks the rule (Milk/Curd with 0 < quantity < 6). */
-export interface MinQtyLine {
-  name: string;
+// ── Unit → physical measure (litres for volume, kilograms for weight) ──
+const SIZE_TOKEN = /(\d+(?:\.\d+)?)\s*(kg|kilogram|ltr|litre|liter|ml|gm|g|l)\b/i;
+
+export interface Measure { litres: number; kg: number; }
+
+function parseMeasure(text: string): Measure | null {
+  const m = text.match(SIZE_TOKEN);
+  if (!m) return null;
+  const size = parseFloat(m[1]);
+  switch (m[2].toLowerCase()) {
+    case "ml":                                        return { litres: size / 1000, kg: 0 };
+    case "l": case "ltr": case "litre": case "liter": return { litres: size, kg: 0 };
+    case "g": case "gm":                              return { litres: 0, kg: size / 1000 };
+    case "kg": case "kilogram":                       return { litres: 0, kg: size };
+  }
+  return null;
+}
+
+/** Litres / kilograms in ONE unit — unit text, then name, then packSize. */
+export function unitMeasure(
+  unit?: string | null,
+  packSize?: number | string | null,
+  name?: string | null,
+): Measure {
+  const fromUnit = parseMeasure((unit ?? "").toString());
+  if (fromUnit) return fromUnit;
+  const fromName = parseMeasure((name ?? "").toString());
+  if (fromName) return fromName;
+  const ps = typeof packSize === "string" ? parseFloat(packSize) : packSize ?? 0;
+  if (ps && ps > 0) {
+    const u = (unit ?? "").toString();
+    if (/kg/i.test(u)) return { litres: 0, kg: ps };
+    if (/ltr|litre|liter/i.test(u)) return { litres: ps, kg: 0 };
+  }
+  return { litres: 0, kg: 0 };
+}
+
+export interface MinLine {
   categoryName?: string | null;
   quantity: number;
+  unit?: string | null;
+  packSize?: number | string | null;
+  name?: string | null;
 }
 
-/** Returns the offending lines, or [] when the order is compliant. */
-export function findMinQtyViolations<T extends MinQtyLine>(lines: T[]): T[] {
-  return lines.filter(
-    (l) =>
-      isMinQtyCategory(l.categoryName) &&
-      l.quantity > 0 &&
-      l.quantity < MIN_ORDER_QTY
+export interface CategoryShortfall {
+  category: RestrictedCategory;
+  total: number;
+  min: number;
+  unit: string;
+}
+
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Restricted categories present in the lines whose L/kg total is below the minimum. */
+export function findCategoryMinShortfalls(lines: MinLine[]): CategoryShortfall[] {
+  let milkLitres = 0;
+  let curdKg = 0;
+  for (const l of lines) {
+    if (!(l.quantity > 0)) continue;
+    const cat = (l.categoryName ?? "").trim().toLowerCase();
+    const m = unitMeasure(l.unit, l.packSize, l.name);
+    if (cat === "milk") milkLitres += l.quantity * m.litres;
+    else if (cat === "curd") curdKg += l.quantity * m.kg;
+  }
+  const out: CategoryShortfall[] = [];
+  const milk = round3(milkLitres);
+  if (milk > 0 && milk < CATEGORY_MIN.milk.min) {
+    out.push({ category: "milk", total: milk, min: CATEGORY_MIN.milk.min, unit: CATEGORY_MIN.milk.unit });
+  }
+  const curd = round3(curdKg);
+  if (curd > 0 && curd < CATEGORY_MIN.curd.min) {
+    out.push({ category: "curd", total: curd, min: CATEGORY_MIN.curd.min, unit: CATEGORY_MIN.curd.unit });
+  }
+  return out;
+}
+
+/** Friendly, list-y message naming each category that is below its minimum. */
+export function categoryMinMessage(shortfalls: CategoryShortfall[]): string {
+  return (
+    shortfalls
+      .map(
+        (s) =>
+          `${s.category === "milk" ? "Milk" : "Curd"} order must total at least ${s.min} ${s.unit} ` +
+          `(currently ${s.total.toFixed(2)} ${s.unit})`,
+      )
+      .join("; ") + "."
   );
 }
 
-/** Friendly, list-y message naming the offending lines. */
-export function minQtyMessage(lines: MinQtyLine[]): string {
-  const list = lines.map((l) => `${l.name} (${l.quantity})`).join(", ");
-  return `Milk & Curd items must be ordered in 6 or more. Increase or remove: ${list}.`;
-}
+/** Short reminder of the rule, for helper text. */
+export const MIN_ORDER_RULE_TEXT =
+  "Milk orders must total at least 12 L and Curd orders at least 12 kg.";

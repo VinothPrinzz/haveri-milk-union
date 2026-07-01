@@ -55,7 +55,7 @@ import {
 } from "../hooks/useDailyDraft";
 import { useOrderPayment } from "../hooks/useOrderPayment";
 import { RazorpayCancelled } from "../lib/razorpay";
-import { isMinQtyCategory, minQtyFor, snapQtyToMin } from "../lib/minOrderQty";
+import { snapQtyToMin } from "../lib/minOrderQty";
 import type { DraftItem, OrderStatus } from "../lib/types";
 
 interface IndentScreenProps {
@@ -508,9 +508,6 @@ function DraftRow({
         </Text>
         <Text style={styles.itemMeta}>
           ₹{item.unitPrice.toFixed(2)} · {item.unit}
-          {isMinQtyCategory(item.categoryName)
-            ? ` · min ${minQtyFor(item.categoryName)}`
-            : ""}
         </Text>
       </View>
       {disabled ? (
