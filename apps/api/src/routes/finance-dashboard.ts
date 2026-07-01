@@ -128,9 +128,11 @@ export async function financeDashboardRoutes(app: FastifyInstance) {
           FROM dealers d WHERE d.deleted_at IS NULL
         )
         SELECT
-          COUNT(*) FILTER (WHERE credit_limit > 0 AND -closing_balance > credit_limit)::int AS "overLimitCount",
+          -- Prepaid model: "overLimit" is now "customers carrying a negative
+          -- (owed) balance"; available is the sum of positive balances.
+          COUNT(*) FILTER (WHERE closing_balance < 0)::int AS "overLimitCount",
           COALESCE(SUM(GREATEST(0, -closing_balance)), 0)::float8 AS "totalExposure",
-          COALESCE(SUM(GREATEST(0, credit_limit + closing_balance)), 0)::float8 AS "totalAvailable"
+          COALESCE(SUM(GREATEST(0, closing_balance)), 0)::float8 AS "totalAvailable"
         FROM dealer_balance
       `;
 
@@ -144,15 +146,14 @@ export async function financeDashboardRoutes(app: FastifyInstance) {
             AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.reference = razorpay_payment_id AND p.mode='upi')
           HAVING COUNT(*) > 0
           UNION ALL
-          SELECT 'high', 'Dealers over credit limit', x.cnt, '/finance/credit-control?statusBucket=over_limit', 2
+          SELECT 'high', 'Customers with a negative balance', x.cnt, '/finance/credit-control?statusBucket=empty', 2
           FROM (
             SELECT COUNT(*)::int AS cnt FROM (
               SELECT (COALESCE(d.opening_balance,0)
                 + COALESCE((SELECT SUM(CASE WHEN dl.type='credit' THEN dl.amount WHEN dl.type='debit' THEN -dl.amount END)
-                    FROM dealer_ledger dl WHERE dl.dealer_id=d.id AND COALESCE(dl.voucher_type,'')<>'Opening'),0)) AS closing,
-                COALESCE(d.credit_limit,0) AS lim
+                    FROM dealer_ledger dl WHERE dl.dealer_id=d.id AND COALESCE(dl.voucher_type,'')<>'Opening'),0)) AS closing
               FROM dealers d WHERE d.deleted_at IS NULL
-            ) y WHERE lim > 0 AND -closing > lim
+            ) y WHERE closing < 0
           ) x WHERE x.cnt > 0
           UNION ALL
           SELECT 'medium', 'Cheques in hand awaiting deposit > 3 days', COUNT(*)::int, '/finance/cheques?status=received', 3

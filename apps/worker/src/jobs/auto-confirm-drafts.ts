@@ -64,9 +64,10 @@ function round2(n: number): number {
 
 // ── Credit check (in-worker copy of apps/api/src/lib/credit-check.ts) ─
 // Ledger-based, IDENTICAL maths to checkDealerCredit() so an auto-confirm
-// and a manual confirm agree on whether a dealer is over their line:
+// and a manual confirm agree on whether a dealer can afford an order.
+// Prepaid balance model — no credit limit:
 //   closing   = opening_balance + Σ(credit) − Σ(debit)   [non-'Opening' rows]
-//   available = max(0, credit_limit + closing)
+//   available = max(0, closing)
 async function workerCreditCheck(
   dealerId: string,
   orderTotal: number
@@ -89,9 +90,8 @@ async function workerCreditCheck(
       AND d.deleted_at IS NULL
   `;
   if (!row) throw new Error(`Dealer ${dealerId} not found`);
-  const creditLimit = parseFloat(row.credit_limit);
   const closing = parseFloat(row.closing_balance);
-  const available = Math.max(0, creditLimit + closing);
+  const available = Math.max(0, closing);   // prepaid: balance only, no limit
   const sufficient = orderTotal <= available;
   const shortfall = sufficient ? 0 : round2(orderTotal - available);
   return { available: round2(available), sufficient, shortfall };

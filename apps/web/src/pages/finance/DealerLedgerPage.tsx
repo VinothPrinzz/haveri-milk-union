@@ -244,7 +244,7 @@ export default function DealerLedgerPage() {
           </FilterBar>
 
           {dealerId && (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
               <StatCard
                 icon={<BookOpen className="h-4 w-4" />}
                 label="Opening Balance"
@@ -272,14 +272,8 @@ export default function DealerLedgerPage() {
                 tone="default"
               />
               <StatCard
-                icon={<ShieldCheck className="h-4 w-4" />}
-                label="Credit Limit"
-                value={fmtINR(summary?.summary.creditLimit ?? 0)}
-                tone="warning"
-              />
-              <StatCard
                 icon={<CircleDollarSign className="h-4 w-4" />}
-                label="Available Credit"
+                label="Available Balance"
                 value={fmtINR(summary?.summary.availableCredit ?? 0)}
                 tone="info"
               />
@@ -660,7 +654,7 @@ function renderStatementPage({
               <div className="text-[10px] mt-0.5">
                 <strong>Pay Mode:</strong> {customer.payMode ?? "—"}
                 {" · "}
-                <strong>Credit Limit:</strong> ₹{fmtMoneyPlain(s.creditLimit)}
+                <strong>Available Balance:</strong> ₹{fmtMoneyPlain(s.availableCredit)}
               </div>
             </div>
 
@@ -799,13 +793,7 @@ function renderStatementPage({
                 </td>
               </tr>
               <tr>
-                <td className="border border-black py-1 px-2">Credit Limit</td>
-                <td className="border border-black py-1 px-2 text-right font-mono">
-                  ₹{fmtMoneyPlain(s.creditLimit)}
-                </td>
-              </tr>
-              <tr>
-                <td className="border border-black py-1 px-2">Available Credit</td>
+                <td className="border border-black py-1 px-2">Available Balance</td>
                 <td className="border border-black py-1 px-2 text-right font-mono">
                   ₹{fmtMoneyPlain(s.availableCredit)}
                 </td>

@@ -229,7 +229,7 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
         if (!credit.sufficient) {
           return reply.status(402).send({
             error: "Credit limit exceeded",
-            message: `Available credit ₹${credit.available.toFixed(2)} is short of this subsidy indent by ₹${credit.shortfall.toFixed(2)}.`,
+            message: `Available balance ₹${credit.available.toFixed(2)} is short of this subsidy indent by ₹${credit.shortfall.toFixed(2)}.`,
             credit,
           });
         }

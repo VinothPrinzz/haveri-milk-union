@@ -735,7 +735,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         `;
         return reply.status(402).send({
           error: "Credit limit exceeded",
-          message: `Order is over your available credit by ₹${credit.shortfall.toFixed(
+          message: `Order is over your available balance by ₹${credit.shortfall.toFixed(
             2
           )}`,
           orderId: order.id,

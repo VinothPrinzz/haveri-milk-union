@@ -18,6 +18,7 @@ import {
   findMinQtyViolations,
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
+import { checkDealerCredit } from "../lib/credit-check.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
 
@@ -168,25 +169,16 @@ export async function orderRoutes(app: FastifyInstance) {
       }
       const grandTotal = subtotal + totalGst;
 
-      // Credit-mode pre-check (Issue #8): block if order would exceed dealer credit_limit
+      // Prepaid balance pre-check: block if the order exceeds available balance
+      // (opening + top-ups − purchases). No credit limit — customers spend only
+      // what they've paid in. checkDealerCredit is the single source of truth.
       if (body.paymentMode === "credit") {
-        const [d] = await pgClient`
-          SELECT COALESCE(credit_limit, 0)::numeric AS credit_limit,
-                 COALESCE((SELECT SUM(grand_total) FROM orders o
-                           WHERE o.dealer_id = dealers.id
-                             AND o.payment_mode = 'credit'
-                             AND o.status NOT IN ('cancelled','delivered')), 0)::numeric AS outstanding
-          FROM dealers WHERE id = ${dealer.dealerId}      
-        `;
-        if (!d) {
-          return reply.status(404).send({ error: "Dealer not found" });
-        }
-        const available = parseFloat(d.credit_limit) - parseFloat(d.outstanding);
-        if (grandTotal > available) {
+        const credit = await checkDealerCredit(dealer.dealerId, grandTotal);
+        if (!credit.sufficient) {
           return reply.status(402).send({
-            error: "Credit limit exceeded",
-            message: `Credit limit ₹${d.credit_limit}, outstanding ₹${d.outstanding}, available ₹${available.toFixed(2)}, this order ₹${grandTotal.toFixed(2)}`,
-            availableCredit: available.toFixed(2),
+            error: "Insufficient balance",
+            message: `Available balance ₹${credit.available.toFixed(2)} is short of this order ₹${grandTotal.toFixed(2)} by ₹${credit.shortfall.toFixed(2)}. Please top up.`,
+            availableCredit: credit.available.toFixed(2),
             requestedAmount: grandTotal.toFixed(2),
           });
         }

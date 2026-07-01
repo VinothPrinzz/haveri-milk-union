@@ -154,13 +154,13 @@ export default function DealerIndentsPage() {
     onSuccess: (res: any) => {
       toast.success(
         res?.forced
-          ? "Draft confirmed (credit limit overridden)"
+          ? "Draft confirmed (available balance overridden)"
           : "Draft confirmed — order placed & ledger posted"
       );
       qc.invalidateQueries({ queryKey: ["admin-dealer-draft", dealerId, date] });
     },
     onError: (e: any) => {
-      // 402 → over credit limit; offer an override.
+      // 402 → insufficient available balance; offer an override.
       if (e?.status === 402) {
         if (window.confirm(`${e.message}\n\nPlace the order anyway (override)?`)) {
           confirmDraft.mutate(true);
@@ -261,26 +261,25 @@ export default function DealerIndentsPage() {
           />
         ) : (
           <>
-            {/* ── Finance / credit snapshot ── */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <StatCard label="Credit Limit" value={fmtINR(credit?.creditLimit ?? 0)} />
+            {/* ── Finance / balance snapshot ── */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <StatCard
+                label="Available Balance"
+                value={fmtINR(credit?.available ?? 0)}
+                tone="success"
+              />
               <StatCard
                 label="Outstanding"
                 value={fmtINR(credit?.outstanding ?? 0)}
                 tone="warning"
               />
               <StatCard
-                label="Available Credit"
-                value={fmtINR(credit?.available ?? 0)}
-                tone="success"
-              />
-              <StatCard
                 label="This Draft"
                 value={fmtINR(draftTotal.grand)}
                 hint={
                   credit && draftTotal.grand > credit.available
-                    ? "Over available credit"
-                    : "Within credit"
+                    ? "Over available balance"
+                    : "Within balance"
                 }
                 tone={
                   credit && draftTotal.grand > credit.available ? "danger" : "default"

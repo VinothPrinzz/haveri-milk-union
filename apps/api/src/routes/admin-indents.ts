@@ -634,7 +634,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         `;
         return reply.status(402).send({
           error: "Credit limit exceeded",
-          message: `Draft is over the dealer's available credit by ₹${credit.shortfall.toFixed(
+          message: `Draft is over the customer's available balance by ₹${credit.shortfall.toFixed(
             2
           )}. Re-send with { "force": true } to place it anyway.`,
           orderId: order.id,

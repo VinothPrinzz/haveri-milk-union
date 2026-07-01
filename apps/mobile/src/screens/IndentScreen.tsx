@@ -186,7 +186,7 @@ export default function IndentScreen({
     if (isPaymentRequired) {
       return {
         kind: "warning" as const,
-        text: "Payment required — your credit limit was exceeded",
+        text: "Payment required — not enough available balance",
       };
     }
     if (!isToday) {
@@ -403,13 +403,15 @@ export default function IndentScreen({
                   />
                 </View>
 
-                {/* ── EDITABLE: review → checkout (pick payment) ── */}
-                {canModify && (
+                {/* ── EDITABLE TODAY: review → checkout (pick payment) ──
+                    Manual confirm + the pay step only exist for TODAY. A
+                    future date is never paid in advance — see ScheduledCard. */}
+                {canModify && isToday && (
                   <>
                     <View style={styles.payCard}>
                       <View style={styles.payHeader}>
                         <Text style={styles.payHint}>
-                          You'll choose how to pay (credit limit or pay
+                          You'll choose how to pay (available balance or pay
                           online) on the next step.
                         </Text>
                       </View>
@@ -425,6 +427,15 @@ export default function IndentScreen({
                       </Text>
                     </TouchableOpacity>
                   </>
+                )}
+
+                {/* ── EDITABLE FUTURE DATE: scheduled, no manual confirm/pay ──
+                    Items stay editable, but there's no confirm button or
+                    payment step for a future date. The indent auto-places at
+                    this date's window close, drawn from available balance
+                    (apps/worker/src/jobs/auto-confirm-drafts.ts). */}
+                {canModify && !isToday && (
+                  <ScheduledCard date={selectedDate} />
                 )}
 
                 {/* ── WINDOW CLOSED (today): locked, no review/confirm ── */}
@@ -585,7 +596,29 @@ function WindowClosedCard({ willAutoConfirm }: { willAutoConfirm: boolean }) {
   );
 }
 
-/** Shown when the order needs payment (credit limit was exceeded). */
+/** Shown for a future-dated indent. There is no manual confirm or payment
+ *  for a future date — the dealer edits the items, and the indent is placed
+ *  automatically at that date's ordering-window close, drawn from available
+ *  balance (apps/worker/src/jobs/auto-confirm-drafts.ts). */
+function ScheduledCard({ date }: { date: string }) {
+  return (
+    <View style={styles.scheduledCard}>
+      <Text style={styles.scheduledIcon}>🗓️</Text>
+      <View style={styles.scheduledTextCol}>
+        <Text style={styles.scheduledTitle}>
+          Scheduled for {relativeLabel(date)}
+        </Text>
+        <Text style={styles.scheduledSub}>
+          This indent is placed automatically when the ordering window closes
+          on this date, using your available balance. Edit the items anytime
+          before then — no payment is needed now.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/** Shown when the order needs payment (not enough available balance). */
 function PaymentRequiredCard({
   busy,
   onPayNow,
@@ -599,8 +632,8 @@ function PaymentRequiredCard({
     <View style={styles.payReqCard}>
       <Text style={styles.payReqTitle}>Payment required</Text>
       <Text style={styles.payReqSub}>
-        This indent is over your available credit. Pay for it now, or top up
-        your credit limit and it will auto-confirm.
+        This indent is over your available balance. Pay for it now, or top up
+        your balance and it will auto-confirm.
       </Text>
       <TouchableOpacity
         activeOpacity={0.85}
@@ -615,7 +648,7 @@ function PaymentRequiredCard({
         )}
       </TouchableOpacity>
       <TouchableOpacity activeOpacity={0.6} onPress={onTopUp}>
-        <Text style={styles.topUpLink}>Top up credit limit instead</Text>
+        <Text style={styles.topUpLink}>Top up balance instead</Text>
       </TouchableOpacity>
     </View>
   );
@@ -969,6 +1002,33 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: fonts.medium,
     color: "#A32D2D",
+    marginTop: 2,
+    lineHeight: 16,
+  },
+
+  // Scheduled (future date) card
+  scheduledCard: {
+    flexDirection: "row",
+    gap: 10,
+    marginHorizontal: 12,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    backgroundColor: colors.primaryLight,
+    borderColor: colors.primary,
+  },
+  scheduledIcon: { fontSize: 16 },
+  scheduledTextCol: { flex: 1 },
+  scheduledTitle: {
+    fontSize: 13,
+    fontFamily: fonts.bold,
+    color: colors.primary,
+  },
+  scheduledSub: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    color: colors.primary,
     marginTop: 2,
     lineHeight: 16,
   },
