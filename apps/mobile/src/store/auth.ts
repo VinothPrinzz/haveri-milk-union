@@ -167,11 +167,19 @@ export const useAuthStore = create<AuthState>()(
       login: async (username: string, password: string) => {
         set({ isLoading: true });
         try {
-          const res = await api.post<{
+          // Give login a longer timeout than the default: it's the first
+          // request over a cold connection (DNS + TLS + round-trip) and a
+          // dealer on slow rural internet must be able to sign in. Uses the
+          // base api() callable so we can pass a per-request timeoutMs.
+          const res = await api<{
             accessToken: string;
             refreshToken: string;
             dealer: Record<string, unknown>;
-          }>("/api/v1/auth/dealer/login", { username, password });
+          }>("/api/v1/auth/dealer/login", {
+            method: "POST",
+            body: { username, password },
+            timeoutMs: 25000,
+          });
 
           await saveTokens(res.accessToken, res.refreshToken);
 

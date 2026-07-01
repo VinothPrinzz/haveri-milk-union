@@ -55,7 +55,12 @@ function getBaseUrl(): string {
 }
 
 export const API_BASE = getBaseUrl();
-const TIMEOUT_MS = 8000;
+// Default per-request network timeout. Raised from 8s so ordinary screens
+// survive "a bit slow" dealer connections (cold connection = DNS + TLS +
+// round-trip can eat several seconds before any data flows). Individual
+// requests can override this via RequestOptions.timeoutMs — login uses a
+// longer budget since it's the critical first request over a cold link.
+const TIMEOUT_MS = 15000;
 
 // Error type -----------------------------------------------------------
 
@@ -165,6 +170,8 @@ type RequestOptions = {
   params?: Record<string, string | number | boolean | undefined | null>;
   /** Pass true to skip the auto-refresh retry (used internally + for auth endpoints) */
   skipAuthRetry?: boolean;
+  /** Override the default network timeout (ms) for this request. */
+  timeoutMs?: number;
 };
 
 function buildUrl(path: string, params?: RequestOptions["params"]): string {
@@ -183,9 +190,13 @@ function buildUrl(path: string, params?: RequestOptions["params"]): string {
   return url;
 }
 
-async function doFetch(url: string, init: RequestInit): Promise<Response> {
+async function doFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = TIMEOUT_MS
+): Promise<Response> {
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
@@ -212,7 +223,7 @@ export async function apiFetch<T = unknown>(
   path: string,
   opts: RequestOptions = {}
 ): Promise<T> {
-  const { method = "GET", body, params, skipAuthRetry = false } = opts;
+  const { method = "GET", body, params, skipAuthRetry = false, timeoutMs } = opts;
 
   const url = buildUrl(path, params);
 
@@ -244,7 +255,7 @@ export async function apiFetch<T = unknown>(
 
   let res: Response;
   try {
-    res = await doFetch(url, { method, headers, body: requestBody });
+    res = await doFetch(url, { method, headers, body: requestBody }, timeoutMs);
   } catch (err) {
     const isAbort = (err as { name?: string })?.name === "AbortError";
     throw new ApiError(0, null, isAbort ? "Request timed out" : "Network error");
@@ -275,7 +286,7 @@ export async function apiFetch<T = unknown>(
           method,
           headers,
           body: retryBody,
-        });
+        }, timeoutMs);
       } catch (err) {
         const isAbort = (err as { name?: string })?.name === "AbortError";
         throw new ApiError(0, null, isAbort ? "Request timed out" : "Network error");
