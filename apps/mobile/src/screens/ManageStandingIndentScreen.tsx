@@ -19,7 +19,7 @@ import {
   useEligibleProducts,
   useUpdateStandingIndent,
 } from "../hooks/useStandingIndent";
-import { isMinQtyCategory, minQtyFor, snapQtyToMin } from "../lib/minOrderQty";
+import { snapQtyToMin } from "../lib/minOrderQty";
 import type { EligibleProduct } from "../lib/types";
 
 /**
@@ -356,9 +356,6 @@ function ProductRow({
         </Text>
         <Text style={styles.rowMeta}>
           ₹{product.basePrice.toFixed(2)} · {product.unit}
-          {isMinQtyCategory(product.categoryName)
-            ? ` · min ${minQtyFor(product.categoryName)}`
-            : ""}
         </Text>
       </View>
 

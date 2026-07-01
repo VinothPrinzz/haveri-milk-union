@@ -471,7 +471,7 @@ export async function financeRoutes(app: FastifyInstance) {
 
       const grandTotal = subtotal + totalGst;
 
-      // Per-line minimum order qty for Milk/Curd.
+      // Milk/Curd order minimums (≥12 L milk, ≥12 kg curd).
       const minQtyViolations = await findMinQtyViolations(body.items);
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({

@@ -124,25 +124,74 @@ async function workerStockShortfalls(
   }));
 }
 
-// Per-line minimum order quantity for restricted categories (Milk/Curd).
-// Mirror of apps/api/src/lib/min-order-qty.ts — kept in sync because the
-// worker is its own package. An order line is a violation when its product
-// is in a restricted category AND 0 < quantity < 6.
-const WORKER_MIN_ORDER_QTY = 6;
+// Order-level Milk/Curd minimum (mirror of apps/api/src/lib/min-order-qty.ts —
+// kept in sync because the worker is its own package). Within one order the
+// TOTAL milk must reach 12 L and the TOTAL curd 12 kg; each applies only when
+// that category is present. Pack sizes normalise to L/kg (ml→L, g→kg).
+const WORKER_CATEGORY_MIN = { milk: 12, curd: 12 } as const;
 
-/** Names (lowercased) of order lines that break the per-line Milk/Curd minimum. */
-async function workerMinQtyViolations(orderId: string): Promise<string[]> {
+// Measure-matched: only volume-measured milk counts toward the litre minimum
+// and only weight-measured curd toward the kg minimum (the Milk category also
+// holds gram-measured chocolates; Curd holds ml-measured lassi).
+const WORKER_SIZE_TOKEN = /(\d+(?:\.\d+)?)\s*(kg|kilogram|ltr|litre|liter|ml|gm|g|l)\b/i;
+function workerParseMeasure(text: string): { litres: number; kg: number } | null {
+  const m = text.match(WORKER_SIZE_TOKEN);
+  if (!m) return null;
+  const size = parseFloat(m[1]!);
+  switch (m[2]!.toLowerCase()) {
+    case "ml":                                        return { litres: size / 1000, kg: 0 };
+    case "l": case "ltr": case "litre": case "liter": return { litres: size, kg: 0 };
+    case "g": case "gm":                              return { litres: 0, kg: size / 1000 };
+    case "kg": case "kilogram":                       return { litres: 0, kg: size };
+  }
+  return null;
+}
+function workerUnitMeasure(unit: string | null, packSize: string | number | null, name: string | null): { litres: number; kg: number } {
+  const fromUnit = workerParseMeasure((unit ?? "").toString());
+  if (fromUnit) return fromUnit;
+  const fromName = workerParseMeasure((name ?? "").toString());
+  if (fromName) return fromName;
+  const ps = typeof packSize === "string" ? parseFloat(packSize) : packSize ?? 0;
+  if (ps && ps > 0) {
+    const u = (unit ?? "").toString();
+    if (/kg/i.test(u)) return { litres: 0, kg: ps };
+    if (/ltr|litre|liter/i.test(u)) return { litres: ps, kg: 0 };
+  }
+  return { litres: 0, kg: 0 };
+}
+
+interface WorkerCategoryShortfall { category: "milk" | "curd"; total: number; min: number; unit: string; }
+
+/** Milk/Curd categories in this order whose L/kg total is below the minimum. */
+async function workerCategoryMinShortfalls(orderId: string): Promise<WorkerCategoryShortfall[]> {
   const rows = await sql`
-    SELECT oi.product_name AS name
+    SELECT c.name AS category, oi.quantity AS quantity,
+           p.unit AS unit, p.pack_size AS pack_size, p.name AS name
       FROM order_items oi
       JOIN products p   ON p.id = oi.product_id
       JOIN categories c ON c.id = p.category_id
      WHERE oi.order_id = ${orderId}::uuid
        AND oi.quantity > 0
-       AND oi.quantity < ${WORKER_MIN_ORDER_QTY}
        AND lower(c.name) IN ('milk', 'curd')
   `;
-  return (rows as any[]).map((r) => r.name as string);
+  let milkLitres = 0;
+  let curdKg = 0;
+  for (const r of rows as any[]) {
+    const cat = String(r.category).trim().toLowerCase();
+    const m = workerUnitMeasure(r.unit, r.pack_size, r.name);
+    if (cat === "milk") milkLitres += Number(r.quantity) * m.litres;
+    else if (cat === "curd") curdKg += Number(r.quantity) * m.kg;
+  }
+  const out: WorkerCategoryShortfall[] = [];
+  const milk = Math.round(milkLitres * 1000) / 1000;
+  if (milk > 0 && milk < WORKER_CATEGORY_MIN.milk) {
+    out.push({ category: "milk", total: milk, min: WORKER_CATEGORY_MIN.milk, unit: "L" });
+  }
+  const curd = Math.round(curdKg * 1000) / 1000;
+  if (curd > 0 && curd < WORKER_CATEGORY_MIN.curd) {
+    out.push({ category: "curd", total: curd, min: WORKER_CATEGORY_MIN.curd, unit: "kg" });
+  }
+  return out;
 }
 
 // Thrown when a line can't be satisfied during the guarded deduction
@@ -412,14 +461,14 @@ export async function processAutoConfirmDrafts(_job: Job) {
       }
     };
 
-    // ── Min-qty gate ── never auto-confirm a Milk/Curd line below the
-    // minimum (6). Leave the order a draft so the dealer/admin can bump
-    // the standing-indent default to ≥6, then it re-confirms.
-    const minQtyNames = await workerMinQtyViolations(orderId);
-    if (minQtyNames.length > 0) {
+    // ── Min-order gate ── never auto-confirm an order whose Milk total is
+    // below 12 L or Curd total below 12 kg. Leave it a draft so the dealer/
+    // admin can top up the standing indent, then it re-confirms on a later tick.
+    const minShortfalls = await workerCategoryMinShortfalls(orderId);
+    if (minShortfalls.length > 0) {
       console.warn(
-        `[AutoConfirm] min-qty-blocked order=${orderId} dealer=${dealer.dealer_id}: ` +
-          `${minQtyNames.join(", ")} below ${WORKER_MIN_ORDER_QTY}`
+        `[AutoConfirm] min-order-blocked order=${orderId} dealer=${dealer.dealer_id}: ` +
+          minShortfalls.map((s) => `${s.category} ${s.total}${s.unit} < ${s.min}${s.unit}`).join(", ")
       );
       return "min_qty_blocked";
     }
