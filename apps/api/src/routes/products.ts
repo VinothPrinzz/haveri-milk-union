@@ -107,6 +107,10 @@ export async function productRoutes(app: FastifyInstance) {
       FROM products p
       JOIN categories c ON c.id = p.category_id
       WHERE p.deleted_at IS NULL AND p.available = true
+        -- The subsidy SKU (migration 0056) is placed ONLY via the Subsidy
+        -- Indents page — never surfaced in the dealer app or any ordering
+        -- picker. It stays available=true for the route-sheet report.
+        AND p.code IS DISTINCT FROM 'PD0191S'
       ORDER BY p.sort_order, p.name
     `;
     return reply.status(200).send({ products: productsList });
@@ -142,11 +146,14 @@ export async function productRoutes(app: FastifyInstance) {
         FROM products p
         JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
+          -- Hide the subsidy-only SKU (migration 0056) from the masters list.
+          AND p.code IS DISTINCT FROM 'PD0191S'
         ORDER BY p.sort_order, p.name
         LIMIT ${query.limit} OFFSET ${offset}
       `;
       const [countRow] = await pgClient`
-        SELECT count(*)::int AS count FROM products WHERE deleted_at IS NULL
+        SELECT count(*)::int AS count FROM products
+         WHERE deleted_at IS NULL AND code IS DISTINCT FROM 'PD0191S'
       `;
       return reply.status(200).send({
         data,

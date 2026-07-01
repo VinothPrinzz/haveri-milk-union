@@ -914,6 +914,40 @@ export const createIndent = async (b: {
   });
 };
 
+// ══════════════════════════════════════
+// SUBSIDY INDENTS — HTM 1000ML (sub)
+// ══════════════════════════════════════
+export interface SubsidyProduct {
+  id: string;
+  name: string;
+  unitPrice: number;
+  gstPercent: number;
+  available: boolean;
+}
+
+export const fetchSubsidyProduct = async () => {
+  const { product } = await get<{ product: SubsidyProduct }>("/orders/subsidy-product");
+  return product;
+};
+
+export const placeSubsidyIndent = async (b: {
+  customerId: string;
+  routeId?: string | null;
+  paymentMode: "upi" | "credit";
+  paymentReference?: string;
+  notes?: string;
+  quantity: number;
+  deliveryDate?: string;
+}) =>
+  post<{
+    message: string;
+    orderId: string;
+    appended: boolean;
+    lineTotal: string;
+    invoiceNumber: string | null;
+    invoicePdfUrl: string | null;
+  }>("/orders/subsidy-place", b);
+
 export interface CancelIndentResult {
   message: string;
   orderId: string;

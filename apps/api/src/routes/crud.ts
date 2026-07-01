@@ -127,6 +127,8 @@ export async function crudRoutes(app: FastifyInstance) {
         FROM products p
         JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
+          -- Hide the subsidy-only SKU (migration 0056) from the price grid.
+          AND p.code IS DISTINCT FROM 'PD0191S'
         ORDER BY c.name, p.sort_order, p.name
       `;
       return reply.send({ data: rows });

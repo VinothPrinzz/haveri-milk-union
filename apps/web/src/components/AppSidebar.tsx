@@ -49,6 +49,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
   ],
   sales: [
     { label: "Record Indents",   path: "/sales/record-indents",                  icon: FileText },
+    { label: "Subsidy Indents",  path: "/sales/subsidy-indents",                 icon: BadgeIndianRupee },
     { label: "Dealer Indents", path: "/sales/dealer-indents", icon: CalendarClock },
     { label: "All Indents",      path: "/sales/all-indents",                     icon: ClipboardCheck },
     { label: "Direct - Gate Pass", path: "/sales/direct-sales/gate-pass",        icon: ScrollText },
