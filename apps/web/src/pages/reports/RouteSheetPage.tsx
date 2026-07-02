@@ -575,7 +575,7 @@ function AbstractPage({
                 <td>{i.alias}</td>
                 <td className="num">{fmtNum(i.crates)}</td>
                 <td className="num">{fmtNum(i.packets)}</td>
-                <td className="num">{kgLtrCorrect.toFixed(3)}</td>
+                <td className="num">{kgLtrCorrect.toFixed(2)}</td>
                 <td className="num">{fmtINR(i.amount)}</td>
                 <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : "—"}</td>
                 <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : "—"}</td>
@@ -586,7 +586,7 @@ function AbstractPage({
             <td className="num">Total Milk \ Amount</td>
             <td className="num">{fmtNum(t.crates)}</td>
             <td className="num">{fmtNum(t.packets)}</td>
-            <td className="num">{totalKgLtr.toFixed(3)}</td>
+            <td className="num">{totalKgLtr.toFixed(2)}</td>
             <td className="num">{fmtINR(t.amount)}</td>
             <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : "—"}</td>
             <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : "—"}</td>

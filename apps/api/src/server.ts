@@ -4,6 +4,7 @@ import cookie from "@fastify/cookie";
 import sensible from "@fastify/sensible";
 import compress from "@fastify/compress";
 import { env } from "./lib/env.js";
+import { isRazorpayConfigured, isWebhookConfigured } from "./lib/razorpay-client.js";
 
 // ── Route Modules ─────────────────────────────────────
 import { authRoutes } from "./routes/auth.js";
@@ -145,6 +146,14 @@ app.get("/api/v1/health", async () => ({
   status: "ok",
   timestamp: new Date().toISOString(),
   version: "0.0.2",
+  // Payment safety-net readiness (booleans only — no secrets leaked). If
+  // razorpay is configured but webhookConfigured/reconcileJobConfigured is
+  // false, captured payments can silently go unrecorded. See the boot log.
+  payments: {
+    razorpayConfigured: isRazorpayConfigured(),
+    webhookConfigured: isWebhookConfigured(),
+    reconcileJobConfigured: !!process.env.INTERNAL_JOB_SECRET,
+  },
 }));
 
 // // ▼▼▼ DUAL-DB (Temporarily Commented Out) ▼▼▼
@@ -235,6 +244,27 @@ try {
   app.log.info(`🚀 API server running at ${address}`);
   app.log.info(`   Health: ${address}/api/v1/health`);
   // app.log.info(`   DB Status: ${address}/api/v1/system/db-status`); // uncomment when dual-db is active
+
+  // ── Payment safety-net readiness check ──
+  // When Razorpay is live, both server-side safety nets must be configured or
+  // captured payments silently go unrecorded (the exact failure that stranded
+  // 38+ payments). Log at ERROR so a missing secret is visible on every boot
+  // instead of only surfacing when money goes missing.
+  if (isRazorpayConfigured()) {
+    if (!isWebhookConfigured()) {
+      app.log.error(
+        "[payments] RAZORPAY_WEBHOOK_SECRET is NOT set — every Razorpay webhook will fail signature verification, so captured payments only apply via the app's synchronous /verify. Set it (matching the Razorpay dashboard webhook secret) to enable the real-time safety net."
+      );
+    }
+    if (!process.env.INTERNAL_JOB_SECRET) {
+      app.log.error(
+        "[payments] INTERNAL_JOB_SECRET is NOT set — the reconciliation backstop (/api/v1/internal/reconcile-razorpay) returns 503, so captured-but-unapplied payments will not be recovered automatically."
+      );
+    }
+    if (isWebhookConfigured() && process.env.INTERNAL_JOB_SECRET) {
+      app.log.info("[payments] Razorpay webhook + reconciliation backstop both configured ✓");
+    }
+  }
 } catch (err) {
   app.log.error(err);
   process.exit(1);
