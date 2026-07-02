@@ -544,6 +544,11 @@ function ModifyTab() {
   const [originalTotal, setOriginalTotal] = useState(0);
   const [paymentMode, setPaymentMode] = useState<string | null>(null);
   const [credit, setCredit] = useState<{ available: number; outstanding: number } | null>(null);
+  // Refundable online (Razorpay) payment on this order, if any — drives the
+  // "refund to bank vs available balance" choice on a downward edit.
+  const [onlinePayment, setOnlinePayment] = useState<{ refundable: number } | null>(null);
+  // When a downward edit can go to bank OR balance, we ask the admin first.
+  const [refundPrompt, setRefundPrompt] = useState(false);
 
   // ── Endpoint helpers ───────────────────────────────────────────────
   const getPath   = (id: string) =>
@@ -567,6 +572,7 @@ function ModifyTab() {
         setOriginalTotal(parseFloat(String(sale.grand_total ?? sale.total ?? 0)) || 0);
         setPaymentMode(null);
         setCredit(null);
+        setOnlinePayment(null);
         // direct_sale_items query uses raw pgClient → snake_case keys
         setItems((resp.items ?? []).map((it: any) => ({
           productId:   String(it.product_id),
@@ -587,6 +593,7 @@ function ModifyTab() {
         setOriginalTotal(parseFloat(String(resp.order.grand_total)) || 0);
         setPaymentMode(resp.order.payment_mode ?? null);
         setCredit(resp.credit ?? null);
+        setOnlinePayment(resp.onlinePayment ?? null);
         setItems((resp.items ?? []).map((it: any) => ({
           productId:   String(it.productId),
           productName: String(it.productName ?? ""),
@@ -605,17 +612,21 @@ function ModifyTab() {
   }, []);
 
   const save = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (refundMethod?: "balance" | "razorpay") => {
       if (!loadedId) throw new Error("Load an indent first");
       // Only qty is editable, so we send the same productIds back with new qty.
       const payload = items
         .filter(i => i.productId)            // safety
         .map(i => ({ productId: i.productId, quantity: i.quantity }));
       if (payload.length === 0) throw new Error("Nothing to save");
-      return patch(patchPath(loadedId), { items: payload });
+      return patch<any>(patchPath(loadedId), refundMethod ? { items: payload, refundMethod } : { items: payload });
     },
-    onSuccess: () => {
-      toast.success("Saved");
+    onSuccess: (resp: any) => {
+      const r = resp?.refund;
+      if (r?.method === "razorpay") toast.success(`Saved — ${fmtINR(r.amount)} refunded to the dealer's bank`);
+      else if (r?.method === "balance") toast.success(`Saved — ${fmtINR(r.amount)} credited to available balance`);
+      else if (r?.method === "wallet") toast.success(`Saved — ${fmtINR(r.amount)} refunded to wallet`);
+      else toast.success("Saved");
       qc.invalidateQueries({ queryKey: ["indents"] });
       qc.invalidateQueries({ queryKey: ["recent-sales"] });
       qc.invalidateQueries({ queryKey: ["recent-direct-sales"] });
@@ -643,21 +654,38 @@ function ModifyTab() {
   // available already excludes the original order's debit, so what's left
   // after this edit is available − difference.
   const projectedBalance = availableBalance != null ? availableBalance - difference : null;
+  // Non-wallet indents (credit + upi) settle against the available balance.
+  const nonWallet = sourceType === "order" && paymentMode != null && paymentMode !== "wallet";
   // Hard block: an upward change may not exceed the dealer's available
   // balance. Small epsilon absorbs GST rounding between UI and server.
-  const overBalance = isCredit && availableBalance != null && difference - availableBalance > 0.01;
+  const overBalance = nonWallet && availableBalance != null && difference - availableBalance > 0.01;
+
+  // A downward edit on an online-paid indent can be refunded to the bank OR
+  // the available balance — ask the admin which. Everything else (wallet,
+  // credit, no online payment, or an increase) saves straight through.
+  const isRefund = difference < -0.01;
+  const canChooseRefund =
+    sourceType === "order" && paymentMode === "upi" && isRefund &&
+    (onlinePayment?.refundable ?? 0) > 0.01;
+
+  function commitSave() {
+    if (!loadedId || save.isPending || overBalance) return;
+    if (canChooseRefund) { setRefundPrompt(true); return; }
+    save.mutate(undefined);
+  }
 
   // Ctrl+S only; F2 (add-line) removed — only qty is editable now.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S") && loadedId) {
         e.preventDefault();
-        if (!save.isPending && !overBalance) save.mutate();
+        commitSave();
       }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [save, loadedId, overBalance]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [save, loadedId, overBalance, canChooseRefund]);
 
   const titleSubtitle = sourceType === "direct-sale"
     ? "Modify a sale (gate-pass, cash, VIP, employee). Only quantities can be updated."
@@ -816,7 +844,7 @@ function ModifyTab() {
               variant="outline" size="sm" className="h-8"
               onClick={() => {
                 setLoadedId(null); setItems([]); setMeta(null); setIndentId("");
-                setOriginalTotal(0); setPaymentMode(null); setCredit(null);
+                setOriginalTotal(0); setPaymentMode(null); setCredit(null); setOnlinePayment(null);
               }}
             >
               Reset
@@ -826,11 +854,41 @@ function ModifyTab() {
               className="h-8"
               disabled={save.isPending || overBalance}
               title={overBalance ? "This change exceeds the dealer's available balance" : undefined}
-              onClick={() => save.mutate()}
+              onClick={commitSave}
             >
               {save.isPending ? "Saving…" : <>Save Changes <Kbd className="ml-1">Ctrl</Kbd>+<Kbd>S</Kbd></>}
             </Button>
           </FormFooter>
+
+          {/* Downward edit on an online-paid indent: choose where the refund goes. */}
+          <Dialog open={refundPrompt} onOpenChange={setRefundPrompt}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Refund {fmtINR(Math.abs(difference))}</DialogTitle>
+              </DialogHeader>
+              <p className="text-[13px] text-muted-foreground">
+                This edit reduces the indent by <span className="font-semibold">{fmtINR(Math.abs(difference))}</span>.
+                Where should the difference go?
+              </p>
+              <DialogFooter className="gap-2 sm:justify-start">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={save.isPending}
+                  onClick={() => { setRefundPrompt(false); save.mutate("balance"); }}
+                >
+                  Available balance
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={save.isPending}
+                  onClick={() => { setRefundPrompt(false); save.mutate("razorpay"); }}
+                >
+                  Dealer's bank (Razorpay)
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </>
       )}
     </div>

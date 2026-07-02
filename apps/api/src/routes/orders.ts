@@ -15,6 +15,11 @@ import { signInvoicePdfToken, verifyInvoicePdfToken } from "../lib/auth.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
 import { adminCancelOrder, RefundError } from "../lib/cancel-order.js";
 import {
+  initiateOrderBankRefund,
+  recordBankRefund,
+  type BankRefundIntent,
+} from "../lib/order-refund.js";
+import {
   findMinQtyViolations,
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
@@ -621,7 +626,24 @@ export async function orderRoutes(app: FastifyInstance) {
         credit = null; // dealer soft-deleted/missing — omit rather than 500
       }
 
-      return reply.status(200).send({ order, items, credit });
+      // Refundable online payment (if any) — the Modify screen uses this to
+      // offer a "refund to bank (Razorpay)" option for downward edits. Null
+      // when nothing was paid online / it's already fully refunded.
+      const [rp] = await pgClient`
+        SELECT amount::numeric AS amount, amount_refunded::numeric AS "amountRefunded"
+          FROM razorpay_payments
+         WHERE order_id = ${id} AND kind = 'order_payment' AND status = 'paid'
+         ORDER BY created_at DESC
+         LIMIT 1
+      `;
+      const refundableOnline = rp
+        ? Math.max(0, parseFloat(rp.amount) - parseFloat(rp.amountRefunded))
+        : 0;
+      const onlinePayment = refundableOnline > 0.001
+        ? { refundable: Math.round(refundableOnline * 100) / 100 }
+        : null;
+
+      return reply.status(200).send({ order, items, credit, onlinePayment });
     }                                                                       
   ); 
 
@@ -805,6 +827,12 @@ export async function orderRoutes(app: FastifyInstance) {
           productId: z.string().uuid(),
           quantity:  z.number().int().min(0),
         })).min(1),
+        // Where a downward edit's refund goes, for orders with a captured
+        // online payment: "balance" → store credit on the available balance;
+        // "razorpay" → bank refund of the difference. Ignored when the edit
+        // isn't a refund or the order was paid via wallet/credit (no bank
+        // payment to refund). Defaults to "balance".
+        refundMethod: z.enum(["balance", "razorpay"]).optional(),
       });
       const body = schema.parse(request.body);
 
@@ -860,14 +888,15 @@ export async function orderRoutes(app: FastifyInstance) {
       const oldGrandTotal = parseFloat(existing.grand_total);
       const delta = newGrandTotal - oldGrandTotal;
 
-      // ── Credit gate (prepaid model) ──────────────────────────────────
-      // An UPWARD change on a credit order posts an extra debit of `delta`.
-      // That extra must fit within the dealer's available balance — which
-      // already reflects THIS order's original debit — so `delta <=
-      // available`. Hard block: the increase is refused when the balance is
-      // short (no override from this screen). Downward changes (delta <= 0)
-      // refund to the balance and are never blocked.
-      if (existing.payment_mode === "credit" && delta > 0) {
+      // ── Balance gate (prepaid model) ─────────────────────────────────
+      // An UPWARD change on a non-wallet order (credit or upi) posts an extra
+      // debit of `delta`, which must fit within the dealer's available
+      // balance — which already reflects THIS order's original debit — so
+      // `delta <= available`. Hard block: the increase is refused when the
+      // balance is short (no override from this screen). Wallet orders run
+      // their own balance check in-tx; downward changes are refunds and are
+      // never blocked.
+      if (existing.payment_mode !== "wallet" && delta > 0) {
         const credit = await checkDealerCredit(existing.dealer_id, delta);
         if (!credit.sufficient) {
           return reply.status(402).send({
@@ -879,6 +908,35 @@ export async function orderRoutes(app: FastifyInstance) {
             credit,
             delta: Number(delta.toFixed(2)),
           });
+        }
+      }
+
+      // ── Refund routing (downward, non-wallet) ────────────────────────
+      // A downward edit refunds `refundAmount` to the dealer. Wallet orders
+      // always refund to the wallet (handled in-tx). Credit orders always go
+      // to the available balance (no bank payment exists to refund). For
+      // upi/online-paid orders the admin picks: "balance" (store credit) or
+      // "razorpay" (bank refund of the difference). The gateway refund is
+      // resolved HERE — before the DB tx — so a failure aborts cleanly with
+      // nothing half-written (RefundError → 409, same as admin-cancel).
+      const refundAmount = delta < 0 ? Math.abs(delta) : 0;
+      // Only an online-paid (upi) order whose admin explicitly chose "razorpay"
+      // triggers a bank refund. Credit orders and the default/"balance" choice
+      // fall through to a ledger credit inside the tx. The gateway call runs
+      // here (before the tx) so a failure aborts cleanly (RefundError → 409).
+      let bankRefund: BankRefundIntent | null = null;
+      if (
+        refundAmount > 0 &&
+        existing.payment_mode !== "wallet" &&
+        existing.payment_mode !== "credit" &&
+        body.refundMethod === "razorpay"
+      ) {
+        try {
+          bankRefund = await initiateOrderBankRefund(id, refundAmount, `Modify refund ${id}`);
+        } catch (err) {
+          if (err instanceof RefundError)
+            return reply.status(err.statusCode).send({ error: err.message });
+          throw err;
         }
       }
 
@@ -925,9 +983,15 @@ export async function orderRoutes(app: FastifyInstance) {
           }
         }
 
-        if (existing.payment_mode === "credit" && delta !== 0) {
-          // For credit orders, only the ledger needs adjusting — the
-          // running balance reflects updated outstanding.
+        if (existing.payment_mode !== "wallet" && delta !== 0) {
+          // Credit + upi orders settle against the dealer's available balance
+          // (the prepaid ledger). An upward edit debits the extra; a downward
+          // edit refunds — to the balance as store credit, UNLESS the admin
+          // chose a Razorpay bank refund (bankRefund set), which posts its own
+          // refund records instead of a balance credit.
+          if (delta < 0 && bankRefund) {
+            await recordBankRefund(tx, bankRefund, `Modify refund ${id}`, request.admin!.userId);
+          } else {
           const [bal] = await tx`
             SELECT
               COALESCE(d.opening_balance, 0)
@@ -972,6 +1036,7 @@ export async function orderRoutes(app: FastifyInstance) {
                  ${balanceAfter.toFixed(2)}::numeric, ${request.admin!.userId})
             `;
           }
+          }
         }
       });
 
@@ -980,8 +1045,29 @@ export async function orderRoutes(app: FastifyInstance) {
       // Recompute credit AFTER the adjustment posts so the Modify screen can
       // show the dealer's new available balance without a second round-trip.
       let credit = null;
-      if (existing.payment_mode === "credit") {
+      if (existing.payment_mode !== "wallet") {
         try { credit = await checkDealerCredit(existing.dealer_id, 0); } catch { credit = null; }
+      }
+
+      // Tell the caller where a downward edit's refund went, so the UI can
+      // confirm it precisely ("₹X to bank" vs "₹X to available balance").
+      let refund:
+        | { method: "razorpay" | "wallet" | "balance"; amount: number; razorpayRefundId?: string; status?: string }
+        | null = null;
+      if (refundAmount > 0) {
+        if (bankRefund) {
+          refund = {
+            method: "razorpay",
+            amount: bankRefund.refundAmt,
+            razorpayRefundId: bankRefund.rzpRefund.id,
+            status: bankRefund.rzpRefund.status,
+          };
+        } else {
+          refund = {
+            method: existing.payment_mode === "wallet" ? "wallet" : "balance",
+            amount: refundAmount,
+          };
+        }
       }
 
       return reply.send({
@@ -989,6 +1075,7 @@ export async function orderRoutes(app: FastifyInstance) {
         order: { id, subtotal: newSubtotal.toFixed(2), totalGst: newGst.toFixed(2), grandTotal: newGrandTotal.toFixed(2), itemCount: newLines.length, items },
         delta: Number(delta.toFixed(2)),
         credit,
+        refund,
       });
     }
   );
