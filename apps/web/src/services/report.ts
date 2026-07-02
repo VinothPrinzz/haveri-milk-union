@@ -48,8 +48,10 @@ export interface RouteSheetCustomer {
   othersQty: number;
   netAmount: number;
   crates: number;
+  /** Loose packets left after filling whole crates (floor model, always ≥ 0). */
+  cratePktPlus: number;
 }
- 
+
 export interface RouteSheetAbstractItem {
   productId: string;
   alias: string;
@@ -96,6 +98,7 @@ export interface RouteSheetRoute {
     othersQty: number;
     netAmount: number;
     crates: number;
+    cratePktPlus: number;
     totalAcrossQty: number;
     totalAllQty: number;
   };

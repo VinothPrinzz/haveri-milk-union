@@ -70,14 +70,23 @@ const LEGACY_ORDER = [
   "CURD 500GM",
 ];
 
+// A subsidised product ("HTM 1000ML (sub)") leads the sheet — its column and
+// abstract row sort before everything else, matching the server's abstract order.
+const isSubAlias = (s: string | undefined | null): boolean =>
+  /\(\s*sub\s*\)/i.test(s ?? "");
+
 function sortAcrossProducts(products: RouteSheetAcrossProduct[]): RouteSheetAcrossProduct[] {
   const legacy = new Map(LEGACY_ORDER.map((c, i) => [c.toUpperCase(), i + 1]));
   const key = (p: RouteSheetAcrossProduct): number => {
-    if (p.abstractPosition && p.abstractPosition > 0) return p.abstractPosition;
-    const l =
-      legacy.get(p.code.toUpperCase()) ??
-      legacy.get((p.reportAlias ?? "").toUpperCase());
-    return l !== undefined ? l : Number.MAX_SAFE_INTEGER;
+    const base =
+      p.abstractPosition && p.abstractPosition > 0
+        ? p.abstractPosition
+        : legacy.get(p.code.toUpperCase()) ??
+          legacy.get((p.reportAlias ?? "").toUpperCase()) ??
+          Number.MAX_SAFE_INTEGER;
+    // Subsidised products sort ahead of all non-sub products while keeping
+    // their relative order (smaller base still leads among subs).
+    return isSubAlias(p.reportAlias) ? base - Number.MAX_SAFE_INTEGER : base;
   };
   return [...products].sort((a, b) => key(a) - key(b));
 }
@@ -296,13 +305,17 @@ export default function RouteSheetPage() {
           rows.push([
             r.code, r.name, c.sl, c.code, c.name,
             ...acrossProducts.map(p => c.acrossQty[p.id] ?? 0),
-            c.othersText, c.crates, c.netAmount,
+            c.othersText,
+            fmtCratePkts(c.crates, c.cratePktPlus ?? 0, 0) || String(c.crates),
+            c.netAmount,
           ]);
         }
         rows.push([
           r.code, `${r.name} TOTAL`, "", "", "",
           ...acrossProducts.map(p => r.totals.acrossQty[p.id] ?? 0),
-          r.totals.othersQty, r.totals.crates, r.totals.netAmount,
+          r.totals.othersQty,
+          fmtCratePkts(r.totals.crates, r.totals.cratePktPlus ?? 0, 0) || String(r.totals.crates),
+          r.totals.netAmount,
         ]);
       }
       return toCsv(rows);
@@ -466,7 +479,7 @@ function RouteRowsPage({
                     );
                   })}
               </td>
-              <td className="num">{fmtNum(c.crates)}</td>
+              <td className="num">{fmtCratePkts(c.crates, c.cratePktPlus ?? 0, 0) || fmtNum(c.crates)}</td>
               <td className="num">{fmtINR(c.netAmount)}</td>
             </tr>
           ))}
@@ -483,7 +496,7 @@ function RouteRowsPage({
               <td className="num">
                 Total Qty (Pkts): {fmtNum(route.totals.totalAllQty)}
               </td>
-              <td className="num">{fmtNum(route.totals.crates)}</td>
+              <td className="num">{fmtCratePkts(route.totals.crates, route.totals.cratePktPlus ?? 0, 0) || fmtNum(route.totals.crates)}</td>
               <td className="num">{fmtINR(route.totals.netAmount)}</td>
             </tr>
           )}
