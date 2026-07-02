@@ -17,7 +17,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import PageHeader, {
-  FilterBar, FormSection, FormFooter, Field, fmtINR, fmtDate, StatusPill, Kbd,
+  FilterBar, FormSection, FormFooter, Field, fmtINR, fmtDate, StatusPill, Kbd, StatCard,
 } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -538,6 +538,12 @@ function ModifyTab() {
   const [meta, setMeta] = useState<{
     dealerName?: string; status?: string; createdAt?: string;
   } | null>(null);
+  // Finance context (indent/credit orders only). `originalTotal` is the total
+  // as last saved; `credit.available` already reflects THIS order's debit, so
+  // the difference below is the incremental debit/refund an edit will post.
+  const [originalTotal, setOriginalTotal] = useState(0);
+  const [paymentMode, setPaymentMode] = useState<string | null>(null);
+  const [credit, setCredit] = useState<{ available: number; outstanding: number } | null>(null);
 
   // ── Endpoint helpers ───────────────────────────────────────────────
   const getPath   = (id: string) =>
@@ -557,6 +563,10 @@ function ModifyTab() {
           status:     "confirmed",                                     // direct sales are always posted
           createdAt:  sale.sale_date ?? sale.created_at,
         });
+        // Direct sales carry no dealer-credit context here.
+        setOriginalTotal(parseFloat(String(sale.grand_total ?? sale.total ?? 0)) || 0);
+        setPaymentMode(null);
+        setCredit(null);
         // direct_sale_items query uses raw pgClient → snake_case keys
         setItems((resp.items ?? []).map((it: any) => ({
           productId:   String(it.product_id),
@@ -574,6 +584,9 @@ function ModifyTab() {
           status:     resp.order.status,
           createdAt:  resp.order.created_at,
         });
+        setOriginalTotal(parseFloat(String(resp.order.grand_total)) || 0);
+        setPaymentMode(resp.order.payment_mode ?? null);
+        setCredit(resp.credit ?? null);
         setItems((resp.items ?? []).map((it: any) => ({
           productId:   String(it.productId),
           productName: String(it.productName ?? ""),
@@ -606,27 +619,42 @@ function ModifyTab() {
       qc.invalidateQueries({ queryKey: ["indents"] });
       qc.invalidateQueries({ queryKey: ["recent-sales"] });
       qc.invalidateQueries({ queryKey: ["recent-direct-sales"] });
+      // Reload the authoritative totals + dealer balance so the summary and
+      // difference reset to the newly-saved baseline.
+      if (loadedId) fetchIndent.mutate(loadedId);
     },
     onError: (e: any) => toast.error(e?.message || "Save failed"),
   });
-
-  // Ctrl+S only; F2 (add-line) removed — only qty is editable now.
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S") && loadedId) {
-        e.preventDefault();
-        if (!save.isPending) save.mutate();
-      }
-    };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [save, loadedId]);
 
   const totals = useMemo(() => {
     const sub = items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
     const gst = items.reduce((s, i) => s + i.unitPrice * i.quantity * (i.gstPercent / 100), 0);
     return { sub, gst, total: sub + gst };
   }, [items]);
+
+  // ── Finance impact (credit indents only) ──────────────────────────────
+  // difference > 0 → extra amount to DEBIT; < 0 → amount to CREDIT back.
+  const difference       = totals.total - originalTotal;
+  const isCredit         = sourceType === "order" && paymentMode === "credit";
+  const availableBalance = credit?.available ?? null;
+  // available already excludes the original order's debit, so what's left
+  // after this edit is available − difference.
+  const projectedBalance = availableBalance != null ? availableBalance - difference : null;
+  // Hard block: an upward change may not exceed the dealer's available
+  // balance. Small epsilon absorbs GST rounding between UI and server.
+  const overBalance = isCredit && availableBalance != null && difference - availableBalance > 0.01;
+
+  // Ctrl+S only; F2 (add-line) removed — only qty is editable now.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S") && loadedId) {
+        e.preventDefault();
+        if (!save.isPending && !overBalance) save.mutate();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [save, loadedId, overBalance]);
 
   const titleSubtitle = sourceType === "direct-sale"
     ? "Modify a sale (gate-pass, cash, VIP, employee). Only quantities can be updated."
@@ -677,6 +705,59 @@ function ModifyTab() {
         </div>
       ) : (
         <>
+          {/* Finance summary — dealer balance + the debit/credit impact of
+              this edit. Shown for indents only; the balance/Balance-After
+              cards appear only for credit indents. */}
+          {sourceType === "order" && (
+            <div className="px-3 pt-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {isCredit && (
+                  <StatCard
+                    label="Available Balance"
+                    value={fmtINR(availableBalance ?? 0)}
+                    tone={(availableBalance ?? 0) <= 0 ? "danger" : "success"}
+                  />
+                )}
+                <StatCard label="Original Total" value={fmtINR(originalTotal)} />
+                <StatCard
+                  label="New Total"
+                  value={fmtINR(totals.total)}
+                  tone={overBalance ? "danger" : "default"}
+                />
+                <StatCard
+                  label="Difference"
+                  value={`${difference > 0 ? "+" : ""}${fmtINR(difference)}`}
+                  hint={
+                    Math.abs(difference) < 0.01
+                      ? "No change"
+                      : difference > 0
+                      ? (isCredit ? "Debited from balance" : "Extra charge")
+                      : (isCredit ? "Credited to balance" : "Refund")
+                  }
+                  tone={
+                    overBalance ? "danger" : Math.abs(difference) < 0.01 ? "default" : "warning"
+                  }
+                />
+                {isCredit && (
+                  <StatCard
+                    label="Balance After"
+                    value={fmtINR(projectedBalance ?? 0)}
+                    tone={(projectedBalance ?? 0) < 0 ? "danger" : "default"}
+                  />
+                )}
+              </div>
+              {overBalance && (
+                <div className="mt-2 rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+                  This change exceeds the dealer's available balance by{" "}
+                  <span className="font-semibold">
+                    {fmtINR(difference - (availableBalance ?? 0))}
+                  </span>
+                  . Reduce quantities or top up the dealer's balance before saving.
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex-1 overflow-auto p-3 pb-24">
             <div className="erp-panel">
               <table className="erp-table">
@@ -730,11 +811,20 @@ function ModifyTab() {
           <FormFooter>
             <Button
               variant="outline" size="sm" className="h-8"
-              onClick={() => { setLoadedId(null); setItems([]); setMeta(null); setIndentId(""); }}
+              onClick={() => {
+                setLoadedId(null); setItems([]); setMeta(null); setIndentId("");
+                setOriginalTotal(0); setPaymentMode(null); setCredit(null);
+              }}
             >
               Reset
             </Button>
-            <Button size="sm" className="h-8" disabled={save.isPending} onClick={() => save.mutate()}>
+            <Button
+              size="sm"
+              className="h-8"
+              disabled={save.isPending || overBalance}
+              title={overBalance ? "This change exceeds the dealer's available balance" : undefined}
+              onClick={() => save.mutate()}
+            >
               {save.isPending ? "Saving…" : <>Save Changes <Kbd className="ml-1">Ctrl</Kbd>+<Kbd>S</Kbd></>}
             </Button>
           </FormFooter>
