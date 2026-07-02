@@ -93,6 +93,18 @@ export function isRazorpayConfigured(): boolean {
   return !!keyId && !!keySecret;
 }
 
+/**
+ * Whether the webhook secret is present. The webhook is the real-time
+ * safety net that applies captured payments the synchronous /verify call
+ * misses; without RAZORPAY_WEBHOOK_SECRET every webhook fails signature
+ * verification (see verifyWebhookSignature) and payments silently depend
+ * on /verify alone. Surfaced at boot + in /api/v1/health so a missing
+ * secret is visible immediately instead of after money goes unrecorded.
+ */
+export function isWebhookConfigured(): boolean {
+  return !!webhookSecret;
+}
+
 export interface CreateOrderParams {
   amountInRupees: number;
   receipt: string;
