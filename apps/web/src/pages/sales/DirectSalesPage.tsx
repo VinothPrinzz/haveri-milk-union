@@ -637,6 +637,9 @@ function ModifyTab() {
   const difference       = totals.total - originalTotal;
   const isCredit         = sourceType === "order" && paymentMode === "credit";
   const availableBalance = credit?.available ?? null;
+  // Show the dealer's live balance for ANY indent (informational); the
+  // ledger-impact bits below stay specific to credit-mode indents.
+  const showBalance      = sourceType === "order" && availableBalance != null;
   // available already excludes the original order's debit, so what's left
   // after this edit is available − difference.
   const projectedBalance = availableBalance != null ? availableBalance - difference : null;
@@ -711,7 +714,7 @@ function ModifyTab() {
           {sourceType === "order" && (
             <div className="px-3 pt-3">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {isCredit && (
+                {showBalance && (
                   <StatCard
                     label="Available Balance"
                     value={fmtINR(availableBalance ?? 0)}
