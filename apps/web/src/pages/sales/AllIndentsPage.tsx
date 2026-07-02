@@ -34,14 +34,14 @@ const fmtPaymentMode = (m?: string) =>
 
 const formatIndentId = (id: string) => id ? `#HMU-${String(id).slice(-4).toUpperCase()}` : "—";
 
-// One-line description of what the auto-refund did, for the success toast.
+// One-line description of what the refund did, for the success toast.
 function refundLine(r: CancelIndentResult): string {
   const amt = fmtINR(r.refund.amount || 0);
   switch (r.refund.method) {
     case "wallet":   return `Refunded ${amt} to the dealer's wallet.`;
-    case "credit":   return `Reversed ${amt} on the dealer's credit ledger.`;
-    case "razorpay": return `Razorpay refund of ${amt} initiated (${r.refund.status ?? "pending"}).`;
-    default:         return `No auto-refund applies for a ${r.paymentMode || "—"} order.`;
+    case "credit":   return `Credited ${amt} to the dealer's available balance.`;
+    case "razorpay": return `Razorpay bank refund of ${amt} initiated (${r.refund.status ?? "pending"}).`;
+    default:         return `No refund applied for a ${r.paymentMode || "—"} order.`;
   }
 }
 
@@ -56,17 +56,33 @@ export default function AllIndentsPage() {
   const [routeId, setRouteId] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
-  // Cancel dialog: the indent being cancelled + the operator's reason.
+  // Cancel dialog: the indent being cancelled + the operator's reason +
+  // where the refund goes ("balance" store credit or "razorpay" bank refund).
   const [cancelFor, setCancelFor] = useState<any | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [refundMethod, setRefundMethod] = useState<"balance" | "razorpay">("balance");
+
+  // Bank (Razorpay) refunds only apply to orders paid online.
+  const bankPossible = cancelFor?.paymentMode === "upi";
+
+  // Open the cancel dialog with a sensible default refund target.
+  const openCancel = (i: any) => {
+    setCancelFor(i);
+    setCancelReason("");
+    setRefundMethod(i.paymentMode === "upi" ? "razorpay" : "balance");
+  };
+  const closeCancel = () => {
+    setCancelFor(null);
+    setCancelReason("");
+  };
 
   const cancelMut = useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason: string }) => cancelIndent(id, reason),
+    mutationFn: ({ id, reason, refundMethod }: { id: string; reason: string; refundMethod: "balance" | "razorpay" }) =>
+      cancelIndent(id, reason, refundMethod),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ["indents"] });
       toast.success("Indent cancelled", { description: refundLine(res) });
-      setCancelFor(null);
-      setCancelReason("");
+      closeCancel();
     },
     onError: (e: any) => toast.error(e?.message || "Cancellation failed"),
   });
@@ -190,7 +206,7 @@ export default function AllIndentsPage() {
                               size="sm"
                               variant="outline"
                               className="h-7 px-2.5 text-[12px] text-destructive"
-                              onClick={() => { setCancelFor(i); setCancelReason(""); }}
+                              onClick={() => openCancel(i)}
                             >
                               <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
                             </Button>
@@ -213,8 +229,8 @@ export default function AllIndentsPage() {
         </div>
       </div>
 
-      {/* Cancel Indent dialog — reason + auto-refund by payment mode */}
-      <Dialog open={!!cancelFor} onOpenChange={o => { if (!o) { setCancelFor(null); setCancelReason(""); } }}>
+      {/* Cancel Indent dialog — reason + choice of refund destination */}
+      <Dialog open={!!cancelFor} onOpenChange={o => { if (!o) closeCancel(); }}>
         <DialogContent className="max-w-md rounded-sm">
           <DialogHeader>
             <DialogTitle className="text-[15px] font-semibold">Cancel Indent</DialogTitle>
@@ -235,10 +251,53 @@ export default function AllIndentsPage() {
                   Payment mode <span className="font-medium text-foreground uppercase">{cancelFor.paymentMode || "—"}</span>
                 </div>
                 <div className="text-[11.5px]">
-                  Cancelling restores stock and auto-refunds the dealer per the
-                  payment mode (wallet → wallet, credit → ledger, UPI → Razorpay).
+                  Cancelling restores stock and refunds the dealer to the destination you choose below.
                 </div>
               </div>
+
+              {/* Refund destination */}
+              <div>
+                <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
+                  Refund to
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRefundMethod("balance")}
+                    className={`rounded-sm border px-3 py-2 text-left text-[12.5px] transition ${
+                      refundMethod === "balance"
+                        ? "border-primary bg-primary/10 font-medium"
+                        : "border-border hover:bg-muted/50"
+                    }`}
+                  >
+                    Available balance
+                    <span className="block text-[10.5px] text-muted-foreground font-normal">
+                      Store credit on the ledger
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!bankPossible}
+                    onClick={() => setRefundMethod("razorpay")}
+                    className={`rounded-sm border px-3 py-2 text-left text-[12.5px] transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                      refundMethod === "razorpay"
+                        ? "border-primary bg-primary/10 font-medium"
+                        : "border-border hover:bg-muted/50"
+                    }`}
+                  >
+                    Bank account
+                    <span className="block text-[10.5px] text-muted-foreground font-normal">
+                      Razorpay refund
+                    </span>
+                  </button>
+                </div>
+                {!bankPossible && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Bank refunds are only available for orders paid online.
+                  </p>
+                )}
+              </div>
+
               <div>
                 <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
                   Reason <span className="text-destructive">*</span>
@@ -254,7 +313,7 @@ export default function AllIndentsPage() {
             </div>
           )}
           <DialogFooter className="gap-2">
-            <Button variant="outline" size="sm" className="h-8" onClick={() => { setCancelFor(null); setCancelReason(""); }}>
+            <Button variant="outline" size="sm" className="h-8" onClick={closeCancel}>
               Keep Indent
             </Button>
             <Button
@@ -262,7 +321,7 @@ export default function AllIndentsPage() {
               size="sm"
               className="h-8"
               disabled={!cancelReason.trim() || cancelMut.isPending}
-              onClick={() => cancelFor && cancelMut.mutate({ id: cancelFor.id, reason: cancelReason.trim() })}
+              onClick={() => cancelFor && cancelMut.mutate({ id: cancelFor.id, reason: cancelReason.trim(), refundMethod })}
             >
               {cancelMut.isPending ? "Cancelling…" : "Cancel Indent"}
             </Button>

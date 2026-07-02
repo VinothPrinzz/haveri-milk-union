@@ -719,17 +719,23 @@ export async function orderRoutes(app: FastifyInstance) {
   );
 
   // POST /api/v1/orders/:id/admin-cancel
-  // Admin-only indent cancellation with auto-refund by payment mode
-  // (wallet → wallet credit, credit → ledger reversal, upi → Razorpay
-  // refund). Cancellation is no longer dealer-initiated; the dealer app
-  // has no cancel path.
+  // Admin-only indent cancellation. The admin picks where the refund goes
+  // via `refundMethod`: "razorpay" (to the dealer's bank, only for orders
+  // with a captured online payment) or "balance" (store credit on the
+  // dealer's available balance). Omitting it keeps the legacy auto-rule.
+  // Cancellation is not dealer-initiated; the dealer app has no cancel path.
   app.post(
     "/api/v1/orders/:id/admin-cancel",
     { preHandler: [adminAuth, requireRole("orders.cancel")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = z
-        .object({ reason: z.string().min(1, "A cancellation reason is required") })
+        .object({
+          reason: z.string().min(1, "A cancellation reason is required"),
+          // Where the refund goes. Omitted → legacy auto-rule (online-paid →
+          // bank, everything else → available balance).
+          refundMethod: z.enum(["razorpay", "balance"]).optional(),
+        })
         .parse(request.body);
 
       const [order] = await pgClient`
@@ -767,7 +773,7 @@ export async function orderRoutes(app: FastifyInstance) {
         });
 
       try {
-        const summary = await adminCancelOrder(id, body.reason, request.admin!.userId);
+        const summary = await adminCancelOrder(id, body.reason, request.admin!.userId, body.refundMethod);
         return reply.send({ message: "Order cancelled", orderId: id, ...summary });
       } catch (err) {
         if (err instanceof RefundError)

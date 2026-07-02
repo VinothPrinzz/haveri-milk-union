@@ -962,10 +962,17 @@ export interface CancelIndentResult {
   };
 }
 
-// Admin cancels an indent. The backend auto-refunds by payment mode:
-// wallet → wallet credit, credit → ledger reversal, upi → Razorpay refund.
-export const cancelIndent = async (id: string, reason: string) =>
-  post<CancelIndentResult>(`/orders/${id}/admin-cancel`, { reason });
+// Admin cancels an indent. `refundMethod` chooses where the money goes:
+// "razorpay" (to the dealer's bank, only for online-paid orders) or
+// "balance" (store credit on the dealer's available balance). Omitting it
+// falls back to the backend auto-rule.
+export type RefundMethod = "razorpay" | "balance";
+export const cancelIndent = async (
+  id: string,
+  reason: string,
+  refundMethod?: RefundMethod,
+) =>
+  post<CancelIndentResult>(`/orders/${id}/admin-cancel`, { reason, refundMethod });
 
 export const resetIndents = async () => {};
 
