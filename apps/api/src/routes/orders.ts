@@ -595,12 +595,22 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Order not found" });        
       }
 
-      const items = await db                                                
-        .select()                                                           
-        .from(orderItems)                                                   
-        .where(eq(orderItems.orderId, id));  
+      const items = await db
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, id));
 
-        return reply.status(200).send({ order, items });                      
+      // Live credit standing for the dealer — lets the Modify screen show the
+      // available balance and the debit/credit impact of an edit. Prepaid
+      // model: `available` already reflects THIS order's existing debit.
+      let credit = null;
+      try {
+        credit = await checkDealerCredit(order.dealer_id, 0);
+      } catch {
+        credit = null; // dealer soft-deleted/missing — omit rather than 500
+      }
+
+      return reply.status(200).send({ order, items, credit });
     }                                                                       
   ); 
 
@@ -833,6 +843,28 @@ export async function orderRoutes(app: FastifyInstance) {
       const oldGrandTotal = parseFloat(existing.grand_total);
       const delta = newGrandTotal - oldGrandTotal;
 
+      // ── Credit gate (prepaid model) ──────────────────────────────────
+      // An UPWARD change on a credit order posts an extra debit of `delta`.
+      // That extra must fit within the dealer's available balance — which
+      // already reflects THIS order's original debit — so `delta <=
+      // available`. Hard block: the increase is refused when the balance is
+      // short (no override from this screen). Downward changes (delta <= 0)
+      // refund to the balance and are never blocked.
+      if (existing.payment_mode === "credit" && delta > 0) {
+        const credit = await checkDealerCredit(existing.dealer_id, delta);
+        if (!credit.sufficient) {
+          return reply.status(402).send({
+            error: "Insufficient available balance",
+            message:
+              `This change raises the indent by ₹${delta.toFixed(2)}, but the dealer only ` +
+              `has ₹${credit.available.toFixed(2)} available (short by ₹${credit.shortfall.toFixed(2)}). ` +
+              `Reduce quantities or top up the dealer's balance first.`,
+            credit,
+            delta: Number(delta.toFixed(2)),
+          });
+        }
+      }
+
       const oldItems = await pgClient`SELECT product_id, quantity FROM order_items WHERE order_id = ${id}`;
 
       // Same TransactionSql cast as in the POST handler — Omit<Sql,...> drops call signatures.                                                 
@@ -927,9 +959,19 @@ export async function orderRoutes(app: FastifyInstance) {
       });
 
       const items = await pgClient`SELECT product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total FROM order_items WHERE order_id = ${id} ORDER BY product_name`;
+
+      // Recompute credit AFTER the adjustment posts so the Modify screen can
+      // show the dealer's new available balance without a second round-trip.
+      let credit = null;
+      if (existing.payment_mode === "credit") {
+        try { credit = await checkDealerCredit(existing.dealer_id, 0); } catch { credit = null; }
+      }
+
       return reply.send({
         message: "Order modified successfully",
         order: { id, subtotal: newSubtotal.toFixed(2), totalGst: newGst.toFixed(2), grandTotal: newGrandTotal.toFixed(2), itemCount: newLines.length, items },
+        delta: Number(delta.toFixed(2)),
+        credit,
       });
     }
   );
