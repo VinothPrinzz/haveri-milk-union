@@ -19,6 +19,7 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { dealerAuth } from "../middleware/dealer-auth.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
+import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 import {
   getOrderStockShortfalls,
   deductOrderStock,
@@ -477,7 +478,13 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       const dealerId = getDealerId(request);
       const zoneId = getDealerZoneId(request);
       const params = z.object({ date: isoDate }).parse(request.params);
-   
+
+      // A dealer with no delivery route can't place orders — block building
+      // the indent at all so they never reach a dead-end at confirm.
+      if (!(await getDealerRouteId(dealerId))) {
+        return reply.status(403).send(NO_ROUTE_RESPONSE);
+      }
+
       const schema = z.object({
         items: z.array(
           z.object({
@@ -648,7 +655,14 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const dealerId = getDealerId(request);
       const params = z.object({ date: isoDate }).parse(request.params);
- 
+
+      // Guard: an unrouted dealer must not be able to place an order, even if
+      // a draft was somehow materialised (e.g. by the nightly standing-indent
+      // job before their route was removed).
+      if (!(await getDealerRouteId(dealerId))) {
+        return reply.status(403).send(NO_ROUTE_RESPONSE);
+      }
+
       const schema = z.object({
         paymentMode: z.enum(["credit", "razorpay"]),
         razorpayPaymentId: z.string().optional(),

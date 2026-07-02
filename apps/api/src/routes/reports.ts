@@ -236,6 +236,9 @@ export async function reportsRoutes(app: FastifyInstance) {
         othersQty: number;
         netAmount: number;
         crates: number;
+        // Loose packets left over after filling whole crates (floor model):
+        // sum of (qty mod packets_crate) across this customer's products.
+        cratePktPlus: number;
       };
       const byRoute = new Map<string, Map<string, CustomerAgg>>();
       const routeProductAgg = new Map<string, Map<string, { qty: number; amount: number }>>();
@@ -256,6 +259,7 @@ export async function reportsRoutes(app: FastifyInstance) {
           othersQty: 0,
           netAmount: 0,
           crates: 0,
+          cratePktPlus: 0,
         });
       }
  
@@ -287,12 +291,15 @@ export async function reportsRoutes(app: FastifyInstance) {
           customer.othersQty += qty;
         }
         customer.netAmount = round2(customer.netAmount + amt);
- 
+
         if (meta.packetsCrate > 0) {
-          customer.crates += Math.round(qty / meta.packetsCrate);
+          // Floor to whole crates and carry the remainder as loose packets —
+          // never round a partial crate UP (that showed "crate+1 / pkt−").
+          customer.crates += Math.floor(qty / meta.packetsCrate);
+          customer.cratePktPlus += qty % meta.packetsCrate;
         }
       }
- 
+
       // 7c. Fold in employee-subsidy items.
       //     Employee rows are created lazily. Every subsidy line goes
       //     into othersItems with a "(Sub)" alias and is aggregated in
@@ -316,6 +323,7 @@ export async function reportsRoutes(app: FastifyInstance) {
             othersQty: 0,
             netAmount: 0,
             crates: 0,
+            cratePktPlus: 0,
           };
           customers.set(it.employee_id, customer);
         }
@@ -339,12 +347,13 @@ export async function reportsRoutes(app: FastifyInstance) {
         });
         customer.othersQty += qty;
         customer.netAmount = round2(customer.netAmount + amt);
- 
+
         if (meta.packetsCrate > 0) {
-          customer.crates += Math.round(qty / meta.packetsCrate);
+          customer.crates += Math.floor(qty / meta.packetsCrate);
+          customer.cratePktPlus += qty % meta.packetsCrate;
         }
       }
- 
+
       // ── 8. Shape per-route output ──
       const routesOut: any[] = [];
       for (const r of routes as any[]) {
@@ -386,6 +395,7 @@ export async function reportsRoutes(app: FastifyInstance) {
             othersQty: d.othersQty,
             netAmount: round2(d.netAmount),
             crates: d.crates,
+            cratePktPlus: d.cratePktPlus,
           };
         });
  
@@ -399,12 +409,13 @@ export async function reportsRoutes(app: FastifyInstance) {
           othersQty:      customers.reduce((s, c) => s + c.othersQty, 0),
           netAmount:      round2(customers.reduce((s, c) => s + c.netAmount, 0)),
           crates:         customers.reduce((s, c) => s + c.crates, 0),
+          cratePktPlus:   customers.reduce((s, c) => s + c.cratePktPlus, 0),
           totalAcrossQty: customers.reduce((s, c) =>
             s + Object.values(c.acrossQty).reduce((a: number, b: number) => a + b, 0), 0),
           totalAllQty:    customers.reduce((s, c) =>
             s + Object.values(c.acrossQty).reduce((a: number, b: number) => a + b, 0) + c.othersQty, 0),
         };
- 
+
         // ── Abstract: per-productKey breakdown (dealer + "(Sub)" lines) ──
         const rmap = routeProductAgg.get(r.id)!;
         const abstractItems: any[] = [];
@@ -415,19 +426,26 @@ export async function reportsRoutes(app: FastifyInstance) {
           const meta = productMeta.get(realPid);
           if (!meta) continue;
           const pc = meta.packetsCrate;
-          let crates = 0, pktPlus = 0, pktMinus = 0;
+          // Floor to whole crates and show the remainder as loose packets (+).
+          // Never round a partial crate UP (that produced "crate+1 / pkt−");
+          // with floor the count stays put and the extra packets read as pkt+.
+          let crates = 0, pktPlus = 0;
+          const pktMinus = 0;
           if (pc > 0) {
-            crates = Math.round(agg.qty / pc);
-            const diff = agg.qty - crates * pc;
-            if (diff > 0) pktPlus = diff;
-            else if (diff < 0) pktMinus = -diff;
+            crates = Math.floor(agg.qty / pc);
+            pktPlus = agg.qty - crates * pc;   // 0 .. pc-1, always ≥ 0
           } else {
             pktPlus = agg.qty;
           }
           // Sort key: the client-defined abstract_position leads; products
           // with no position (0) fall after all positioned rows in sort_order.
           // Sub lines sit immediately after their base product (+0.5).
-          const basePos = meta.abstractPosition > 0 ? meta.abstractPosition : 1000 + meta.sortOrder;
+          // A subsidised across product (alias carries "(sub)") is pulled to
+          // the FRONT so it — and its column — lead the sheet & abstract.
+          const isSubProduct = /\(\s*sub\s*\)/i.test(meta.alias);
+          const basePos = isSubProduct
+            ? -1_000_000 + meta.sortOrder
+            : meta.abstractPosition > 0 ? meta.abstractPosition : 1000 + meta.sortOrder;
           abstractItems.push({
             productId:    key,
             alias:        isSub ? `${meta.alias} (Sub)` : meta.alias,

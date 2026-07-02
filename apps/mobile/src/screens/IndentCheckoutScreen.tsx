@@ -96,6 +96,11 @@ export default function IndentCheckoutScreen({
     draftStatus === "dispatched" ||
     draftStatus === "delivered";
 
+  // A dealer with no delivery route can't place orders (the server rejects
+  // every order-creating call with 403). Surface that up front instead of
+  // letting them tap "Confirm" into a dead-end error.
+  const hasRoute = !!dealer?.routeId;
+
   // ── Available balance (prepaid — no credit limit) ──
   // Whatever the customer has topped up, floored at 0. Comes straight from
   // the API's credit_available (opening + top-ups − purchases).
@@ -263,7 +268,16 @@ export default function IndentCheckoutScreen({
 
         {!draftQuery.isLoading && !draftQuery.isError && (
           <>
-            {isPlaced ? (
+            {!hasRoute ? (
+              <View style={styles.notice}>
+                <Text style={styles.noticeTitle}>No delivery route assigned</Text>
+                <Text style={styles.noticeSub}>
+                  Your account isn't assigned to a delivery route yet, so
+                  orders can't be placed. Please contact the dairy office to
+                  get a route assigned.
+                </Text>
+              </View>
+            ) : isPlaced ? (
               <View style={styles.notice}>
                 <Text style={styles.noticeTitle}>Indent already placed</Text>
                 <Text style={styles.noticeSub}>
@@ -359,6 +373,7 @@ export default function IndentCheckoutScreen({
       {/* Pay footer */}
       {!draftQuery.isLoading &&
         !draftQuery.isError &&
+        hasRoute &&
         !isPlaced &&
         !isFuture &&
         items.length > 0 && (

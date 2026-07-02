@@ -44,6 +44,8 @@ export interface Dealer {
   routeId: string;
   routeName: string;
   routeCode: string;
+  /** Route's scheduled departure time, e.g. "5:30 AM" (routes.dispatch_time). */
+  routeDispatchTime?: string;
   walletBalance: number;
   creditLimit: number;
   creditOutstanding?: number;

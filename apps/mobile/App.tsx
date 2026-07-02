@@ -21,7 +21,7 @@ import {
   MutationCache,
   focusManager,
 } from "@tanstack/react-query";
-import { useAuthStore } from "./src/store/auth";
+import { useAuthStore, setQueryCacheReset } from "./src/store/auth";
 import { ApiError } from "./src/lib/api";
 import { colors, fonts, fontSize, shadows } from "./src/lib/theme";
 import { useAppFonts } from "./src/lib/fonts";
@@ -111,6 +111,10 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+// Let the auth store wipe this cache on login / logout so one dealer's
+// cached data can never surface under the next account (see auth.ts).
+setQueryCacheReset(() => queryClient.clear());
 
 type Tab = "home" | "indent" | "orders" | "categories";
 type PushedScreen =
