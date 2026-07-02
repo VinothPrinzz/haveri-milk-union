@@ -679,7 +679,9 @@ export async function reportsRoutes(app: FastifyInstance) {
         othersItems: Array<{ productId: string; alias: string; qty: number; sortOrder: number }>;
         othersQty: number;
         netAmount: number;
-        crates: number;
+        // Total quantity per product; crates are computed once from these
+        // AGGREGATES (an agent may hold several gate passes for a product).
+        qtyByProduct: Map<string, number>;
       };
       const byRoute = new Map<string, Map<string, AgentAgg>>();
       const routeProductAgg = new Map<string, Map<string, { qty: number; amount: number }>>();
@@ -707,7 +709,7 @@ export async function reportsRoutes(app: FastifyInstance) {
             othersItems: [],
             othersQty: 0,
             netAmount: 0,
-            crates: 0,
+            qtyByProduct: new Map(),
           };
           agents.set(it.agent_id, agent);
         }
@@ -733,10 +735,12 @@ export async function reportsRoutes(app: FastifyInstance) {
           agent.othersQty += qty;
         }
         agent.netAmount = round2(agent.netAmount + amt);
- 
-        if (meta.packetsCrate > 0) {
-          agent.crates += Math.round(qty / meta.packetsCrate);
-        }
+
+        // Accumulate qty per product; crates are computed later from the total.
+        agent.qtyByProduct.set(
+          it.product_id,
+          (agent.qtyByProduct.get(it.product_id) ?? 0) + qty
+        );
       }
  
       // ── 6. Shape per-route output — identical to Route Sheet ──
@@ -764,7 +768,22 @@ export async function reportsRoutes(app: FastifyInstance) {
           const othersList = Array.from(collapsed.values())
             .filter(x => x.qty > 0)
             .sort((a, b) => a.sortOrder - b.sortOrder);
- 
+
+          // Whole crates ± loose packets, from aggregated per-product qty,
+          // grouped by crate size so same-size products share crates. Only
+          // pc-assigned products count; +/− netted into one cell.
+          const qtyByPc = new Map<number, number>();
+          for (const [pid, qty] of d.qtyByProduct) {
+            const pc = productMeta.get(pid)?.packetsCrate ?? 0;
+            if (pc > 0 && qty > 0) qtyByPc.set(pc, (qtyByPc.get(pc) ?? 0) + qty);
+          }
+          let cr = 0, pPlus = 0, pMinus = 0;
+          for (const [pc, qty] of qtyByPc) {
+            const s = crateSplit(qty, pc);
+            cr += s.crates; pPlus += s.pktPlus; pMinus += s.pktMinus;
+          }
+          const net = pPlus - pMinus;
+
           return {
             sl: idx + 1,
             id: d.id,
@@ -774,10 +793,17 @@ export async function reportsRoutes(app: FastifyInstance) {
             othersText: othersList.map(x => `${x.alias} → ${x.qty}`).join(", "),
             othersQty: d.othersQty,
             netAmount: round2(d.netAmount),
-            crates: d.crates,
+            crates: cr,
+            cratePktPlus:  net > 0 ?  net : 0,
+            cratePktMinus: net < 0 ? -net : 0,
           };
         });
- 
+
+        // Route-level net of every agent's loose packets (pkt+ minus pkt−).
+        const routeNetCratePkt = customers.reduce(
+          (s, c) => s + c.cratePktPlus - c.cratePktMinus, 0
+        );
+
         const totals = {
           acrossQty: Object.fromEntries(
             acrossProducts.map(p => [
@@ -788,6 +814,8 @@ export async function reportsRoutes(app: FastifyInstance) {
           othersQty:      customers.reduce((s, c) => s + c.othersQty, 0),
           netAmount:      round2(customers.reduce((s, c) => s + c.netAmount, 0)),
           crates:         customers.reduce((s, c) => s + c.crates, 0),
+          cratePktPlus:   Math.max(0,  routeNetCratePkt),
+          cratePktMinus:  Math.max(0, -routeNetCratePkt),
           totalAcrossQty: customers.reduce((s, c) =>
             s + Object.values(c.acrossQty).reduce((a: number, b: number) => a + b, 0), 0),
           totalAllQty:    customers.reduce((s, c) =>
@@ -801,15 +829,9 @@ export async function reportsRoutes(app: FastifyInstance) {
           if (agg.qty === 0) continue;
           const meta = productMeta.get(pid)!;
           const pc = meta.packetsCrate;
-          let crates = 0, pktPlus = 0, pktMinus = 0;
-          if (pc > 0) {
-            crates = Math.round(agg.qty / pc);
-            const diff = agg.qty - crates * pc;
-            if (diff > 0) pktPlus = diff;
-            else if (diff < 0) pktMinus = -diff;
-          } else {
-            pktPlus = agg.qty;
-          }
+          // Nearest-crate split (ties/"middle" → pkt+). Non-crate products
+          // contribute nothing — no crates, no loose packets.
+          const { crates, pktPlus, pktMinus } = crateSplit(agg.qty, pc);
           // Sort key: client-defined abstract_position leads; unpositioned
           // products (0) fall after all positioned rows in sort_order.
           const basePos = meta.abstractPosition > 0 ? meta.abstractPosition : 1000 + meta.sortOrder;
