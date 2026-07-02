@@ -235,10 +235,10 @@ export async function reportsRoutes(app: FastifyInstance) {
         othersItems: Array<{ productId: string; alias: string; qty: number; sortOrder: number }>;
         othersQty: number;
         netAmount: number;
-        crates: number;
-        // Loose packets left over after filling whole crates (floor model):
-        // sum of (qty mod packets_crate) across this customer's products.
-        cratePktPlus: number;
+        // Total quantity per product for this customer. Crates are computed
+        // once, later, from these AGGREGATES — never rounded per order line
+        // (a customer may have several lines of the same product).
+        qtyByProduct: Map<string, number>;
       };
       const byRoute = new Map<string, Map<string, CustomerAgg>>();
       const routeProductAgg = new Map<string, Map<string, { qty: number; amount: number }>>();
@@ -258,8 +258,7 @@ export async function reportsRoutes(app: FastifyInstance) {
           othersItems: [],
           othersQty: 0,
           netAmount: 0,
-          crates: 0,
-          cratePktPlus: 0,
+          qtyByProduct: new Map(),
         });
       }
  
@@ -292,12 +291,11 @@ export async function reportsRoutes(app: FastifyInstance) {
         }
         customer.netAmount = round2(customer.netAmount + amt);
 
-        if (meta.packetsCrate > 0) {
-          // Floor to whole crates and carry the remainder as loose packets —
-          // never round a partial crate UP (that showed "crate+1 / pkt−").
-          customer.crates += Math.floor(qty / meta.packetsCrate);
-          customer.cratePktPlus += qty % meta.packetsCrate;
-        }
+        // Accumulate qty per product; crates are computed later from the total.
+        customer.qtyByProduct.set(
+          it.product_id,
+          (customer.qtyByProduct.get(it.product_id) ?? 0) + qty
+        );
       }
 
       // 7c. Fold in employee-subsidy items.
@@ -322,8 +320,7 @@ export async function reportsRoutes(app: FastifyInstance) {
             othersItems: [],
             othersQty: 0,
             netAmount: 0,
-            crates: 0,
-            cratePktPlus: 0,
+            qtyByProduct: new Map(),
           };
           customers.set(it.employee_id, customer);
         }
@@ -348,10 +345,10 @@ export async function reportsRoutes(app: FastifyInstance) {
         customer.othersQty += qty;
         customer.netAmount = round2(customer.netAmount + amt);
 
-        if (meta.packetsCrate > 0) {
-          customer.crates += Math.floor(qty / meta.packetsCrate);
-          customer.cratePktPlus += qty % meta.packetsCrate;
-        }
+        customer.qtyByProduct.set(
+          it.product_id,
+          (customer.qtyByProduct.get(it.product_id) ?? 0) + qty
+        );
       }
 
       // ── 8. Shape per-route output ──
@@ -383,7 +380,25 @@ export async function reportsRoutes(app: FastifyInstance) {
           const othersList = Array.from(collapsed.values())
             .filter(x => x.qty > 0)
             .sort((a, b) => a.sortOrder - b.sortOrder);
- 
+
+          // Whole crates ± loose packets for the single Crates cell. Group the
+          // customer's products by crate size (packets/crate) and split each
+          // group's COMBINED qty, so same-size products share crates and the
+          // remainder stays minimal (e.g. two 13-pkt lines of a 24-crate read
+          // "1+2", not "2−22"). Only pc-assigned products count; the +/− are
+          // netted so the cell reads "N", "N+p", or "N−p".
+          const qtyByPc = new Map<number, number>();
+          for (const [pid, qty] of d.qtyByProduct) {
+            const pc = productMeta.get(pid)?.packetsCrate ?? 0;
+            if (pc > 0 && qty > 0) qtyByPc.set(pc, (qtyByPc.get(pc) ?? 0) + qty);
+          }
+          let cr = 0, pPlus = 0, pMinus = 0;
+          for (const [pc, qty] of qtyByPc) {
+            const s = crateSplit(qty, pc);
+            cr += s.crates; pPlus += s.pktPlus; pMinus += s.pktMinus;
+          }
+          const net = pPlus - pMinus;
+
           return {
             sl: idx + 1,
             id: d.id,
@@ -394,11 +409,17 @@ export async function reportsRoutes(app: FastifyInstance) {
             othersText: othersList.map(x => `${x.alias} → ${x.qty}`).join(", "),
             othersQty: d.othersQty,
             netAmount: round2(d.netAmount),
-            crates: d.crates,
-            cratePktPlus: d.cratePktPlus,
+            crates: cr,
+            cratePktPlus:  net > 0 ?  net : 0,
+            cratePktMinus: net < 0 ? -net : 0,
           };
         });
- 
+
+        // Route-level net of every dealer's loose packets (pkt+ minus pkt−).
+        const routeNetCratePkt = customers.reduce(
+          (s, c) => s + c.cratePktPlus - c.cratePktMinus, 0
+        );
+
         const totals = {
           acrossQty: Object.fromEntries(
             acrossProducts.map(p => [
@@ -409,7 +430,9 @@ export async function reportsRoutes(app: FastifyInstance) {
           othersQty:      customers.reduce((s, c) => s + c.othersQty, 0),
           netAmount:      round2(customers.reduce((s, c) => s + c.netAmount, 0)),
           crates:         customers.reduce((s, c) => s + c.crates, 0),
-          cratePktPlus:   customers.reduce((s, c) => s + c.cratePktPlus, 0),
+          // Net the per-dealer loose packets across the route into one +/−.
+          cratePktPlus:   Math.max(0,  routeNetCratePkt),
+          cratePktMinus:  Math.max(0, -routeNetCratePkt),
           totalAcrossQty: customers.reduce((s, c) =>
             s + Object.values(c.acrossQty).reduce((a: number, b: number) => a + b, 0), 0),
           totalAllQty:    customers.reduce((s, c) =>
@@ -426,17 +449,9 @@ export async function reportsRoutes(app: FastifyInstance) {
           const meta = productMeta.get(realPid);
           if (!meta) continue;
           const pc = meta.packetsCrate;
-          // Floor to whole crates and show the remainder as loose packets (+).
-          // Never round a partial crate UP (that produced "crate+1 / pkt−");
-          // with floor the count stays put and the extra packets read as pkt+.
-          let crates = 0, pktPlus = 0;
-          const pktMinus = 0;
-          if (pc > 0) {
-            crates = Math.floor(agg.qty / pc);
-            pktPlus = agg.qty - crates * pc;   // 0 .. pc-1, always ≥ 0
-          } else {
-            pktPlus = agg.qty;
-          }
+          // Nearest-crate split (ties/"middle" → pkt+). Non-crate products
+          // contribute nothing — no crates, no loose packets.
+          const { crates, pktPlus, pktMinus } = crateSplit(agg.qty, pc);
           // Sort key: the client-defined abstract_position leads; products
           // with no position (0) fall after all positioned rows in sort_order.
           // Sub lines sit immediately after their base product (+0.5).
@@ -859,4 +874,30 @@ export async function reportsRoutes(app: FastifyInstance) {
 
 function round2(n: number): number {
   return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+/**
+ * Split an ordered quantity into whole crates ± loose packets, for ONE product.
+ *
+ * Rounds to the NEAREST whole crate:
+ *   • remainder in the lower half (ties / the exact "middle" included) → keep
+ *     the crate, show the extra as pkt (+):   "quotient + remainder"
+ *   • remainder in the upper half → round up to the next crate, show the
+ *     shortfall as pkt (−):                    "(quotient+1) − (pc − remainder)"
+ *
+ * Only products with a packets-per-crate assigned (pc > 0) count; anything else
+ * returns all-zero — no crate, no loose packets ("do nothing for others").
+ */
+function crateSplit(
+  qty: number,
+  pc: number
+): { crates: number; pktPlus: number; pktMinus: number } {
+  if (!(pc > 0) || qty <= 0) return { crates: 0, pktPlus: 0, pktMinus: 0 };
+  const quotient = Math.floor(qty / pc);
+  const remainder = qty - quotient * pc;
+  if (remainder === 0) return { crates: quotient, pktPlus: 0, pktMinus: 0 };
+  // Lower half (and the exact middle) stays on the current crate as pkt(+).
+  if (remainder * 2 <= pc) return { crates: quotient, pktPlus: remainder, pktMinus: 0 };
+  // Upper half rounds up to the next crate; the gap shows as pkt(−).
+  return { crates: quotient + 1, pktPlus: 0, pktMinus: pc - remainder };
 }
