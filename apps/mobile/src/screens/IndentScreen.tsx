@@ -158,12 +158,24 @@ export default function IndentScreen({
   // lock the dealer out while the window is actually still open.
   const windowClosedToday = isToday && windowQuery.data?.state === "closed";
 
+  // A dealer with no delivery route can't place orders (the server rejects
+  // every order-creating call). Lock editing so items don't optimistically
+  // appear and then silently roll back on the 403.
+  const hasRoute = !!dealer?.routeId;
+
   const isEditable = !isPaused && !isPlaced && !isPaymentRequired;
-  // Editable AND the window still allows changes (future dates always do).
-  const canModify = isEditable && !windowClosedToday;
+  // Editable AND the window still allows changes (future dates always do)
+  // AND the dealer actually has a route to deliver on.
+  const canModify = isEditable && !windowClosedToday && hasRoute;
 
   // ── Status banner ──
   const statusBanner = useMemo(() => {
+    if (!hasRoute) {
+      return {
+        kind: "closed" as const,
+        text: "No delivery route assigned — contact the dairy office to order",
+      };
+    }
     if (isPaused) {
       return {
         kind: "closed" as const,
@@ -205,6 +217,7 @@ export default function IndentScreen({
       text: `Closes in ${min} minute${min === 1 ? "" : "s"}`,
     };
   }, [
+    hasRoute,
     isPaused,
     isPlaced,
     isPaymentRequired,

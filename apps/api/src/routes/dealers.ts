@@ -754,6 +754,7 @@ export async function dealerRoutes(app: FastifyInstance) {
                 z.name  AS zone_name,
                 r.name  AS route_name,
                 r.code  AS route_code,
+                r.dispatch_time::text AS route_dispatch_time,
                 COALESCE(w.balance, 0) AS wallet_balance,
                 GREATEST(0, -led.closing_balance)::numeric                          AS credit_outstanding,
                 led.closing_balance::numeric                                        AS ledger_balance,

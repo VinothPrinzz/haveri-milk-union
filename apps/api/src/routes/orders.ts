@@ -19,6 +19,7 @@ import {
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
+import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
 
@@ -51,6 +52,16 @@ export async function orderRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
       const dealer = request.dealer!;
+
+      // ── 0. Dealer must be assigned to a delivery route ──
+      // No route ⇒ no ordering window and no place on any dispatch, so the
+      // order would be undeliverable. Reject with a clear message before the
+      // window/stock checks (which would otherwise fail with a misleading
+      // "window not active for your route").
+      const routeId = await getDealerRouteId(dealer.dealerId);
+      if (!routeId) {
+        return reply.status(403).send(NO_ROUTE_RESPONSE);
+      }
 
       // ── 1. Validate ordering window is still open ──
       // Time-windows are route-based (migration 0023): the admin panel

@@ -72,6 +72,7 @@ function parseDealer(d: Record<string, unknown>): Dealer {
     routeId:               get<string>("route_id", "routeId") ?? "",
     routeName:             get<string>("route_name", "routeName") ?? "",
     routeCode:             get<string>("route_code", "routeCode") ?? "",
+    routeDispatchTime:     get<string>("route_dispatch_time", "routeDispatchTime"),
     walletBalance,
     creditLimit,
     creditOutstanding,
@@ -91,6 +92,21 @@ function parseDealer(d: Record<string, unknown>): Dealer {
 /** True if the dealer object actually has display-worthy data. */
 function isHydratedDealer(d: Dealer | null | undefined): boolean {
   return !!d && (!!d.name || !!d.zoneName);
+}
+
+/**
+ * The React Query cache lives in App.tsx's QueryClient, which this store
+ * can't import without a circular dependency. Instead App.tsx registers a
+ * reset callback here at startup. We invoke it whenever a session ENDS
+ * (logout / forced logout) or a new one BEGINS (login) so the previous
+ * dealer's cached orders / invoices / draft / notifications can never bleed
+ * into the next account. Without this, logging out of A and into B on the
+ * same app launch showed A's cached data until each query happened to
+ * refetch. Safe no-op until App.tsx wires it up.
+ */
+let resetQueryCache: (() => void) | null = null;
+export function setQueryCacheReset(fn: () => void): void {
+  resetQueryCache = fn;
 }
 
 interface AuthState {
@@ -183,6 +199,12 @@ export const useAuthStore = create<AuthState>()(
 
           await saveTokens(res.accessToken, res.refreshToken);
 
+          // New session begins — wipe any query cache left over from a
+          // previous account BEFORE we fetch this dealer's profile or route
+          // to any of their screens, so no stale data from the last login
+          // can flash through.
+          resetQueryCache?.();
+
           // The login response may only contain { id, phone } (older API).
           // Always fetch the full profile so name/zone/code are present on
           // the very first paint — no manual reload needed.
@@ -215,6 +237,8 @@ export const useAuthStore = create<AuthState>()(
 
       logout: async () => {
         await clearTokens();
+        // Drop every cached query so the next account starts clean.
+        resetQueryCache?.();
         set({ dealer: null, isAuthenticated: false });
       },
 
@@ -222,6 +246,7 @@ export const useAuthStore = create<AuthState>()(
         // Fire-and-forget token wipe; the session is already invalid so
         // we don't await it — clearing state immediately is what matters.
         void clearTokens();
+        resetQueryCache?.();
         set({ dealer: null, isAuthenticated: false, isLoading: false });
       },
 

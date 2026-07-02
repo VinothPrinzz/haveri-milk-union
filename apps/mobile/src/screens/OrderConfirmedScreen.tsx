@@ -19,6 +19,7 @@ import {
   fonts,
 } from "../lib/theme";
 import { useAuthStore } from "../store/auth";
+import { relativeLabel } from "../store/targetDate";
 import { useMyOrders } from "../hooks/useOrders";
 import { useMyInvoices, useInvoiceByOrder } from "../hooks/useInvoices";
 import type { Order } from "../lib/types";
@@ -144,7 +145,17 @@ export default function OrderConfirmedScreen({
   const paymentMode = order?.paymentMode ?? "upi";
   const paymentLabel = paymentMode.toUpperCase();
 
-  const dispatchInfo = "Tomorrow · 5:00 – 5:30 AM";
+  // Dispatch = the order's delivery day at the dealer's route departure time.
+  // Both are real data now (routes.dispatch_time via the profile; the order's
+  // delivery_date), not a hardcoded "Tomorrow · 5:00 – 5:30 AM".
+  const dispatchInfo = useMemo(() => {
+    const dayLabel = order?.deliveryDate
+      ? relativeLabel(order.deliveryDate)
+      : null;
+    const time = formatDispatchTime(dealer?.routeDispatchTime);
+    const parts = [dayLabel, time].filter(Boolean) as string[];
+    return parts.length ? parts.join(" · ") : "Scheduled for dispatch";
+  }, [order?.deliveryDate, dealer?.routeDispatchTime]);
   const locationLabel =
     dealer?.locationLabel
       ? `${dealer.locationLabel}${dealer.zoneName ? ` · ${dealer.zoneName}` : ""}`
@@ -274,6 +285,35 @@ function SuccessRow({ icon, label, value, paid, isLast }: SuccessRowProps) {
 function prettyOrderId(orderId: string): string {
   const slug = orderId.replace(/-/g, "").slice(0, 12).toUpperCase();
   return `HMU-${slug.slice(0, 4)}-${slug.slice(4, 12)}`;
+}
+
+/**
+ * Format the route's dispatch time for display.
+ *
+ * routes.dispatch_time is a Postgres `time` column, so the API sends it as
+ * "HH:MM:SS" (e.g. "05:30:00"). Older/seeded rows may already be a friendly
+ * "5:30 AM". Normalise both to "5:30 AM". Returns null for empty/unparseable
+ * input so the caller can omit the time entirely.
+ */
+function formatDispatchTime(raw: string | null | undefined): string | null {
+  const s = raw?.trim();
+  if (!s) return null;
+
+  // Already has an AM/PM marker → assume it's display-ready.
+  if (/[ap]\.?m\.?/i.test(s)) return s;
+
+  // Match 24h "HH:MM" or "HH:MM:SS".
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return s; // unknown format — show as-is rather than hide it
+
+  let hour = parseInt(m[1]!, 10);
+  const minute = m[2];
+  if (Number.isNaN(hour)) return s;
+
+  const period = hour >= 12 ? "PM" : "AM";
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  return `${hour}:${minute} ${period}`;
 }
 
 // ════════════════════════════════════════════════════════════════════════

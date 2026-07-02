@@ -30,6 +30,7 @@ import {
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 import { deductOrderStockCapped, describeShortfalls } from "../lib/stock-check.js";
 import { enqueuePDFInvoice } from "../lib/queue.js";
+import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -496,6 +497,10 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
       if (!order) return reply.status(404).send({ error: "Order not found" });
       if (order.dealerId !== dealerId)
         return reply.status(403).send({ error: "Forbidden" });
+      // No delivery route ⇒ order is undeliverable; don't take a payment for it.
+      if (!(await getDealerRouteId(dealerId))) {
+        return reply.status(403).send(NO_ROUTE_RESPONSE);
+      }
       if (!["draft", "payment_required"].includes(order.status)) {
         return reply.status(400).send({
           error: "Order not payable",
