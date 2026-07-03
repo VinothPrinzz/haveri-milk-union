@@ -63,27 +63,47 @@ function require503IfUnconfigured(reply: any): boolean {
  *
  * Returns `{ ok: true }` only when the payment is genuinely captured for
  * the right order and amount.
+ *
+ * On failure, `indeterminate` distinguishes the two very different cases the
+ * caller must NOT conflate:
+ *   • indeterminate: false — Razorpay gave a definitive negative answer
+ *     (payment failed/refunded, wrong order, amount mismatch). The money is
+ *     NOT ours; it is safe to mark the row 'failed' and tell the dealer.
+ *   • indeterminate: true  — we could NOT get a definitive answer (the fetch
+ *     timed out, the network dropped, or the payment is authorized-but-not-
+ *     yet-captured). The money MAY have been taken. Do NOT mark 'failed'
+ *     (that hides the row from the reconcile sweep and wrongly tells the
+ *     dealer the payment failed); leave it recoverable for the webhook /
+ *     reconciliation job to resolve.
  */
 export async function ensureCaptured(opts: {
   razorpayOrderId: string;
   razorpayPaymentId: string;
   expectedAmountPaise: number;
-}): Promise<{ ok: true } | { ok: false; status: string; message: string }> {
+}): Promise<
+  | { ok: true }
+  | { ok: false; indeterminate: boolean; status: string; message: string }
+> {
   let payment;
   try {
     payment = await fetchRazorpayPayment(opts.razorpayPaymentId);
   } catch {
+    // Could not reach Razorpay to confirm — this is NOT proof of failure.
     return {
       ok: false,
+      indeterminate: true,
       status: "unknown",
       message: "Could not verify payment status with Razorpay",
     };
   }
 
   // The payment must belong to the order we created and match its amount.
+  // These are definitive Razorpay answers — this payment is not the one we
+  // are trying to settle — so they are NOT indeterminate.
   if (payment.order_id && payment.order_id !== opts.razorpayOrderId) {
     return {
       ok: false,
+      indeterminate: false,
       status: payment.status,
       message: "Payment does not belong to this order",
     };
@@ -91,6 +111,7 @@ export async function ensureCaptured(opts: {
   if (payment.amount !== opts.expectedAmountPaise) {
     return {
       ok: false,
+      indeterminate: false,
       status: payment.status,
       message: "Payment amount does not match the order",
     };
@@ -106,14 +127,20 @@ export async function ensureCaptured(opts: {
         payment.currency || "INR"
       );
       if (cap.status === "captured") return { ok: true };
+      // Capture returned but the money is still only authorized/held —
+      // reconcile can re-capture it, so keep the row recoverable.
       return {
         ok: false,
+        indeterminate: true,
         status: cap.status,
         message: "Payment could not be captured",
       };
     } catch (e) {
+      // The capture call itself failed (network/timeout). The money is at
+      // least authorized and may even be captured — do not declare failure.
       return {
         ok: false,
+        indeterminate: true,
         status: "authorized",
         message:
           e instanceof Error ? e.message : "Payment capture failed",
@@ -121,9 +148,14 @@ export async function ensureCaptured(opts: {
     }
   }
 
-  // created / failed / refunded / etc. — never treat as paid.
+  // created / failed / refunded / etc. — never treat as paid. Only a
+  // definitive 'failed'/'refunded' is a genuine dead end; anything else
+  // (e.g. still 'created') might yet settle, so keep it recoverable.
+  const definitivelyDead =
+    payment.status === "failed" || payment.status === "refunded";
   return {
     ok: false,
+    indeterminate: !definitivelyDead,
     status: payment.status,
     message:
       payment.error_description ?? `Payment is ${payment.status}, not captured`,
@@ -435,6 +467,32 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         expectedAmountPaise: Math.round(parseFloat(row.amount) * 100),
       });
       if (!capture.ok) {
+        if (capture.indeterminate) {
+          // Couldn't get a definitive answer from Razorpay (timeout / network
+          // / authorized-not-yet-captured). The money may have been taken, so
+          // DON'T mark the row 'failed' — that would both hide it from the
+          // reconciliation sweep and wrongly tell the dealer the payment
+          // failed. Record the reason, leave the row recoverable, and return a
+          // 'pending' signal. The webhook or the reconcile job will confirm it
+          // within minutes if the capture really happened.
+          await pgClient`
+            UPDATE razorpay_payments
+               SET razorpay_payment_id = COALESCE(razorpay_payment_id, ${body.razorpayPaymentId}),
+                   error_description = ${capture.message},
+                   updated_at = now()
+             WHERE id = ${row.id}::uuid
+               AND status IN ('created', 'attempted')
+          `;
+          return reply.status(202).send({
+            status: "pending",
+            pending: true,
+            message:
+              "We couldn't confirm your payment instantly. If the amount was debited, it will be credited automatically within a few minutes.",
+            paymentStatus: capture.status,
+          });
+        }
+        // Definitive failure — Razorpay says the payment failed / was refunded
+        // / doesn't match. Safe to mark the row failed and tell the dealer.
         await pgClient`
           UPDATE razorpay_payments
              SET status = 'failed',
@@ -617,6 +675,33 @@ export async function dealerPaymentsRoutes(app: FastifyInstance) {
         expectedAmountPaise: Math.round(parseFloat(row.amount) * 100),
       });
       if (!capture.ok) {
+        if (capture.indeterminate) {
+          // Couldn't get a definitive answer from Razorpay (timeout / network
+          // / authorized-not-yet-captured). The money may have been taken, so
+          // DON'T mark the row 'failed' — that would both hide it from the
+          // reconciliation sweep and wrongly tell the dealer the payment
+          // failed. Leave the order in 'payment_required' and the row
+          // recoverable; the webhook or the reconcile job will confirm the
+          // order within minutes if the capture really happened.
+          await pgClient`
+            UPDATE razorpay_payments
+               SET razorpay_payment_id = COALESCE(razorpay_payment_id, ${body.razorpayPaymentId}),
+                   error_description = ${capture.message},
+                   updated_at = now()
+             WHERE id = ${row.id}::uuid
+               AND status IN ('created', 'attempted')
+          `;
+          return reply.status(202).send({
+            status: "pending",
+            pending: true,
+            message:
+              "We couldn't confirm your payment instantly. If the amount was debited, your order will be confirmed automatically within a few minutes.",
+            paymentStatus: capture.status,
+            orderId: params.id,
+          });
+        }
+        // Definitive failure — Razorpay says the payment failed / was refunded
+        // / doesn't match. Safe to mark the row failed and tell the dealer.
         await pgClient`
           UPDATE razorpay_payments
              SET status = 'failed',
