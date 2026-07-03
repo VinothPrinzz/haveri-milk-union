@@ -11,11 +11,14 @@
 // exactly what stranded orders like HMU-1BFF (order_T86nktGk8E4320) and
 // order_T884W4w9YRtka1 required manual one-off scripts to repair.
 //
-// This scans razorpay_payments rows still 'created'/'attempted' after a
-// grace period, asks Razorpay whether any attempt actually captured, and if
-// so applies it through the SAME live path (applyPaidPayment) — no
-// duplicated ledger/stock/invoice logic. Idempotent: applyPaidPayment keys
-// off the internal payments.reference, so re-runs are no-ops.
+// This scans razorpay_payments rows still 'created'/'attempted'/'failed'
+// after a grace period, asks Razorpay whether any attempt actually captured,
+// and if so applies it through the SAME live path (applyPaidPayment) — no
+// duplicated ledger/stock/invoice logic. 'failed' is included because the
+// /verify path can mark a row 'failed' when it merely couldn't reach Razorpay
+// to confirm (not a real failure); such a row must stay recoverable.
+// Idempotent: applyPaidPayment keys off the internal payments.reference, so
+// re-runs are no-ops.
 //
 // Triggered on a schedule by the worker (POST /api/v1/internal/reconcile-
 // razorpay, guarded by INTERNAL_JOB_SECRET) and safe to invoke manually.
@@ -91,6 +94,14 @@ export async function reconcileStuckRazorpayPayments(opts?: {
     return summary;
   }
 
+  // Include 'failed' rows, not just created/attempted. The synchronous
+  // /verify path marks a row 'failed' when it truly fails — but ALSO used to
+  // when it simply couldn't reach Razorpay to confirm (a timeout), which is
+  // NOT proof the money wasn't taken. Those poisoned rows must stay
+  // recoverable here as the last automatic backstop when the webhook also
+  // misses. Re-checking a genuinely-failed row is harmless: Razorpay reports
+  // no captured attempt, so it's left untouched (counted as no-capture). The
+  // status-flip UPDATE below already guards on 'failed', so this is safe.
   const rows = await pgClient`
     SELECT id::text AS id,
            razorpay_order_id  AS "rzpOrderId",
@@ -99,7 +110,7 @@ export async function reconcileStuckRazorpayPayments(opts?: {
            amount::numeric    AS amount,
            status::text       AS status
       FROM razorpay_payments
-     WHERE status IN ('created', 'attempted')
+     WHERE status IN ('created', 'attempted', 'failed')
        AND created_at < now() - make_interval(mins => ${olderThanMinutes})
        AND created_at > now() - make_interval(hours => ${maxAgeHours})
      ORDER BY created_at ASC
@@ -218,8 +229,9 @@ export async function reconcileStuckRazorpayPayments(opts?: {
   // missing. Both the webhook and this job flip the gateway row to 'paid'
   // BEFORE calling applyPaidPayment; if that apply crashed (or threw) the
   // row is stranded 'paid' yet the dealer was never credited and the order
-  // never confirmed. The main scan (created/attempted only) can't see these.
-  // applyPaidPayment is idempotent, so re-running it is safe.
+  // never confirmed. The main scan (created/attempted/failed) can't see a
+  // row that's already 'paid'. applyPaidPayment is idempotent, so re-running
+  // it is safe.
   const orphans = await pgClient`
     SELECT rp.id::text        AS id,
            rp.razorpay_order_id AS "rzpOrderId",
