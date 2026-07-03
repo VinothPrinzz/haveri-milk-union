@@ -58,6 +58,62 @@ async function getClient(): Promise<any> {
   return _client;
 }
 
+// ── Outbound-call timeout ───────────────────────────────────────────
+// The Razorpay SDK sets no request timeout, so a slow or hung Razorpay call
+// (or slow outbound network from the host) can block a /verify request far
+// past the mobile client's own timeout — the dealer's app gives up while the
+// server is still waiting, and the payment only records later via the webhook
+// / reconcile backstop. Bounding every outbound call here lets the server
+// return a definitive answer (or a clean 'pending') BEFORE the app aborts.
+//
+// Keep this comfortably BELOW the mobile client's request timeout. The verify
+// path can make TWO sequential calls (payments.fetch → payments.capture), so
+// 2 × this must still fit the app's budget (default 10s here vs a ~25s app
+// timeout → 20s worst case, with headroom). Configurable via
+// RAZORPAY_HTTP_TIMEOUT_MS.
+export const RAZORPAY_TIMEOUT_MS = (() => {
+  const n = parseInt(process.env.RAZORPAY_HTTP_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(n) && n >= 1000 ? n : 10_000;
+})();
+
+export class RazorpayTimeoutError extends Error {
+  constructor(operation: string, ms: number) {
+    super(`Razorpay ${operation} timed out after ${ms}ms`);
+    this.name = "RazorpayTimeoutError";
+  }
+}
+
+/**
+ * Reject if `p` doesn't settle within `ms`. The underlying SDK request may
+ * still finish in the background — its result is simply ignored — but the
+ * caller is freed to respond promptly. Wraps every outbound Razorpay call.
+ * On the /verify path a timeout surfaces as an INDETERMINATE result (the
+ * money may have been captured), so the row is left recoverable rather than
+ * marked failed — see ensureCaptured() in routes/dealer-payments.ts.
+ */
+function withTimeout<T>(
+  operation: string,
+  p: Promise<T>,
+  ms: number = RAZORPAY_TIMEOUT_MS
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new RazorpayTimeoutError(operation, ms)),
+      ms
+    );
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
 export function getRazorpayKeyId(): string {
   if (!keyId) throw new Error("Razorpay not configured");
   return keyId;
@@ -68,18 +124,21 @@ export async function createRazorpayOrder(
 ): Promise<RazorpayOrder> {
   const client = await getClient();
   const amountPaise = Math.round(params.amountInRupees * 100);
-  const order = await client.orders.create({
-    amount: amountPaise,
-    currency: "INR",
-    receipt: params.receipt,
-    notes: params.notes,
-    // Auto-capture authorized payments. Belt-and-suspenders only: the
-    // verify endpoints ALSO fetch the live payment status and capture
-    // explicitly, so confirmation never depends on the account-level
-    // capture setting (which is the real source of "authorized but not
-    // captured" payments looking 'paid').
-    payment_capture: 1,
-  });
+  const order: any = await withTimeout(
+    "orders.create",
+    client.orders.create({
+      amount: amountPaise,
+      currency: "INR",
+      receipt: params.receipt,
+      notes: params.notes,
+      // Auto-capture authorized payments. Belt-and-suspenders only: the
+      // verify endpoints ALSO fetch the live payment status and capture
+      // explicitly, so confirmation never depends on the account-level
+      // capture setting (which is the real source of "authorized but not
+      // captured" payments looking 'paid').
+      payment_capture: 1,
+    })
+  );
   return {
     id: order.id,
     amount: typeof order.amount === "string" ? parseInt(order.amount, 10) : order.amount,
@@ -124,11 +183,14 @@ export async function createRazorpayRefund(
 ): Promise<RazorpayRefund> {
   const client = await getClient();
   const amountPaise = Math.round(params.amountInRupees * 100);
-  const refund = await client.payments.refund(params.paymentId, {
-    amount: amountPaise,
-    speed: "normal",
-    notes: params.notes,
-  });
+  const refund: any = await withTimeout(
+    "payments.refund",
+    client.payments.refund(params.paymentId, {
+      amount: amountPaise,
+      speed: "normal",
+      notes: params.notes,
+    })
+  );
   return {
     id: refund.id,
     status: refund.status,
@@ -147,7 +209,7 @@ export async function fetchRazorpayRefund(
   refundId: string
 ): Promise<{ id: string; status: string; error_description: string | null }> {
   const client = await getClient();
-  const refund = await client.refunds.fetch(refundId);
+  const refund: any = await withTimeout("refunds.fetch", client.refunds.fetch(refundId));
   return {
     id: refund.id,
     status: refund.status,
@@ -172,7 +234,7 @@ export async function fetchRazorpayPayment(paymentId: string): Promise<{
   error_description: string | null;
 }> {
   const client = await getClient();
-  const p = await client.payments.fetch(paymentId);
+  const p: any = await withTimeout("payments.fetch", client.payments.fetch(paymentId));
   return {
     id: p.id,
     order_id: (p as { order_id?: string | null }).order_id ?? null,
@@ -202,7 +264,10 @@ export async function fetchRazorpayOrderPayments(orderId: string): Promise<
   }>
 > {
   const client = await getClient();
-  const res = await client.orders.fetchPayments(orderId);
+  const res = await withTimeout(
+    "orders.fetchPayments",
+    client.orders.fetchPayments(orderId)
+  );
   const items = ((res as { items?: unknown[] })?.items ?? []) as Array<
     Record<string, unknown>
   >;
@@ -228,7 +293,10 @@ export async function captureRazorpayPayment(
   currency = "INR"
 ): Promise<{ status: string }> {
   const client = await getClient();
-  const p = await client.payments.capture(paymentId, amountPaise, currency);
+  const p: any = await withTimeout(
+    "payments.capture",
+    client.payments.capture(paymentId, amountPaise, currency)
+  );
   return { status: p.status };
 }
 
