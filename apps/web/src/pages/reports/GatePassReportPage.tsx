@@ -204,13 +204,17 @@ export default function GatePassReportPage() {
           rows.push([
             r.code, r.name, c.sl, c.code, c.name,
             ...acrossProducts.map(p => c.acrossQty[p.id] ?? 0),
-            c.othersText, c.crates, c.netAmount,
+            c.othersText,
+            fmtCratePkts(c.crates, c.cratePktPlus ?? 0, c.cratePktMinus ?? 0) || String(c.crates),
+            c.netAmount,
           ]);
         }
         rows.push([
           r.code, `${r.name} TOTAL`, "", "", "",
           ...acrossProducts.map(p => r.totals.acrossQty[p.id] ?? 0),
-          r.totals.othersQty, r.totals.crates, r.totals.netAmount,
+          r.totals.othersQty,
+          fmtCratePkts(r.totals.crates, r.totals.cratePktPlus ?? 0, r.totals.cratePktMinus ?? 0) || String(r.totals.crates),
+          r.totals.netAmount,
         ]);
       }
       return toCsv(rows);
@@ -368,7 +372,7 @@ function GatePassRowsPage({
                     );
                   })}
               </td>
-              <td className="num">{fmtNum(c.crates)}</td>
+              <td className="num">{fmtCratePkts(c.crates, c.cratePktPlus ?? 0, c.cratePktMinus ?? 0) || fmtNum(c.crates)}</td>
               <td className="num">{fmtINR(c.netAmount)}</td>
             </tr>
           ))}
@@ -385,7 +389,7 @@ function GatePassRowsPage({
               <td className="num">
                 Total Qty (Pkts): {fmtNum(route.totals.totalAllQty)}
               </td>
-              <td className="num">{fmtNum(route.totals.crates)}</td>
+              <td className="num">{fmtCratePkts(route.totals.crates, route.totals.cratePktPlus ?? 0, route.totals.cratePktMinus ?? 0) || fmtNum(route.totals.crates)}</td>
               <td className="num">{fmtINR(route.totals.netAmount)}</td>
             </tr>
           )}

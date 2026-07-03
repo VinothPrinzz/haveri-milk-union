@@ -531,9 +531,14 @@ function ModifyTab() {
 
   const [indentId, setIndentId] = useState(initialId);
   const [loadedId, setLoadedId] = useState<string | null>(null);
+  // `uid` is a stable client key so rows don't remount when a new line's
+  // product is picked; `isNew` flags a line the admin added in this edit
+  // (indents only) so it renders a product picker instead of static text.
   const [items, setItems] = useState<Array<{
+    uid: string;
     productId: string; productName: string; quantity: number;
     unitPrice: number; gstPercent: number;
+    isNew?: boolean;
   }>>([]);
   const [meta, setMeta] = useState<{
     dealerName?: string; status?: string; createdAt?: string;
@@ -549,6 +554,14 @@ function ModifyTab() {
   const [onlinePayment, setOnlinePayment] = useState<{ refundable: number } | null>(null);
   // When a downward edit can go to bank OR balance, we ask the admin first.
   const [refundPrompt, setRefundPrompt] = useState(false);
+
+  // Product master — powers the picker for NEW lines. Indents only: the
+  // /orders/:id/items endpoint reprices every line from the product master,
+  // accepts arbitrary products, AND rebuilds the whole line set — so a line
+  // dropped from the payload is deleted. Direct sales reject add/swap and
+  // leave omitted lines untouched, so add/remove is gated to indents.
+  const { data: products = [] } = useQuery({ queryKey: ["products"], queryFn: fetchProducts });
+  const canEditItems = sourceType === "order";
 
   // ── Endpoint helpers ───────────────────────────────────────────────
   const getPath   = (id: string) =>
@@ -575,6 +588,7 @@ function ModifyTab() {
         setOnlinePayment(null);
         // direct_sale_items query uses raw pgClient → snake_case keys
         setItems((resp.items ?? []).map((it: any) => ({
+          uid:         rid(),
           productId:   String(it.product_id),
           productName: String(it.product_name ?? ""),
           quantity:    Number(it.quantity),
@@ -595,6 +609,7 @@ function ModifyTab() {
         setCredit(resp.credit ?? null);
         setOnlinePayment(resp.onlinePayment ?? null);
         setItems((resp.items ?? []).map((it: any) => ({
+          uid:         rid(),
           productId:   String(it.productId),
           productName: String(it.productName ?? ""),
           quantity:    Number(it.quantity),
@@ -643,6 +658,47 @@ function ModifyTab() {
     return { sub, gst, total: sub + gst };
   }, [items]);
 
+  // ── Add-product support (indents only) ─────────────────────────────────
+  // A new line starts empty; picking a product fills rate + GST from the
+  // master (matching what /orders/:id/items will charge). We block picking a
+  // product already on the order — the endpoint replaces the whole item set,
+  // so a duplicate line would double-count stock and totals.
+  const selectedIds = useMemo(
+    () => new Set(items.map(i => i.productId).filter(Boolean)),
+    [items],
+  );
+  const productOptsFor = (ownId: string): F9Option[] =>
+    products
+      .filter(p => p.id === ownId || !selectedIds.has(p.id))
+      .map(p => ({ value: p.id, label: p.name, sublabel: p.code }));
+  const addProductRow = () =>
+    setItems(arr => [
+      ...arr,
+      { uid: rid(), productId: "", productName: "", quantity: 0, unitPrice: 0, gstPercent: 0, isNew: true },
+    ]);
+  const removeRow = (uid: string) =>
+    setItems(arr => {
+      const next = arr.filter(r => r.uid !== uid);
+      // An indent must keep at least one product line.
+      if (!next.some(r => r.productId)) {
+        toast.error("An indent must have at least one product");
+        return arr;
+      }
+      return next;
+    });
+  const pickProduct = (uid: string, productId: string | null) =>
+    setItems(arr => arr.map(row => {
+      if (row.uid !== uid) return row;
+      const p = products.find(x => x.id === productId);
+      return {
+        ...row,
+        productId:   productId ?? "",
+        productName: p?.name ?? "",
+        unitPrice:   p ? (parseFloat(String(p.basePrice ?? 0)) || 0) : 0,
+        gstPercent:  p ? (parseFloat(String(p.gstPercent ?? 0)) || 0) : 0,
+      };
+    }));
+
   // ── Finance impact (credit indents only) ──────────────────────────────
   // difference > 0 → extra amount to DEBIT; < 0 → amount to CREDIT back.
   const difference       = totals.total - originalTotal;
@@ -670,6 +726,12 @@ function ModifyTab() {
 
   function commitSave() {
     if (!loadedId || save.isPending || overBalance) return;
+    // A new line with a quantity but no product would be silently dropped —
+    // flag it so the admin either picks a product or removes the row.
+    if (items.some(i => i.isNew && i.quantity > 0 && !i.productId)) {
+      toast.error("Select a product for the new line, or remove it");
+      return;
+    }
     if (canChooseRefund) { setRefundPrompt(true); return; }
     save.mutate(undefined);
   }
@@ -689,7 +751,7 @@ function ModifyTab() {
 
   const titleSubtitle = sourceType === "direct-sale"
     ? "Modify a sale (gate-pass, cash, VIP, employee). Only quantities can be updated."
-    : "Modify an indent. Only quantities can be updated.";
+    : "Modify an indent — edit quantities, add or remove products.";
 
   return (
     <div className="flex flex-col h-full">
@@ -804,9 +866,44 @@ function ModifyTab() {
                 </thead>
                 <tbody>
                   {items.map((it, i) => (
-                    <tr key={`${it.productId}-${i}`}>
+                    <tr key={it.uid}>
                       <td className="num">{i + 1}</td>
-                      <td className="font-medium">{it.productName || "—"}</td>
+                      <td className="font-medium">
+                        {it.isNew ? (
+                          <div className="flex items-center gap-1.5">
+                            <F9SearchSelect
+                              className="flex-1"
+                              value={it.productId || null}
+                              onChange={(v) => pickProduct(it.uid, v)}
+                              options={productOptsFor(it.productId)}
+                              placeholder="Select product…"
+                              modalTitle="Add product"
+                            />
+                            <Button
+                              variant="ghost" size="icon"
+                              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                              onClick={() => removeRow(it.uid)}
+                              title="Remove line"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ) : canEditItems ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <span>{it.productName || "—"}</span>
+                            <Button
+                              variant="ghost" size="icon"
+                              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                              onClick={() => removeRow(it.uid)}
+                              title="Remove product from indent"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ) : (
+                          it.productName || "—"
+                        )}
+                      </td>
                       <td>
                         <Input
                           className="erp-input num text-right"
@@ -837,6 +934,13 @@ function ModifyTab() {
                 </tfoot>
               </table>
             </div>
+            {canEditItems && (
+              <div className="mt-2">
+                <Button variant="outline" size="sm" className="h-8" onClick={addProductRow}>
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Add product
+                </Button>
+              </div>
+            )}
           </div>
 
           <FormFooter>
