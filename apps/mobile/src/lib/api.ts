@@ -7,7 +7,9 @@ import { Platform } from "react-native";
  *   - Platform-aware token storage (SecureStore on native, localStorage on web)
  *   - Bearer-token injection
  *   - Refresh-token rotation on 401 (single-flight, no loops)
- *   - 8-second request timeout via AbortController
+ *   - Per-request timeout via AbortController (default 15s)
+ *   - Opt-in retry on pure network failure with escalating timeouts
+ *     (RequestOptions.networkRetries) — for slow rural connections
  *   - Proper Error subclass (ApiError) so stack traces and error boundaries work
  *
  * Backend endpoints (verified against /mnt/project/api.txt):
@@ -61,6 +63,39 @@ export const API_BASE = getBaseUrl();
 // requests can override this via RequestOptions.timeoutMs — login uses a
 // longer budget since it's the critical first request over a cold link.
 const TIMEOUT_MS = 15000;
+// Ceiling for the escalating per-attempt timeout used by networkRetries.
+const MAX_TIMEOUT_MS = 30000;
+// Base pause between retry attempts (multiplied by the attempt number).
+const RETRY_BACKOFF_MS = 1000;
+
+// Connection warm-up ----------------------------------------------------
+//
+// A cold HTTPS connection costs DNS + TCP + TLS — several round trips
+// before the first byte of a real request is sent. On a weak rural signal
+// that handshake alone can eat many seconds (or fail), which is why login
+// used to die with "Connection Problem" while WhatsApp (persistent socket,
+// no per-request handshake) kept working. Firing a tiny health-check as
+// soon as the splash/login screen appears performs that handshake while
+// the dealer is still typing, so the actual login POST reuses the already
+// open connection (fetch on Android pools keep-alive connections via
+// OkHttp). Fire-and-forget: failures are irrelevant — the real request
+// will simply open its own connection like before.
+
+let lastWarmUpAt = 0;
+
+export function warmUpConnection(): void {
+  const now = Date.now();
+  if (now - lastWarmUpAt < 60_000) return; // at most once a minute
+  lastWarmUpAt = now;
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 10_000);
+  fetch(`${API_BASE}/api/v1/health`, { signal: controller.signal })
+    .catch(() => {
+      // Ignore — this is purely an opportunistic TLS warm-up.
+    })
+    .finally(() => clearTimeout(t));
+}
 
 // Error type -----------------------------------------------------------
 
@@ -86,7 +121,19 @@ const ACCESS_KEY  = "hmu_access_token";
 const REFRESH_KEY = "hmu_refresh_token";
 
 let accessToken: string | null = null;
-let refreshing: Promise<boolean> | null = null;
+
+/**
+ * Refresh outcome. The distinction matters on slow connections:
+ *   "refreshed" — new tokens saved, retry the original request.
+ *   "invalid"   — the server rejected the refresh token; session is dead.
+ *   "network"   — timeout / no connectivity; the session may be FINE.
+ *                 Callers must surface this as a network error (status 0),
+ *                 never as a 401 — otherwise a flaky signal logs the
+ *                 dealer out even though their refresh token is valid.
+ */
+type RefreshResult = "refreshed" | "invalid" | "network";
+
+let refreshing: Promise<RefreshResult> | null = null;
 
 export async function loadToken(): Promise<void> {
   try {
@@ -120,40 +167,51 @@ export async function clearTokens(): Promise<void> {
 }
 
 /** Single-flight refresh — concurrent 401s share one refresh call. */
-async function refreshAccessToken(): Promise<boolean> {
+async function refreshAccessToken(): Promise<RefreshResult> {
   if (refreshing) return refreshing;
 
-  refreshing = (async () => {
+  refreshing = (async (): Promise<RefreshResult> => {
     try {
       const store = await getStorage();
       const refreshToken = await store.getItemAsync(REFRESH_KEY);
-      if (!refreshToken) return false;
+      if (!refreshToken) return "invalid";
 
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-      const res = await fetch(`${API_BASE}/api/v1/auth/dealer/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken }),
-        signal: controller.signal,
-      });
-      clearTimeout(t);
+      let res: Response;
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        try {
+          res = await fetch(`${API_BASE}/api/v1/auth/dealer/refresh`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refreshToken }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(t);
+        }
+      } catch {
+        // Timeout or no connectivity. The refresh token is very likely
+        // still valid — do NOT clear it. Clearing here was silently
+        // logging dealers out whenever a refresh raced a weak signal.
+        return "network";
+      }
 
       if (!res.ok) {
         await clearTokens();
-        return false;
+        return "invalid";
       }
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       if (!data?.accessToken || !data?.refreshToken) {
         await clearTokens();
-        return false;
+        return "invalid";
       }
       await saveTokens(data.accessToken, data.refreshToken);
-      return true;
+      return "refreshed";
     } catch {
-      await clearTokens();
-      return false;
+      // Unexpected local failure (storage). Treat as transient — never
+      // destroy a possibly-valid session over it.
+      return "network";
     } finally {
       setTimeout(() => { refreshing = null; }, 0);
     }
@@ -172,6 +230,18 @@ type RequestOptions = {
   skipAuthRetry?: boolean;
   /** Override the default network timeout (ms) for this request. */
   timeoutMs?: number;
+  /**
+   * Extra attempts on PURE network failure (ApiError status 0 — timeout or
+   * no connectivity). HTTP errors (401/500/…) are never retried here.
+   * Each retry waits a short backoff, then runs with a 1.5× longer
+   * timeout (capped at MAX_TIMEOUT_MS): aborting a stalled socket and
+   * opening a fresh one usually beats waiting on the dead one.
+   *
+   * ONLY set this on requests that are safe to repeat (GETs, login).
+   * Never on order placement / payments — a timed-out request may still
+   * have been processed by the server.
+   */
+  networkRetries?: number;
 };
 
 function buildUrl(path: string, params?: RequestOptions["params"]): string {
@@ -217,9 +287,35 @@ async function parseBody(res: Response): Promise<unknown> {
 /**
  * Primary request function. All typed helpers below call this.
  *
+ * Runs the request once via apiFetchOnce; if opts.networkRetries > 0 and
+ * the failure was a pure network error (status 0), retries with backoff
+ * and an escalating per-attempt timeout.
+ *
  * @throws {ApiError} on non-2xx or network/timeout error
  */
 export async function apiFetch<T = unknown>(
+  path: string,
+  opts: RequestOptions = {}
+): Promise<T> {
+  const { networkRetries = 0, ...rest } = opts;
+  let attemptTimeout = rest.timeoutMs ?? TIMEOUT_MS;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await apiFetchOnce<T>(path, { ...rest, timeoutMs: attemptTimeout });
+    } catch (err) {
+      const isNetworkError = err instanceof ApiError && err.status === 0;
+      if (!isNetworkError || attempt >= networkRetries) throw err;
+
+      // Brief backoff (1s, 2s, …) — lets a congested radio link breathe —
+      // then try again on a fresh connection with a longer budget.
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
+      attemptTimeout = Math.min(Math.round(attemptTimeout * 1.5), MAX_TIMEOUT_MS);
+    }
+  }
+}
+
+async function apiFetchOnce<T = unknown>(
   path: string,
   opts: RequestOptions = {}
 ): Promise<T> {
@@ -263,8 +359,16 @@ export async function apiFetch<T = unknown>(
 
   // 401 + we have a token -> try one refresh
   if (res.status === 401 && accessToken && !skipAuthRetry) {
-    const refreshed = await refreshAccessToken();
-    if (refreshed && accessToken) {
+    const refreshResult = await refreshAccessToken();
+
+    // Refresh couldn't reach the server — the session may well be alive.
+    // Surface a network error (status 0), NOT the 401: the global 401
+    // handler force-logs-out, and a weak signal must never do that.
+    if (refreshResult === "network") {
+      throw new ApiError(0, null, "Network error");
+    }
+
+    if (refreshResult === "refreshed" && accessToken) {
       headers.Authorization = `Bearer ${accessToken}`;
 
       // Use the SAME requestBody logic here

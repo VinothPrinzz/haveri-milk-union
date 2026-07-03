@@ -183,10 +183,18 @@ export const useAuthStore = create<AuthState>()(
       login: async (username: string, password: string) => {
         set({ isLoading: true });
         try {
-          // Give login a longer timeout than the default: it's the first
-          // request over a cold connection (DNS + TLS + round-trip) and a
-          // dealer on slow rural internet must be able to sign in. Uses the
-          // base api() callable so we can pass a per-request timeoutMs.
+          // Login is the critical first request over a cold rural link, so
+          // it gets RETRIES, not just a long timeout. One do-or-die 25s
+          // attempt punished slow-but-working connections: the request was
+          // aborted at the cliff and the dealer saw "Connection Problem"
+          // even though a retry would have succeeded. Now: 3 attempts
+          // (15s → 22.5s → 30s) with backoff — slow internet feels slow,
+          // but signs in; it no longer hard-fails.
+          //
+          // Retrying login is safe: a duplicate success just inserts an
+          // extra refresh-token row server-side, and a 401 (wrong
+          // credentials) is an HTTP error, which networkRetries never
+          // retries.
           const res = await api<{
             accessToken: string;
             refreshToken: string;
@@ -194,7 +202,8 @@ export const useAuthStore = create<AuthState>()(
           }>("/api/v1/auth/dealer/login", {
             method: "POST",
             body: { username, password },
-            timeoutMs: 25000,
+            timeoutMs: 15000,
+            networkRetries: 2,
           });
 
           await saveTokens(res.accessToken, res.refreshToken);
