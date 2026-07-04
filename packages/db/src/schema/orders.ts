@@ -8,6 +8,7 @@ import {
   date,
   boolean,
   index,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import {
@@ -84,6 +85,24 @@ export const orderItems = pgTable("order_items", {
 }, (table) => [
   index("idx_order_items_order").on(table.orderId),
   index("idx_order_items_product").on(table.productId),
+]);
+
+// ── Order Idempotency Keys ──
+// One row per client-supplied idempotency key on POST /api/v1/orders. A retry
+// carrying a seen (dealer_id, key) returns the recorded order instead of
+// creating a duplicate — dealers on flaky connections retry after the commit
+// succeeded but the response was lost. Lives in its own table because orders
+// is partitioned and can't carry this unique constraint (migration 0058).
+export const orderIdempotencyKeys = pgTable("order_idempotency_keys", {
+  dealerId: uuid("dealer_id")
+    .notNull()
+    .references(() => dealers.id, { onDelete: "cascade" }),
+  idempotencyKey: text("idempotency_key").notNull(),
+  orderId: uuid("order_id").notNull(), // references orders(id) — no FK because orders is partitioned
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.dealerId, table.idempotencyKey] }),
+  index("idx_order_idem_created").on(table.createdAt),
 ]);
 
 // ── Cancellation Requests ──

@@ -184,6 +184,13 @@ export interface PlaceOrderRequest {
   paymentMode: PaymentMode;
   paymentReference?: string;
   notes?: string;
+  /**
+   * Client-generated key, unique per submission (see newIdempotencyKey in
+   * lib/utils). The server dedupes on it: a retry after a lost response
+   * returns the already-created order instead of placing a duplicate —
+   * which is what makes retrying this POST safe at all.
+   */
+  idempotencyKey?: string;
 }
 
 export interface PlaceOrderResponse {

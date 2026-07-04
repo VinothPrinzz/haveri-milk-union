@@ -76,9 +76,16 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
       // most likely slow/unavailable internet, so tell the user that instead
       // of implying their username or password is wrong.
       if (err instanceof ApiError && err.status === 0) {
+        // Never a dead end: login() already retried 4 times with backoff,
+        // but on a very weak link the right move is to keep going, not to
+        // give up — so the alert's primary action resumes the attempt.
         Alert.alert(
-          "Connection Problem",
-          "We tried several times but could not reach the server. Your internet seems too weak right now — please move to better signal or try again in a moment."
+          "Slow Connection",
+          "We couldn't reach the server yet — your internet seems very weak right now. We can keep trying.",
+          [
+            { text: "Keep trying", onPress: () => handleLogin() },
+            { text: "Cancel", style: "cancel" },
+          ]
         );
       } else {
         const msg =
