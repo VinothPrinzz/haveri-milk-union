@@ -71,6 +71,8 @@ export interface MinLine {
   unit?: string | null;
   packSize?: number | string | null;
   name?: string | null;
+  /** Exempt from the minimum (e.g. the subsidy HTM 1000ML SKU). Never counts. */
+  exempt?: boolean;
 }
 
 export interface CategoryShortfall {
@@ -87,6 +89,7 @@ export function findCategoryMinShortfalls(lines: MinLine[]): CategoryShortfall[]
   let milkLitres = 0;
   for (const l of lines) {
     if (!(l.quantity > 0)) continue;
+    if (l.exempt) continue; // subsidy milk etc. — never counts toward the minimum
     const cat = (l.categoryName ?? "").trim().toLowerCase();
     const m = unitMeasure(l.unit, l.packSize, l.name);
     if (cat === "milk") milkLitres += l.quantity * m.litres;

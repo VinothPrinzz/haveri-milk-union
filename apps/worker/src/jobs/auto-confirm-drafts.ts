@@ -163,6 +163,10 @@ interface WorkerCategoryShortfall { category: "milk"; total: number; min: number
 
 /** Milk category in this order whose L total is below the minimum. */
 async function workerCategoryMinShortfalls(orderId: string): Promise<WorkerCategoryShortfall[]> {
+  // The subsidy HTM 1000ML SKU (code PD0191S, migration 0056) is EXEMPT from
+  // the milk minimum — it's a half-price scheme line, so a subsidy-milk-only
+  // standing indent still auto-confirms. Mirror of MIN_QTY_EXEMPT_CODES in
+  // apps/api/src/lib/min-order-qty.ts (the worker is its own package).
   const rows = await sql`
     SELECT c.name AS category, oi.quantity AS quantity,
            p.unit AS unit, p.pack_size AS pack_size, p.name AS name
@@ -172,6 +176,7 @@ async function workerCategoryMinShortfalls(orderId: string): Promise<WorkerCateg
      WHERE oi.order_id = ${orderId}::uuid
        AND oi.quantity > 0
        AND lower(c.name) = 'milk'
+       AND COALESCE(p.code, '') <> 'PD0191S'
   `;
   let milkLitres = 0;
   for (const r of rows as any[]) {

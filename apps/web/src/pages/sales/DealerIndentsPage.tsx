@@ -186,6 +186,7 @@ export default function DealerIndentsPage() {
             categoryName: it.categoryName,
             unit: it.unit,
             quantity: template[it.productId]?.qty ?? 0,
+            exempt: it.isSubsidy,
           }))
       ),
     [templateQuery.data, template]
@@ -200,6 +201,7 @@ export default function DealerIndentsPage() {
           categoryName: it.categoryName,
           unit: it.unit,
           quantity: draftQty[it.productId] ?? 0,
+          exempt: it.isSubsidy,
         }))
       ),
     [draft, draftQty]
@@ -293,7 +295,8 @@ export default function DealerIndentsPage() {
                 <div>
                   <h3 className="font-semibold text-[14px]">Standing Indent Template</h3>
                   <p className="text-[12px] text-muted-foreground">
-                    Per-product default quantities the nightly worker materializes into drafts
+                    Default daily quantities — auto-placed &amp; confirmed at each route's warning time.
+                    Includes subsidy milk.
                   </p>
                 </div>
                 <Button
@@ -338,6 +341,11 @@ export default function DealerIndentsPage() {
                           <td>
                             {it.productName}
                             <span className="text-muted-foreground"> / {it.unit}</span>
+                            {it.isSubsidy && (
+                              <span className="ml-2 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                                Subsidy
+                              </span>
+                            )}
                             {!it.productAvailable && (
                               <span className="ml-2 text-[11px] text-destructive">
                                 unavailable
