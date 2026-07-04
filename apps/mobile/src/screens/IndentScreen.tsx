@@ -54,7 +54,7 @@ import {
   usePatchDraft,
 } from "../hooks/useDailyDraft";
 import { useOrderPayment } from "../hooks/useOrderPayment";
-import { RazorpayCancelled } from "../lib/razorpay";
+import { PaymentPending, RazorpayCancelled } from "../lib/razorpay";
 import { snapQtyToMin } from "../lib/minOrderQty";
 import type { DraftItem, OrderStatus } from "../lib/types";
 
@@ -119,6 +119,12 @@ export default function IndentScreen({
         }
       } catch (err) {
         if (cancelled || err instanceof RazorpayCancelled) return;
+        // Money likely taken but the server couldn't confirm in time — the
+        // backend confirms it automatically. NOT a failure.
+        if (err instanceof PaymentPending) {
+          Alert.alert("Confirming your payment", err.message);
+          return;
+        }
         Alert.alert(
           "Payment failed",
           err instanceof Error ? err.message : "Please try again."

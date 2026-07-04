@@ -4,9 +4,11 @@ import { qk } from "../lib/queryKeys";
 import {
   openRazorpayCheckout,
   prefillFromDealer,
+  PaymentPending,
   RazorpayCancelled,
   RazorpayFailed,
 } from "../lib/razorpay";
+import { verifyPayment } from "../lib/payments";
 import { useAuthStore } from "../store/auth";
 
 /**
@@ -49,8 +51,11 @@ export function useOrderPayment(orderId: string) {
         prefill: prefillFromDealer(),
       });
 
-      // 3. Verify server-side — also flips order to 'confirmed'
-      const verified = await api.post<{
+      // 3. Verify server-side — also flips order to 'confirmed'.
+      // Throws PaymentPending on 202/timeout (money may be captured, the
+      // backend will auto-confirm) — callers must show "confirming…",
+      // never "failed" or "confirmed".
+      const verified = await verifyPayment<{
         ok: true;
         alreadyApplied: boolean;
         orderId: string | null;
@@ -88,4 +93,4 @@ export function useOrderPayment(orderId: string) {
   });
 }
 
-export { RazorpayCancelled, RazorpayFailed };
+export { PaymentPending, RazorpayCancelled, RazorpayFailed };

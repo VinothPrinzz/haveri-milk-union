@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { colors, fonts } from "../lib/theme";
 import {
+  PaymentPending,
   RazorpayCancelled,
   RazorpayFailed,
   useCreditTopUp,
@@ -108,6 +109,14 @@ export default function TopUpSheet({
       if (err instanceof RazorpayCancelled) return;
       if (err instanceof RazorpayFailed) {
         Alert.alert("Payment failed", err.description || "Please try again.");
+        return;
+      }
+      // Money likely taken but the server couldn't confirm in time — the
+      // backend credits it automatically. NOT a failure; close the sheet so
+      // the dealer doesn't retry and pay twice.
+      if (err instanceof PaymentPending) {
+        Alert.alert("Confirming your top-up", err.message);
+        onClose();
         return;
       }
       Alert.alert(
