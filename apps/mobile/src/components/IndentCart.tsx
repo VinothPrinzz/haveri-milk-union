@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +16,7 @@ import { useOrderPayment } from "../hooks/useOrderPayment";
 import { PaymentPending, RazorpayCancelled, RazorpayFailed } from "../lib/razorpay";
 import { uiPaymentToBackend, type UiPaymentMethod } from "../lib/types";
 import { ApiError } from "../lib/api";
+import { newIdempotencyKey } from "../lib/utils";
 import {
   findCategoryMinShortfalls,
   categoryMinMessage,
@@ -98,6 +99,14 @@ export default function IndentCart({
   const placeOrder = usePlaceOrder();
   const [selectedPay, setSelectedPay] = useState<UiPaymentMethod>("upi");
 
+  // Idempotency key for POST /orders. Held in a ref so it survives across the
+  // automatic network retries AND a manual re-tap after "Order Failed": if the
+  // first attempt actually committed server-side but the response was lost,
+  // the retry replays the original order instead of duplicating it. Only
+  // rotated after mutateAsync resolves — at that point the order exists and
+  // the next submission is a genuinely new order.
+  const idemKeyRef = useRef(newIdempotencyKey());
+
   // Razorpay pay-now plumbing for online payments.
   const [payOrderId, setPayOrderId] = useState<string | null>(null);
   const orderPayment = useOrderPayment(payOrderId ?? "");
@@ -136,7 +145,11 @@ export default function IndentCart({
       const result = await placeOrder.mutateAsync({
         items: items.map((i) => ({ productId: i.id, quantity: i.quantity })),
         paymentMode: backendMode,
+        idempotencyKey: idemKeyRef.current,
       });
+      // Order committed (created or replayed) — rotate the key so the next
+      // checkout isn't deduped against this one.
+      idemKeyRef.current = newIdempotencyKey();
 
       if (backendMode === "upi") {
         // Server created the order as 'payment_required'. Don't clear the
