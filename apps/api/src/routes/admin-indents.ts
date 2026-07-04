@@ -45,6 +45,15 @@ import {
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
 const uuid = z.string().uuid();
 
+// The half-price HTM 1000ML SKU seeded by migration 0056. It carries
+// make_zero_in_indents = true so it stays hidden from the DEALER's own
+// standing-indent picker (the subsidy scheme is admin-operated). Admins,
+// however, may mark it as a standing indent on a dealer's behalf here, so
+// the endpoints below whitelist it back into the eligible set. Once a
+// standing row exists, the nightly materialize + warning-time auto-confirm
+// place it on the dealer's order at its 50% base_price like any other line.
+const SUBSIDY_PRODUCT_CODE = "PD0191S";
+
 function adminUserId(request: FastifyRequest): string {
   const a = (request as unknown as { admin?: { userId: string } }).admin;
   if (!a?.userId) throw new Error("adminAuth middleware not set");
@@ -112,6 +121,8 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
           p.base_price::numeric          AS "basePrice",
           p.gst_percent::numeric         AS "gstPercent",
           p.available                   AS "productAvailable",
+          p.code                        AS "code",
+          (p.code = ${SUBSIDY_PRODUCT_CODE}) AS "isSubsidy",
           c.name                        AS "categoryName",
           COALESCE(dsi.default_qty, 0)   AS "defaultQty",
           COALESCE(dsi.active, false)    AS "active",
@@ -123,7 +134,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         LEFT JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
           AND p.available = true
-          AND p.make_zero_in_indents = false
+          AND (p.make_zero_in_indents = false OR p.code = ${SUBSIDY_PRODUCT_CODE})
         ORDER BY p.sort_order, p.name
       `;
 
@@ -164,7 +175,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         SELECT id::text FROM products
          WHERE id = ANY(${productIds}::uuid[])
            AND deleted_at IS NULL
-           AND make_zero_in_indents = false
+           AND (make_zero_in_indents = false OR code = ${SUBSIDY_PRODUCT_CODE})
       `;
       const eligibleSet = new Set(eligible.map((r: any) => r.id));
       const ineligible = productIds.filter((id) => !eligibleSet.has(id));
@@ -277,6 +288,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
             p.icon                   AS "icon",
             p.image_url              AS "imageUrl",
             p.unit                   AS "unit",
+            (p.code = ${SUBSIDY_PRODUCT_CODE}) AS "isSubsidy",
             c.name                   AS "categoryName"
           FROM order_items oi
           LEFT JOIN products p ON p.id = oi.product_id
@@ -321,6 +333,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
           p.image_url             AS "imageUrl",
           p.base_price::numeric   AS "unitPrice",
           p.gst_percent::numeric  AS "gstPercent",
+          (p.code = ${SUBSIDY_PRODUCT_CODE}) AS "isSubsidy",
           c.name                  AS "categoryName"
         FROM dealer_standing_indents dsi
         JOIN products p ON p.id = dsi.product_id
@@ -351,6 +364,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
           icon: r.icon,
           imageUrl: r.imageUrl,
           unit: r.unit,
+          isSubsidy: r.isSubsidy ?? false,
           categoryName: r.categoryName ?? null,
         };
       });

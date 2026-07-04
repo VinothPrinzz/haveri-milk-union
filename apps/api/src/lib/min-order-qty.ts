@@ -26,6 +26,14 @@ export const CATEGORY_MIN = {
 /** Category names (compared case-insensitively) the minimum applies to. */
 export const MIN_QTY_CATEGORY_NAMES = ["milk"] as const;
 
+/**
+ * Product codes EXEMPT from the category minimum. The subsidy HTM 1000ML SKU
+ * (code PD0191S, migration 0056) is a half-price scheme line placed on the
+ * admin's behalf — it must neither count toward nor trigger the 12 L milk
+ * minimum, so a subsidy-milk-only standing indent still auto-confirms.
+ */
+export const MIN_QTY_EXEMPT_CODES = ["PD0191S"] as const;
+
 export type RestrictedCategory = keyof typeof CATEGORY_MIN;
 
 export interface CategoryMinViolation {
@@ -133,6 +141,7 @@ export async function findMinQtyViolations(
       JOIN categories c ON c.id = p.category_id
      WHERE p.id = ANY(${ids}::uuid[])
        AND lower(c.name) = ANY(${MIN_QTY_CATEGORY_NAMES as unknown as string[]}::text[])
+       AND COALESCE(p.code, '') <> ALL(${MIN_QTY_EXEMPT_CODES as unknown as string[]}::text[])
   `) as Array<{ id: string; name: string; unit: string | null; pack_size: string | null; category: string }>;
 
   const meta = new Map(rows.map((r) => [r.id, r]));
@@ -161,6 +170,7 @@ export async function findOrderMinQtyViolations(
      WHERE oi.order_id = ${orderId}::uuid
        AND oi.quantity > 0
        AND lower(c.name) = ANY(${MIN_QTY_CATEGORY_NAMES as unknown as string[]}::text[])
+       AND COALESCE(p.code, '') <> ALL(${MIN_QTY_EXEMPT_CODES as unknown as string[]}::text[])
   `) as Array<{ category: string; quantity: number; unit: string | null; pack_size: string | null; name: string }>;
 
   return computeShortfalls(
