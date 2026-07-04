@@ -49,7 +49,7 @@ import {
   isCreditExceededError,
 } from "../hooks/useDailyDraft";
 import { useOrderPayment } from "../hooks/useOrderPayment";
-import { RazorpayCancelled } from "../lib/razorpay";
+import { PaymentPending, RazorpayCancelled } from "../lib/razorpay";
 import type { DraftItem, OrderStatus } from "../lib/types";
 
 interface IndentCheckoutScreenProps {
@@ -199,6 +199,15 @@ export default function IndentCheckoutScreen({
         setBusy(false);
         setPayOrderId(null);
         if (err instanceof RazorpayCancelled) return; // user closed sheet
+        // Money likely taken but the server couldn't confirm in time — the
+        // backend confirms it automatically. NOT a failure: return to the
+        // Indent tab so the dealer doesn't retry and pay twice.
+        if (err instanceof PaymentPending) {
+          Alert.alert("Confirming your payment", err.message, [
+            { text: "OK", onPress: onConfirmed },
+          ]);
+          return;
+        }
         Alert.alert(
           "Payment failed",
           err instanceof Error ? err.message : "Please try again."

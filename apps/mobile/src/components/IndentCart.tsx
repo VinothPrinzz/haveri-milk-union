@@ -13,7 +13,7 @@ import { colors, fonts, shadows } from "../lib/theme";
 import { useCartStore } from "../store/cart";
 import { usePlaceOrder } from "../hooks/useOrders";
 import { useOrderPayment } from "../hooks/useOrderPayment";
-import { RazorpayCancelled, RazorpayFailed } from "../lib/razorpay";
+import { PaymentPending, RazorpayCancelled, RazorpayFailed } from "../lib/razorpay";
 import { uiPaymentToBackend, type UiPaymentMethod } from "../lib/types";
 import { ApiError } from "../lib/api";
 import {
@@ -178,6 +178,14 @@ export default function IndentCart({
             "Payment cancelled",
             "Your indent is saved but not paid. You can pay it from the Orders tab."
           );
+          return;
+        }
+        // Money likely taken but the server couldn't confirm in time — the
+        // backend confirms it automatically. NOT a failure: never tell the
+        // dealer "failed" here or they may pay twice. Cart is kept; the
+        // Orders tab will show the indent once it confirms.
+        if (err instanceof PaymentPending) {
+          Alert.alert("Confirming your payment", err.message);
           return;
         }
         Alert.alert(

@@ -24,7 +24,7 @@ import AppHeader from "../components/AppHeader";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { useMyOrders, useReorder } from "../hooks/useOrders";
-import { useOrderPayment, RazorpayCancelled, RazorpayFailed } from "../hooks/useOrderPayment";
+import { useOrderPayment, PaymentPending, RazorpayCancelled, RazorpayFailed } from "../hooks/useOrderPayment";
 import { useProducts } from "../hooks/useProducts";
 import { useMyInvoices, useInvoiceByOrder } from "../hooks/useInvoices";
 import type { Order, OrderStatus } from "../lib/types";
@@ -222,6 +222,13 @@ export default function OrdersScreen({
             "Payment Cancelled",
             "You can try paying again from this screen."
           );
+          return;
+        }
+        // Money likely taken but the server couldn't confirm in time — the
+        // backend confirms it automatically. NOT a failure: never show
+        // "failed" here or the dealer may pay twice.
+        if (err instanceof PaymentPending) {
+          Alert.alert("Confirming Your Payment", err.message);
           return;
         }
         Alert.alert(

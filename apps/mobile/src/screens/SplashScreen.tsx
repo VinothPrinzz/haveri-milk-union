@@ -16,6 +16,7 @@ import {
   fonts,
   gradients,
 } from "../lib/theme";
+import { warmUpConnection } from "../lib/api";
 
 /**
  * SplashScreen - mockup screen 01.
@@ -50,6 +51,13 @@ export default function SplashScreen({ onLogin }: SplashScreenProps) {
   // Scale-in animation for the logo ring + truck (spec 5.1)
   const scaleAnim = useRef(new Animated.Value(0.9)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
+
+  // Start the HTTPS handshake to the API now, while the dealer is looking
+  // at the splash — by the time they reach the login form the connection
+  // is already open. See warmUpConnection() in lib/api.ts.
+  useEffect(() => {
+    warmUpConnection();
+  }, []);
 
   useEffect(() => {
     Animated.parallel([

@@ -3,9 +3,11 @@ import { api } from "../lib/api";
 import {
   openRazorpayCheckout,
   prefillFromDealer,
+  PaymentPending,
   RazorpayCancelled,
   RazorpayFailed,
 } from "../lib/razorpay";
+import { verifyPayment } from "../lib/payments";
 import { useAuthStore } from "../store/auth";
 
 /**
@@ -47,8 +49,11 @@ export function useCreditTopUp() {
         prefill: prefillFromDealer(),
       });
 
-      // 3. Verify server-side
-      const verified = await api.post<{
+      // 3. Verify server-side.
+      // Throws PaymentPending on 202/timeout (money may be captured, the
+      // backend will auto-credit) — callers must show "confirming…",
+      // never "failed" or a credited balance.
+      const verified = await verifyPayment<{
         ok: true;
         alreadyApplied: boolean;
         amount: number;
@@ -73,4 +78,4 @@ export function useCreditTopUp() {
   });
 }
 
-export { RazorpayCancelled, RazorpayFailed };
+export { PaymentPending, RazorpayCancelled, RazorpayFailed };

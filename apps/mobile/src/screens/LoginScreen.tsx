@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,7 +20,7 @@ import {
   gradients,
 } from "../lib/theme";
 import { useAuthStore } from "../store/auth";
-import { ApiError } from "../lib/api";
+import { ApiError, warmUpConnection } from "../lib/api";
 
 interface LoginScreenProps {
   onSuccess: () => void;
@@ -35,13 +35,33 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [slowHint, setSlowHint] = useState(false);
   const [usernameFocused, setUsernameFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
+
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Pre-warm the HTTPS connection (DNS + TCP + TLS) while the dealer is
+  // still typing their credentials. On a weak signal that handshake alone
+  // can take many seconds — doing it now means the login POST rides an
+  // already-open connection instead of paying that cost at tap time.
+  useEffect(() => {
+    warmUpConnection();
+    return () => {
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+    };
+  }, []);
 
   const handleLogin = async () => {
     if (!username || !password || loading) return;
 
     setLoading(true);
+    setSlowHint(false);
+    // login() now retries with backoff on a slow link, so the spinner can
+    // legitimately run for a while. After 8s, tell the dealer we're still
+    // working — otherwise they assume it's broken and force-quit or mash
+    // the (disabled) button.
+    slowTimerRef.current = setTimeout(() => setSlowHint(true), 8000);
     try {
       const success = await login(username, password);
       if (success) {
@@ -58,7 +78,7 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
       if (err instanceof ApiError && err.status === 0) {
         Alert.alert(
           "Connection Problem",
-          "Your internet seems slow or unavailable. Please check your connection and try again."
+          "We tried several times but could not reach the server. Your internet seems too weak right now — please move to better signal or try again in a moment."
         );
       } else {
         const msg =
@@ -66,6 +86,8 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
         Alert.alert("Login Failed", msg);
       }
     } finally {
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+      setSlowHint(false);
       setLoading(false);
     }
   };
@@ -150,6 +172,14 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
             <Text style={styles.btnBrandText}>Login</Text>
           )}
         </TouchableOpacity>
+
+        {/* Slow-network reassurance — appears 8s into a login attempt so
+            dealers on weak signal wait instead of assuming it's broken. */}
+        {loading && slowHint && (
+          <Text style={styles.slowHint}>
+            Slow connection — still signing you in, please wait…
+          </Text>
+        )}
 
         {/* Change Password — verify current password to set a new one */}
         <TouchableOpacity
@@ -263,6 +293,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: fonts.extrabold,
     color: colors.primaryForeground,
+  },
+
+  slowHint: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    color: colors.mutedForeground,
+    textAlign: "center",
+    marginTop: 12,
+    lineHeight: 16.5,
   },
 
   forgotContainer: {

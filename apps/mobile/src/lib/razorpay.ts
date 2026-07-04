@@ -63,6 +63,25 @@ export class RazorpayFailed extends Error {
   }
 }
 
+/**
+ * Thrown when the payment likely SUCCEEDED on Razorpay's side but the server
+ * couldn't give a definitive answer in time — the /verify call returned
+ * 202 "pending", timed out, or hit a network/server error. The money may
+ * already be captured; the backend's webhook / reconciliation job will
+ * confirm the order automatically within minutes. Callers must show
+ * "confirming…" — NEVER "failed" (the dealer might pay twice) and NEVER
+ * "confirmed" (it isn't yet).
+ */
+export class PaymentPending extends Error {
+  constructor(message?: string, public orderId?: string | null) {
+    super(
+      message ??
+        "We couldn't confirm your payment instantly. If the amount was debited, it will be confirmed automatically within a few minutes — no need to pay again."
+    );
+    this.name = "PaymentPending";
+  }
+}
+
 export async function openRazorpayCheckout(
   params: RazorpayOpenParams
 ): Promise<RazorpaySuccess> {
