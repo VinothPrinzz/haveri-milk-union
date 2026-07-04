@@ -28,7 +28,7 @@ type Storage = {
 
 let storagePromise: Promise<Storage> | null = null;
 
-function getStorage(): Promise<Storage> {
+export function getStorage(): Promise<Storage> {
   if (storagePromise) return storagePromise;
 
   storagePromise = (async (): Promise<Storage> => {
@@ -135,13 +135,14 @@ type RefreshResult = "refreshed" | "invalid" | "network";
 
 let refreshing: Promise<RefreshResult> | null = null;
 
-export async function loadToken(): Promise<void> {
+export async function loadToken(): Promise<string | null> {
   try {
     const store = await getStorage();
     accessToken = await store.getItemAsync(ACCESS_KEY);
   } catch {
     accessToken = null;
   }
+  return accessToken;
 }
 
 export async function saveTokens(access: string, refresh: string): Promise<void> {

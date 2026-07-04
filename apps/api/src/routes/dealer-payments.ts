@@ -162,6 +162,120 @@ export async function ensureCaptured(opts: {
   };
 }
 
+// The worker's auto-discard reason for unpaid online orders at window close
+// (mirror of the literal in apps/worker/src/jobs/auto-confirm-drafts.ts —
+// keep the two in sync). confirmPaidOrder uses it to recognise — and revive —
+// a paid order that the worker discarded before the payment finished applying.
+export const AUTO_DISCARD_REASON =
+  "Online payment not completed before window close";
+
+/**
+ * Flip a paid-for order to 'confirmed' (idempotent) and deduct its stock.
+ *
+ * Never assume the guarded UPDATE hit a row: order HMU-2A9B
+ * (pay_T9JpSPmjHL5BBW) had its receipt committed while this confirm matched
+ * 0 rows, stayed 'payment_required', and was auto-discarded at window close
+ * as "unpaid" — with the dealer's ₹4,846 captured. So the row count is now
+ * checked and every miss is handled explicitly:
+ *   • already confirmed/dispatched/delivered → fine, another path won
+ *   • cancelled by the worker's unpaid-at-close discard → REVIVE it (the
+ *     money was captured; the discard raced the payment)
+ *   • anything else → ERROR log; finance must refund or reinstate by hand
+ */
+async function confirmPaidOrder(
+  tx: typeof pgClient,
+  orderId: string,
+  rzpPaymentId: string
+): Promise<void> {
+  // cancel_window_ends_at = LEAST(now + 30 min, route's close_time for the
+  // delivery date). Same rule as the credit-confirm path so online-paid
+  // orders are cancellable for the same window.
+  const confirmed = await tx`
+    UPDATE orders
+       SET status = 'confirmed',
+           payment_mode = 'upi',
+           payment_reference = ${rzpPaymentId},
+           confirmed_at = COALESCE(confirmed_at, now()),
+           updated_at = now(),
+           cancel_window_ends_at = LEAST(
+             now() + interval '30 minutes',
+             COALESCE(
+               (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+               now() + interval '30 minutes'
+             )
+           )
+      FROM dealers d
+      LEFT JOIN time_windows tw ON tw.route_id = d.route_id
+     WHERE orders.id = ${orderId}::uuid
+       AND orders.dealer_id = d.id
+       AND orders.status IN ('draft', 'payment_required')
+    RETURNING orders.id
+  `;
+
+  if (confirmed.count === 0) {
+    const [ord] = await tx`
+      SELECT status::text AS status, cancellation_reason AS reason
+        FROM orders WHERE id = ${orderId}::uuid
+    `;
+    if (!ord) {
+      console.error(
+        `[apply-payment] captured payment ${rzpPaymentId} references missing order ${orderId}`
+      );
+      return;
+    }
+    if (["confirmed", "dispatched", "delivered"].includes(ord.status)) {
+      return; // another path already confirmed it — nothing to do
+    }
+    if (ord.status === "cancelled" && ord.reason === AUTO_DISCARD_REASON) {
+      // The window-close worker discarded this order as "unpaid" while the
+      // payment was in fact captured (a capture landing between the worker's
+      // check and the apply). The dealer paid before close — reinstate.
+      // Zero cancel grace: the window is shut, same as worker auto-confirms.
+      const revived = await tx`
+        UPDATE orders
+           SET status = 'confirmed',
+               payment_mode = 'upi',
+               payment_reference = ${rzpPaymentId},
+               confirmed_at = COALESCE(confirmed_at, now()),
+               cancelled_at = NULL,
+               cancellation_reason = NULL,
+               cancel_window_ends_at = now(),
+               updated_at = now()
+         WHERE id = ${orderId}::uuid
+           AND status = 'cancelled'
+           AND cancellation_reason = ${AUTO_DISCARD_REASON}
+        RETURNING id
+      `;
+      if (revived.count > 0) {
+        console.warn(
+          `[apply-payment] revived order ${orderId}: it was auto-discarded at window close but payment ${rzpPaymentId} WAS captured`
+        );
+      }
+    } else {
+      // Cancelled by the dealer/admin (or some unexpected state) with money
+      // captured — never swallow that silently. Finance must refund/resolve.
+      console.error(
+        `[apply-payment] ORDER NOT CONFIRMED: order ${orderId} is '${ord.status}' ` +
+          `but payment ${rzpPaymentId} is captured — needs manual review (refund or reinstate)`
+      );
+      return;
+    }
+  }
+
+  // Move physical stock now that the order is confirmed. Money is
+  // already captured, so we never block here — deduct capped at 0
+  // (never negative) and log any oversell for ops. Idempotent: the
+  // cart path that deducted at creation already set the latch, so a
+  // cart-UPI order is a no-op here (no double-deduct).
+  const oversold = await deductOrderStockCapped(tx, orderId);
+  if (oversold.length > 0) {
+    console.warn(
+      `[pay-now] order ${orderId} oversold (paid, stock capped at 0): ` +
+        describeShortfalls(oversold)
+    );
+  }
+}
+
 /**
  * Apply a verified Razorpay payment to internal tables. Idempotent —
  * checks the payments table before inserting.
@@ -200,6 +314,15 @@ export async function applyPaidPayment(rzpRowId: string): Promise<{
     `;
 
     if (existing) {
+      // The receipt is already booked — but the ORDER may still be stuck.
+      // HMU-2A9B: the receipt committed while the confirm matched 0 rows, and
+      // every retry (webhook, reconcile) then short-circuited HERE, so nothing
+      // could ever heal the order and the worker discarded it as unpaid.
+      // The confirm is idempotent, so always give the order another chance to
+      // advance before declaring this apply a no-op.
+      if (row.kind === "order_payment" && row.orderId) {
+        await confirmPaidOrder(tx, row.orderId, row.rzpPaymentId);
+      }
       return {
         alreadyApplied: true,
         dealerId: row.dealerId,
@@ -288,43 +411,11 @@ export async function applyPaidPayment(rzpRowId: string): Promise<{
     }
 
     // === Update Order Status (always done for order_payment) ===
+    // confirmPaidOrder verifies the confirm actually landed (row count),
+    // revives a wrongly auto-discarded order, and deducts stock — never
+    // assume the guarded UPDATE hit a row (see the HMU-2A9B incident).
     if (row.kind === "order_payment" && row.orderId) {
-      // cancel_window_ends_at = LEAST(now + 30 min, route's close_time for the
-      // delivery date). Same rule as the credit-confirm path so online-paid
-      // orders are cancellable for the same window.
-      await tx`
-        UPDATE orders
-           SET status = 'confirmed',
-               payment_mode = 'upi',
-               payment_reference = ${row.rzpPaymentId},
-               confirmed_at = COALESCE(confirmed_at, now()),
-               updated_at = now(),
-               cancel_window_ends_at = LEAST(
-                 now() + interval '30 minutes',
-                 COALESCE(
-                   (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
-                   now() + interval '30 minutes'
-                 )
-               )
-          FROM dealers d
-          LEFT JOIN time_windows tw ON tw.route_id = d.route_id
-         WHERE orders.id = ${row.orderId}::uuid
-           AND orders.dealer_id = d.id
-           AND orders.status IN ('draft', 'payment_required')
-      `;
-
-      // Move physical stock now that the order is confirmed. Money is
-      // already captured, so we never block here — deduct capped at 0
-      // (never negative) and log any oversell for ops. Idempotent: the
-      // cart path that deducted at creation already set the latch, so a
-      // cart-UPI order is a no-op here (no double-deduct).
-      const oversold = await deductOrderStockCapped(tx, row.orderId);
-      if (oversold.length > 0) {
-        console.warn(
-          `[pay-now] order ${row.orderId} oversold (paid, stock capped at 0): ` +
-            describeShortfalls(oversold)
-        );
-      }
+      await confirmPaidOrder(tx, row.orderId, row.rzpPaymentId);
     }
 
     return {

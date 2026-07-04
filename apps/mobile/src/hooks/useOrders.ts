@@ -128,9 +128,18 @@ export function usePlaceOrder() {
   const qc = useQueryClient();
   return useMutation<PlaceOrderResponse, Error, PlaceOrderRequest>({
     mutationFn: async (payload) => {
-      const res = await api.post<Record<string, unknown> & { order?: RawOrder }>(
+      const res = await api<Record<string, unknown> & { order?: RawOrder }>(
         "/api/v1/orders",
-        payload
+        {
+          method: "POST",
+          body: payload,
+          // Retrying order placement is ONLY safe when the payload carries an
+          // idempotencyKey: the server dedupes on it, so a retry after a lost
+          // response returns the already-created order instead of a duplicate.
+          // A connection reset mid-request ("Network error") is exactly the
+          // failure dealers hit on weak links — retry through it.
+          networkRetries: payload.idempotencyKey ? 2 : 0,
+        }
       );
       const raw = (res.order ?? res) as RawOrder;
       return {

@@ -28,6 +28,36 @@ import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
 
+/**
+ * Loads an already-committed order in the exact success shape of
+ * POST /orders. Used by the idempotency replay paths: when a dealer's
+ * retry carries a key we've already fulfilled, we return the original
+ * order instead of creating a duplicate. Returns null if the order row
+ * is missing (should be impossible — key + order commit atomically).
+ */
+async function orderReplayPayload(orderId: string) {
+  const [fullOrder] = await pgClient`
+    SELECT * FROM orders WHERE id = ${orderId} LIMIT 1
+  `;
+  if (!fullOrder) return null;
+  const items = await pgClient`
+    SELECT product_id, product_name, quantity,
+           unit_price, gst_percent, gst_amount, line_total
+    FROM order_items WHERE order_id = ${orderId}
+    ORDER BY product_name
+  `;
+  const [inv] = await pgClient`
+    SELECT invoice_number FROM invoices WHERE order_id = ${orderId} LIMIT 1
+  `;
+  return {
+    message: "Order placed successfully",
+    idempotentReplay: true,
+    order: { ...fullOrder, items },
+    invoiceNumber: inv?.invoice_number ?? null,
+    invoicePdfUrl: null,
+  };
+}
+
 export async function orderRoutes(app: FastifyInstance) {
   // ════════════════════════════════════════════
   // POST /api/v1/orders — PLACE AN INDENT
@@ -37,6 +67,8 @@ export async function orderRoutes(app: FastifyInstance) {
   // - Product goes out of stock
   // - Wallet exactly at zero
   // - Two dealers ordering the same product simultaneously
+  // - Retry after the commit succeeded but the response was lost
+  //   (idempotencyKey — see order_idempotency_keys, migration 0058)
   // ════════════════════════════════════════════
   app.post(
     "/api/v1/orders",
@@ -54,9 +86,31 @@ export async function orderRoutes(app: FastifyInstance) {
         paymentMode: z.enum(["wallet", "upi", "credit"]).default("wallet"),
         paymentReference: z.string().optional(),
         notes: z.string().optional(),
+        // Client-generated, unique per submission. A retry with a key we've
+        // already fulfilled returns the original order (2xx) instead of
+        // creating a duplicate — which is what makes the mobile client's
+        // network-retry on this endpoint safe.
+        idempotencyKey: z.string().min(8).max(80).optional(),
       });
       const body = schema.parse(request.body);
       const dealer = request.dealer!;
+
+      // ── Idempotency replay (before ANY validation) ──
+      // If this key was already fulfilled, the order exists — return it even
+      // if the window has since closed or stock has changed. The dealer's
+      // first attempt succeeded; they just never saw the response.
+      if (body.idempotencyKey) {
+        const [seen] = await pgClient`
+          SELECT order_id AS "orderId" FROM order_idempotency_keys
+          WHERE dealer_id = ${dealer.dealerId}
+            AND idempotency_key = ${body.idempotencyKey}
+          LIMIT 1
+        `;
+        if (seen) {
+          const replay = await orderReplayPayload(seen.orderId as string);
+          if (replay) return reply.status(200).send(replay);
+        }
+      }
 
       // ── 0. Dealer must be assigned to a delivery route ──
       // No route ⇒ no ordering window and no place on any dispatch, so the
@@ -216,17 +270,38 @@ export async function orderRoutes(app: FastifyInstance) {
       try {
         const result = await pgClient.begin(async (_tx) => {
           const tx = _tx as unknown as typeof pgClient;
-          // Insert order
+          // Insert order. stock_deducted is latched here rather than via the
+          // old post-deduction UPDATE: the deduction below runs in this same
+          // transaction, so either both persist or neither does (see 0049).
           const [order] = await tx`
-            INSERT INTO orders (dealer_id, zone_id, status, payment_mode, payment_reference, subtotal, total_gst, grand_total, item_count, notes, created_at, updated_at)
+            INSERT INTO orders (dealer_id, zone_id, status, payment_mode, payment_reference, subtotal, total_gst, grand_total, item_count, notes, stock_deducted, created_at, updated_at)
             VALUES (
               ${dealer.dealerId}, ${dealer.zoneId}, ${initialStatus}, ${body.paymentMode},
               ${body.paymentReference ?? null},
               ${subtotal.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric, ${grandTotal.toFixed(2)}::numeric,
-              ${orderItemsData.length}, ${body.notes ?? null}, now(), now()
+              ${orderItemsData.length}, ${body.notes ?? null}, true, now(), now()
             )
             RETURNING id, created_at
           `;
+
+          // Claim the idempotency key. The PK on (dealer_id, key) makes this
+          // race-safe: if a concurrent duplicate submission already claimed
+          // it, this inserts nothing — abort so the whole transaction (order,
+          // items, stock) rolls back, and the catch below replays the
+          // winner's order instead.
+          if (body.idempotencyKey) {
+            const claimed = await tx`
+              INSERT INTO order_idempotency_keys (dealer_id, idempotency_key, order_id)
+              VALUES (${dealer.dealerId}, ${body.idempotencyKey}, ${order!.id})
+              ON CONFLICT (dealer_id, idempotency_key) DO NOTHING
+              RETURNING order_id
+            `;
+            if (claimed.length === 0) {
+              throw Object.assign(new Error("Duplicate submission"), {
+                idempotentReplay: true,
+              });
+            }
+          }
 
           // For settled (confirmed) orders, stamp confirm time + the
           // route-based self-cancel window: LEAST(now + 30 min, the route's
@@ -251,29 +326,60 @@ export async function orderRoutes(app: FastifyInstance) {
             `;
           }
 
-          // Insert order items
-          for (const item of orderItemsData) {
-            await tx`
-              INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total)
-              VALUES (${order!.id}, ${item.productId}, ${item.productName}, ${item.quantity},
-                      ${item.unitPrice}::numeric, ${item.gstPercent}::numeric, ${item.gstAmount}::numeric, ${item.lineTotal}::numeric)
-            `;
-          }
+          // Insert order items — one multi-row statement. This used to be one
+          // INSERT per item: on a 26-line indent that was 26 sequential
+          // API→DB round-trips inside the transaction, holding the dealer's
+          // connection silent long enough for mobile carriers / edge proxies
+          // to reset it mid-request ("Order Failed — Network error").
+          await tx`
+            INSERT INTO order_items
+              (order_id, product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total)
+            SELECT ${order!.id}, u.product_id, u.product_name, u.quantity,
+                   u.unit_price, u.gst_percent, u.gst_amount, u.line_total
+              FROM unnest(
+                ${orderItemsData.map((i) => i.productId)}::uuid[],
+                ${orderItemsData.map((i) => i.productName)}::text[],
+                ${orderItemsData.map((i) => i.quantity)}::int[],
+                ${orderItemsData.map((i) => i.unitPrice)}::numeric[],
+                ${orderItemsData.map((i) => i.gstPercent)}::numeric[],
+                ${orderItemsData.map((i) => i.gstAmount)}::numeric[],
+                ${orderItemsData.map((i) => i.lineTotal)}::numeric[]
+              ) AS u(product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total)
+          `;
 
-          // Deduct stock — guard against concurrent orders driving stock negative
+          // Deduct stock — one statement for the whole cart, still guarded
+          // against concurrent orders driving stock negative. Quantities are
+          // summed per product first: an UPDATE ... FROM with duplicate join
+          // rows would apply only one of them.
+          const qtyByProduct = new Map<string, number>();
           for (const item of body.items) {
-            const updated = await tx`
-              UPDATE products SET stock = stock - ${item.quantity}, updated_at = now()
-              WHERE id = ${item.productId} AND stock >= ${item.quantity}
-              RETURNING id
-            `;
-            if (updated.length === 0) {
-              throw Object.assign(new Error("Stock depleted"), { statusCode: 409, productId: item.productId });
-            }
+            qtyByProduct.set(
+              item.productId,
+              (qtyByProduct.get(item.productId) ?? 0) + item.quantity
+            );
           }
-          // Latch the deduction so a later cancel restores exactly once
-          // (and a pay-now completion won't re-deduct). See migration 0049.
-          await tx`UPDATE orders SET stock_deducted = true WHERE id = ${order!.id}`;
+          const stockIds = [...qtyByProduct.keys()];
+          const deducted = await tx`
+            UPDATE products p
+               SET stock = p.stock - u.qty, updated_at = now()
+              FROM unnest(
+                     ${stockIds}::uuid[],
+                     ${stockIds.map((id) => qtyByProduct.get(id)!)}::int[]
+                   ) AS u(id, qty)
+             WHERE p.id = u.id AND p.stock >= u.qty
+             RETURNING p.id
+          `;
+          if (deducted.length !== stockIds.length) {
+            const ok = new Set(deducted.map((r) => r.id as string));
+            const failed = stockIds.find((id) => !ok.has(id));
+            throw Object.assign(new Error("Stock depleted"), {
+              statusCode: 409,
+              productId: failed,
+            });
+          }
+          // stock_deducted was latched in the order INSERT above (same
+          // transaction), so a later cancel restores exactly once and a
+          // pay-now completion won't re-deduct. See migration 0049.
 
           // Deduct wallet atomically — balance check is inside the same transaction 
           if (body.paymentMode === "wallet") {
@@ -395,8 +501,23 @@ export async function orderRoutes(app: FastifyInstance) {
           invoiceNumber,
           invoicePdfUrl,
         });
-      } catch (err: any) {                                                  
-        if (err.statusCode === 402) {                                       
+      } catch (err: any) {
+        // Lost the idempotency-key claim to a concurrent duplicate
+        // submission — this attempt rolled back cleanly; return the
+        // winner's order as the success it (from the dealer's view) is.
+        if (err.idempotentReplay && body.idempotencyKey) {
+          const [seen] = await pgClient`
+            SELECT order_id AS "orderId" FROM order_idempotency_keys
+            WHERE dealer_id = ${dealer.dealerId}
+              AND idempotency_key = ${body.idempotencyKey}
+            LIMIT 1
+          `;
+          const replay = seen
+            ? await orderReplayPayload(seen.orderId as string)
+            : null;
+          if (replay) return reply.status(200).send(replay);
+        }
+        if (err.statusCode === 402) {
           return reply.status(402).send({                                   
             error: "Insufficient Balance",                                  
             message: `Wallet balance ₹${err.currentBalance} is less than order total ₹${err.orderTotal}`,                                        

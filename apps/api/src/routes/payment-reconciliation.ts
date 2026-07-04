@@ -20,6 +20,10 @@
 // Idempotent: applyPaidPayment keys off the internal payments.reference, so
 // re-runs are no-ops.
 //
+// A third pass catches 'paid' rows whose ORDER never advanced (receipt
+// booked but the order stuck in payment_required — or auto-discarded at
+// window close): the HMU-2A9B / pay_T9JpSPmjHL5BBW failure mode.
+//
 // Triggered on a schedule by the worker (POST /api/v1/internal/reconcile-
 // razorpay, guarded by INTERNAL_JOB_SECRET) and safe to invoke manually.
 // ═══════════════════════════════════════════════════════════════════════
@@ -32,7 +36,7 @@ import {
   fetchRazorpayOrderPayments,
   captureRazorpayPayment,
 } from "../lib/razorpay-client.js";
-import { applyPaidPayment } from "./dealer-payments.js";
+import { applyPaidPayment, AUTO_DISCARD_REASON } from "./dealer-payments.js";
 
 interface ReconcileItem {
   rzpRowId: string;
@@ -264,6 +268,56 @@ export async function reconcileStuckRazorpayPayments(opts?: {
         paymentId: row.rzpPaymentId,
         amount: applied.amount,
         detail: "paid-but-unapplied",
+      });
+    } catch (err) {
+      summary.errors++;
+      summary.items.push({
+        rzpRowId: row.id,
+        rzpOrderId: row.rzpOrderId,
+        orderId: row.orderId,
+        outcome: "apply-error",
+        paymentId: row.rzpPaymentId,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Third pass — the gateway row is 'paid' AND the internal receipt exists,
+  // but the ORDER never advanced: still draft/payment_required, or worse,
+  // auto-discarded at window close as "unpaid". This is the HMU-2A9B failure
+  // mode, and BOTH passes above are blind to it (the row isn't stuck and the
+  // receipt exists). applyPaidPayment now re-runs the order confirm on its
+  // already-applied path — and revives an order cancelled with the worker's
+  // auto-discard reason — without ever double-booking money, so routing
+  // these through it is safe and idempotent.
+  const stuckOrders = await pgClient`
+    SELECT rp.id::text            AS id,
+           rp.razorpay_order_id   AS "rzpOrderId",
+           rp.order_id::text      AS "orderId",
+           rp.razorpay_payment_id AS "rzpPaymentId"
+      FROM razorpay_payments rp
+      JOIN orders o ON o.id = rp.order_id
+     WHERE rp.status = 'paid'
+       AND rp.kind = 'order_payment'
+       AND rp.created_at > now() - make_interval(hours => ${maxAgeHours})
+       AND (o.status IN ('draft', 'payment_required')
+            OR (o.status = 'cancelled'
+                AND o.cancellation_reason = ${AUTO_DISCARD_REASON}))
+     LIMIT ${limit}
+  `;
+
+  for (const row of stuckOrders as any[]) {
+    try {
+      const applied = await applyPaidPayment(row.id);
+      summary.applied++;
+      summary.items.push({
+        rzpRowId: row.id,
+        rzpOrderId: row.rzpOrderId,
+        orderId: row.orderId,
+        outcome: "applied",
+        paymentId: row.rzpPaymentId,
+        amount: applied.amount,
+        detail: "paid-but-order-stuck",
       });
     } catch (err) {
       summary.errors++;

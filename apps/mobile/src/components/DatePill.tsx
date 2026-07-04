@@ -55,7 +55,17 @@ export default function DatePill({ windowStatus, onPress }: DatePillProps) {
     const tomorrow = istTomorrowIso();
 
     if (selectedDate === today) {
-      const state = windowStatus?.state ?? "closed";
+      // Status not loaded yet (query pending / retrying on a slow link):
+      // show a neutral pill instead of wrongly claiming the window is
+      // closed. The window query refetches every 30s, so this heals on
+      // its own once the network answers.
+      if (!windowStatus) {
+        return {
+          variant: "future" as const,
+          contextText: "checking order window…",
+        };
+      }
+      const state = windowStatus.state;
       if (state === "open") {
         return {
           variant: "open" as const,

@@ -3,8 +3,9 @@
 // WHAT CHANGED & WHY
 //   1. login() fetches /dealer/profile right after saving tokens so the
 //      top bar (name / zone / code) is populated on first paint.
-//   2. initialize() retries the profile fetch once on a transient
-//      (network/timeout) error instead of silently leaving dealer = null.
+//   2. initialize() no longer blocks app boot on the network: it decides
+//      auth from local storage instantly (persisted session + token) and
+//      refreshes the profile in the background with retries.
 //   3. NEW: forceLogout() — a synchronous, side-effect-free logout used
 //      when a session is detected as dead (ApiError 401) from anywhere
 //      in the app. Unlike logout(), it does NOT call the logout endpoint
@@ -16,9 +17,40 @@
 //      session, leaving the user on logged-in screens that error.
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
-import { api, saveTokens, clearTokens, loadToken, ApiError } from "../lib/api";
+import { createJSONStorage, persist } from "zustand/middleware";
+import {
+  api,
+  saveTokens,
+  clearTokens,
+  loadToken,
+  getStorage,
+  ApiError,
+} from "../lib/api";
+import { useCartStore } from "./cart";
+import { useTargetDateStore } from "./targetDate";
 import type { Dealer } from "../lib/types";
+
+/**
+ * Persist storage for this store. zustand's persist() defaults to
+ * window.localStorage, which does NOT exist in React Native — so on a real
+ * device nothing was ever actually persisted: every cold start began
+ * logged-out and the app blocked on a profile fetch over the network
+ * before letting the dealer in. Backing the store with the same storage
+ * the tokens already use (SecureStore on native, localStorage on web)
+ * makes the session + dealer snapshot genuinely survive restarts, which
+ * is what lets initialize() enter the app instantly without the network.
+ * The persisted payload (isAuthenticated + dealer, see partialize) is a
+ * few hundred bytes — well under SecureStore's 2 KB Android guideline.
+ */
+const authStorage = createJSONStorage(() => ({
+  getItem: async (name: string) => (await getStorage()).getItemAsync(name),
+  setItem: async (name: string, value: string) => {
+    await (await getStorage()).setItemAsync(name, value);
+  },
+  removeItem: async (name: string) => {
+    await (await getStorage()).deleteItemAsync(name);
+  },
+}));
 
 /**
  * Parses the backend dealer object into our camelCase Dealer type.
@@ -109,6 +141,26 @@ export function setQueryCacheReset(fn: () => void): void {
   resetQueryCache = fn;
 }
 
+/**
+ * Wipe every client-side, account-scoped store so one dealer's data can
+ * never bleed into the next: the React Query cache (registered by App.tsx
+ * above), the in-memory cart, and the target-order date. Called on every
+ * session boundary — login (a new session begins), logout and forceLogout
+ * (a session ends).
+ *
+ * The cart is the important addition here: it's a plain in-memory zustand
+ * store with no per-account key, so logging out of A and into B on the
+ * SAME app launch used to leave A's cart — and its "View indent" bar —
+ * sitting under B's account until the app process was killed. The query
+ * cache reset already covered the server-side indent draft; the cart and
+ * target date were the missing pieces.
+ */
+function resetSessionScopedState(): void {
+  resetQueryCache?.();
+  useCartStore.getState().clearCart();
+  useTargetDateStore.getState().resetToToday();
+}
+
 interface AuthState {
   dealer: Dealer | null;
   isLoading: boolean;
@@ -128,9 +180,10 @@ interface AuthState {
   patchDealer: (patch: Partial<Dealer>) => void;
 }
 
-async function fetchProfile(): Promise<Dealer | null> {
-  const data = await api.get<{ dealer: Record<string, unknown> }>(
-    "/api/v1/dealer/profile"
+async function fetchProfile(networkRetries = 0): Promise<Dealer | null> {
+  const data = await api<{ dealer: Record<string, unknown> }>(
+    "/api/v1/dealer/profile",
+    { networkRetries }
   );
   return data?.dealer ? parseDealer(data.dealer) : null;
 }
@@ -143,37 +196,50 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
 
       initialize: async () => {
+        // Boot must NEVER block on the network. The old version awaited a
+        // profile fetch (15s timeout ×2) behind the full-screen loader; on
+        // a slow link the dealer stared at "Loading…" for ~30s and was
+        // then dumped at the login screen despite holding a valid session.
+        // Now: decide from local storage instantly, refresh in background.
         try {
-          await loadToken();
-
-          // Fetch the profile; retry once on a transient failure so a
-          // single network blip on cold start doesn't leave the header
-          // permanently blank.
-          let dealer: Dealer | null = null;
+          // One deterministic hydration pass (skipHydration is set below).
+          // This is a local storage read — milliseconds, not network. A
+          // corrupt/unreadable snapshot must not block entry: the token
+          // check below still decides, and the profile refresh repopulates.
           try {
-            dealer = await fetchProfile();
+            await useAuthStore.persist.rehydrate();
+          } catch {
+            // ignore — proceed with whatever state we have
+          }
+
+          const token = await loadToken();
+
+          if (!token) {
+            // No session — go to splash immediately, zero network.
+            set({ isAuthenticated: false, dealer: null, isLoading: false });
+            return;
+          }
+
+          // A token exists → let the dealer straight in with the persisted
+          // profile snapshot. Screens hydrate section-by-section from their
+          // own queries (skeletons while pending).
+          set({ isAuthenticated: true, isLoading: false });
+
+          // Background profile refresh with retries. Failure is fine —
+          // the persisted snapshot keeps the header populated, and
+          // refetch-on-reconnect/foreground heals the rest.
+          try {
+            const dealer = await fetchProfile(2);
+            if (dealer) set({ dealer });
           } catch (err) {
             if (err instanceof ApiError && err.status === 401) {
-              // Session is dead — clear tokens AND auth state so the
-              // navigation shell routes to splash on a cold start.
+              // Session truly dead (refresh rotation failed too) — route
+              // back to splash.
               await clearTokens();
               set({ isAuthenticated: false, dealer: null });
-              return;
             }
-            // network / timeout — retry once
-            dealer = await fetchProfile();
+            // Network/timeout: stay in the app with cached data.
           }
-
-          if (dealer) {
-            set({ dealer, isAuthenticated: true });
-          }
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 401) {
-            await clearTokens();
-            set({ isAuthenticated: false, dealer: null });
-          }
-          // Any other error: keep whatever was rehydrated from storage.
-          // refreshProfile() (pull-to-refresh) will heal it.
         } finally {
           set({ isLoading: false });
         }
@@ -187,9 +253,9 @@ export const useAuthStore = create<AuthState>()(
           // it gets RETRIES, not just a long timeout. One do-or-die 25s
           // attempt punished slow-but-working connections: the request was
           // aborted at the cliff and the dealer saw "Connection Problem"
-          // even though a retry would have succeeded. Now: 3 attempts
-          // (15s → 22.5s → 30s) with backoff — slow internet feels slow,
-          // but signs in; it no longer hard-fails.
+          // even though a retry would have succeeded. Now: 4 attempts
+          // (15s → 22.5s → 30s → 30s) with backoff — slow internet feels
+          // slow, but signs in; it no longer hard-fails.
           //
           // Retrying login is safe: a duplicate success just inserts an
           // extra refresh-token row server-side, and a 401 (wrong
@@ -203,23 +269,24 @@ export const useAuthStore = create<AuthState>()(
             method: "POST",
             body: { username, password },
             timeoutMs: 15000,
-            networkRetries: 2,
+            networkRetries: 3,
           });
 
           await saveTokens(res.accessToken, res.refreshToken);
 
-          // New session begins — wipe any query cache left over from a
-          // previous account BEFORE we fetch this dealer's profile or route
-          // to any of their screens, so no stale data from the last login
-          // can flash through.
-          resetQueryCache?.();
+          // New session begins — wipe every account-scoped client store
+          // (query cache, cart, target date) left over from a previous
+          // account BEFORE we fetch this dealer's profile or route to any
+          // of their screens, so no stale data from the last login — not
+          // even a lingering cart — can flash through.
+          resetSessionScopedState();
 
           // The login response may only contain { id, phone } (older API).
           // Always fetch the full profile so name/zone/code are present on
           // the very first paint — no manual reload needed.
           let dealer = parseDealer(res.dealer ?? {});
           try {
-            const full = await fetchProfile();
+            const full = await fetchProfile(1);
             if (full) dealer = full;
           } catch {
             // Profile fetch failed — fall back to the login payload.
@@ -246,8 +313,9 @@ export const useAuthStore = create<AuthState>()(
 
       logout: async () => {
         await clearTokens();
-        // Drop every cached query so the next account starts clean.
-        resetQueryCache?.();
+        // Drop every account-scoped client store (query cache, cart,
+        // target date) so the next account starts clean.
+        resetSessionScopedState();
         set({ dealer: null, isAuthenticated: false });
       },
 
@@ -255,7 +323,7 @@ export const useAuthStore = create<AuthState>()(
         // Fire-and-forget token wipe; the session is already invalid so
         // we don't await it — clearing state immediately is what matters.
         void clearTokens();
-        resetQueryCache?.();
+        resetSessionScopedState();
         set({ dealer: null, isAuthenticated: false, isLoading: false });
       },
 
@@ -282,6 +350,10 @@ export const useAuthStore = create<AuthState>()(
 
     {
       name: "hmu-dealer-auth",
+      storage: authStorage,
+      // initialize() rehydrates explicitly before reading state, so the
+      // async auto-rehydrate can't race it and clobber what it sets.
+      skipHydration: true,
       partialize: (state) => ({
         isAuthenticated: state.isAuthenticated,
         dealer: state.dealer,

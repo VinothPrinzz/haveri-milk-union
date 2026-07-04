@@ -138,6 +138,32 @@ export default function OrderConfirmedScreen({
     }
   };
 
+  // ── Real order status ──────────────────────────────────────────────
+  // Never hard-code "Confirmed": this screen once told a dealer their indent
+  // was "locked and confirmed" while the server had actually left the order
+  // in payment_required — it was then auto-discarded at window close
+  // (HMU-2A9B). Reflect what the server says; fall back to "Confirmed" only
+  // while the order is still loading (we only reach this screen on a
+  // successful verify).
+  const statusInfo = useMemo(() => {
+    switch (order?.status) {
+      case "dispatched":
+        return { label: "Dispatched", placed: true };
+      case "delivered":
+        return { label: "Delivered", placed: true };
+      case "payment_required":
+        return { label: "Confirming…", placed: false };
+      case "draft":
+        return { label: "Processing…", placed: false };
+      case "cancelled":
+        return { label: "Cancelled", placed: false };
+      case "confirmed":
+      default:
+        return { label: "Confirmed", placed: true };
+    }
+  }, [order?.status]);
+  const isCancelled = order?.status === "cancelled";
+
   // ── Derived row values ─────────────────────────────────────────────
   const itemCount = order?.itemCount ?? 0;
   const productCount = order?.items.length ?? 0;
@@ -188,17 +214,26 @@ export default function OrderConfirmedScreen({
         </View>
 
         {/* Heading */}
-        <Text style={styles.title}>Indent Placed!</Text>
+        <Text style={styles.title}>
+          {isCancelled
+            ? "Indent Cancelled"
+            : statusInfo.placed
+              ? "Indent Placed!"
+              : "Payment Received!"}
+        </Text>
         <Text style={styles.sub}>
-          Payment received.{"\n"}
-          Your indent is locked and confirmed for dispatch.
+          {isCancelled
+            ? "This indent was cancelled. If you were charged, the amount will be refunded — contact the dairy office if it isn't."
+            : statusInfo.placed
+              ? "Payment received.\nYour indent is locked and confirmed for dispatch."
+              : "Payment received.\nWe're confirming your indent — it will show in Orders shortly."}
         </Text>
 
         {/* Order ID pill */}
         <View style={styles.idPill}>
           <Text style={styles.idPillNum}>#{prettyOrderId(orderId)}</Text>
           <Text style={styles.idPillSep}>·</Text>
-          <Text style={styles.idPillStatus}>Confirmed</Text>
+          <Text style={styles.idPillStatus}>{statusInfo.label}</Text>
           <TouchableOpacity
             onPress={handleCopyId}
             activeOpacity={0.7}

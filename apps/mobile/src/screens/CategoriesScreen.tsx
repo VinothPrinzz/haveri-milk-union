@@ -11,6 +11,10 @@ import { colors, fonts } from "../lib/theme";
 import AppHeader from "../components/AppHeader";
 import DatePill from "../components/DatePill";
 import ProductCard from "../components/ProductCard";
+import {
+  CategoryGridSkeleton,
+  SectionLoadFailed,
+} from "../components/Skeleton";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { useProducts, useCategories } from "../hooks/useProducts";
@@ -124,7 +128,8 @@ export default function CategoriesScreen({
     setQuantity(product.id, qty);
   };
 
-  if (!dealer) return null;
+  // No `if (!dealer) return null` — the shell renders immediately and the
+  // header/window pill fill in when the profile / window status arrive.
 
   // ── State B: category detail ──
   if (selectedCategory) {
@@ -242,8 +247,16 @@ export default function CategoriesScreen({
           </View>
         </View>
 
-        {/* Category grid */}
-        {filteredCategories.length === 0 ? (
+        {/* Category grid — skeleton while loading, inline retry on
+            failure, real empty state only once the data has answered. */}
+        {catsQuery.isPending ? (
+          <CategoryGridSkeleton />
+        ) : catsQuery.isError && categories.length === 0 ? (
+          <SectionLoadFailed
+            label="Couldn't load categories"
+            onRetry={() => catsQuery.refetch()}
+          />
+        ) : filteredCategories.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyEmoji}>🔎</Text>
             <Text style={styles.emptyTitle}>No matching categories</Text>

@@ -31,6 +31,11 @@ import DatePill from "../components/DatePill";
 import PromoBanner, { type PromoBannerItem } from "../components/PromoBanner";
 import CategoryBar, { type CategoryItem } from "../components/CategoryBar";
 import ProductCard from "../components/ProductCard";
+import {
+  CategoryBarSkeleton,
+  ProductGridSkeleton,
+  SectionLoadFailed,
+} from "../components/Skeleton";
 
 // ── Hooks + stores ─────────────────────────────────────────────────
 import { useAuthStore } from "../store/auth";
@@ -200,6 +205,8 @@ export default function HomeScreen({
   );
 
   // Scrolls WITH the grid. No TextInput here, so re-rendering is safe.
+  // Each block hydrates independently (Blinkit-style): the pill, banners,
+  // category bar and grid each show as soon as THEIR data arrives.
   const ListHeader = (
     <View>
       <DatePill
@@ -209,25 +216,41 @@ export default function HomeScreen({
 
       {bannerItems.length > 0 && <PromoBanner items={bannerItems} />}
 
-      {categoryItems.length > 0 && (
+      {catsQuery.isPending ? (
+        <CategoryBarSkeleton />
+      ) : categoryItems.length > 0 ? (
         <CategoryBar
           categories={categoryItems}
           selectedId={selectedCategoryId}
           onSelect={setSelectedCategoryId}
         />
-      )}
+      ) : null}
 
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>{selectedCategoryName}</Text>
         <Text style={styles.sectionMeta}>
-          {filteredProducts.length} item
-          {filteredProducts.length === 1 ? "" : "s"}
+          {productsQuery.isPending
+            ? ""
+            : `${filteredProducts.length} item${
+                filteredProducts.length === 1 ? "" : "s"
+              }`}
         </Text>
       </View>
     </View>
   );
 
-  const ListEmpty = (
+  // The grid's empty slot has three distinct states — loading (skeleton),
+  // failed-with-no-cache (inline retry), genuinely empty (no matches).
+  // Previously "No products found" flashed while the request was still
+  // in flight, which read as broken on slow connections.
+  const ListEmpty = productsQuery.isPending ? (
+    <ProductGridSkeleton />
+  ) : productsQuery.isError ? (
+    <SectionLoadFailed
+      label="Couldn't load products"
+      onRetry={() => productsQuery.refetch()}
+    />
+  ) : (
     <View style={styles.empty}>
       <Text style={styles.emptyEmoji}>🔎</Text>
       <Text style={styles.emptyTitle}>No products found</Text>
@@ -238,7 +261,10 @@ export default function HomeScreen({
   );
 
   // ── Render ──────────────────────────────────────────────────────
-  if (!dealer) return null;
+  // NOTE: no `if (!dealer) return null` here. On the first cold start
+  // after login the profile may still be loading in the background —
+  // the shell renders immediately (AppHeader falls back to "Dealer")
+  // and fills in as data arrives.
 
   return (
     <View style={styles.root}>

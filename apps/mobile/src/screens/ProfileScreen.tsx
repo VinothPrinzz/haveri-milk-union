@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Linking,
   ScrollView,
@@ -169,7 +170,15 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
     );
   };
 
-  if (!dealer) return null;
+  if (!dealer) {
+    // Profile still hydrating in the background (fresh cold start on a
+    // slow link) — show a light placeholder instead of a blank screen.
+    return (
+      <View style={[styles.root, { alignItems: "center", justifyContent: "center" }]}>
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
 
   const { colors: gradColors, angle } = gradients.profileHeader;
   const { start, end } = cssAngleToPoints(angle);

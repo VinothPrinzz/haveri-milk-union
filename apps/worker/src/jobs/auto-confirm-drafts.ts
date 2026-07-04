@@ -10,7 +10,10 @@
 // An order the dealer started paying online for (payment_required +
 // payment_mode='upi') is NEVER placed on credit; if it's still unpaid
 // once close_time has passed, it is discarded (cancelled). The dealer
-// had until window close to complete payment.
+// had until window close to complete payment. "Unpaid" is checked
+// atomically inside the cancel UPDATE (no 'paid' razorpay_payments row)
+// so a captured-but-stuck payment is never discarded — reconcile
+// confirms those instead.
 //
 // WHY THIS IS STANDING-INDENT-DRIVEN (and not "confirm existing drafts"):
 //   The old version only confirmed orders that were already
@@ -689,6 +692,16 @@ export async function processAutoConfirmDrafts(_job: Job) {
         // + 'upi') but never completed payment. They had until close to
         // pay; now the window has shut, so discard it instead of ever
         // placing it on credit. Only fires once close_time has passed.
+        //
+        // NEVER discard an order that actually has captured money. The
+        // HMU-2A9B incident: the payment applied (receipt booked) but the
+        // order stayed 'payment_required', and this branch then cancelled
+        // a fully-PAID order as "unpaid". The NOT EXISTS below makes the
+        // paid-check atomic with the cancel; a paid-but-stuck order is
+        // left alone for the reconcile job, which re-confirms it through
+        // applyPaidPayment (and can revive one cancelled with this exact
+        // reason string — keep it in sync with AUTO_DISCARD_REASON in
+        // apps/api/src/routes/dealer-payments.ts).
         if (
           status === "payment_required" &&
           dealer.payment_mode === "upi" &&
@@ -704,6 +717,11 @@ export async function processAutoConfirmDrafts(_job: Job) {
              WHERE id = ${dealer.order_id}::uuid
                AND status = 'payment_required'
                AND payment_mode = 'upi'
+               AND NOT EXISTS (
+                 SELECT 1 FROM razorpay_payments rp
+                  WHERE rp.order_id = orders.id
+                    AND rp.status = 'paid'
+               )
           `;
           if (cancelled.count > 0) {
             discardedUnpaid++;
@@ -720,6 +738,14 @@ export async function processAutoConfirmDrafts(_job: Job) {
                   console.warn(`[AutoConfirm] notif failed for ${dealer.order_id}:`, e?.message)
                 );
             }
+          } else {
+            // A captured payment exists (or the status just moved) — the
+            // order is paid but stuck. Leave it; reconcile confirms it.
+            skipped++;
+            console.warn(
+              `[AutoConfirm] kept order=${dealer.order_id} (${dealer.dealer_name}): ` +
+                `a captured online payment exists or status moved — reconciliation will confirm it`
+            );
           }
           continue;
         }
