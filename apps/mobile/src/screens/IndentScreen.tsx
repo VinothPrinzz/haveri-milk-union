@@ -242,6 +242,9 @@ export default function IndentScreen({
     // still allows changes (today's window not yet closed).
     if (!canModify) return;
     const current = items.find((i) => i.productId === productId);
+    // The subsidy line is union-assigned — dealers can't change it (the
+    // server pins it regardless; this just keeps the UI honest).
+    if (current?.isSubsidy) return;
     // Milk/Curd carry a per-line minimum (6): snap 1–5 up to it; 0 removes.
     const newQty = snapQtyToMin(Math.max(0, qty), current?.categoryName);
     const nextItems = items
@@ -394,8 +397,10 @@ export default function IndentScreen({
                     key={it.productId}
                     item={it}
                     isLast={idx === items.length - 1}
-                    // Steppers only when editable AND the window is still open.
-                    disabled={!canModify}
+                    // Steppers only when editable AND the window is still
+                    // open. The subsidy line is union-assigned: always a
+                    // read-only badge, never a stepper.
+                    disabled={!canModify || !!it.isSubsidy}
                     onSetQty={(qty) => setItemQty(it.productId, qty)}
                   />
                 ))}
@@ -546,6 +551,7 @@ function DraftRow({
         </Text>
         <Text style={styles.itemMeta}>
           ₹{item.unitPrice.toFixed(2)} · {item.unit}
+          {item.isSubsidy ? " · Union scheme (fixed)" : ""}
         </Text>
       </View>
       {disabled ? (

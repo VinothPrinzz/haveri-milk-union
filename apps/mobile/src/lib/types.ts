@@ -279,6 +279,9 @@ export interface DraftItem {
   imageUrl: string | null;
   unit: string;
   categoryName?: string | null;  // drives the Milk minimum-order-qty rule
+  /** Union-operated subsidy line (PD0191S) — read-only for the dealer;
+   *  only the admin panel assigns/changes it. The server pins it anyway. */
+  isSubsidy?: boolean;
 }
  
 export interface DraftTotals {

@@ -39,6 +39,7 @@ import {
   findOrderMinQtyViolations,
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
+import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -488,6 +489,13 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       const orderId = await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
 
+        // Serialize draft creation per (dealer, date) — same advisory
+        // lock as the dealer PATCH (the partitioned orders table can't
+        // enforce uniqueness, so concurrent edits could insert twins).
+        await tx`
+          SELECT pg_advisory_xact_lock(hashtext(${dealerId + ":" + date}))
+        `;
+
         const [existing] = await tx`
           SELECT id FROM orders
            WHERE dealer_id = ${dealerId}
@@ -721,6 +729,10 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
         // Move physical stock last — its guard is what can abort the confirm.
         await deductOrderStock(tx, order.id);
+
+        // This is now the day's placed order — cancel any stranded twin
+        // (older duplicate draft / unpaid payment_required) for this date.
+        await cancelSupersededSiblings(tx, order.id);
       });
       } catch (err) {
         if (err instanceof StockConflictError) {

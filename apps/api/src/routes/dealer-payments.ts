@@ -31,6 +31,10 @@ import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/paginat
 import { deductOrderStockCapped, describeShortfalls } from "../lib/stock-check.js";
 import { enqueuePDFInvoice } from "../lib/queue.js";
 import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
+import {
+  cancelSupersededSiblings,
+  SUPERSEDE_REASON_PREFIX,
+} from "../lib/supersede-orders.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -226,11 +230,16 @@ async function confirmPaidOrder(
     if (["confirmed", "dispatched", "delivered"].includes(ord.status)) {
       return; // another path already confirmed it — nothing to do
     }
-    if (ord.status === "cancelled" && ord.reason === AUTO_DISCARD_REASON) {
-      // The window-close worker discarded this order as "unpaid" while the
-      // payment was in fact captured (a capture landing between the worker's
-      // check and the apply). The dealer paid before close — reinstate.
-      // Zero cancel grace: the window is shut, same as worker auto-confirms.
+    const autoCancelled =
+      ord.status === "cancelled" &&
+      (ord.reason === AUTO_DISCARD_REASON ||
+        (ord.reason ?? "").startsWith(SUPERSEDE_REASON_PREFIX));
+    if (autoCancelled) {
+      // A system cancel raced the payment: either the window-close worker
+      // discarded it as "unpaid", or the supersede rule cancelled it as a
+      // twin — in both cases BEFORE the capture landed. Money is captured,
+      // so the order stands — reinstate it. Zero cancel grace: the
+      // window/day has moved on, same as worker auto-confirms.
       const revived = await tx`
         UPDATE orders
            SET status = 'confirmed',
@@ -243,12 +252,12 @@ async function confirmPaidOrder(
                updated_at = now()
          WHERE id = ${orderId}::uuid
            AND status = 'cancelled'
-           AND cancellation_reason = ${AUTO_DISCARD_REASON}
+           AND cancellation_reason = ${ord.reason}
         RETURNING id
       `;
       if (revived.count > 0) {
         console.warn(
-          `[apply-payment] revived order ${orderId}: it was auto-discarded at window close but payment ${rzpPaymentId} WAS captured`
+          `[apply-payment] revived order ${orderId}: it was cancelled (${ord.reason}) but payment ${rzpPaymentId} WAS captured`
         );
       }
     } else {
@@ -274,6 +283,10 @@ async function confirmPaidOrder(
         describeShortfalls(oversold)
     );
   }
+
+  // The paid order is now the day's placed order — cancel any stranded
+  // twin (duplicate draft / unpaid payment_required) for the same date.
+  await cancelSupersededSiblings(tx, orderId);
 }
 
 /**

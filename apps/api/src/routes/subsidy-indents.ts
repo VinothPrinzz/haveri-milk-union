@@ -32,6 +32,7 @@ import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
 import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
+import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 
 // The subsidy SKU seeded by migration 0056 (half-price HTM 1000ML).
 const SUBSIDY_PRODUCT_CODE = "PD0191S";
@@ -223,8 +224,19 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
       // subsidy line already on the order (set-not-add semantics).
       const chargeDelta = round2(lineTotal - oldSubTotal);
 
-      // ── Credit gate (only when this action increases the credit debit) ──
-      if (body.paymentMode === "credit" && chargeDelta > 0) {
+      // Is the order this line lands on already PLACED (booked to the
+      // ledger)? A fresh order is created 'confirmed' below, so yes. An
+      // existing confirmed/dispatched order is booked, so yes. But an
+      // existing DRAFT / payment_required order has NOT been charged yet
+      // — its eventual confirm (auto-confirm at close, or pay-now) debits
+      // the FULL grand total, which will include the line set here. Posting
+      // the delta debit now would charge the subsidy TWICE. So for a
+      // not-yet-placed target: set the line, skip the money movement.
+      const targetPlaced =
+        !existing || ["confirmed", "dispatched"].includes(existing.status);
+
+      // ── Credit gate (only when this action debits credit right now) ──
+      if (body.paymentMode === "credit" && targetPlaced && chargeDelta > 0) {
         const credit = await checkDealerCredit(body.customerId, chargeDelta);
         if (!credit.sufficient) {
           return reply.status(402).send({
@@ -312,8 +324,10 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
         // ── Credit ledger movement for the delta (subsidy portion only) ──
         // UPI and cash subsidy indents are paid at the counter (UPI captures
         // a reference; cash needs none) and post no ledger row. Only credit
-        // indents debit/credit the dealer's line by the delta.
-        if (body.paymentMode === "credit" && chargeDelta !== 0) {
+        // indents debit/credit the dealer's line by the delta — and only
+        // when the target order is already placed (see targetPlaced above:
+        // a draft's confirm debits the full total later, delta now = twice).
+        if (body.paymentMode === "credit" && targetPlaced && chargeDelta !== 0) {
           const bal = await currentBalance(tx, body.customerId);
           if (chargeDelta > 0) {
             await tx`
@@ -341,46 +355,62 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
           }
         }
 
+        // If this order is placed (fresh 'confirmed', or an already-placed
+        // existing order), it is THE order for the date — cancel stranded
+        // twins (e.g. the dealer-app draft that carries the same subsidy
+        // line). A draft target isn't placed yet, so nothing to supersede.
+        if (targetPlaced) {
+          await cancelSupersededSiblings(tx, id);
+        }
+
         return id;
       });
 
       // ── Invoice (re)generation + push (best-effort, outside the tx) ──
-      try {
-        await enqueuePDFInvoice(orderId);
-      } catch (err) {
-        console.warn("[subsidy] PDF enqueue failed:", err);
-      }
-      if (!existing) {
-        try {
-          await enqueuePushNotification({
-            event: "order.confirmed",
-            dealerId: body.customerId,
-            orderId,
-          });
-        } catch (err) {
-          console.warn("[subsidy] Push enqueue failed:", err);
-        }
-      }
-
+      // Only for a PLACED order — an invoice for a still-draft order would
+      // be a tax document for an unplaced indent (the confirm generates it).
       let invoiceNumber: string | null = null;
       let invoicePdfUrl: string | null = null;
-      try {
-        const pdf = await generateInvoicePdfSync(orderId);
-        invoicePdfUrl = pdf?.pdfUrl ?? null;
-        const [inv] = await pgClient`
-          SELECT invoice_number FROM invoices WHERE order_id = ${orderId} LIMIT 1
-        `;
-        invoiceNumber = inv?.invoice_number ?? null;
-      } catch (err) {
-        console.error("[subsidy] Invoice generation failed:", err);
+      if (targetPlaced) {
+        try {
+          await enqueuePDFInvoice(orderId);
+        } catch (err) {
+          console.warn("[subsidy] PDF enqueue failed:", err);
+        }
+        if (!existing) {
+          try {
+            await enqueuePushNotification({
+              event: "order.confirmed",
+              dealerId: body.customerId,
+              orderId,
+            });
+          } catch (err) {
+            console.warn("[subsidy] Push enqueue failed:", err);
+          }
+        }
+
+        try {
+          const pdf = await generateInvoicePdfSync(orderId);
+          invoicePdfUrl = pdf?.pdfUrl ?? null;
+          const [inv] = await pgClient`
+            SELECT invoice_number FROM invoices WHERE order_id = ${orderId} LIMIT 1
+          `;
+          invoiceNumber = inv?.invoice_number ?? null;
+        } catch (err) {
+          console.error("[subsidy] Invoice generation failed:", err);
+        }
       }
 
       return reply.status(201).send({
         message: existing
-          ? "Subsidy indent added to the customer's indent for this date"
+          ? targetPlaced
+            ? "Subsidy indent added to the customer's indent for this date"
+            : "Subsidy line set on the customer's draft — it is charged when the draft is placed"
           : "Subsidy indent placed successfully",
         orderId,
-        status: "confirmed",
+        // Honest status: an append onto a draft/payment_required order does
+        // NOT place it — reporting 'confirmed' here misled the admin UI.
+        status: existing ? existing.status : "confirmed",
         deliveryDate,
         appended: !!existing,
         quantity: body.quantity,
