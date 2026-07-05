@@ -334,25 +334,41 @@ export async function orderRoutes(app: FastifyInstance) {
             await cancelSupersededSiblings(tx, order!.id as string);
           }
 
-          // Insert order items — one multi-row statement. This used to be one
-          // INSERT per item: on a 26-line indent that was 26 sequential
-          // API→DB round-trips inside the transaction, holding the dealer's
-          // connection silent long enough for mobile carriers / edge proxies
-          // to reset it mid-request ("Order Failed — Network error").
+          // Insert order items — ONE multi-row statement, still a single
+          // round-trip: the old per-item loop meant 26 sequential API→DB hops
+          // on a 26-line indent, holding the dealer's connection silent long
+          // enough for mobile carriers / edge proxies to reset it mid-request
+          // ("Order Failed — Network error").
+          //
+          // Built with postgres.js's native row helper (scalar params) instead
+          // of unnest(${array}::type[]). Passing JS arrays as bound params
+          // through the Supabase transaction pooler (prepare:false) made
+          // postgres.js's Bind throw "The 'string' argument must be of type
+          // string ... Received an instance of Array" and 500 every order.
+          // Scalar params serialize cleanly and Postgres coerces each value to
+          // its destination column type.
+          const orderItemRows = orderItemsData.map((i) => ({
+            order_id: order!.id,
+            product_id: i.productId,
+            product_name: i.productName,
+            quantity: i.quantity,
+            unit_price: i.unitPrice,
+            gst_percent: i.gstPercent,
+            gst_amount: i.gstAmount,
+            line_total: i.lineTotal,
+          }));
           await tx`
-            INSERT INTO order_items
-              (order_id, product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total)
-            SELECT ${order!.id}, u.product_id, u.product_name, u.quantity,
-                   u.unit_price, u.gst_percent, u.gst_amount, u.line_total
-              FROM unnest(
-                ${orderItemsData.map((i) => i.productId)}::uuid[],
-                ${orderItemsData.map((i) => i.productName)}::text[],
-                ${orderItemsData.map((i) => i.quantity)}::int[],
-                ${orderItemsData.map((i) => i.unitPrice)}::numeric[],
-                ${orderItemsData.map((i) => i.gstPercent)}::numeric[],
-                ${orderItemsData.map((i) => i.gstAmount)}::numeric[],
-                ${orderItemsData.map((i) => i.lineTotal)}::numeric[]
-              ) AS u(product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total)
+            INSERT INTO order_items ${tx(
+              orderItemRows,
+              "order_id",
+              "product_id",
+              "product_name",
+              "quantity",
+              "unit_price",
+              "gst_percent",
+              "gst_amount",
+              "line_total"
+            )}
           `;
 
           // Deduct stock — one statement for the whole cart, still guarded
@@ -367,14 +383,19 @@ export async function orderRoutes(app: FastifyInstance) {
             );
           }
           const stockIds = [...qtyByProduct.keys()];
+          // Same single-statement guard as before — one round-trip, still
+          // blocks concurrent orders from driving stock < 0 — but the (id, qty)
+          // pairs travel as ONE jsonb param instead of two `::type[]` array
+          // params, which crash Bind through the pooler (see order_items note).
+          const stockRows = stockIds.map((id) => ({
+            id,
+            qty: qtyByProduct.get(id)!,
+          }));
           const deducted = await tx`
             UPDATE products p
-               SET stock = p.stock - u.qty, updated_at = now()
-              FROM unnest(
-                     ${stockIds}::uuid[],
-                     ${stockIds.map((id) => qtyByProduct.get(id)!)}::int[]
-                   ) AS u(id, qty)
-             WHERE p.id = u.id AND p.stock >= u.qty
+               SET stock = p.stock - v.qty, updated_at = now()
+              FROM jsonb_to_recordset(${tx.json(stockRows)}) AS v(id uuid, qty int)
+             WHERE p.id = v.id AND p.stock >= v.qty
              RETURNING p.id
           `;
           if (deducted.length !== stockIds.length) {
