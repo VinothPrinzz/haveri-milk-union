@@ -9,6 +9,7 @@ import {
   findMinQtyViolations,
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
+import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 
 export async function financeRoutes(app: FastifyInstance) {
   // ═══ INVOICES ═══
@@ -505,7 +506,7 @@ export async function financeRoutes(app: FastifyInstance) {
               created_at, updated_at
             )
             VALUES (
-              ${body.dealerId}, ${dealer.zone_id}, 'pending', ${body.paymentMode},
+              ${body.dealerId}, ${dealer.zone_id}, 'confirmed', ${body.paymentMode},
               ${body.paymentReference ?? null},                             -- ← NEW
               ${subtotal.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric,
               ${grandTotal.toFixed(2)}::numeric, ${orderItemsData.length},
@@ -524,14 +525,73 @@ export async function financeRoutes(app: FastifyInstance) {
           // Latch the deduction so a later cancel restores exactly once. See migration 0049.
           await tx`UPDATE orders SET stock_deducted = true WHERE id = ${order!.id}`;
 
-          // ... rest of the transaction (ledger, etc.) remains unchanged
+          // Admin-placed orders settle at placement, so they are inserted
+          // 'confirmed' (not 'pending' — dispatch/finance only look at
+          // 'confirmed'; see orders.ts). Stamp confirm time + the route-based
+          // self-cancel window (LEAST(now + 30 min, route close time for the
+          // delivery date)), identical to the Call Desk POST /orders path.
+          await tx`
+            UPDATE orders
+               SET confirmed_at = now(),
+                   cancel_window_ends_at = LEAST(
+                     now() + interval '30 minutes',
+                     COALESCE(
+                       (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                       now() + interval '30 minutes'
+                     )
+                   )
+              FROM dealers d
+              LEFT JOIN time_windows tw ON tw.route_id = d.route_id
+             WHERE orders.id = ${order!.id}::uuid
+               AND orders.dealer_id = d.id
+          `;
+
+          // One live order per (dealer, delivery_date): this is now the day's
+          // placed order, so cancel any stranded twin (draft / unpaid) for the
+          // same date.
+          await cancelSupersededSiblings(tx, order!.id as string);
+
           if (body.paymentMode === "wallet") {
             const [w] = await tx`SELECT balance FROM dealer_wallets WHERE dealer_id = ${body.dealerId}`;
             await tx`INSERT INTO dealer_ledger (dealer_id, type, amount, reference_id, reference_type, description, balance_after, performed_by) VALUES (${body.dealerId}, 'debit', ${grandTotal.toFixed(2)}::numeric, ${order!.id}, 'order', ${"Call Desk order " + order!.id}, ${w!.balance}::numeric, ${request.admin!.userId})`;
           }
 
+          // Credit-mode orders are debits against the dealer's credit line.
+          // No wallet movement; just an audit row + running balance for the
+          // credit-available calculation — the same maths the Call Desk
+          // POST /orders and standing-indent confirm paths use. Without this
+          // the order never reaches the books (Dealer Ledger, outstanding,
+          // available balance).
           if (body.paymentMode === "credit") {
-            // ... existing credit ledger logic
+            const [bal] = await tx`
+              SELECT
+                COALESCE(d.opening_balance, 0)
+                + COALESCE((SELECT SUM(CASE WHEN dl.type = 'credit'
+                                             AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                            THEN dl.amount ELSE 0 END)
+                              FROM dealer_ledger dl WHERE dl.dealer_id = d.id), 0)
+                - COALESCE((SELECT SUM(CASE WHEN dl.type = 'debit'
+                                             AND COALESCE(dl.voucher_type,'') <> 'Opening'
+                                            THEN dl.amount ELSE 0 END)
+                              FROM dealer_ledger dl WHERE dl.dealer_id = d.id), 0)
+                AS bal
+              FROM dealers d WHERE d.id = ${body.dealerId}
+            `;
+            const balanceAfter = parseFloat(bal!.bal) - grandTotal;
+            await tx`
+              INSERT INTO dealer_ledger
+                (dealer_id, type, amount,
+                 reference_id, reference_type,
+                 voucher_type, voucher_date,
+                 description, balance_after, performed_by)
+              VALUES
+                (${body.dealerId}, 'debit', ${grandTotal.toFixed(2)}::numeric,
+                 ${order!.id}, 'order',
+                 'Invoice', now()::date,
+                 ${"Call Desk credit order " + order!.id},
+                 ${balanceAfter.toFixed(2)}::numeric,
+                 ${request.admin!.userId})
+            `;
           }
 
           return order;
