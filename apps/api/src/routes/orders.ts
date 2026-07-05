@@ -371,10 +371,8 @@ export async function orderRoutes(app: FastifyInstance) {
             )}
           `;
 
-          // Deduct stock — one statement for the whole cart, still guarded
-          // against concurrent orders driving stock negative. Quantities are
-          // summed per product first: an UPDATE ... FROM with duplicate join
-          // rows would apply only one of them.
+          // Deduct stock. Quantities are summed per product first so a product
+          // that appears on two lines is deducted once with the combined qty.
           const qtyByProduct = new Map<string, number>();
           for (const item of body.items) {
             qtyByProduct.set(
@@ -382,29 +380,30 @@ export async function orderRoutes(app: FastifyInstance) {
               (qtyByProduct.get(item.productId) ?? 0) + item.quantity
             );
           }
-          const stockIds = [...qtyByProduct.keys()];
-          // Same single-statement guard as before — one round-trip, still
-          // blocks concurrent orders from driving stock < 0 — but the (id, qty)
-          // pairs travel as ONE jsonb param instead of two `::type[]` array
-          // params, which crash Bind through the pooler (see order_items note).
-          const stockRows = stockIds.map((id) => ({
-            id,
-            qty: qtyByProduct.get(id)!,
-          }));
-          const deducted = await tx`
-            UPDATE products p
-               SET stock = p.stock - v.qty, updated_at = now()
-              FROM jsonb_to_recordset(${tx.json(stockRows)}) AS v(id uuid, qty int)
-             WHERE p.id = v.id AND p.stock >= v.qty
-             RETURNING p.id
-          `;
-          if (deducted.length !== stockIds.length) {
-            const ok = new Set(deducted.map((r) => r.id as string));
-            const failed = stockIds.find((id) => !ok.has(id));
-            throw Object.assign(new Error("Stock depleted"), {
-              statusCode: 409,
-              productId: failed,
-            });
+          // Deduct each distinct product with SCALAR bound params only, still
+          // guarded (stock >= qty) so concurrent orders can't drive stock < 0.
+          //
+          // Every attempt to fold this into ONE statement passed a JS
+          // array/object as a bound param — unnest(${arr}::int[]), then
+          // jsonb_to_recordset(${tx.json(rows)}) — and BOTH crash postgres.js's
+          // Bind through the Supabase transaction pooler ("Received an instance
+          // of Array"): only scalar params serialize safely here. Distinct
+          // products per order are few (milk/curd variants), so the loop's
+          // round-trips are negligible — unlike the order_items line count,
+          // which stays a single multi-row INSERT above.
+          for (const [productId, qty] of qtyByProduct) {
+            const r = await tx`
+              UPDATE products
+                 SET stock = stock - ${qty}, updated_at = now()
+               WHERE id = ${productId}::uuid AND stock >= ${qty}
+               RETURNING id
+            `;
+            if (r.length === 0) {
+              throw Object.assign(new Error("Stock depleted"), {
+                statusCode: 409,
+                productId,
+              });
+            }
           }
           // stock_deducted was latched in the order INSERT above (same
           // transaction), so a later cancel restores exactly once and a
