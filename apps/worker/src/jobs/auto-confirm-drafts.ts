@@ -204,6 +204,70 @@ class WorkerStockConflict extends Error {
   }
 }
 
+// ── Supersede rule (in-worker copy of apps/api/src/lib/supersede-orders.ts —
+// keep the two in sync; the worker is its own package) ─────────────────
+//
+// One live order per (dealer, delivery_date). Once an order is PLACED,
+// every other same-day order still 'draft'/'payment_required' that has no
+// captured payment and no ledger debit is a stranded twin — cancel it and
+// restore any stock it latched (cart-UPI orders deduct at creation).
+// Keep the reason prefix in sync with SUPERSEDE_REASON_PREFIX in
+// apps/api/src/lib/supersede-orders.ts (payment-apply revives on it).
+const SUPERSEDE_REASON_PREFIX = "Superseded by placed order ";
+
+async function cancelSupersededSiblingsWorker(
+  winnerOrderId: string
+): Promise<number> {
+  return await sql.begin(async (tx) => {
+    const losers = await tx`
+      UPDATE orders o
+         SET status = 'cancelled',
+             cancellation_reason = ${SUPERSEDE_REASON_PREFIX + winnerOrderId},
+             cancelled_at = now(),
+             updated_at = now()
+        FROM orders w
+       WHERE w.id = ${winnerOrderId}::uuid
+         AND o.dealer_id = w.dealer_id
+         AND o.delivery_date = w.delivery_date
+         AND o.id <> w.id
+         AND o.status IN ('draft', 'payment_required')
+         AND NOT EXISTS (
+               SELECT 1 FROM razorpay_payments rp
+                WHERE rp.order_id = o.id AND rp.status = 'paid'
+             )
+         AND NOT EXISTS (
+               SELECT 1 FROM dealer_ledger dl
+                WHERE dl.reference_id = o.id
+                  AND dl.reference_type = 'order'
+                  AND dl.type = 'debit'
+             )
+      RETURNING o.id::text AS id
+    `;
+    for (const l of losers as unknown as Array<{ id: string }>) {
+      // Latch-guarded restore (mirror of restoreOrderStock): only orders
+      // that actually deducted stock give it back, exactly once.
+      const released = await tx`
+        UPDATE orders SET stock_deducted = false, updated_at = now()
+         WHERE id = ${l.id}::uuid AND stock_deducted = true
+        RETURNING id
+      `;
+      if (released.count === 0) continue;
+      const items = await tx`
+        SELECT product_id::text AS product_id, quantity AS quantity
+          FROM order_items WHERE order_id = ${l.id}::uuid
+      `;
+      for (const it of items as any[]) {
+        await tx`
+          UPDATE products
+             SET stock = stock + ${it.quantity}, updated_at = now()
+           WHERE id = ${it.product_id}::uuid
+        `;
+      }
+    }
+    return losers.count;
+  });
+}
+
 /** Guarded, idempotent deduction inside the confirm tx — stock can never
  *  go negative. Claims the orders.stock_deducted latch first (mirror of
  *  apps/api/src/lib/stock-check.ts) so a re-run never double-deducts. */
@@ -342,6 +406,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
   let materialized = 0;
   let cancelledEmpty = 0;
   let discardedUnpaid = 0;
+  let superseded = 0;
   let skipped = 0;
   let failed = 0;
 
@@ -580,6 +645,14 @@ export async function processAutoConfirmDrafts(_job: Job) {
 
     if (!applied) return "confirmed"; // already handled by a prior tick
 
+    // This order is now the day's placed order — cancel any stranded twin
+    // (older duplicate draft / unpaid payment_required) for the same date.
+    try {
+      await cancelSupersededSiblingsWorker(orderId);
+    } catch (e: any) {
+      console.warn(`[AutoConfirm] supersede failed for ${orderId}:`, e?.message);
+    }
+
     await pdfQueue
       .add(`invoice-${orderId.slice(0, 8)}`, { orderId }, {
         removeOnComplete: 100,
@@ -750,7 +823,32 @@ export async function processAutoConfirmDrafts(_job: Job) {
           continue;
         }
 
-        // ── Already placed / cancelled / awaiting payment → leave alone ─
+        // ── Already placed → leave it, but sweep up stranded twins ──────
+        // The LATERAL above sees only the MOST-RECENT order; an older
+        // duplicate draft (double-edit race, or a standing-indent draft
+        // beside a cart order) would otherwise sit unconfirmed AND
+        // uncancelled forever, showing "awaiting payment" for goods the
+        // dealer already paid for.
+        if (
+          status === "confirmed" ||
+          status === "dispatched" ||
+          status === "delivered"
+        ) {
+          if (dealer.order_id) {
+            try {
+              superseded += await cancelSupersededSiblingsWorker(dealer.order_id);
+            } catch (e: any) {
+              console.warn(
+                `[AutoConfirm] supersede sweep failed for ${dealer.order_id}:`,
+                e?.message
+              );
+            }
+          }
+          skipped++;
+          continue;
+        }
+
+        // ── Cancelled / awaiting payment (unpaid) → leave alone ─────────
         if (status !== null) {
           skipped++;
           continue;
@@ -1007,6 +1105,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
     materialized,
     cancelledEmpty,
     discardedUnpaid,
+    superseded,
     skipped,
     failed,
     employees: {

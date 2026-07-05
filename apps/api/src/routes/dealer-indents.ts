@@ -32,10 +32,20 @@ import {
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
 import { enqueuePDFInvoice } from "../lib/queue.js";
+import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
+
+// The half-price HTM 1000ML SKU (migration 0056). The subsidy scheme is
+// UNION-OPERATED: the line is assigned per-dealer from the admin panel
+// (standing template / Subsidy Indents page) and the dealer must not be
+// able to add, change, or remove it — here it is pinned server-side in
+// PATCH /drafts/:date, and flagged isSubsidy in GET /drafts/:date so the
+// app renders it read-only. (The standing-indent PUT already rejects it
+// via make_zero_in_indents, and the catalog endpoint hides it.)
+const SUBSIDY_PRODUCT_CODE = "PD0191S";
 
 function getDealerId(request: FastifyRequest): string {
   const d = (request as unknown as { dealer?: { dealerId: string } }).dealer;
@@ -364,6 +374,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
             p.icon                  AS "icon",
             p.image_url             AS "imageUrl",
             p.unit                  AS "unit",
+            (p.code = ${SUBSIDY_PRODUCT_CODE}) AS "isSubsidy",
             c.name                  AS "categoryName"
           FROM order_items oi
           JOIN products p ON p.id = oi.product_id
@@ -391,6 +402,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           icon: r.icon,
           imageUrl: r.imageUrl,
           unit: r.unit,
+          isSubsidy: Boolean(r.isSubsidy),
           categoryName: r.categoryName ?? null,
         }));
         return reply.send({
@@ -420,6 +432,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           p.image_url             AS "imageUrl",
           p.base_price::numeric   AS "unitPrice",
           p.gst_percent::numeric  AS "gstPercent",
+          (p.code = ${SUBSIDY_PRODUCT_CODE}) AS "isSubsidy",
           c.name                  AS "categoryName"
         FROM dealer_standing_indents dsi
         JOIN products p ON p.id = dsi.product_id
@@ -451,6 +464,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           icon: r.icon,
           imageUrl: r.imageUrl,
           unit: r.unit,
+          isSubsidy: Boolean(r.isSubsidy),
           categoryName: r.categoryName ?? null,
         };
       });
@@ -494,8 +508,8 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         ),
       });
       const body = schema.parse(request.body);
-      const lineItems = body.items.filter((i) => i.quantity > 0);
-   
+      let lineItems = body.items.filter((i) => i.quantity > 0);
+
       // ── FIX: if an order for this date already exists and is no longer a
       // draft, it has been placed — reject the edit instead of mutating a
       // placed order or inserting a duplicate.
@@ -515,7 +529,43 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           status: active.status,
         });
       }
-   
+
+      // ── Subsidy line is union-managed — pin it ──────────────────────
+      // Whatever the client sent for PD0191S is ignored. The line is held
+      // at what is already on this date's draft (or, for a fresh draft,
+      // what the admin-assigned standing template says). Dealers keep full
+      // control of every other line; only the admin panel moves this one.
+      const [subsidyProduct] = await pgClient`
+        SELECT id::text AS id FROM products
+         WHERE code = ${SUBSIDY_PRODUCT_CODE} AND deleted_at IS NULL
+         LIMIT 1
+      `;
+      if (subsidyProduct) {
+        let pinnedQty = 0;
+        if (active) {
+          const [line] = await pgClient`
+            SELECT quantity FROM order_items
+             WHERE order_id = ${active.id}::uuid
+               AND product_id = ${subsidyProduct.id}::uuid
+             LIMIT 1
+          `;
+          pinnedQty = line ? Number(line.quantity) : 0;
+        } else {
+          const [tpl] = await pgClient`
+            SELECT default_qty FROM dealer_standing_indents
+             WHERE dealer_id = ${dealerId}
+               AND product_id = ${subsidyProduct.id}::uuid
+               AND active = true
+             LIMIT 1
+          `;
+          pinnedQty = tpl ? Number(tpl.default_qty) : 0;
+        }
+        lineItems = lineItems.filter((i) => i.productId !== subsidyProduct.id);
+        if (pinnedQty > 0) {
+          lineItems.push({ productId: subsidyProduct.id, quantity: pinnedQty });
+        }
+      }
+
       const productRows =
         lineItems.length > 0
           ? await pgClient`
@@ -575,7 +625,18 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
    
       const orderId = await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
-   
+
+        // Serialize draft creation per (dealer, date). The partitioned
+        // orders table can't carry a unique index on (dealer_id,
+        // delivery_date), so two concurrent PATCHes (mobile network
+        // retries on flaky rural links) could BOTH see "no draft" and
+        // insert twins — one dealer accumulated five. The xact-scoped
+        // advisory lock makes the second wait until the first commits,
+        // so its SELECT below finds the committed draft and UPDATEs it.
+        await tx`
+          SELECT pg_advisory_xact_lock(hashtext(${dealerId + ":" + params.date}))
+        `;
+
         // Only ever update an existing DRAFT. (A placed order was already
         // rejected above; this guard keeps the transaction consistent.)
         const [existing] = await tx`
@@ -819,6 +880,10 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
 
         // Move physical stock last — its guard is what can abort the confirm.
         await deductOrderStock(tx, order.id);
+
+        // This is now the day's placed order — cancel any stranded twin
+        // (older duplicate draft / unpaid payment_required) for this date.
+        await cancelSupersededSiblings(tx, order.id);
       });
       } catch (err) {
         if (err instanceof StockConflictError) {

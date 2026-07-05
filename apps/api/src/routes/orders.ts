@@ -25,6 +25,7 @@ import {
 } from "../lib/min-order-qty.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
 import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
+import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
 
@@ -324,6 +325,13 @@ export async function orderRoutes(app: FastifyInstance) {
                WHERE orders.id = ${order!.id}::uuid
                  AND orders.dealer_id = d.id
             `;
+
+            // One live order per (dealer, delivery_date): this cart order
+            // is now the day's placed order, so cancel any stranded
+            // draft / unpaid payment_required twin for the same date
+            // (e.g. the standing-indent draft materialised this morning).
+            // UPI orders do this at payment-apply time instead.
+            await cancelSupersededSiblings(tx, order!.id as string);
           }
 
           // Insert order items — one multi-row statement. This used to be one

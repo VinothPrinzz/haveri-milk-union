@@ -37,6 +37,7 @@ function normalizeDailyDraft(raw: any): DailyDraft {
         imageUrl: it?.imageUrl ?? null,
         unit: String(it?.unit ?? ""),
         categoryName: it?.categoryName ?? null,
+        isSubsidy: Boolean(it?.isSubsidy),
       }))
     : [];
   const t = raw?.totals ?? {};
