@@ -334,31 +334,45 @@ export async function orderRoutes(app: FastifyInstance) {
             await cancelSupersededSiblings(tx, order!.id as string);
           }
 
-          // Insert order items — one multi-row statement. This used to be one
-          // INSERT per item: on a 26-line indent that was 26 sequential
-          // API→DB round-trips inside the transaction, holding the dealer's
-          // connection silent long enough for mobile carriers / edge proxies
-          // to reset it mid-request ("Order Failed — Network error").
+          // Insert order items — ONE multi-row statement, still a single
+          // round-trip: the old per-item loop meant 26 sequential API→DB hops
+          // on a 26-line indent, holding the dealer's connection silent long
+          // enough for mobile carriers / edge proxies to reset it mid-request
+          // ("Order Failed — Network error").
+          //
+          // Built with postgres.js's native row helper (scalar params) instead
+          // of unnest(${array}::type[]). Passing JS arrays as bound params
+          // through the Supabase transaction pooler (prepare:false) made
+          // postgres.js's Bind throw "The 'string' argument must be of type
+          // string ... Received an instance of Array" and 500 every order.
+          // Scalar params serialize cleanly and Postgres coerces each value to
+          // its destination column type.
+          const orderItemRows = orderItemsData.map((i) => ({
+            order_id: order!.id,
+            product_id: i.productId,
+            product_name: i.productName,
+            quantity: i.quantity,
+            unit_price: i.unitPrice,
+            gst_percent: i.gstPercent,
+            gst_amount: i.gstAmount,
+            line_total: i.lineTotal,
+          }));
           await tx`
-            INSERT INTO order_items
-              (order_id, product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total)
-            SELECT ${order!.id}, u.product_id, u.product_name, u.quantity,
-                   u.unit_price, u.gst_percent, u.gst_amount, u.line_total
-              FROM unnest(
-                ${orderItemsData.map((i) => i.productId)}::uuid[],
-                ${orderItemsData.map((i) => i.productName)}::text[],
-                ${orderItemsData.map((i) => i.quantity)}::int[],
-                ${orderItemsData.map((i) => i.unitPrice)}::numeric[],
-                ${orderItemsData.map((i) => i.gstPercent)}::numeric[],
-                ${orderItemsData.map((i) => i.gstAmount)}::numeric[],
-                ${orderItemsData.map((i) => i.lineTotal)}::numeric[]
-              ) AS u(product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total)
+            INSERT INTO order_items ${tx(
+              orderItemRows,
+              "order_id",
+              "product_id",
+              "product_name",
+              "quantity",
+              "unit_price",
+              "gst_percent",
+              "gst_amount",
+              "line_total"
+            )}
           `;
 
-          // Deduct stock — one statement for the whole cart, still guarded
-          // against concurrent orders driving stock negative. Quantities are
-          // summed per product first: an UPDATE ... FROM with duplicate join
-          // rows would apply only one of them.
+          // Deduct stock. Quantities are summed per product first so a product
+          // that appears on two lines is deducted once with the combined qty.
           const qtyByProduct = new Map<string, number>();
           for (const item of body.items) {
             qtyByProduct.set(
@@ -366,24 +380,30 @@ export async function orderRoutes(app: FastifyInstance) {
               (qtyByProduct.get(item.productId) ?? 0) + item.quantity
             );
           }
-          const stockIds = [...qtyByProduct.keys()];
-          const deducted = await tx`
-            UPDATE products p
-               SET stock = p.stock - u.qty, updated_at = now()
-              FROM unnest(
-                     ${stockIds}::uuid[],
-                     ${stockIds.map((id) => qtyByProduct.get(id)!)}::int[]
-                   ) AS u(id, qty)
-             WHERE p.id = u.id AND p.stock >= u.qty
-             RETURNING p.id
-          `;
-          if (deducted.length !== stockIds.length) {
-            const ok = new Set(deducted.map((r) => r.id as string));
-            const failed = stockIds.find((id) => !ok.has(id));
-            throw Object.assign(new Error("Stock depleted"), {
-              statusCode: 409,
-              productId: failed,
-            });
+          // Deduct each distinct product with SCALAR bound params only, still
+          // guarded (stock >= qty) so concurrent orders can't drive stock < 0.
+          //
+          // Every attempt to fold this into ONE statement passed a JS
+          // array/object as a bound param — unnest(${arr}::int[]), then
+          // jsonb_to_recordset(${tx.json(rows)}) — and BOTH crash postgres.js's
+          // Bind through the Supabase transaction pooler ("Received an instance
+          // of Array"): only scalar params serialize safely here. Distinct
+          // products per order are few (milk/curd variants), so the loop's
+          // round-trips are negligible — unlike the order_items line count,
+          // which stays a single multi-row INSERT above.
+          for (const [productId, qty] of qtyByProduct) {
+            const r = await tx`
+              UPDATE products
+                 SET stock = stock - ${qty}, updated_at = now()
+               WHERE id = ${productId}::uuid AND stock >= ${qty}
+               RETURNING id
+            `;
+            if (r.length === 0) {
+              throw Object.assign(new Error("Stock depleted"), {
+                statusCode: 409,
+                productId,
+              });
+            }
           }
           // stock_deducted was latched in the order INSERT above (same
           // transaction), so a later cancel restores exactly once and a
