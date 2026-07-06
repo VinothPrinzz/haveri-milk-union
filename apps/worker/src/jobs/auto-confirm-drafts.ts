@@ -111,14 +111,19 @@ interface WorkerStockShortfall {
 async function workerStockShortfalls(
   orderId: string
 ): Promise<WorkerStockShortfall[]> {
+  // A variant SKU (the HTM 1000ML subsidy line) draws its stock from a base
+  // SKU via products.stock_source_product_id — resolve to that row's stock,
+  // not the variant's own (which stays 0). Mirror of stock-check.ts in the
+  // API package; see migration 0059.
   const rows = await sql`
     SELECT oi.product_name AS product_name,
            oi.quantity     AS ordered,
-           p.stock         AS available
+           sp.stock        AS available
       FROM order_items oi
-      JOIN products p ON p.id = oi.product_id
+      JOIN products p  ON p.id = oi.product_id
+      JOIN products sp ON sp.id = COALESCE(p.stock_source_product_id, p.id)
      WHERE oi.order_id = ${orderId}::uuid
-       AND oi.quantity > p.stock
+       AND oi.quantity > sp.stock
   `;
   return rows.map((r: any) => ({
     productName: r.product_name,
@@ -252,9 +257,14 @@ async function cancelSupersededSiblingsWorker(
         RETURNING id
       `;
       if (released.count === 0) continue;
+      // Restore to the same row the deduction targeted — a variant SKU's
+      // base SKU (COALESCE(stock_source_product_id, id)). See migration 0059.
       const items = await tx`
-        SELECT product_id::text AS product_id, quantity AS quantity
-          FROM order_items WHERE order_id = ${l.id}::uuid
+        SELECT COALESCE(p.stock_source_product_id, p.id)::text AS product_id,
+               oi.quantity AS quantity
+          FROM order_items oi
+          JOIN products p ON p.id = oi.product_id
+         WHERE oi.order_id = ${l.id}::uuid
       `;
       for (const it of items as any[]) {
         await tx`
@@ -281,9 +291,13 @@ async function deductOrderStockWorker(
     RETURNING id
   `;
   if (claimed.count === 0) return; // already deducted
+  // Variant SKUs draw from their base SKU's stock row (migration 0059).
   const items = await tx`
-    SELECT product_id::text AS product_id, quantity AS quantity
-      FROM order_items WHERE order_id = ${orderId}::uuid
+    SELECT COALESCE(p.stock_source_product_id, p.id)::text AS product_id,
+           oi.quantity AS quantity
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+     WHERE oi.order_id = ${orderId}::uuid
   `;
   for (const it of items as any[]) {
     const updated = await tx`

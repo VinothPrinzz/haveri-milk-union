@@ -56,15 +56,19 @@ export async function getOrderStockShortfalls(
   client: typeof pgClient,
   orderId: string
 ): Promise<StockShortfall[]> {
+  // A variant SKU (e.g. the HTM 1000ML subsidy line) draws its stock from a
+  // base SKU via products.stock_source_product_id — resolve to that row's
+  // stock, not the variant's own (which stays 0). See migration 0059.
   const rows = await client`
     SELECT oi.product_id::text AS "productId",
            oi.product_name     AS "productName",
            oi.quantity         AS "ordered",
-           p.stock             AS "available"
+           sp.stock            AS "available"
       FROM order_items oi
-      JOIN products p ON p.id = oi.product_id
+      JOIN products p  ON p.id = oi.product_id
+      JOIN products sp ON sp.id = COALESCE(p.stock_source_product_id, p.id)
      WHERE oi.order_id = ${orderId}::uuid
-       AND oi.quantity > p.stock
+       AND oi.quantity > sp.stock
   `;
   return (rows as any[]).map((r) => ({
     productId: r.productId,
@@ -105,24 +109,28 @@ export async function deductOrderStock(
   orderId: string
 ): Promise<void> {
   if (!(await claimDeduction(tx, orderId))) return; // already deducted
+  // stockProductId resolves a variant SKU to its base SKU's stock row
+  // (COALESCE(stock_source_product_id, id)); deduct there. See migration 0059.
   const items = await tx`
-    SELECT product_id::text AS "productId",
-           product_name     AS "productName",
-           quantity         AS "quantity"
-      FROM order_items
-     WHERE order_id = ${orderId}::uuid
+    SELECT oi.product_id::text AS "productId",
+           oi.product_name     AS "productName",
+           oi.quantity         AS "quantity",
+           COALESCE(p.stock_source_product_id, p.id)::text AS "stockProductId"
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+     WHERE oi.order_id = ${orderId}::uuid
   `;
   for (const it of items as any[]) {
     const updated = await tx`
       UPDATE products
          SET stock = stock - ${it.quantity}, updated_at = now()
-       WHERE id = ${it.productId}::uuid
+       WHERE id = ${it.stockProductId}::uuid
          AND stock >= ${it.quantity}
       RETURNING id
     `;
     if (updated.count === 0) {
       const [cur] = await tx`
-        SELECT stock FROM products WHERE id = ${it.productId}::uuid
+        SELECT stock FROM products WHERE id = ${it.stockProductId}::uuid
       `;
       throw new StockConflictError([
         {
@@ -149,14 +157,17 @@ export async function deductOrderStockCapped(
   orderId: string
 ): Promise<StockShortfall[]> {
   if (!(await claimDeduction(tx, orderId))) return []; // already deducted
+  // Variant SKUs draw from their base SKU's stock row (migration 0059).
   const items = await tx`
-    SELECT product_id::text AS "productId",
-           product_name     AS "productName",
-           quantity         AS "quantity",
-           p.stock          AS "available"
-      FROM order_items
-      JOIN products p ON p.id = order_items.product_id
-     WHERE order_id = ${orderId}::uuid
+    SELECT oi.product_id::text AS "productId",
+           oi.product_name     AS "productName",
+           oi.quantity         AS "quantity",
+           sp.stock            AS "available",
+           sp.id::text         AS "stockProductId"
+      FROM order_items oi
+      JOIN products p  ON p.id = oi.product_id
+      JOIN products sp ON sp.id = COALESCE(p.stock_source_product_id, p.id)
+     WHERE oi.order_id = ${orderId}::uuid
   `;
   const oversold: StockShortfall[] = [];
   for (const it of items as any[]) {
@@ -171,7 +182,7 @@ export async function deductOrderStockCapped(
     await tx`
       UPDATE products
          SET stock = GREATEST(stock - ${it.quantity}, 0), updated_at = now()
-       WHERE id = ${it.productId}::uuid
+       WHERE id = ${it.stockProductId}::uuid
     `;
   }
   return oversold;
@@ -194,15 +205,20 @@ export async function restoreOrderStock(
     RETURNING id
   `;
   if (released.count === 0) return; // never deducted — nothing to restore
+  // Restore to the same row the deduction targeted — a variant SKU's base
+  // SKU (COALESCE(stock_source_product_id, id)). See migration 0059.
   const items = await tx`
-    SELECT product_id::text AS "productId", quantity AS "quantity"
-      FROM order_items WHERE order_id = ${orderId}::uuid
+    SELECT COALESCE(p.stock_source_product_id, p.id)::text AS "stockProductId",
+           oi.quantity AS "quantity"
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+     WHERE oi.order_id = ${orderId}::uuid
   `;
   for (const it of items as any[]) {
     await tx`
       UPDATE products
          SET stock = stock + ${it.quantity}, updated_at = now()
-       WHERE id = ${it.productId}::uuid
+       WHERE id = ${it.stockProductId}::uuid
     `;
   }
 }

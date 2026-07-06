@@ -50,6 +50,12 @@ export const products = pgTable("products", {
   imageUrl:           text("image_url"),
   makeZeroInIndents:  boolean("make_zero_in_indents").notNull().default(false),
 
+  // Self-reference (migration 0059). When set, this SKU is a pricing/scheme
+  // variant of another product and draws its stock from that base SKU — all
+  // stock reads/deductions/restores resolve COALESCE(stockSourceProductId,
+  // id). NULL = the SKU uses its own stock. Used by "HTM 1000ML (Subsidy)".
+  stockSourceProductId: uuid("stock_source_product_id"),
+
 });
 
 // ── Price Revisions ──
