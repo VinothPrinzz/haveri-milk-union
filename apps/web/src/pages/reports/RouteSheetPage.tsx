@@ -8,8 +8,8 @@
 //     the route TOTAL row and a "Total Crates" row below it (for the
 //     9 across products), showing crates ± leftover packets.
 //   • 1 abstract page  → Route Sheet Abstract table + ₹ summary line.
-//                         Qty (Kg/Ltr) column shows values divided by
-//                         1000 so pack_size in ml/g converts correctly.
+//                         Qty (Kg/Ltr) = packets × pack_size, read from the
+//                         product's DB fields (see @/lib/kgLtr).
 //   • 1 security page  → Despatch Summary For Security checklist with
 //                         "Crates Out" (prefilled total) and
 //                         "Crates In"  (blank fill-line for security).
@@ -20,11 +20,10 @@
 //        → SHBM 200ML → SAMRUDHI 500ML → CURD 200GM → CURD 500GM
 //   2. Total Crates row added on page 1 below the TOTAL row (same styling
 //        as TOTAL row), showing crates+pkts or crates-pkts per column.
-//   3. Qty (Kg/Ltr) on page 2 uses computeKgLtr() which inspects the unit
-//        text: pack_size is in ml/g for liquid/solid small packs (÷1000),
-//        but already in Kg/Ltr for large bulk packs like 5KG, 10KG (×1).
-//        Root cause: migration 0006 seeds pack_size by extracting the leading
-//        number from the unit text — "500ml Pouch" → 500 (ml), "5KG" → 5 (Kg).
+//   3. Qty (Kg/Ltr) on page 2 uses computeKgLtr() (@/lib/kgLtr), which
+//        multiplies packets by products.pack_size — pack_size is stored in
+//        the macro unit (L/kg), so multi-pack SKUs like "180 ML (30 PACK)"
+//        (5.4 L) report their true carton volume instead of one pouch.
 //   4. Security page: Crates Out (prefilled) and Crates In (blank).
 // ════════════════════════════════════════════════════════════════════
 import { useState, useMemo, type ReactNode } from "react";
@@ -45,6 +44,7 @@ import {
   type RouteSheetAcrossProduct,
 } from "@/services/report";
 import { toCsv } from "@/lib/exporters";
+import { computeKgLtr } from "@/lib/kgLtr";
 
 // ── Display order for the across-product columns ──────────────────
 // Driven by products.abstract_position, set per-product from the admin panel
@@ -100,37 +100,7 @@ function fmtCratePkts(crates: number, pktPlus: number, pktMinus: number): string
   return `${crates}`;
 }
 
-// ── Helper: convert packets × pack_size → Kg or Ltr ───────────────
-// Root cause (migration 0006): pack_size is seeded by extracting the
-// leading number from the product unit text:
-//   "500ml Pouch"  → pack_size=500 (ml  → ÷1000 → Ltr)
-//   "200g Block"   → pack_size=200 (g   → ÷1000 → Kg)
-//   "5KG Bucket"   → pack_size=5   (Kg  → ×1, no division)
-//   "10KG Bucket"  → pack_size=10  (Kg  → ×1, no division)
-//   "1Ltr Pouch"   → pack_size=1   (Ltr → ×1, no division)
-// We detect macro-unit products by scanning the unit string for "kg"
-// or "ltr/litre/liter" keywords (case-insensitive).
-function computeKgLtr(packets: number, packSize: number, unit: string, alias = ""): number {
-  // Primary: read the per-pack size from the product name (alias) when it
-  // carries an explicit size token — e.g. "HTM 1000ML" → 1 L/pack,
-  // "HTM 500ML" → 0.5 L/pack, "100 GM" → 0.1 Kg/pack. This is the source of
-  // truth because products.pack_size is stored inconsistently (ml/g for some
-  // products, already Kg/Ltr for others such as HTM). ml/g convert ÷1000;
-  // Kg/Ltr/L are used as-is.
-  const m = alias.match(/(\d+(?:\.\d+)?)\s*(kg|kilogram|ltr|litre|liter|ml|gm|g|l)\b/i);
-  if (m) {
-    const size = parseFloat(m[1]);
-    const tok = m[2].toLowerCase();
-    const perPack = (tok === "ml" || tok === "g" || tok === "gm") ? size / 1000 : size;
-    return packets * perPack;
-  }
-  // Legacy fallback: pack_size with unit-keyword macro detection.
-  //   "500ml Pouch" → 500 (÷1000)   "5KG Bucket" → 5 (×1)   "1Ltr Pouch" → 1 (×1)
-  // NOTE: no \b before "kg" — "5KG" has no whitespace between digit and K.
-  const u = unit.toLowerCase();
-  const alreadyMacro = /kg/.test(u) || /ltr|litre|liter/.test(u);
-  return alreadyMacro ? packets * packSize : packets * packSize / 1000;
-}
+// Qty (Kg/Ltr) = packets × pack_size, read from the DB — see @/lib/kgLtr.
 
 // ── Content-aware pagination ────────────────────────────────────────
 // A fixed row-count split orphaned tall rows: 13 rows only fit when they're
@@ -533,7 +503,7 @@ function RouteRowsPage({
 // ════════════════════════════════════════════════════════════════════
 // PAGE 2: Route Sheet Abstract (per-product breakdown only)
 // — No TM/HM-Qty, no FCM-Qty, no signatures, no return particulars —
-// Qty (Kg/Ltr) = packets × pack_size ÷ 1000 (pack_size stored in ml/g)
+// Qty (Kg/Ltr) = packets × pack_size, read from the DB (see @/lib/kgLtr)
 // ════════════════════════════════════════════════════════════════════
 function AbstractPage({
   data, route,
@@ -550,7 +520,7 @@ function AbstractPage({
   // this grand total is restricted to the Milk category.
   const totalKgLtr = items
     .filter(i => (i.category ?? "").trim().toLowerCase() === "milk")
-    .reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit, i.alias), 0);
+    .reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit), 0);
 
   return (
     <div className="rs-page rs-abstract-page">
@@ -582,7 +552,7 @@ function AbstractPage({
         </thead>
         <tbody>
           {items.map(i => {
-            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit, i.alias);
+            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit);
             return (
               <tr key={i.productId}>
                 <td>{i.alias}</td>

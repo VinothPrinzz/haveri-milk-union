@@ -32,6 +32,7 @@ import {
   type RouteSheetAcrossProduct,
 } from "@/services/report";
 import { toCsv } from "@/lib/exporters";
+import { computeKgLtr } from "@/lib/kgLtr";
 
 // ── Fixed display order for the across-product columns ────────────
 // Products matched by `code` (case-insensitive). Anything not listed
@@ -67,26 +68,7 @@ function fmtCratePkts(crates: number, pktPlus: number, pktMinus: number): string
   return `${crates}`;
 }
 
-// ── Helper: convert packets × pack size → Kg or Ltr ───────────────
-// The per-pack size is read from the product name (alias) when it carries
-// an explicit size token — e.g. "HTM 1000ML" → 1 L/pack, "100 GM" → 0.1
-// Kg/pack. This is the source of truth because products.pack_size is stored
-// inconsistently (ml/g for some, already Kg/Ltr for others). ml/g convert
-// ÷1000; Kg/Ltr/L are used as-is. Falls back to the legacy pack_size +
-// unit-keyword heuristic only when the name has no size token.
-function computeKgLtr(packets: number, packSize: number, unit: string, alias = ""): number {
-  const m = alias.match(/(\d+(?:\.\d+)?)\s*(kg|kilogram|ltr|litre|liter|ml|gm|g|l)\b/i);
-  if (m) {
-    const size = parseFloat(m[1]);
-    const u = m[2].toLowerCase();
-    const perPack = (u === "ml" || u === "g" || u === "gm") ? size / 1000 : size;
-    return packets * perPack;
-  }
-  // Legacy fallback: pack_size with unit-keyword macro detection.
-  const u = unit.toLowerCase();
-  const alreadyMacro = /kg/.test(u) || /ltr|litre|liter/.test(u);
-  return alreadyMacro ? packets * packSize : packets * packSize / 1000;
-}
+// Qty (Kg/Ltr) = packets × pack_size, read from the DB — see @/lib/kgLtr.
 
 // 13 agent rows per A4 landscape page.
 const ROWS_PER_PAGE = 13;
@@ -434,7 +416,7 @@ function AbstractPage({
   const items = route.abstract.items;
   const t = route.abstract.totals;
 
-  const totalKgLtr = items.reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit, i.alias), 0);
+  const totalKgLtr = items.reduce((s, i) => s + computeKgLtr(i.packets, i.packSize, i.unit), 0);
 
   return (
     <div className="rs-page rs-abstract-page">
@@ -466,7 +448,7 @@ function AbstractPage({
         </thead>
         <tbody>
           {items.map(i => {
-            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit, i.alias);
+            const kgLtrCorrect = computeKgLtr(i.packets, i.packSize, i.unit);
             return (
               <tr key={i.productId}>
                 <td>{i.alias}</td>
