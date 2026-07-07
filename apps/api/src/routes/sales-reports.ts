@@ -408,6 +408,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
                c.name AS category_name,
                p.hsn_no,
                COALESCE(p.pack_size, 0)::numeric AS pack_size,
+               p.unit,
                p.sort_order,
                p.gst_percent::numeric AS gst_percent,
                o.created_at::date AS sale_date,
@@ -445,6 +446,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
         category: string;
         hsn: string;
         packSize: number;
+        unit: string;
         rate: number;      // unit_price observed (last seen)
         gstPct: number;
         sortOrder: number;
@@ -484,6 +486,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
             category: (r.category_name ?? "").toUpperCase(),
             hsn: r.hsn_no ?? "",
             packSize: parseFloat(r.pack_size) || 0,
+            unit: r.unit ?? "",
             rate: parseFloat(r.unit_price) || 0,
             gstPct: parseFloat(r.gst_percent) || 0,
             sortOrder: Number(r.sort_order) || 0,
@@ -529,7 +532,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
 
           // Footer totals — all arrays aligned with products[]
           const pkts = products.map((_, i) => dailyRows.reduce((s, r) => s + (r.qty[i] ?? 0), 0));
-          const kgLtr = products.map((p, i) => round3(((pkts[i] ?? 0) * p.packSize) / 1000));
+          const kgLtr = products.map((p, i) => round3(toKgLtr(pkts[i] ?? 0, p.packSize, p.unit)));
           const basic = products.map((p, i) => round2((pkts[i] ?? 0) * p.rate));
           const cgstPctArr = products.map(p => round2(p.gstPct / 2));
           const sgstPctArr = products.map(p => round2(p.gstPct / 2));
@@ -613,7 +616,9 @@ export async function salesReportRoutes(app: FastifyInstance) {
       const cfg = await loadReportConfig();
 
       const products = await pgClient`
-        SELECT p.id, p.code, p.report_alias, p.name, p.sort_order, c.name AS category_name
+        SELECT p.id, p.code, p.report_alias, p.name, p.sort_order,
+               COALESCE(p.pack_size, 0)::numeric AS pack_size, p.unit,
+               c.name AS category_name
         FROM products p
         JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL AND p.available = true
@@ -738,16 +743,21 @@ export async function salesReportRoutes(app: FastifyInstance) {
       });
 
       // ── Taluka wise milk sales (In Ltrs) overview ──
-      // Total Milk (Ltr) / Total Curd (Kg) per taluka = Σ packets × qtyToUnit,
-      // using the same SKU factors as the Daily Sales Report. Avg = Total ÷ days.
+      // Total Milk (Ltr) / Total Curd (Kg) per taluka = Σ packets × per-pack
+      // volume, read live from each product's DB pack_size + unit (same SKU set
+      // as the Daily Sales Report; hardcoded qtyToUnit only as a fallback when
+      // a product/pack_size can't be resolved). Avg = Total ÷ days.
       const milkFactorById = new Map<string, number>();
       const curdFactorById = new Map<string, number>();
       {
         const milkByCode = new Map(MILK_COLS.map(c => [c.code, c.qtyToUnit]));
         const curdByCode = new Map(CURD_COLS.map(c => [c.code, c.qtyToUnit]));
         for (const p of products as any[]) {
-          if (milkByCode.has(p.code)) milkFactorById.set(p.id, milkByCode.get(p.code)!);
-          if (curdByCode.has(p.code)) curdFactorById.set(p.id, curdByCode.get(p.code)!);
+          const dbPerPack = toKgLtr(1, parseFloat(p.pack_size) || 0, p.unit ?? "");
+          if (milkByCode.has(p.code))
+            milkFactorById.set(p.id, dbPerPack > 0 ? dbPerPack : milkByCode.get(p.code)!);
+          if (curdByCode.has(p.code))
+            curdFactorById.set(p.id, dbPerPack > 0 ? dbPerPack : curdByCode.get(p.code)!);
         }
       }
       const volByTaluka = new Map<string, { milk: number; curd: number }>();
@@ -802,10 +812,11 @@ export async function salesReportRoutes(app: FastifyInstance) {
   //   2. Curd sales (In Kgs)  — taluka × curd product
   //   3. Summary — Total Milk / Avg Milk / Total Curd / Avg Curd per taluka
   //
-  //   Volume per (taluka, product) = Σ packets × pack_size / 1000, so milk
-  //   reads in litres and curd in kilograms (pack_size is ml for milk, g for
-  //   curd). Averages divide by the number of days in the period. Sales are
-  //   attributed to the order's zone (taluka), like the Taluka/Agent report.
+  //   Volume per (taluka, product) = Σ packets × pack_size (unit-aware, see
+  //   toKgLtr) — pack_size is stored in the macro unit (L for milk, kg for
+  //   curd), so milk reads in litres and curd in kilograms. Averages divide by
+  //   the number of days in the period. Sales are attributed to the order's
+  //   zone (taluka), like the Taluka/Agent report.
   // ════════════════════════════════════════════
   app.get(
     "/api/v1/reports/sales-reports/taluka-wise",
@@ -824,6 +835,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
       const products = await pgClient`
         SELECT p.id, p.report_alias, p.name, p.sort_order,
                COALESCE(p.pack_size, 0)::numeric AS pack_size,
+               p.unit,
                c.name AS category_name
         FROM products p
         JOIN categories c ON c.id = p.category_id
@@ -835,6 +847,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
       const milkIds = new Set(milkProducts.map(p => p.id));
       const curdIds = new Set(curdProducts.map(p => p.id));
       const packSizeById = new Map((products as any[]).map(p => [p.id, parseFloat(p.pack_size) || 0]));
+      const unitById = new Map((products as any[]).map(p => [p.id, p.unit ?? ""]));
 
       // Per (taluka = zone, product) qty from orders in range.
       const rows = await pgClient`
@@ -858,7 +871,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
       for (const r of rows as any[]) {
         if (!talukaMap.has(r.taluka)) talukaMap.set(r.taluka, { milkVol: {}, curdVol: {} });
         const t = talukaMap.get(r.taluka)!;
-        const vol = (Number(r.qty) || 0) * (packSizeById.get(r.product_id) ?? 0) / 1000;
+        const vol = toKgLtr(Number(r.qty) || 0, packSizeById.get(r.product_id) ?? 0, unitById.get(r.product_id) ?? "");
         if (milkIds.has(r.product_id)) t.milkVol[r.product_id] = (t.milkVol[r.product_id] ?? 0) + vol;
         else if (curdIds.has(r.product_id)) t.curdVol[r.product_id] = (t.curdVol[r.product_id] ?? 0) + vol;
       }
@@ -1505,10 +1518,12 @@ async function buildMilkCurdCrossTab(
 ) {
   // ── 1. Products: resolve the fixed columns + the G/L set by name ──
   const products = await pgClient`
-    SELECT p.id, p.code, p.name, p.report_alias
+    SELECT p.id, p.code, p.name, p.report_alias,
+           COALESCE(p.pack_size, 0)::numeric AS pack_size, p.unit
     FROM products p
     WHERE p.deleted_at IS NULL
   `;
+  const prodById = new Map((products as any[]).map(p => [p.id, p]));
 
   // Loose key: uppercase + strip every non-alphanumeric char, so
   // "HTM 1000ML" / "HTM-1000ML" / "htm1000ml" all collapse to the same
@@ -1533,14 +1548,23 @@ async function buildMilkCurdCrossTab(
     if (ka && !byAlias.has(ka)) byAlias.set(ka, p.id);
   }
 
-  // productId → column key (code → name → alias fallback)
+  // productId → column key (code → name → alias fallback), plus each column's
+  // Ltr/Kg-per-packet factor read live from the matched product's pack_size +
+  // unit. The DB is the source of truth so editing a product's pack_size flows
+  // straight through to the report; the hardcoded qtyToUnit is only a fallback
+  // for when the column's product (or its pack_size) can't be resolved.
   const colKeyByProductId = new Map<string, string>();
+  const perPackByColKey = new Map<string, number>();
   for (const col of DSR_COLUMNS) {
     const pid =
       byCode.get(norm(col.code)) ??
       byName.get(norm(col.name)) ??
       byAlias.get(norm(col.name));
-    if (pid) colKeyByProductId.set(pid, col.key);
+    if (!pid) continue;
+    colKeyByProductId.set(pid, col.key);
+    const p = prodById.get(pid);
+    const dbPerPack = p ? toKgLtr(1, parseFloat(p.pack_size) || 0, p.unit ?? "") : 0;
+    perPackByColKey.set(col.key, dbPerPack > 0 ? dbPerPack : col.qtyToUnit);
   }
 
   // ── 2. Active routes + their session (Night / Afternoon) ──
@@ -1574,7 +1598,8 @@ async function buildMilkCurdCrossTab(
   // ── 3. Accumulate per-route packet counts, split by period ──
   //     cols / prevCols hold the selected- and comparison-period packet
   //     counts per column; the Ltr/Kg totals are derived from these ×
-  //     qtyToUnit so the printed columns and the totals can never disagree.
+  //     perPackByColKey (each column's DB pack_size+unit) so the printed
+  //     columns and the totals can never disagree.
   type Acc = {
     qty: number;                       // selected-period total packets (all products)
     prevQty: number;                   // comparison-period total packets (all products)
@@ -1603,15 +1628,18 @@ async function buildMilkCurdCrossTab(
     }
   }
 
+  // Each column's Ltr/Kg-per-packet factor: DB pack_size+unit, hardcoded
+  // qtyToUnit only as a last resort.
+  const unitPer = (c: (typeof DSR_COLUMNS)[number]) => perPackByColKey.get(c.key) ?? c.qtyToUnit;
   const milkLtr = (cmap: Record<string, number>) =>
-    MILK_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
+    MILK_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * unitPer(c), 0);
   const curdKg = (cmap: Record<string, number>) =>
-    CURD_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
+    CURD_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * unitPer(c), 0);
   // Combined sales volume across every fixed column (milk Ltr + curd Kg +
   // lassi Ltr) — drives the period-over-period comparison columns so they
   // read in volume units like the rest of the sheet.
   const totalVol = (cmap: Record<string, number>) =>
-    DSR_COLUMNS.reduce((s, c) => s + (cmap[c.key] ?? 0) * c.qtyToUnit, 0);
+    DSR_COLUMNS.reduce((s, c) => s + (cmap[c.key] ?? 0) * unitPer(c), 0);
 
   const mkRow = (id: string | null, code: string, name: string, acc: Acc) => ({
     id, code, name,
@@ -1664,6 +1692,20 @@ async function buildMilkCurdCrossTab(
 }
 
 // ── utility ──
+// Qty in Kg/Ltr from the product's DB fields. products.pack_size is stored in
+// the product's macro unit (L/kg) for every product in this dataset — e.g.
+// HTM 1000ML = 1.00 L, CURD 140GM = 0.14 kg, and multi-packs like G/L UHT
+// "180 ML 30 PACK" = 5.40 L — so volume is simply qty × pack_size. Micro units
+// (ml/g), still selectable on the product form, hold a sub-unit size and
+// convert ÷1000. This matches the web helper in apps/web/src/lib/kgLtr.ts.
+function toKgLtr(qty: number, packSize: number, unit: string): number {
+  const u = (unit ?? "").trim().toLowerCase();
+  const isMicro =
+    u === "ml" || u === "g" || u === "gm" || u === "gram" || u === "grams";
+  const perPack = isMicro ? packSize / 1000 : packSize;
+  return (Number(qty) || 0) * (Number(perPack) || 0);
+}
+
 function round2(n: number): number {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
