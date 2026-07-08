@@ -89,12 +89,60 @@ const productUpdateSchema = productBaseSchema.partial().superRefine((data, ctx) 
 export async function productRoutes(app: FastifyInstance) {
   // GET /api/v1/products — includes basePrice, dealerPrice, mrp
   app.get("/api/v1/products", async (request, reply) => {
+    // `stock` is the DAY-AWARE available quantity, derived live from the FGS
+    // daily model (fgs_stock_log) — NOT the free-floating products.stock
+    // counter, which carries indefinitely and drifts for any SKU whose stock
+    // was set outside the morning Stock Entry flow (that drift is why a
+    // product with a zero opening for today could still show hundreds "in
+    // stock"). Availability for today =
+    //   opening (carried from the most recent prior day's closing when today
+    //            has no Stock Entry yet, else 0)
+    //   + received − wastage
+    //   − reservations already claimed by live orders for today's delivery.
+    // Floored at 0.
     const productsList = await pgClient`
+      WITH today AS (
+        SELECT (now() AT TIME ZONE 'Asia/Kolkata')::date AS d
+      ),
+      reserved AS (
+        -- Stock already committed by live orders for today's delivery. An
+        -- order holds its reservation exactly while stock_deducted = true (set
+        -- at confirm, cleared on cancel/restore), so every committed order —
+        -- confirmed, dispatched or delivered — is counted once and cancelled
+        -- ones drop out. Keyed by the stock-owning product: a variant SKU
+        -- draws from its base via stock_source_product_id (migration 0059), so
+        -- a subsidy-line order reduces the base SKU's availability.
+        SELECT COALESCE(pp.stock_source_product_id, pp.id) AS stock_product_id,
+               SUM(oi.quantity)::int AS qty
+        FROM orders o
+        JOIN order_items oi ON oi.order_id = o.id
+        JOIN products pp    ON pp.id = oi.product_id
+        WHERE o.delivery_date = (SELECT d FROM today)
+          AND o.stock_deducted = true
+        GROUP BY COALESCE(pp.stock_source_product_id, pp.id)
+      )
       SELECT p.id, p.name, p.icon, p.unit,
              p.base_price   AS "basePrice",     -- Basic Price (pre-GST)
              p.dealer_price AS "dealerPrice",   -- Dealer-Price (gross)
              p.mrp,                             -- MRP
-             p.gst_percent AS "gstPercent", p.stock, p.available,
+             p.gst_percent AS "gstPercent",
+             GREATEST(
+               COALESCE(
+                 fsl.opening,
+                 (SELECT prev.closing
+                    FROM fgs_stock_log prev
+                   WHERE prev.product_id = p.id
+                     AND prev.date < (SELECT d FROM today)
+                   ORDER BY prev.date DESC
+                   LIMIT 1),
+                 0
+               )
+               + COALESCE(fsl.received, 0)
+               - COALESCE(fsl.wastage, 0)
+               - COALESCE(r.qty, 0),
+               0
+             )::int AS stock,
+             p.available,
              p.category_id AS "categoryId", c.name AS "categoryName",
              p.sort_order AS "sortOrder",
              p.code, p.hsn_no AS "hsnNo", p.pack_size AS "packSize",
@@ -108,6 +156,9 @@ export async function productRoutes(app: FastifyInstance) {
              COALESCE(p.parlour_dealer_price, p.base_price) AS "parlourDealerPrice"
       FROM products p
       JOIN categories c ON c.id = p.category_id
+      LEFT JOIN fgs_stock_log fsl
+             ON fsl.product_id = p.id AND fsl.date = (SELECT d FROM today)
+      LEFT JOIN reserved r ON r.stock_product_id = p.id
       WHERE p.deleted_at IS NULL AND p.available = true
         -- The subsidy SKU (migration 0056) is placed ONLY via the Subsidy
         -- Indents page — never surfaced in the dealer app or any ordering
