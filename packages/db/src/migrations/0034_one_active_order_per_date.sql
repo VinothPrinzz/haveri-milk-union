@@ -1,0 +1,52 @@
+-- 0034_one_active_order_per_date.sql
+--
+-- Enforces the indent invariant at the database level:
+--   AT MOST ONE non-cancelled order per (dealer_id, delivery_date).
+--
+-- An indent is a single orders row that transitions draft → pending →
+-- confirmed → … . Without this index a bug in the API (e.g. a PATCH that
+-- inserts a new draft while a confirmed order already exists for the date)
+-- could create a duplicate order. This partial unique index makes the DB
+-- reject that outright.
+--
+-- delivery_date IS NOT NULL in the predicate so legacy/non-indent orders
+-- that have no delivery_date are unaffected.
+
+-- ── PRE-FLIGHT ──────────────────────────────────────────────────────
+-- If duplicates already exist this index creation will FAIL. Run this
+-- first to find them, and cancel the extras before applying the index:
+--
+--   SELECT dealer_id, delivery_date, count(*)
+--     FROM orders
+--    WHERE status <> 'cancelled' AND delivery_date IS NOT NULL
+--    GROUP BY dealer_id, delivery_date
+--   HAVING count(*) > 1;
+--
+-- Suggested cleanup — keep the most-progressed / newest, cancel the rest:
+--
+--   WITH ranked AS (
+--     SELECT id,
+--            row_number() OVER (
+--              PARTITION BY dealer_id, delivery_date
+--              ORDER BY
+--                CASE status
+--                  WHEN 'delivered'  THEN 5
+--                  WHEN 'dispatched' THEN 4
+--                  WHEN 'confirmed'  THEN 3
+--                  WHEN 'pending'    THEN 2
+--                  WHEN 'payment_required' THEN 1
+--                  ELSE 0 END DESC,
+--                created_at DESC
+--            ) AS rn
+--       FROM orders
+--      WHERE status <> 'cancelled' AND delivery_date IS NOT NULL
+--   )
+--   UPDATE orders o
+--      SET status = 'cancelled', updated_at = now()
+--     FROM ranked r
+--    WHERE o.id = r.id AND r.rn > 1;
+-- ────────────────────────────────────────────────────────────────────
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_dealer_delivery_active
+  ON orders (dealer_id, delivery_date)
+  WHERE status <> 'cancelled' AND delivery_date IS NOT NULL;

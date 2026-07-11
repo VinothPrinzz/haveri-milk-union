@@ -16,6 +16,12 @@
 // recorded as 'credit' ledger receipts). There is NO credit limit — the
 // `creditLimit`/`outstanding` fields below are kept for response-shape
 // compatibility only and no longer affect availability.
+//
+// EXCEPTION — credit institutions (dealers.customer_type 'Credit Inst-MRP'
+// or 'Credit Inst-Dealer'): they buy on monthly credit and clear the bill
+// at month end, so `sufficient` is ALWAYS true for them. Their ledger
+// balance simply goes negative as purchases accumulate (that negative
+// balance IS the month's bill — see dealer statements / AR aging).
 // ═══════════════════════════════════════════════════════════════════════
 
 import { pgClient } from "./db.js";
@@ -33,6 +39,8 @@ export interface CreditCheckResult {
   sufficient: boolean;
   /** orderTotal - available, only set when !sufficient (INR) */
   shortfall: number;
+  /** True when the dealer is a credit institution (billed monthly) */
+  creditInstitution: boolean;
 }
 
 /**
@@ -51,6 +59,7 @@ export async function checkDealerCredit(
   const [row] = await pgClient`
     SELECT
       COALESCE(d.credit_limit, 0)::numeric AS credit_limit,
+      d.customer_type::text AS customer_type,
       (
         COALESCE(d.opening_balance, 0)
         + COALESCE((
@@ -71,9 +80,11 @@ export async function checkDealerCredit(
 
   const creditLimit = parseFloat(row.credit_limit);
   const closing     = parseFloat(row.closing_balance);
+  const creditInstitution = isCreditInstitutionType(row.customer_type);
   const outstanding = closing < 0 ? -closing : 0;
   const available   = Math.max(0, closing);   // prepaid: balance only, no limit
-  const sufficient = orderTotal <= available;
+  // Credit institutions are billed monthly — never blocked by balance.
+  const sufficient = creditInstitution || orderTotal <= available;
   const shortfall = sufficient ? 0 : Math.round((orderTotal - available) * 100) / 100;
 
   return {
@@ -83,7 +94,15 @@ export async function checkDealerCredit(
     orderTotal: round2(orderTotal),
     sufficient,
     shortfall,
+    creditInstitution,
   };
+}
+
+/** 'Credit Inst-MRP' / 'Credit Inst-Dealer' dealers buy on monthly credit. */
+export function isCreditInstitutionType(
+  customerType: string | null | undefined
+): boolean {
+  return !!customerType && customerType.startsWith("Credit Inst");
 }
 
 function round2(n: number): number {
@@ -139,5 +158,6 @@ export async function checkEmployeeCredit(
     orderTotal: round2(orderTotal),
     sufficient,
     shortfall,
+    creditInstitution: false,
   };
 }

@@ -204,7 +204,7 @@ export default function IndentScreen({
     if (isPaymentRequired) {
       return {
         kind: "warning" as const,
-        text: "Payment required — not enough available balance",
+        text: "Payment required — not enough wallet balance",
       };
     }
     if (!isToday) {
@@ -443,8 +443,8 @@ export default function IndentScreen({
                     <View style={styles.payCard}>
                       <View style={styles.payHeader}>
                         <Text style={styles.payHint}>
-                          You'll choose how to pay (available balance or pay
-                          online) on the next step.
+                          You'll choose how to pay (wallet, credit, UPI or
+                          card) on the next step.
                         </Text>
                       </View>
                     </View>
@@ -464,7 +464,8 @@ export default function IndentScreen({
                 {/* ── EDITABLE FUTURE DATE: scheduled, no manual confirm/pay ──
                     Items stay editable, but there's no confirm button or
                     payment step for a future date. The indent auto-places at
-                    this date's window close, drawn from available balance
+                    this date's window close, drawn from the wallet (or
+                    monthly credit for credit institutions)
                     (apps/worker/src/jobs/auto-confirm-drafts.ts). */}
                 {canModify && !isToday && (
                   <ScheduledCard date={selectedDate} />
@@ -631,8 +632,8 @@ function WindowClosedCard({ willAutoConfirm }: { willAutoConfirm: boolean }) {
 
 /** Shown for a future-dated indent. There is no manual confirm or payment
  *  for a future date — the dealer edits the items, and the indent is placed
- *  automatically at that date's ordering-window close, drawn from available
- *  balance (apps/worker/src/jobs/auto-confirm-drafts.ts). */
+ *  automatically at that date's ordering-window close, drawn from the
+ *  wallet or monthly credit (apps/worker/src/jobs/auto-confirm-drafts.ts). */
 function ScheduledCard({ date }: { date: string }) {
   return (
     <View style={styles.scheduledCard}>
@@ -643,7 +644,7 @@ function ScheduledCard({ date }: { date: string }) {
         </Text>
         <Text style={styles.scheduledSub}>
           This indent is placed automatically when the ordering window closes
-          on this date, using your available balance. Edit the items anytime
+          on this date, using your wallet balance. Edit the items anytime
           before then — no payment is needed now.
         </Text>
       </View>
@@ -651,7 +652,7 @@ function ScheduledCard({ date }: { date: string }) {
   );
 }
 
-/** Shown when the order needs payment (not enough available balance). */
+/** Shown when the order needs payment (not enough wallet balance). */
 function PaymentRequiredCard({
   busy,
   onPayNow,
@@ -665,8 +666,8 @@ function PaymentRequiredCard({
     <View style={styles.payReqCard}>
       <Text style={styles.payReqTitle}>Payment required</Text>
       <Text style={styles.payReqSub}>
-        This indent is over your available balance. Pay for it now, or top up
-        your balance and it will auto-confirm.
+        This indent is over your wallet balance. Pay for it now, or top up
+        your wallet and it will auto-confirm.
       </Text>
       <TouchableOpacity
         activeOpacity={0.85}
@@ -681,7 +682,7 @@ function PaymentRequiredCard({
         )}
       </TouchableOpacity>
       <TouchableOpacity activeOpacity={0.6} onPress={onTopUp}>
-        <Text style={styles.topUpLink}>Top up balance instead</Text>
+        <Text style={styles.topUpLink}>Top up wallet instead</Text>
       </TouchableOpacity>
     </View>
   );

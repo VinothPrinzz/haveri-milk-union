@@ -33,3 +33,37 @@ npm-debug.log*
 
 # Supabase
 supabase/.temp/
+
+# Abandoned dual-DB scaffolding (not deployed — see .dockerignore)
+apps/api/src/routes/db-status.ts
+apps/api/src/routes/db-reconciliation.ts
+apps/api/src/routes/db-polling-replication.ts
+apps/worker/src/index.patch.ts
+apps/worker/src/polling-replication-bootstrap.ts
+packages/db/src/db-manager.ts
+packages/db/src/reconciliation/
+packages/db/src/polling-replication/
+apps/web/src/pages/system/DatabaseHealthPage.tsx
+apps/web/src/components/system/
+apps/web/src/services/dbHealth.ts
+apps/web/src/services/dbReconciliation.ts
+apps/web/src/services/dbPollingReplication.ts
+docs/dual-db-setup.md
+packages/db/src/migrations/0020_db_failover_events.sql
+packages/db/src/migrations/0021_db_reconciliation_runs.sql
+packages/db/src/migrations/0022_replication_watermarks.sql
+
+# One-off diagnostic / seed / reconcile scratch scripts (run locally via tsx)
+packages/db/src/diag-*
+packages/db/src/seed-*
+packages/db/src/reconcile-*
+
+# Local context dumps
+/api.txt
+/mobile.txt
+/web.txt
+/worker.txt
+/packages-db.txt
+
+# Dual-DB replication tooling (init-polling-replication, verify-replication)
+/scripts/

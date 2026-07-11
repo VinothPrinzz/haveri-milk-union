@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { useAuthStore } from "../store/auth";
 import { useWindowStatus } from "../hooks/useWindow";
 import IndentCart from "../components/IndentCart";
+import { isCreditInstitution } from "../lib/types";
 
 /**
  * CartScreen — thin wrapper that hosts the IndentCart component.
@@ -63,6 +64,7 @@ export default function CartScreen({ onBack, onOrderPlaced }: CartScreenProps) {
     locationLabel={locationLabel}
     creditLimit={dealer?.creditLimit ?? 0}
     creditAvailable={Math.max(0, dealer?.creditAvailable ?? 0)}
+    creditInstitution={isCreditInstitution(dealer)}
     onBack={onBack}
     onChangeLocation={() => {}}
     onOrderPlaced={onOrderPlaced}

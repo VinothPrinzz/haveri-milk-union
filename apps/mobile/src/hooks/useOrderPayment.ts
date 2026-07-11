@@ -31,7 +31,9 @@ export function useOrderPayment(orderId: string) {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: async () => {
+    // `method` pins UPI or Card/Net-banking on top of the Razorpay sheet
+    // (the checkout screen's "UPI" vs "Cards" options). Omit for default.
+    mutationFn: async (vars?: { method?: "upi" | "card" } | void) => {
       // 1. Create the Razorpay order server-side
       const created = await api.post<{
         razorpayOrderId: string;
@@ -49,6 +51,7 @@ export function useOrderPayment(orderId: string) {
         orderId: created.razorpayOrderId,
         description: `Order payment · ₹${Number(created.amount).toFixed(2)}`,
         prefill: prefillFromDealer(),
+        preferredMethod: vars?.method,
       });
 
       // 3. Verify server-side — also flips order to 'confirmed'.

@@ -248,7 +248,7 @@ export async function orderRoutes(app: FastifyInstance) {
         if (!credit.sufficient) {
           return reply.status(402).send({
             error: "Insufficient balance",
-            message: `Available balance ₹${credit.available.toFixed(2)} is short of this order ₹${grandTotal.toFixed(2)} by ₹${credit.shortfall.toFixed(2)}. Please top up.`,
+            message: `Wallet balance ₹${credit.available.toFixed(2)} is short of this order ₹${grandTotal.toFixed(2)} by ₹${credit.shortfall.toFixed(2)}. Please top up.`,
             availableCredit: credit.available.toFixed(2),
             requestedAmount: grandTotal.toFixed(2),
           });

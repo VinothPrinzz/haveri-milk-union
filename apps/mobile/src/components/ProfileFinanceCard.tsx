@@ -12,7 +12,7 @@ import { useAuthStore } from "../store/auth";
 import TopUpSheet from "./TopUpSheet";
 
 /**
- * ProfileFinanceCard — prepaid available-balance summary + top-up CTA.
+ * ProfileFinanceCard — prepaid wallet summary + top-up CTA.
  *
  * Reads `creditAvailable` / `creditOutstanding` from the auth store's
  * dealer record (refreshed via the `/dealer/profile` endpoint). There is
@@ -29,7 +29,7 @@ export default function ProfileFinanceCard() {
 
   const outstanding   = dealer.creditOutstanding ?? 0;
   const ledgerBalance = dealer.ledgerBalance ?? 0;        // + prepaid / − owed
-  // Prepaid model: available balance is whatever the customer has topped up
+  // Prepaid model: the wallet holds whatever the customer has topped up
   // (opening + top-ups − purchases), floored at 0. No credit limit.
   const available     = dealer.creditAvailable ?? Math.max(0, ledgerBalance);
   const isEmpty       = available <= 0;
@@ -41,12 +41,12 @@ export default function ProfileFinanceCard() {
     <>
       <View style={[styles.card, { borderColor: stripe.border }]}>
         <View style={styles.cardHeader}>
-          <Text style={styles.cardTitle}>Available balance</Text>
+          <Text style={styles.cardTitle}>Wallet</Text>
         </View>
 
         <Text style={styles.bigAmount}>
           ₹{available.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-          <Text style={styles.bigAmountSuffix}> available</Text>
+          <Text style={styles.bigAmountSuffix}> in wallet</Text>
         </Text>
 
         {outstanding > 0 && (
@@ -64,14 +64,14 @@ export default function ProfileFinanceCard() {
             onPress={() => setShowTopUp(true)}
             style={styles.topUpBtn}
           >
-            <Text style={styles.topUpBtnText}>Top up balance</Text>
+            <Text style={styles.topUpBtnText}>Top up wallet</Text>
           </TouchableOpacity>
         </View>
 
         {isEmpty && (
           <View style={[styles.alertStripe, { backgroundColor: stripe.bg }]}>
             <Text style={[styles.alertText, { color: stripe.label }]}>
-              Balance empty. Top up to place new orders.
+              Wallet empty. Top up to place new orders.
             </Text>
           </View>
         )}
@@ -84,7 +84,7 @@ export default function ProfileFinanceCard() {
           setShowTopUp(false);
           Alert.alert(
             "Top-up successful",
-            `₹${paid.toLocaleString("en-IN")} credited. Your available balance will refresh shortly.`
+            `₹${paid.toLocaleString("en-IN")} credited. Your wallet balance will refresh shortly.`
           );
         }}
       />

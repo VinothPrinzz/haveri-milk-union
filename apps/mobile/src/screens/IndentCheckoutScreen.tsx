@@ -12,9 +12,12 @@
 // It reads the SAME draft (useDailyDraft for the globally-selected date),
 // shows a read-only review of the items + bill, and lets the dealer pick:
 //
-//   • Use available balance → POST /drafts/:date/confirm { paymentMode:"credit" }
-//   • Pay online         → materialise the draft, then Razorpay pay-now
-//                          (UPI / card / netbanking inside the sheet)
+//   • Wallet  (regular dealers)      → POST /drafts/:date/confirm
+//   • Credit  (credit institutions)  → same endpoint — the server waives
+//     the balance gate for 'Credit Inst-*' dealers; the debit lands on
+//     their monthly bill instead
+//   • UPI / Cards → materialise the draft, then Razorpay pay-now with the
+//     chosen method pinned on top of the sheet
 //
 // On success it routes back to the Indent tab, which now shows the
 // read-only "Indent placed" view for that date.
@@ -50,6 +53,7 @@ import {
 } from "../hooks/useDailyDraft";
 import { useOrderPayment } from "../hooks/useOrderPayment";
 import { PaymentPending, RazorpayCancelled } from "../lib/razorpay";
+import { isCreditInstitution } from "../lib/types";
 import type { DraftItem, OrderStatus } from "../lib/types";
 
 interface IndentCheckoutScreenProps {
@@ -59,7 +63,10 @@ interface IndentCheckoutScreenProps {
   onConfirmed: () => void;
 }
 
-type PayMode = "credit" | "online";
+// "balance" = wallet for regular dealers, monthly credit for credit
+// institutions — both settle via /confirm. "upi" / "card" open Razorpay
+// with that method pinned on top of the sheet.
+type PayMode = "balance" | "upi" | "card";
 
 export default function IndentCheckoutScreen({
   onBack,
@@ -71,9 +78,9 @@ export default function IndentCheckoutScreen({
   // The date being checked out is the globally-selected indent date.
   const selectedDate = useTargetDateStore((s) => s.selectedDate);
   // Future dates are never paid in advance — they auto-place at their own
-  // window close, drawn from available balance. IndentScreen no longer opens
-  // checkout for a future date; this guard keeps the payment step from ever
-  // rendering for one even if some other path reaches here.
+  // window close, drawn from the wallet (or monthly credit). IndentScreen no
+  // longer opens checkout for a future date; this guard keeps the payment
+  // step from ever rendering for one even if some other path reaches here.
   const isFuture = !!selectedDate && selectedDate > istTodayIso();
 
   const draftQuery = useDailyDraft(selectedDate);
@@ -101,21 +108,25 @@ export default function IndentCheckoutScreen({
   // letting them tap "Confirm" into a dead-end error.
   const hasRoute = !!dealer?.routeId;
 
-  // ── Available balance (prepaid — no credit limit) ──
+  // ── Wallet balance (prepaid — no credit limit) ──
   // Whatever the customer has topped up, floored at 0. Comes straight from
   // the API's credit_available (opening + top-ups − purchases).
-  const creditAvailable = Math.max(0, dealer?.creditAvailable ?? 0);
-  const creditOk = creditAvailable >= totals.grandTotal;
+  const walletBalance = Math.max(0, dealer?.creditAvailable ?? 0);
+  // Credit institutions buy on monthly credit — the balance gate is waived
+  // server-side, so their "Credit" option is always payable.
+  const creditInst = isCreditInstitution(dealer);
+  const balanceOk = creditInst || walletBalance >= totals.grandTotal;
 
   // ── Payment selection ──
   // `mode === null` means "not chosen yet" → fall back to a sensible
-  // default once the draft has loaded (credit if there's headroom).
+  // default once the draft has loaded (wallet/credit if payable).
   const [mode, setMode] = useState<PayMode | null>(null);
-  const effectiveMode: PayMode = mode ?? (creditOk ? "credit" : "online");
+  const effectiveMode: PayMode = mode ?? (balanceOk ? "balance" : "upi");
 
   // ── Busy / pay-online plumbing ──
   const [busy, setBusy] = useState(false);
   const [payOrderId, setPayOrderId] = useState<string | null>(null);
+  const [payMethod, setPayMethod] = useState<"upi" | "card">("upi");
   const orderPayment = useOrderPayment(payOrderId ?? "");
 
   // Materialise the draft into a real orders row (if needed) and return
@@ -133,8 +144,8 @@ export default function IndentCheckoutScreen({
     return patched.orderId;
   };
 
-  // ── Credit path ──
-  const confirmWithCredit = async () => {
+  // ── Wallet / monthly-credit path (both settle via /confirm) ──
+  const confirmWithBalance = async () => {
     setBusy(true);
     try {
       await ensureOrderId();
@@ -142,18 +153,20 @@ export default function IndentCheckoutScreen({
       setBusy(false);
       Alert.alert(
         "Indent confirmed",
-        `Your indent for ${relativeLabel(selectedDate)} is placed on credit.`,
+        creditInst
+          ? `Your indent for ${relativeLabel(selectedDate)} is placed on your monthly credit account.`
+          : `Your indent for ${relativeLabel(selectedDate)} is placed — paid from your wallet.`,
         [{ text: "Done", onPress: onConfirmed }]
       );
     } catch (err) {
       setBusy(false);
       if (isCreditExceededError(err)) {
         Alert.alert(
-          "Insufficient balance",
-          `This indent is over your available balance by ₹${err.body.credit.shortfall.toFixed(
+          "Insufficient wallet balance",
+          `This indent is over your wallet balance by ₹${err.body.credit.shortfall.toFixed(
             2
           )}. Pay online to place it instead.`,
-          [{ text: "Pay online", onPress: () => setMode("online") }]
+          [{ text: "Pay online", onPress: () => setMode("upi") }]
         );
         return;
       }
@@ -165,10 +178,11 @@ export default function IndentCheckoutScreen({
   };
 
   // ── Pay-online path ── (kick off — the effect below runs the SDK)
-  const payOnline = async () => {
+  const payOnline = async (method: "upi" | "card") => {
     setBusy(true);
     try {
       const orderId = await ensureOrderId();
+      setPayMethod(method);
       setPayOrderId(orderId);
     } catch (err) {
       setBusy(false);
@@ -185,7 +199,7 @@ export default function IndentCheckoutScreen({
     let cancelled = false;
     (async () => {
       try {
-        await orderPayment.mutateAsync();
+        await orderPayment.mutateAsync({ method: payMethod });
         if (cancelled) return;
         setBusy(false);
         setPayOrderId(null);
@@ -225,8 +239,8 @@ export default function IndentCheckoutScreen({
       Alert.alert("Empty indent", "Add at least one item before confirming.");
       return;
     }
-    if (effectiveMode === "credit") confirmWithCredit();
-    else payOnline();
+    if (effectiveMode === "balance") confirmWithBalance();
+    else payOnline(effectiveMode);
   };
 
   // ════════════════════════════════════════════════════════════════
@@ -299,7 +313,7 @@ export default function IndentCheckoutScreen({
                 <Text style={styles.noticeTitle}>Scheduled — no payment now</Text>
                 <Text style={styles.noticeSub}>
                   Indents for a future date are placed automatically at that
-                  date's window close, using your available balance. Edit the
+                  date's window close, using your {creditInst ? "monthly credit" : "wallet"}. Edit the
                   items from the Indent tab anytime before then.
                 </Text>
               </View>
@@ -347,26 +361,43 @@ export default function IndentCheckoutScreen({
                 {/* Payment mode */}
                 <Text style={styles.sectionTitle}>Payment method</Text>
 
+                {creditInst ? (
+                  <PayOption
+                    selected={effectiveMode === "balance"}
+                    icon="🧾"
+                    title="Credit (monthly account)"
+                    subtitle="Added to this month's bill — clear it at month end"
+                    onPress={() => setMode("balance")}
+                  />
+                ) : (
+                  <PayOption
+                    selected={effectiveMode === "balance"}
+                    disabled={!balanceOk}
+                    icon="👛"
+                    title="Wallet"
+                    subtitle={
+                      balanceOk
+                        ? `₹${walletBalance.toFixed(0)} in wallet`
+                        : `Short by ₹${(
+                            totals.grandTotal - walletBalance
+                          ).toFixed(0)} — not enough wallet balance`
+                    }
+                    onPress={() => setMode("balance")}
+                  />
+                )}
                 <PayOption
-                  selected={effectiveMode === "credit"}
-                  disabled={!creditOk}
-                  icon="🧾"
-                  title="Use available balance"
-                  subtitle={
-                    creditOk
-                      ? `₹${creditAvailable.toFixed(0)} available`
-                      : `Short by ₹${(
-                          totals.grandTotal - creditAvailable
-                        ).toFixed(0)} — not enough balance`
-                  }
-                  onPress={() => setMode("credit")}
+                  selected={effectiveMode === "upi"}
+                  icon="📱"
+                  title="UPI"
+                  subtitle="GPay · PhonePe · Paytm & more"
+                  onPress={() => setMode("upi")}
                 />
                 <PayOption
-                  selected={effectiveMode === "online"}
-                  icon="📱"
-                  title="Pay online"
-                  subtitle="UPI · Card · Net banking"
-                  onPress={() => setMode("online")}
+                  selected={effectiveMode === "card"}
+                  icon="💳"
+                  title="Cards"
+                  subtitle="Credit / debit card · Net banking"
+                  onPress={() => setMode("card")}
                 />
 
                 <Text style={styles.policyNote}>
@@ -402,8 +433,10 @@ export default function IndentCheckoutScreen({
                 <ActivityIndicator color={colors.primaryForeground} />
               ) : (
                 <Text style={styles.payBtnText}>
-                  {effectiveMode === "credit"
-                    ? `Confirm on credit · ₹${totals.grandTotal.toFixed(2)}`
+                  {effectiveMode === "balance"
+                    ? creditInst
+                      ? `Confirm on credit · ₹${totals.grandTotal.toFixed(2)}`
+                      : `Pay from wallet · ₹${totals.grandTotal.toFixed(2)}`
                     : `🔒 Pay ₹${totals.grandTotal.toFixed(2)} online`}
                 </Text>
               )}

@@ -51,6 +51,8 @@ export interface Dealer {
   creditOutstanding?: number;
   creditAvailable?: number;
   ledgerBalance: number;
+  /** dealers.customer_type — "Credit Inst-*" dealers buy on monthly credit. */
+  customerType?: string;
   locationLabel?: string;
   email?: string;
   gstNumber?: string;
@@ -143,6 +145,18 @@ export function uiPaymentToBackend(m: UiPaymentMethod): PaymentMode {
   if (m === "wallet") return "wallet";
   if (m === "credit") return "credit";
   return "upi";
+}
+
+/**
+ * Credit institutions (schools, hostels, canteens — customer_type
+ * 'Credit Inst-MRP' / 'Credit Inst-Dealer') purchase on monthly credit:
+ * every order goes on their account and one bill is cleared at month end.
+ * Only they see the "Credit" payment option at checkout.
+ */
+export function isCreditInstitution(
+  dealer: Pick<Dealer, "customerType"> | null | undefined
+): boolean {
+  return !!dealer?.customerType?.startsWith("Credit Inst");
 }
 
 export interface OrderItem {

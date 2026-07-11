@@ -150,15 +150,15 @@ export default function TopUpSheet({
           <View style={styles.grabber} />
 
           <View style={styles.header}>
-            <Text style={styles.title}>Top up credit</Text>
+            <Text style={styles.title}>Top up wallet</Text>
             <TouchableOpacity onPress={handleClose} hitSlop={10}>
               <Text style={styles.closeX}>✕</Text>
             </TouchableOpacity>
           </View>
 
           <Text style={styles.subtitle}>
-            Pay via UPI, card, or net banking. Amount goes against your
-            outstanding balance, freeing up credit immediately.
+            Pay via UPI, card, or net banking. The amount is added to your
+            wallet immediately and can be used for new indents.
           </Text>
 
           {suggestedAmount && suggestedAmount > 0 ? (

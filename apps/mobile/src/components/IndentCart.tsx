@@ -56,30 +56,37 @@ interface IndentCartProps {
   savingsAmount?: number;
   savingsLabel?: string;
   creditLimit?: number;
-  creditAvailable?: number;    // prepaid available balance (no limit)
+  creditAvailable?: number;    // prepaid wallet balance (no limit)
+  /** 'Credit Inst-*' dealer — buys on monthly credit, no balance gate. */
+  creditInstitution?: boolean;
   onBack: () => void;
   onChangeLocation: () => void;
   onOrderPlaced: (orderId: string) => void;
 }
 
-const PAYMENT_OPTIONS: ReadonlyArray<{
-  id: UiPaymentMethod;
-  icon: string;
-  label: string;
-}> = [
-    { id: "credit",  icon: "💳", label: "Balance" },  // pay from prepaid balance
-    { id: "upi",     icon: "📱", label: "UPI" },
-    { id: "card",    icon: "💳", label: "Card" },
-    { id: "netbank", icon: "🏦", label: "Net Bank" },
-  ];
+// Both "Wallet" (regular dealers) and "Credit" (credit institutions) send
+// backend mode 'credit' — the same ledger settlement; the server waives the
+// balance gate for institutions. UPI / Card / Net Bank all go to Razorpay
+// with that method pinned on top of the sheet.
+const paymentOptionsFor = (
+  creditInstitution: boolean
+): ReadonlyArray<{ id: UiPaymentMethod; icon: string; label: string }> => [
+  creditInstitution
+    ? { id: "credit", icon: "🧾", label: "Credit" } // monthly account
+    : { id: "credit", icon: "👛", label: "Wallet" }, // prepaid balance
+  { id: "upi",     icon: "📱", label: "UPI" },
+  { id: "card",    icon: "💳", label: "Card" },
+  { id: "netbank", icon: "🏦", label: "Net Bank" },
+];
 
 export default function IndentCart({
   windowSubtitle,
   locationLabel,
   savingsAmount = 0,
   savingsLabel = "Bulk offer applied",
-  creditLimit,       
-  creditAvailable,     
+  creditLimit,
+  creditAvailable,
+  creditInstitution = false,
   onBack,
   onChangeLocation,
   onOrderPlaced,
@@ -170,14 +177,18 @@ export default function IndentCart({
     }
   };
 
-  // Razorpay runs once a payment_required order id is set.
+  // Razorpay runs once a payment_required order id is set. The selected
+  // UI option pins its method on top of the sheet (netbanking lives in
+  // the card block).
   useEffect(() => {
     if (!payOrderId) return;
     let cancelled = false;
 
     (async () => {
       try {
-        await orderPayment.mutateAsync();
+        await orderPayment.mutateAsync({
+          method: selectedPay === "upi" ? "upi" : "card",
+        });
         if (cancelled) return;
         const placedId = payOrderId;
         setPayOrderId(null);
@@ -394,16 +405,22 @@ export default function IndentCart({
           ]}
         >
           <View style={styles.payModes}>
-          {PAYMENT_OPTIONS.map((opt) => {
+          {paymentOptionsFor(creditInstitution).map((opt) => {
             const isSelected = selectedPay === opt.id;
             const sub =
-                opt.id === "credit" && creditAvailable !== undefined
-                ? `₹${creditAvailable.toFixed(0)} avail`
+                opt.id === "credit"
+                ? creditInstitution
+                  ? "Monthly bill"
+                  : creditAvailable !== undefined
+                    ? `₹${creditAvailable.toFixed(0)} in wallet`
+                    : undefined
                 : undefined;
 
-            // Disable credit if no headroom
+            // Disable wallet if no headroom — institutions are never gated.
             const disabled =
-                (opt.id === "credit" && (creditAvailable ?? 0) < grandTotal);
+                (opt.id === "credit" &&
+                 !creditInstitution &&
+                 (creditAvailable ?? 0) < grandTotal);
 
             return (
                 <TouchableOpacity

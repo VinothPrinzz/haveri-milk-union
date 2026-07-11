@@ -39,6 +39,13 @@ export interface RazorpayOpenParams {
   };
   /** Customization */
   theme?: { color?: string };
+  /**
+   * Which payment method to surface first in the Razorpay sheet.
+   * "upi" pins UPI on top; "card" pins cards + net banking. Other
+   * methods stay available below (show_default_blocks). Omit for
+   * Razorpay's default ordering.
+   */
+  preferredMethod?: "upi" | "card";
 }
 
 export interface RazorpaySuccess {
@@ -82,6 +89,41 @@ export class PaymentPending extends Error {
   }
 }
 
+/**
+ * Standard-checkout display config that pins the chosen method's block on
+ * top of the sheet while keeping every other method available under it.
+ * Razorpay ignores unknown/unsupported options, so this degrades to the
+ * default sheet on older SDK builds.
+ */
+function displayConfigFor(method: "upi" | "card") {
+  if (method === "upi") {
+    return {
+      display: {
+        blocks: {
+          pref: {
+            name: "Pay via UPI",
+            instruments: [{ method: "upi" }],
+          },
+        },
+        sequence: ["block.pref"],
+        preferences: { show_default_blocks: true },
+      },
+    };
+  }
+  return {
+    display: {
+      blocks: {
+        pref: {
+          name: "Pay via Card / Net banking",
+          instruments: [{ method: "card" }, { method: "netbanking" }],
+        },
+      },
+      sequence: ["block.pref"],
+      preferences: { show_default_blocks: true },
+    },
+  };
+}
+
 export async function openRazorpayCheckout(
   params: RazorpayOpenParams
 ): Promise<RazorpaySuccess> {
@@ -95,6 +137,9 @@ export async function openRazorpayCheckout(
     image: undefined, // Optional: dealer-app logo URL hosted on a CDN
     prefill: params.prefill ?? {},
     theme: params.theme ?? { color: "#1448CC" },
+    ...(params.preferredMethod
+      ? { config: displayConfigFor(params.preferredMethod) }
+      : {}),
   };
 
   try {

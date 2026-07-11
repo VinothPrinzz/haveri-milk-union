@@ -1,0 +1,22 @@
+name: Deploy to Fly
+
+# Auto-deploy the API + worker (one Fly app, two processes) on every push to main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
+
+jobs:
+  deploy:
+    name: Deploy API + worker to Fly (Mumbai)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: fly-deploy      # never let two deploys overlap
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

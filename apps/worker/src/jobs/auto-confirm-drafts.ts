@@ -71,6 +71,9 @@ function round2(n: number): number {
 // Prepaid balance model — no credit limit:
 //   closing   = opening_balance + Σ(credit) − Σ(debit)   [non-'Opening' rows]
 //   available = max(0, closing)
+// EXCEPTION: credit institutions (customer_type 'Credit Inst-*') buy on
+// monthly credit — always sufficient; their balance goes negative and is
+// cleared at month end.
 async function workerCreditCheck(
   dealerId: string,
   orderTotal: number
@@ -78,6 +81,7 @@ async function workerCreditCheck(
   const [row] = await sql`
     SELECT
       COALESCE(d.credit_limit, 0)::numeric AS credit_limit,
+      d.customer_type::text AS customer_type,
       (
         COALESCE(d.opening_balance, 0)
         + COALESCE((
@@ -94,8 +98,11 @@ async function workerCreditCheck(
   `;
   if (!row) throw new Error(`Dealer ${dealerId} not found`);
   const closing = parseFloat(row.closing_balance);
+  const creditInstitution =
+    typeof row.customer_type === "string" &&
+    row.customer_type.startsWith("Credit Inst");
   const available = Math.max(0, closing);   // prepaid: balance only, no limit
-  const sufficient = orderTotal <= available;
+  const sufficient = creditInstitution || orderTotal <= available;
   const shortfall = sufficient ? 0 : round2(orderTotal - available);
   return { available: round2(available), sufficient, shortfall };
 }

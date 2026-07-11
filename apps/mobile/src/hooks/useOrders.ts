@@ -152,6 +152,10 @@ export function usePlaceOrder() {
       qc.invalidateQueries({ queryKey: qk.invoices.all });
       qc.invalidateQueries({ queryKey: qk.profile });
       qc.invalidateQueries({ queryKey: qk.products });
+      // A cart order supersedes today's standing-indent draft server-side
+      // (cancelSupersededSiblings). Refresh the draft cache so the home
+      // screen sees the now-placed status and won't re-seed the cleared cart.
+      qc.invalidateQueries({ queryKey: qk.draft.all });
     },
   });
 }
