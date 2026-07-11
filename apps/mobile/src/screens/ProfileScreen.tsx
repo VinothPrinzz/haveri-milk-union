@@ -227,7 +227,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
             </View>
           </View>
 
-          {/* Stats Strip — available balance (prepaid, no limit) */}
+          {/* Stats Strip — wallet balance (prepaid, no limit) */}
           <View style={styles.statsStrip}>
             <StatCell value={String(stats.monthOrders)} label={stats.monthOrdersLabel} />
             <View style={styles.statDivider} />
@@ -239,7 +239,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
                   ? `Rs ${formatCompact(dealer.creditAvailable)}`
                   : "—"
               }
-              label="Balance"
+              label="Wallet"
             />
           </View>
         </LinearGradient>
@@ -272,10 +272,10 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
             <ProfileItem
               icon="💳"
               tint="green"
-              title="Available Balance"
+              title="Wallet Balance"
               sub={
                 dealer.creditAvailable != null
-                  ? `₹${dealer.creditAvailable.toLocaleString("en-IN")} available`
+                  ? `₹${dealer.creditAvailable.toLocaleString("en-IN")} in wallet`
                   : "—"
               }
               showArrow={false}

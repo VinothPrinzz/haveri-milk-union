@@ -9,3 +9,17 @@ apps/mobile
 !apps/mobile/package.json
 packages/types
 packages/utils
+
+# --- Abandoned dual-DB scaffolding: not deployed, not wired in (registrations
+#     are commented out in server.ts / packages/db index.ts). Kept out of the
+#     Fly image entirely so it can never run and can't break the build. ---
+apps/api/src/routes/db-status.ts
+apps/api/src/routes/db-reconciliation.ts
+apps/api/src/routes/db-polling-replication.ts
+apps/worker/src/polling-replication-bootstrap.ts
+apps/worker/src/index.patch.ts
+
+# --- One-off diagnostic / seed scripts: run locally via tsx, never part of a
+#     production build (also excluded from tsc in packages/db/tsconfig.json). ---
+packages/db/src/diag-*.ts
+packages/db/src/seed-*.ts

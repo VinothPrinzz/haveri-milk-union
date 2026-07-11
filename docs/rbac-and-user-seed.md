@@ -39,17 +39,19 @@ business groups:
 |---|---|---|
 | Manager | `manager` | orders, dealers (master), distribution, routes, batches, price chart |
 | Indent | `call_desk` | record/edit indents, create orders, view dealers, wallet top-ups |
-| FGS — Milk & Curd | `fgs_milk_curd` | inventory (stock entry/update) **scoped to Milk & Curd**, dispatch, batches, route sheets |
-| FGS — Other Products | `fgs_others` | inventory (stock entry/update) **scoped to Other Products**, dispatch, batches, route sheets |
+| FGS — Milk & Curd | `fgs_milk_curd` | inventory (stock entry/update) **& dispatch sheet scoped to Milk & Curd**, dispatch, batches, route sheets |
+| FGS — Other Products | `fgs_others` | inventory (stock entry/update) **& dispatch sheet scoped to Other Products**, dispatch, batches, route sheets |
 | Route officer | `officer` | gate pass, **route sheets**, **dispatch sheets**, direct sales, cash customers, create orders |
 | Finance | `accountant` | finance view + manage, **credit limits**, reports |
 
 > The two FGS accounts carry the same FGS capabilities, but the stock
-> view/entry endpoints (`/fgs/overview`, `/fgs/update`) scope each role to a
-> single product bucket — the SKA milk & curd diary vs. the other-products
-> diary — via `bucketsForRole()` in `apps/api/src/routes/inventory.ts`. A
-> Milk & Curd operator cannot view or edit Other-Products stock, and vice
-> versa. Opening stock auto-fills from the previous day's closing.
+> view/entry endpoints (`/fgs/overview`, `/fgs/update`) **and the dispatch
+> sheet** (`/dispatch-sheet`) scope each role to a single product bucket — the
+> SKA milk & curd diary vs. the other-products diary — via `bucketsForRole()`
+> in `apps/api/src/lib/stock-buckets.ts` (shared by `inventory.ts` and
+> `dispatch-sheet.ts`). A Milk & Curd operator only sees Milk & Curd products
+> on their Stock Entry and Dispatch Sheet pages, and vice versa. Opening stock
+> auto-fills from the previous day's closing.
 
 ## 3. Issues found & fixed
 
@@ -117,6 +119,28 @@ Indent staff can place/edit indents without gaining dealer master-data (incl.
 credit) write access.
 
 Files: `apps/api/src/middleware/admin-auth.ts`, `apps/api/src/routes/admin-indents.ts`.
+
+### 3e. Stock suppliers master + receipt cost tracking ✅
+
+Stock received into FGS now records **which supplier it was purchased from**
+and **at what cost**. New `suppliers` master (Masters → Suppliers) plus a
+`stock_receipts` table (one row per receipt event — product, supplier, qty,
+unit cost). The daily `fgs_stock_log.received` is rolled up as the sum of that
+day's receipts. Two dedicated permissions:
+
+```
+suppliers.view   → super_admin, manager, dispatch_officer, viewer, fgs_milk_curd, fgs_others
+suppliers.manage → super_admin, manager
+```
+
+FGS/dispatch roles get `suppliers.view` so they can pick a supplier when
+recording received stock on the Stock Entry screen; only masters staff manage
+the supplier list. The receipt rows themselves are written through the existing
+`inventory.update`-gated `POST /api/v1/fgs/update` endpoint.
+
+Files: `apps/api/src/middleware/admin-auth.ts`, `apps/api/src/routes/suppliers.ts`,
+`apps/api/src/routes/inventory.ts`, `packages/db/src/migrations/0053_stock_suppliers_and_receipts.sql`,
+`packages/db/src/schema/suppliers.ts`, `packages/db/src/schema/inventory.ts`.
 
 ## 4. Verified correct (no change needed)
 

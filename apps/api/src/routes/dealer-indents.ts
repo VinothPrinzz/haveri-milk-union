@@ -725,7 +725,14 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       }
 
       const schema = z.object({
-        paymentMode: z.enum(["credit", "razorpay"]),
+        // "wallet" and "credit" are the SAME settlement path (a ledger
+        // debit): regular dealers draw on their prepaid wallet balance,
+        // credit institutions accumulate the debit on their monthly bill
+        // (checkDealerCredit waives the balance gate for them). "wallet"
+        // is the name newer app builds send; "credit" is kept for older
+        // builds. Stored payment_mode stays 'credit' either way — the
+        // cancel/refund path reverses these orders via the ledger.
+        paymentMode: z.enum(["credit", "wallet", "razorpay"]),
         razorpayPaymentId: z.string().optional(),
       });
       const body = schema.parse(request.body);
@@ -810,7 +817,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         `;
         return reply.status(402).send({
           error: "Credit limit exceeded",
-          message: `Order is over your available balance by ₹${credit.shortfall.toFixed(
+          message: `Order is over your wallet balance by ₹${credit.shortfall.toFixed(
             2
           )}`,
           orderId: order.id,

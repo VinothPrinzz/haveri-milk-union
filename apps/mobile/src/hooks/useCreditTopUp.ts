@@ -45,7 +45,7 @@ export function useCreditTopUp() {
         keyId: created.keyId,
         amountPaise: created.amountPaise,
         orderId: created.razorpayOrderId,
-        description: `Top up balance by ₹${amount}`,
+        description: `Top up wallet by ₹${amount}`,
         prefill: prefillFromDealer(),
       });
 

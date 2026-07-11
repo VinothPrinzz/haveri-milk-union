@@ -13,7 +13,7 @@
 //   lose focus on re-render); DatePill / banners / category pills / the
 //   section header go in ListHeaderComponent and scroll with the grid.
 
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import {
   FlatList,
   RefreshControl,
@@ -40,8 +40,9 @@ import {
 // ── Hooks + stores ─────────────────────────────────────────────────
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
-import { useTargetDateStore } from "../store/targetDate";
+import { useTargetDateStore, istTodayIso } from "../store/targetDate";
 import { useWindowStatus } from "../hooks/useWindow";
+import { useDailyDraft } from "../hooks/useDailyDraft";
 import { useProducts, useCategories } from "../hooks/useProducts";
 import { useBanners } from "../hooks/useBanners";
 import { useNotifications } from "../hooks/useNotifications";
@@ -81,6 +82,9 @@ export default function HomeScreen({
 
   // ── API ─────────────────────────────────────────────────────────
   const windowQuery = useWindowStatus(dealer?.routeId);
+  // Today's standing-indent / draft — used to pre-fill the cart below.
+  const today = istTodayIso();
+  const todayDraftQuery = useDailyDraft(today);
   const productsQuery = useProducts();
   const catsQuery = useCategories();
   const bannersQuery = useBanners();
@@ -91,6 +95,11 @@ export default function HomeScreen({
   const [searchFocused, setSearchFocused] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(ALL_CATEGORY_ID);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Tracks the day we've already pre-filled the cart for, so we seed the
+  // standing indent at most once per day (and never re-add items the
+  // dealer deliberately removed within the same mount).
+  const seededDayRef = useRef<string | null>(null);
 
   React.useEffect(() => {
     const closed = windowQuery.data?.state === "closed";
@@ -170,6 +179,57 @@ export default function HomeScreen({
     gstPercent: p.gstPercent,
     categoryName: p.categoryName,
   });
+
+  // ── Pre-fill the cart with today's standing indent / draft ─────────
+  // A dealer who has a standing indent (or a draft already started for
+  // today) should find those items already waiting in their cart — the
+  // home bottom "View indent" bar and the checkout page both read this
+  // same cart. Seed it non-destructively:
+  //   • once per day (seededDayRef),
+  //   • only while the cart is still empty (never clobber the dealer's
+  //     own edits or re-add items they deliberately removed),
+  //   • only for an editable, not-yet-placed draft, whose window is open,
+  //     for a routed dealer who can actually place it.
+  // The dealer keeps every existing action (add / remove / change qty).
+  // The union subsidy line (PD0191S) is intentionally left out: it isn't
+  // in the catalog, so the lookup below skips it — it stays on the
+  // server-managed draft/auto-confirm path exactly as before. If the
+  // dealer never places, that draft still auto-confirms unchanged.
+  useEffect(() => {
+    if (seededDayRef.current === today) return;
+    const draft = todayDraftQuery.data;
+    const win = windowQuery.data;
+    if (!draft || !win || !dealer) return; // wait until inputs are known
+
+    const editable = draft.status === "draft" && !draft.paused;
+    const placeable = win.state === "open" || win.state === "warning";
+    const hasRoute = !!dealer.routeId;
+    if (!editable || !placeable || !hasRoute) {
+      seededDayRef.current = today; // not seedable today — stop re-checking
+      return;
+    }
+
+    const draftItems = draft.items.filter((i) => i.quantity > 0);
+    if (draftItems.length === 0) {
+      seededDayRef.current = today; // no standing indent to seed
+      return;
+    }
+
+    if (products.length === 0) return; // need the catalog for price/display
+    if (useCartStore.getState().getItemCount() > 0) {
+      seededDayRef.current = today; // dealer is already building a cart
+      return;
+    }
+
+    const byId = new Map(products.map((p) => [p.id, p]));
+    for (const it of draftItems) {
+      const p = byId.get(it.productId);
+      if (!p) continue; // hidden/unavailable (e.g. subsidy SKU) — skip
+      addItem(toCartProduct(p));
+      setQuantity(p.id, it.quantity);
+    }
+    seededDayRef.current = today;
+  }, [todayDraftQuery.data, windowQuery.data, dealer, products, today]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Absolute-quantity setter — used by the ProductCard stepper's editable
   // input (and its +/-). Clamps to [0, stock] and removes at 0. addItem is

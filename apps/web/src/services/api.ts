@@ -2772,17 +2772,43 @@ export const fetchFinanceDashboard = (f?: { period?: string; from?: string; to?:
   get<FinanceDashboard>("/finance/dashboard", { period: f?.period, from: f?.from, to: f?.to });
 
 // ── Day Book ──
+export type DayBookKind = "receipt" | "sale" | "refund" | "adjustment";
+export interface DayBookLine {
+  id: string; at: string; kind: DayBookKind;
+  // topup | topup_ledger | order_payment | invoice_payment | on_account |
+  // order_sale | counter_sale | refund | adjustment_credit | adjustment_debit
+  type: string;
+  mode: string | null; amount: number;
+  reference: string | null; docNo: string | null;
+  dealerCode: string | null; dealerName: string | null;
+  routeId: string | null; routeName: string | null;
+  byName: string | null;
+}
 export interface DayBook {
   date: string;
-  receiptsByMode: Array<{ mode: string; cnt: number; total: number }>;
-  refundsOut: { cnt: number; total: number };
-  adjustments: Array<{ voucherType: string; type: string; cnt: number; total: number }>;
-  lines: Array<{
-    id: string; date: string; mode: string; amount: number; reference: string | null;
-    dealerCode: string; dealerName: string; invoiceNumber: string | null;
-    receivedByName: string | null; routeName: string | null;
+  routeId: string | null;
+  lines: DayBookLine[];
+  routeWise: Array<{
+    id: string | null; name: string | null;
+    receipts: number; collected: number; cash: number;
+    orders: number; sales: number;
   }>;
-  routeWise: Array<{ id: string | null; name: string | null; collected: number; receipts: number }>;
-  summary: { totalReceipts: number; byMode: Record<string, number>; refundsOut: number; net: number; cashCollected: number };
+  summary: {
+    totalReceipts: number;
+    byMode: Record<string, number>;
+    byType: Record<string, number>;
+    cashCollected: number;
+    refundsOut: number; refundsCount: number;
+    net: number;
+    sales: {
+      total: number;
+      ordersTotal: number; ordersCount: number;
+      counterTotal: number; counterCount: number;
+      byMode: Record<string, number>;
+    };
+    ledgerTopups: { count: number; total: number };
+    adjustments: { count: number; creditTotal: number; debitTotal: number };
+  };
 }
-export const fetchDayBook = (date?: string) => get<DayBook>("/finance/day-book", { date });
+export const fetchDayBook = (date?: string, routeId?: string | null) =>
+  get<DayBook>("/finance/day-book", { date, routeId: routeId ?? undefined });

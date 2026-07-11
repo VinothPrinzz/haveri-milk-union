@@ -97,7 +97,7 @@ app.addContentTypeParser(
 // ── Plugins ───────────────────────────────────────────
 await app.register(cors, {
   origin: env.NODE_ENV === "production"
-    ? ["https://erp.haverimunion.coop"]
+    ? (process.env.WEB_ORIGIN?.split(",").map((s) => s.trim()) ?? ["https://admin.havemul.in"])
     : true,
   credentials: true,
   allowedHeaders: ["Content-Type", "x-session-token"],
