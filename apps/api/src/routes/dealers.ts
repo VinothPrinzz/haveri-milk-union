@@ -8,11 +8,19 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { dealerAuth } from "../middleware/dealer-auth.js";
+import { hashPassword } from "../lib/auth.js";
 import {
   paginationSchema,
   paginationMeta,
   offsetFromPage,
 } from "../lib/pagination.js";
+
+// Dealers log in to the mobile app with username + password. We derive the
+// username from the dealer's phone number automatically (on create, and on
+// every phone change) and seed every new dealer with this default password,
+// which they are expected to change after first login. Kept in sync with
+// packages/db seed-password.ts; override via env for non-prod environments.
+const DEFAULT_DEALER_PASSWORD = process.env.DEFAULT_DEALER_PASSWORD || "password123";
 
 export async function dealerRoutes(app: FastifyInstance) {
   // ═══════════════════════════════════════════════════════════════
@@ -264,17 +272,22 @@ export async function dealerRoutes(app: FastifyInstance) {
         if (codeExists) return reply.status(409).send({ error: `Code ${body.code} is already taken` });
       }
 
+      // New dealers get mobile-app credentials automatically: username is the
+      // phone number they were created with, password is the shared default
+      // (they change it after first login). See DEFAULT_DEALER_PASSWORD above.
+      const passwordHash = await hashPassword(DEFAULT_DEALER_PASSWORD);
+
       // officer_name is set automatically from the dealer's zone by the
       // dealers_set_officer_from_zone trigger (migration 0043) — the
       // officer always follows the taluka, so any client value is ignored.
       const [dealer] = await pgClient`
         INSERT INTO dealers (
-          name, phone, email, gst_number, zone_id, address, city, pin_code, location_label,
+          name, phone, username, password_hash, email, gst_number, zone_id, address, city, pin_code, location_label,
           code, customer_type, rate_category, pay_mode, route_id, bank, active,
           account_no, address_type, state, area, house_no, street
         )
         VALUES (
-          ${body.name}, ${body.phone}, ${body.email || null}, ${body.gstNumber || null},
+          ${body.name}, ${body.phone}, ${body.phone}, ${passwordHash}, ${body.email || null}, ${body.gstNumber || null},
           ${body.zoneId || (await getDefaultZoneId())}, ${body.address || null}, ${body.city || null},
           ${body.pinCode || null}, ${body.locationLabel || null},
           ${body.code || null}, ${body.customerType || "Retail-Dealer"},
@@ -338,6 +351,9 @@ export async function dealerRoutes(app: FastifyInstance) {
           UPDATE dealers SET
             name = COALESCE(${body.name ?? null}, name),
             phone = COALESCE(${body.phone ?? null}, phone),
+            -- Dealer login username follows the phone number: whenever the
+            -- phone is changed here it is auto-captured as the username too.
+            username = COALESCE(${body.phone ?? null}, username),
             email = CASE WHEN ${body.email !== undefined} THEN ${body.email ?? null} ELSE email END,
             gst_number = CASE WHEN ${body.gstNumber !== undefined} THEN ${body.gstNumber ?? null} ELSE gst_number END,
             active = COALESCE(${body.active ?? null}::boolean, active),
