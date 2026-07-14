@@ -26,8 +26,16 @@ import {
 import { checkDealerCredit } from "../lib/credit-check.js";
 import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
+import { fgsAvailable, lockStockProducts } from "../lib/stock-check.js";
 import { PDFDocument } from "pdf-lib";
 import jwt from "jsonwebtoken"
+
+// The half-price HTM 1000ML SKU (migration 0056). The subsidy scheme is
+// UNION-OPERATED: the line is assigned per-dealer from the admin panel and
+// the dealer must not be able to add, change, or remove it. POST /orders
+// pins it server-side (below) exactly like PATCH /drafts/:date does in
+// dealer-indents.ts — keep the two in sync.
+const SUBSIDY_PRODUCT_CODE = "PD0191S";
 
 /**
  * Loads an already-committed order in the exact success shape of
@@ -159,8 +167,75 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       }
 
+      // ── 1b. Pin the union subsidy line (PD0191S) ──
+      // This cart order becomes the day's placed order and cancels the
+      // standing-indent draft as superseded — which is the ONLY order that
+      // carried the dealer's admin-assigned subsidy line. Without pinning it
+      // here, checking out via the cart silently dropped the subsidy milk
+      // from the day's delivery. Same rules as PATCH /drafts/:date: whatever
+      // the client sent for this SKU is ignored; the quantity is held at
+      // what the day's existing (non-cancelled) order says, or the standing
+      // template when there's no order yet. Cart orders are same-day
+      // (delivery_date defaults to today IST), so "the day" is today.
+      let lineItems = body.items;
+      const [subsidyProduct] = await pgClient`
+        SELECT id::text AS id FROM products
+         WHERE code = ${SUBSIDY_PRODUCT_CODE} AND deleted_at IS NULL
+         LIMIT 1
+      `;
+      if (subsidyProduct) {
+        let pinnedQty = 0;
+        const [activeOrder] = await pgClient`
+          SELECT id, status::text AS status FROM orders
+           WHERE dealer_id = ${dealer.dealerId}
+             AND delivery_date = (now() AT TIME ZONE 'Asia/Kolkata')::date
+             AND status <> 'cancelled'
+           ORDER BY created_at DESC
+           LIMIT 1
+        `;
+        if (activeOrder) {
+          // Carry the line over ONLY from a sibling this order will cancel
+          // as superseded (draft / payment_required). An already-PLACED
+          // order (e.g. a fresh confirmed subsidy-only order from the
+          // admin's subsidy-place endpoint) survives the supersede and
+          // keeps its own line — copying it here would double the scheme
+          // milk AND the charge.
+          if (
+            activeOrder.status === "draft" ||
+            activeOrder.status === "payment_required"
+          ) {
+            const [line] = await pgClient`
+              SELECT quantity FROM order_items
+               WHERE order_id = ${activeOrder.id}::uuid
+                 AND product_id = ${subsidyProduct.id}::uuid
+               LIMIT 1
+            `;
+            pinnedQty = line ? Number(line.quantity) : 0;
+          }
+        } else {
+          const [tpl] = await pgClient`
+            SELECT default_qty FROM dealer_standing_indents
+             WHERE dealer_id = ${dealer.dealerId}
+               AND product_id = ${subsidyProduct.id}::uuid
+               AND active = true
+             LIMIT 1
+          `;
+          pinnedQty = tpl ? Number(tpl.default_qty) : 0;
+        }
+        lineItems = lineItems.filter((i) => i.productId !== subsidyProduct.id);
+        if (pinnedQty > 0) {
+          lineItems.push({ productId: subsidyProduct.id, quantity: pinnedQty });
+        }
+        if (lineItems.length === 0) {
+          return reply.status(400).send({
+            error: "Empty order",
+            message: "Add at least one item before placing the order.",
+          });
+        }
+      }
+
       // ── 2. Fetch product details and validate availability ──
-      const productIds = body.items.map((i) => i.productId);
+      const productIds = lineItems.map((i) => i.productId);
       const productRows = await db
         .select({
           id: products.id,
@@ -169,13 +244,23 @@ export async function orderRoutes(app: FastifyInstance) {
           gstPercent: products.gstPercent,
           stock: products.stock,
           available: products.available,
+          stockSourceProductId: products.stockSourceProductId,
         })
         .from(products)
         .where(inArray(products.id, productIds));
       const productMap = new Map(productRows.map((p) => [p.id, p]));
 
-      // Validate all products exist and are available
-      for (const item of body.items) {
+      // A variant SKU (the subsidy line) draws stock from its base SKU —
+      // COALESCE(stock_source_product_id, id), migration 0059.
+      const stockRowIdOf = (p: {
+        id: string;
+        stockSourceProductId: string | null;
+      }) => p.stockSourceProductId ?? p.id;
+
+      // Validate existence + availability, and sum each order's demand per
+      // STOCK ROW (a variant and its base collapse onto the same row).
+      const demandByStockRow = new Map<string, number>();
+      for (const item of lineItems) {
         const product = productMap.get(item.productId);
         if (!product) {
           return reply.status(400).send({
@@ -189,16 +274,37 @@ export async function orderRoutes(app: FastifyInstance) {
             message: `${product.name} is currently unavailable`,
           });
         }
-        if (product.stock < item.quantity) {
+        const rowId = stockRowIdOf(product);
+        demandByStockRow.set(
+          rowId,
+          (demandByStockRow.get(rowId) ?? 0) + item.quantity
+        );
+      }
+
+      // Stock gate — checked against the SAME day-aware FGS availability the
+      // dealer app's product list shows (fgsAvailable), NOT the free-floating
+      // products.stock counter. That counter drifts (it carries across days),
+      // and gating on it here is exactly what rejected SKUs that had real
+      // stock — e.g. SAMRUDHI showed 3580 on the home page but the counter had
+      // drifted to 16, so checkout failed with "only 16 units available".
+      for (const [rowId, demand] of demandByStockRow) {
+        const available = await fgsAvailable(pgClient, rowId);
+        if (available < demand) {
+          const named = productRows.find((p) => stockRowIdOf(p) === rowId);
           return reply.status(400).send({
             error: "Insufficient Stock",
-            message: `${product.name} has only ${product.stock} units available`,
+            message: `${named?.name ?? "This product"} has only ${Math.max(
+              0,
+              available
+            )} units available`,
           });
         }
       }
 
       // ── 2b. Enforce Milk order minimum (≥12 L milk; curd has no minimum) ──
-      const minQtyViolations = await findMinQtyViolations(body.items);
+      // (The subsidy line is exempt via MIN_QTY_EXEMPT_CODES, so pinning it
+      // above neither counts toward nor triggers the 12 L rule.)
+      const minQtyViolations = await findMinQtyViolations(lineItems);
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
           error: "Minimum order quantity",
@@ -219,7 +325,7 @@ export async function orderRoutes(app: FastifyInstance) {
         gstAmount: string;
         lineTotal: string;
       }> = [];
-      for (const item of body.items) {
+      for (const item of lineItems) {
         const product = productMap.get(item.productId)!;
         const price = parseFloat(product.basePrice);
         const gstPct = parseFloat(product.gstPercent);
@@ -371,39 +477,53 @@ export async function orderRoutes(app: FastifyInstance) {
             )}
           `;
 
-          // Deduct stock. Quantities are summed per product first so a product
-          // that appears on two lines is deducted once with the combined qty.
+          // Sum demand per STOCK ROW — a variant SKU deducts from its base
+          // SKU's row (migration 0059) — so a product on two lines, or a
+          // variant ordered alongside its base, moves once with the combined
+          // qty.
           const qtyByProduct = new Map<string, number>();
-          for (const item of body.items) {
+          for (const item of lineItems) {
+            const stockRowId = stockRowIdOf(productMap.get(item.productId)!);
             qtyByProduct.set(
-              item.productId,
-              (qtyByProduct.get(item.productId) ?? 0) + item.quantity
+              stockRowId,
+              (qtyByProduct.get(stockRowId) ?? 0) + item.quantity
             );
           }
-          // Deduct each distinct product with SCALAR bound params only, still
-          // guarded (stock >= qty) so concurrent orders can't drive stock < 0.
-          //
-          // Every attempt to fold this into ONE statement passed a JS
-          // array/object as a bound param — unnest(${arr}::int[]), then
-          // jsonb_to_recordset(${tx.json(rows)}) — and BOTH crash postgres.js's
-          // Bind through the Supabase transaction pooler ("Received an instance
-          // of Array"): only scalar params serialize safely here. Distinct
-          // products per order are few (milk/curd variants), so the loop's
-          // round-trips are negligible — unlike the order_items line count,
-          // which stays a single multi-row INSERT above.
-          for (const [productId, qty] of qtyByProduct) {
-            const r = await tx`
-              UPDATE products
-                 SET stock = stock - ${qty}, updated_at = now()
-               WHERE id = ${productId}::uuid AND stock >= ${qty}
-               RETURNING id
-            `;
-            if (r.length === 0) {
+
+          // Authoritative, race-safe stock gate. The order was latched
+          // (stock_deducted = true) in the INSERT above and superseded siblings
+          // were already freed (cancelSupersededSiblings, above), so
+          // fgsAvailable now COUNTS this order against today's FGS stock — a
+          // negative remainder means it oversells. Lock each stock product
+          // first so two concurrent orders on the last units can't both pass
+          // (scalar param per product — array params crash Bind through the
+          // Supabase pooler). This backs the fgsAvailable pre-check above with a
+          // guarantee under concurrency.
+          await lockStockProducts(tx, [...qtyByProduct.keys()]);
+          for (const [stockRowId, qty] of qtyByProduct) {
+            const remaining = await fgsAvailable(tx, stockRowId); // counts this order
+            if (remaining < 0) {
+              const named = productRows.find(
+                (p) => stockRowIdOf(p) === stockRowId
+              );
               throw Object.assign(new Error("Stock depleted"), {
                 statusCode: 409,
-                productId,
+                productId: stockRowId,
+                productName: named?.name ?? null,
+                available: qty + remaining, // what was available before this order
               });
             }
+          }
+
+          // Legacy bookkeeping only: move the vestigial products.stock counter
+          // for any reader still on it, FLOORED + UNGATED so a drifted counter
+          // can never block (the FGS check above is the gate).
+          for (const [stockRowId, qty] of qtyByProduct) {
+            await tx`
+              UPDATE products
+                 SET stock = GREATEST(stock - ${qty}, 0), updated_at = now()
+               WHERE id = ${stockRowId}::uuid
+            `;
           }
           // stock_deducted was latched in the order INSERT above (same
           // transaction), so a later cancel restores exactly once and a
@@ -553,11 +673,13 @@ export async function orderRoutes(app: FastifyInstance) {
             orderTotal: err.orderTotal,                                     
           });                                                               
         }
-        if (err.statusCode === 409) {                                       
-          return reply.status(409).send({                                   
-            error: "Insufficient Stock",                                    
-            message: `Stock depleted for product ${err.productId} — please refresh and retry`,                                                   
-          });                                                               
+        if (err.statusCode === 409) {
+          return reply.status(409).send({
+            error: "Insufficient Stock",
+            message: err.productName
+              ? `${err.productName} has only ${Math.max(0, err.available ?? 0)} units available — please refresh and retry`
+              : `Stock depleted for product ${err.productId} — please refresh and retry`,
+          });
         }
         throw err;
       }

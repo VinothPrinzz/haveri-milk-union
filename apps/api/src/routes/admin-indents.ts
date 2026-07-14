@@ -727,12 +727,15 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
              ${adminUserId(request)})
         `;
 
-        // Move physical stock last — its guard is what can abort the confirm.
-        await deductOrderStock(tx, order.id);
-
         // This is now the day's placed order — cancel any stranded twin
-        // (older duplicate draft / unpaid payment_required) for this date.
+        // (older duplicate draft / unpaid payment_required) for this date
+        // FIRST, so its reservation no longer counts against this order in the
+        // FGS stock check below (else a dealer replacing their own order
+        // double-counts and false-blocks).
         await cancelSupersededSiblings(tx, order.id);
+
+        // Move physical stock last — its FGS guard is what can abort the confirm.
+        await deductOrderStock(tx, order.id);
       });
       } catch (err) {
         if (err instanceof StockConflictError) {
