@@ -13,7 +13,7 @@
 // you instead copied the renderer into the worker, import it from
 // "../lib/render-invoice-pdf.js".
 // ════════════════════════════════════════════════════════════════════
-import { Job } from "bullmq";
+import type { JobLike } from "../lib/queues.js";
 import { sql } from "../lib/db.js";
 import { uploadPDF } from "../lib/r2.js";
 import {
@@ -25,7 +25,7 @@ export interface PDFInvoiceJobData {
   orderId: string;
 }
 
-export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
+export async function processPDFInvoice(job: JobLike<PDFInvoiceJobData>) {
   const { orderId } = job.data;
 
   // ── Fetch order + dealer + route ───────────────────────────────────
@@ -48,7 +48,7 @@ export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
       r.name        AS route_name
     FROM orders o
     JOIN dealers d      ON d.id = o.dealer_id
-    LEFT JOIN routes r  ON r.id = d.route_id
+    LEFT JOIN routes r  ON r.id = COALESCE(o.route_id, d.route_id)
     WHERE o.id = ${orderId}
     LIMIT 1
   `;

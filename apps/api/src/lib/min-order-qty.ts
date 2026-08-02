@@ -34,6 +34,41 @@ export const MIN_QTY_CATEGORY_NAMES = ["milk"] as const;
  */
 export const MIN_QTY_EXEMPT_CODES = ["PD0191S"] as const;
 
+/**
+ * Rate categories EXEMPT from the milk minimum. 'Credit Inst-MRP' customers
+ * are government institutions: supply is compulsory however small the indent,
+ * so the 12 L floor must not block them. Note this is narrower than
+ * isCreditInstitutionType() — 'Credit Inst-Dealer' still carries the minimum.
+ */
+export const MIN_QTY_EXEMPT_RATE_CATEGORIES = ["Credit Inst-MRP"] as const;
+
+/** True when this dealer's rate category is exempt from the milk minimum. */
+export function isMinQtyExemptRateCategory(
+  rateCategory: string | null | undefined
+): boolean {
+  return (MIN_QTY_EXEMPT_RATE_CATEGORIES as readonly string[]).includes(
+    String(rateCategory ?? "").trim()
+  );
+}
+
+/**
+ * Look up a dealer's rate category and say whether they skip the minimum.
+ * Call sites hold a dealerId far more often than a rate category, so this
+ * keeps them to a one-line change. Unknown/missing dealer → not exempt.
+ */
+export async function isDealerExemptFromMinQty(
+  dealerId: string | null | undefined
+): Promise<boolean> {
+  if (!dealerId) return false;
+  const [row] = await pgClient`
+    SELECT rate_category::text AS rate_category
+      FROM dealers
+     WHERE id = ${dealerId} AND deleted_at IS NULL
+     LIMIT 1
+  `;
+  return isMinQtyExemptRateCategory(row?.rate_category);
+}
+
 export type RestrictedCategory = keyof typeof CATEGORY_MIN;
 
 export interface CategoryMinViolation {
@@ -129,9 +164,15 @@ export function minQtyErrorMessage(violations: CategoryMinViolation[]): string {
  */
 export async function findMinQtyViolations(
   items: Array<{ productId: string; quantity: number }>,
+  /** Placing dealer. When they are a Credit Inst-MRP (government)
+   *  institution the minimum does not apply — supply is compulsory
+   *  however small the indent. Omit for non-dealer callers. */
+  dealerId?: string | null,
 ): Promise<CategoryMinViolation[]> {
   const positive = items.filter((i) => i.quantity > 0);
   if (positive.length === 0) return [];
+
+  if (await isDealerExemptFromMinQty(dealerId)) return [];
 
   const ids = positive.map((i) => i.productId);
   const rows = (await pgClient`
@@ -161,6 +202,17 @@ export async function findMinQtyViolations(
 export async function findOrderMinQtyViolations(
   orderId: string,
 ): Promise<CategoryMinViolation[]> {
+  // The order knows its own dealer, so the Credit Inst-MRP exemption is
+  // resolved here rather than pushed onto every caller.
+  const [owner] = await pgClient`
+    SELECT d.rate_category::text AS rate_category
+      FROM orders o
+      JOIN dealers d ON d.id = o.dealer_id
+     WHERE o.id = ${orderId}::uuid
+     LIMIT 1
+  `;
+  if (isMinQtyExemptRateCategory(owner?.rate_category)) return [];
+
   const rows = (await pgClient`
     SELECT c.name AS category, oi.quantity AS quantity,
            p.unit AS unit, p.pack_size AS pack_size, p.name AS name

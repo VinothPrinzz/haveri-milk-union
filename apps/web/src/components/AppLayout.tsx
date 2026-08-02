@@ -33,6 +33,29 @@ export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType
   { key: "system",         label: "Admin",          icon: ShieldCheck,     path: "/system/users" },
 ];
 
+// ─── Role → module visibility ─────────────────────────────────────────
+// The API is the real gate (every write/read endpoint checks the role), but
+// staff shouldn't even see modules they can't use. Only roles listed here are
+// restricted; every other role sees the full module set.
+//
+//   • officer (route officer) → Route Sheets + Sales Reports only.
+const ROLE_MODULES: Partial<Record<string, ModuleKey[]>> = {
+  officer: ["reports", "sales-reports"],
+};
+
+/** Module keys the given role may see, in MODULES order. */
+export function allowedModulesForRole(role: string | null | undefined): ModuleKey[] {
+  const restricted = role ? ROLE_MODULES[role] : undefined;
+  const allow = restricted ? new Set<ModuleKey>(restricted) : null;
+  return MODULES.map(m => m.key).filter(k => !allow || allow.has(k));
+}
+
+/** Landing path for a role: its first allowed module (or Dashboard). */
+export function defaultModulePathForRole(role: string | null | undefined): string {
+  const allowed = new Set(allowedModulesForRole(role));
+  return MODULES.find(m => allowed.has(m.key))?.path ?? "/";
+}
+
 // Map a pathname to the active module key
 export function moduleOfPath(pathname: string): ModuleKey {
   if (pathname === "/") return "dashboard";
@@ -68,7 +91,9 @@ function labelize(seg?: string) {
 
 // ─── Command palette (inline shadcn dialog, no new files) ────────────
 
-function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
+function CommandPalette({
+  open, onClose, allowedModules,
+}: { open: boolean; onClose: () => void; allowedModules: Set<ModuleKey> }) {
   const navigate = useNavigate();
   const [q, setQ] = useState("");
 
@@ -76,7 +101,8 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
 
   if (!open) return null;
   const items = COMMAND_ITEMS.filter(i =>
-    !q || i.label.toLowerCase().includes(q.toLowerCase()) || i.path.toLowerCase().includes(q.toLowerCase())
+    allowedModules.has(moduleOfPath(i.path)) &&
+    (!q || i.label.toLowerCase().includes(q.toLowerCase()) || i.path.toLowerCase().includes(q.toLowerCase()))
   );
 
   return (
@@ -167,6 +193,11 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const activeModule = useMemo(() => moduleOfPath(pathname), [pathname]);
   const breadcrumb = useBreadcrumb();
 
+  // Modules this user's role may see. The API enforces access regardless; this
+  // just hides tabs/pages the user can't use (e.g. route officers → reports only).
+  const allowedModuleKeys = useMemo(() => new Set(allowedModulesForRole(user?.role)), [user?.role]);
+  const visibleModules = useMemo(() => MODULES.filter(m => allowedModuleKeys.has(m.key)), [allowedModuleKeys]);
+
   // --- Clean View Patch Start ---
   const __location = useLocation();
   const __isCleanView = new URLSearchParams(__location.search).get("clean") === "1";
@@ -247,7 +278,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           data-kbd-region="topbar"
           className="hidden lg:flex items-center gap-0.5 overflow-x-auto flex-1 min-w-0"
         >
-          {MODULES.map(m => {
+          {visibleModules.map(m => {
             const Icon = m.icon;
             const active = activeModule === m.key;
             return (
@@ -391,7 +422,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         </main>
       </div>
 
-      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} />
+      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} allowedModules={allowedModuleKeys} />
       <ChangePasswordDialog open={changePwdOpen} onOpenChange={setChangePwdOpen} />
     </div>
   );

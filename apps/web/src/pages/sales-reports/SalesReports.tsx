@@ -15,7 +15,7 @@ import {
   fetchTalukaWise,
   type DailyStatementResponse, type DayRouteCashResponse,
   type OfficerWiseResponse, type SalesGridResponse, type SalesGridRoute,
-  type CreditSalesResponse, type TalukaAgentResponse,
+  type CreditSalesResponse, type CreditBillCustomer, type TalukaAgentResponse,
   type AdhocResponse, type GstStatementResponse, type VipSalesResponse,
   type TalukaWiseResponse, type TalukaWiseRow,
   type ProductLite,
@@ -23,8 +23,23 @@ import {
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import { toCsv } from "@/lib/exporters";
 import { ColumnPagedTable, paginateColumns } from "@/lib/reportColumnPaging";
+import { computeKgLtr } from "@/lib/kgLtr";
 
 const fmtQty = (n: number | string) => String(Number(n || 0));
+
+// dd-mm-yyyy — the on-paper date format the union uses across sales reports.
+const fmtDMY = (iso: string) => {
+  const [y, m, d] = (iso ?? "").split("-");
+  return y && m && d ? `${d}-${m}-${y}` : (iso ?? "");
+};
+
+// Ltr/Kg volume: blank for 0 (keeps grids readable), else up to 2 decimals.
+const fmtVol = (n: number) =>
+  n ? Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 }) : "";
+
+// Volume of one product column's packet count, using its DB pack_size + unit.
+const volOf = (packets: number, p: { packSize?: number; unit?: string }) =>
+  computeKgLtr(packets, p.packSize ?? 0, p.unit ?? "");
 
 // ─────────────────────────────────────────────────────────────
 // Shared shell — wraps every sales report
@@ -35,6 +50,7 @@ function SalesReportShell<T>({
   renderPages,
   buildCsv,
   printOrientation = "portrait",
+  printMeta = <ReportPrintMeta />,
 }: {
   title: string;
   description: string;
@@ -42,6 +58,9 @@ function SalesReportShell<T>({
   renderPages: (from: string, to: string, data: T | undefined) => ReactNode[];
   buildCsv?: (from: string, to: string, data: T) => (string | number | null | undefined)[][];
   printOrientation?: "portrait" | "landscape";
+  /** Per-page letterhead. Pass `null` to omit it (e.g. the credit bill, which
+   *  carries its own printed header). Defaults to the union letterhead. */
+  printMeta?: ReactNode;
 }) {
   const today = new Date().toISOString().split("T")[0];
   const monthStart = today.substring(0, 8) + "01";
@@ -87,9 +106,7 @@ function SalesReportShell<T>({
       }
       onGenerate={handleGenerate}
       exporters={exporters}
-      printMeta={
-        <ReportPrintMeta/>
-      }
+      printMeta={printMeta}
       state={{ generated, loading: isLoading, pages }}
     />
   );
@@ -177,22 +194,28 @@ function renderCashStyleGrid(
   from: string,
   to: string,
   apiData: SalesGridResponse,
+  asVolume = false,
 ): ReactNode[] {
   const routePages = paginateColumns(apiData.routes, CASH_ROUTES_PER_PAGE);
   const pageCount = routePages.length;
 
+  // Cell + total formatters: packet counts, or Ltr/Kg volume (Sales Register).
+  const one = (packets: number, p: ProductLite) =>
+    asVolume ? volOf(packets, p) : packets;
+  const fmtCell = (v: number) => (asVolume ? fmtVol(v) : fmtQty(v));
+
   return routePages.map((routeChunk, pageIdx) => {
     const routeQtyTotal = (r: SalesGridRoute) =>
-      apiData.products.reduce((s, p) => s + (r.qty[p.id] ?? 0), 0);
+      apiData.products.reduce((s, p) => s + one(r.qty[p.id] ?? 0, p), 0);
     const grandQtyTotal = apiData.products.reduce(
-      (s, p) => s + (apiData.totals.qty[p.id] ?? 0), 0);
+      (s, p) => s + one(apiData.totals.qty[p.id] ?? 0, p), 0);
     const isLast = pageIdx === pageCount - 1;
 
     return (
       <div key={pageIdx} className="report-page">
         <ReportHeader
           title={title}
-          subtitle={`Period: ${from} to ${to} · Columns ${pageIdx + 1}/${pageCount}`}
+          subtitle={`Period: ${from} to ${to} · Columns ${pageIdx + 1}/${pageCount}${asVolume ? " · Qty in Ltr / Kg" : ""}`}
         />
         <table className="w-full text-[11px] border-collapse">
           <thead>
@@ -218,12 +241,12 @@ function renderCashStyleGrid(
                 <td className="border border-border py-1 px-2 font-medium">{p.reportAlias}</td>
                 {routeChunk.map(r => (
                   <td key={r.id} className="border border-border py-1 px-2 text-center num">
-                    {fmtQty(r.qty[p.id] ?? 0)}
+                    {fmtCell(one(r.qty[p.id] ?? 0, p))}
                   </td>
                 ))}
                 {isLast && (
                   <td className="border border-border py-1 px-2 text-center font-bold num">
-                    {fmtQty(apiData.totals.qty[p.id] ?? 0)}
+                    {fmtCell(one(apiData.totals.qty[p.id] ?? 0, p))}
                   </td>
                 )}
               </tr>
@@ -234,12 +257,12 @@ function renderCashStyleGrid(
               <td className="border border-border py-1.5 px-2">TOTAL</td>
               {routeChunk.map(r => (
                 <td key={r.id} className="border border-border py-1.5 px-2 text-center num">
-                  {fmtQty(routeQtyTotal(r))}
+                  {fmtCell(routeQtyTotal(r))}
                 </td>
               ))}
               {isLast && (
                 <td className="border border-border py-1.5 px-2 text-center num">
-                  {fmtQty(grandQtyTotal)}
+                  {fmtCell(grandQtyTotal)}
                 </td>
               )}
             </tr>
@@ -277,28 +300,33 @@ function renderCashStyleGrid(
   });
 }
 
-const buildCashGridCsv = (from: string, to: string, d: SalesGridResponse) => {
-  const rows: (string | number)[][] = [
-    [`${from} to ${to}`],
-    ["Product", ...d.routes.map(r => `${r.code} ${r.name}`), "Total Qty"],
-  ];
-  d.products.forEach(p => {
+// Cash Sales exports packet counts; Sales Register exports Ltr/Kg volume.
+const makeCashGridCsv =
+  (asVolume: boolean) =>
+  (from: string, to: string, d: SalesGridResponse) => {
+    const cell = (packets: number, p: ProductLite) =>
+      asVolume ? Math.round(volOf(packets, p) * 100) / 100 : packets;
+    const rows: (string | number)[][] = [
+      [`${from} to ${to}${asVolume ? " · Qty in Ltr/Kg" : ""}`],
+      ["Product", ...d.routes.map(r => `${r.code} ${r.name}`), "Total Qty"],
+    ];
+    d.products.forEach(p => {
+      rows.push([
+        p.reportAlias,
+        ...d.routes.map(r => cell(r.qty[p.id] ?? 0, p)),
+        cell(d.totals.qty[p.id] ?? 0, p),
+      ]);
+    });
     rows.push([
-      p.reportAlias,
-      ...d.routes.map(r => r.qty[p.id] ?? 0),
-      d.totals.qty[p.id] ?? 0,
+      "TOTAL QTY",
+      ...d.routes.map(r => Math.round(d.products.reduce((s, p) => s + cell(r.qty[p.id] ?? 0, p), 0) * 100) / 100),
+      Math.round(d.products.reduce((s, p) => s + cell(d.totals.qty[p.id] ?? 0, p), 0) * 100) / 100,
     ]);
-  });
-  rows.push([
-    "TOTAL QTY",
-    ...d.routes.map(r => d.products.reduce((s, p) => s + (r.qty[p.id] ?? 0), 0)),
-    d.products.reduce((s, p) => s + (d.totals.qty[p.id] ?? 0), 0),
-  ]);
-  rows.push(["Milk ₹",    ...d.routes.map(r => r.milkAmount),    d.totals.milkAmount]);
-  rows.push(["Product ₹", ...d.routes.map(r => r.productAmount), d.totals.productAmount]);
-  rows.push(["Total ₹",   ...d.routes.map(r => r.total),         d.totals.total]);
-  return rows;
-};
+    rows.push(["Milk ₹",    ...d.routes.map(r => r.milkAmount),    d.totals.milkAmount]);
+    rows.push(["Product ₹", ...d.routes.map(r => r.productAmount), d.totals.productAmount]);
+    rows.push(["Total ₹",   ...d.routes.map(r => r.total),         d.totals.total]);
+    return rows;
+  };
 
 // ─── B1. Daily Sales Statement ──────────────────────────────────
 export const DailySalesStatement = () => (
@@ -308,61 +336,64 @@ export const DailySalesStatement = () => (
     fetcher={(from, to) => fetchDailyStatement({ from, to })}
     renderPages={(from, to, apiData) => {
       if (!apiData) return [];
-    
+
       // Cap at 8 product columns/page so a portrait A4 fits:
-      // Date (90px) + 8×60px + Total Amount (110px) ≈ 680px < 703px usable.
+      // Date (90px) + 8×60px + Total Qty (110px) ≈ 680px < 703px usable.
       // Aliases are ≤14 chars (migration 0027) and wrap inside the 60px cols.
       return apiData.groups.flatMap((group, gi) => {
         const productPages = paginateColumns(group.products, 8);
+        // Milk & Lassi pages read in litres, Curd page in kilograms.
+        const unitLbl = group.key === "curd" ? "Kgs" : "Ltrs";
+        // Row's total volume = Σ every product in the category (unit-consistent
+        // within a page), so it doesn't change across column-paged chunks.
+        const rowVol = (row: (typeof group.rows)[number]) =>
+          group.products.reduce((s, p) => s + volOf(row.qty[p.id] ?? 0, p), 0);
+        const colTotalVol = group.products.reduce(
+          (s, p) => s + volOf(group.totals.qty[p.id] ?? 0, p), 0);
 
         return productPages.map((prodChunk, pi) => (
           <ColumnPagedTable
             key={`${gi}-${pi}`}
-            title={`Daily Sales Statement — ${group.label} • Cols ${pi + 1}/${productPages.length}`}
+            title={`Daily Sales Statement — ${group.label} (${unitLbl})${productPages.length > 1 ? ` • Cols ${pi + 1}/${productPages.length}` : ""}`}
             fixedLayout
-            fixedHead={[{ label: "Date", accessor: r => r.date, width: "90px" }]}
+            fixedHead={[{ label: "Date", accessor: r => fmtDMY(r.date), width: "90px" }]}
             productCols={prodChunk}
-            productCellRender={(row, p) => fmtQty(row.qty[p.id] ?? 0)}
+            productCellRender={(row, p) => fmtVol(volOf(row.qty[p.id] ?? 0, p))}
             trailingHead={[
-              { label: "Total Amount", accessor: r => fmtINR(r.totalAmount), num: true, width: "110px" }
+              { label: `Total Qty (${unitLbl})`, accessor: r => fmtVol(rowVol(r)), num: true, width: "110px" }
             ]}
             rows={group.rows}
             totalRow={{
               fixedCells: ["TOTAL"],
-              productCell: (p) => fmtQty(group.totals.qty[p.id] ?? 0),
-              trailingCells: [fmtINR(group.totals.totalAmount)],
+              productCell: (p) => fmtVol(volOf(group.totals.qty[p.id] ?? 0, p)),
+              trailingCells: [fmtVol(colTotalVol)],
             }}
           />
         ));
       });
     }}
     buildCsv={(from, to, d) => {
-      // One combined table: every product (across all groups) as its own
-      // column, one row per date, plus a single Total Amount column.
-      const cols = d.groups.flatMap(g => g.products);
-      const out: any[][] = [
-        [`Daily Sales Statement — ${from} to ${to}`],
-        ["Date", ...cols.map(p => p.reportAlias), "Total Amount"],
-      ];
-      d.dates.forEach(date => {
-        const cells: any[] = [date];
-        let amount = 0;
-        d.groups.forEach(g => {
-          const row = g.rows.find(r => r.date === date);
-          g.products.forEach(p => cells.push(row?.qty[p.id] ?? 0));
-          amount += row?.totalAmount ?? 0;
-        });
-        cells.push(Math.round(amount * 100) / 100);
-        out.push(cells);
-      });
-      const totalCells: any[] = ["TOTAL"];
-      let grand = 0;
+      // One section per category page: Date + per-product Ltr/Kg + Total Qty.
+      const out: any[][] = [[`Daily Sales Statement — ${from} to ${to}`]];
+      const r2 = (n: number) => Math.round(n * 100) / 100;
       d.groups.forEach(g => {
-        g.products.forEach(p => totalCells.push(g.totals.qty[p.id] ?? 0));
-        grand += g.totals.totalAmount;
+        const unitLbl = g.key === "curd" ? "Kgs" : "Ltrs";
+        out.push([]);
+        out.push([`${g.label} (${unitLbl})`]);
+        out.push(["Date", ...g.products.map(p => p.reportAlias), `Total Qty (${unitLbl})`]);
+        g.rows.forEach(row => {
+          out.push([
+            fmtDMY(row.date),
+            ...g.products.map(p => r2(volOf(row.qty[p.id] ?? 0, p))),
+            r2(g.products.reduce((s, p) => s + volOf(row.qty[p.id] ?? 0, p), 0)),
+          ]);
+        });
+        out.push([
+          "TOTAL",
+          ...g.products.map(p => r2(volOf(g.totals.qty[p.id] ?? 0, p))),
+          r2(g.products.reduce((s, p) => s + volOf(g.totals.qty[p.id] ?? 0, p), 0)),
+        ]);
       });
-      totalCells.push(Math.round(grand * 100) / 100);
-      out.push(totalCells);
       return out;
     }}
   />
@@ -397,7 +428,7 @@ export const DayRouteCashSales = () => (
             <tbody>
               {apiData.dates.map(d => (
                 <tr key={d}>
-                  <td className="border border-border py-1 px-2 font-medium">{d}</td>
+                  <td className="border border-border py-1 px-2 font-medium">{fmtDMY(d)}</td>
                   {routeChunk.map(r => (
                     <td key={r.id} className="border border-border py-1 px-2 text-center num">{fmtINR(apiData.matrix[d]?.[r.id] ?? 0)}</td>
                   ))}
@@ -420,7 +451,7 @@ export const DayRouteCashSales = () => (
       out.push(["Date", ...d.routes.map(r => r.name), "Total"]);
       d.dates.forEach(date => {
         out.push([
-          date,
+          fmtDMY(date),
           ...d.routes.map(r => d.matrix[date]?.[r.id] ?? 0),
           d.dayTotals[date] ?? 0
         ]);
@@ -439,9 +470,16 @@ export const OfficerWiseSales = () => (
     fetcher={(from, to) => fetchOfficerWise({ from, to })}
     renderPages={(from, to, apiData) => {
       if (!apiData) return [];
+      // Values render as Ltr (milk) / Kg (curd) per product row. Column and
+      // grand totals are recomputed from the volumes (they mix units across
+      // products, so the server's packet-count totals can't just be scaled).
+      const officerVol = (oId: string) =>
+        apiData.products.reduce((s, p) => s + volOf(apiData.matrix[p.id]?.[oId] ?? 0, p), 0);
+      const grandVol = apiData.products.reduce(
+        (s, p) => s + volOf(apiData.productTotals[p.id] ?? 0, p), 0);
       return [(
         <div key="p1">
-          <ReportHeader title="Officer Wise Sales" subtitle={`Period: ${from} to ${to}`} />
+          <ReportHeader title="Officer Wise Sales" subtitle={`Period: ${from} to ${to} · Qty in Ltr / Kg`} />
           <table className="w-full text-[11px] border-collapse">
             <thead>
               <tr className="bg-muted/50">
@@ -455,15 +493,15 @@ export const OfficerWiseSales = () => (
                 <tr key={p.id}>
                   <td className="border border-border py-1 px-2 font-medium">{p.reportAlias}</td>
                   {apiData.officers.map(o => (
-                    <td key={o.id} className="border border-border py-1 px-2 text-center num">{fmtQty(apiData.matrix[p.id]?.[o.id] ?? 0)}</td>
+                    <td key={o.id} className="border border-border py-1 px-2 text-center num">{fmtVol(volOf(apiData.matrix[p.id]?.[o.id] ?? 0, p))}</td>
                   ))}
-                  <td className="border border-border py-1 px-2 text-right font-bold num">{fmtQty(apiData.productTotals[p.id] ?? 0)}</td>
+                  <td className="border border-border py-1 px-2 text-right font-bold num">{fmtVol(volOf(apiData.productTotals[p.id] ?? 0, p))}</td>
                 </tr>
               ))}
               <tr className="font-bold bg-muted/40">
                 <td className="border border-border py-1.5 px-2">TOTAL</td>
-                {apiData.officers.map(o => <td key={o.id} className="border border-border py-1.5 px-2 text-center num">{fmtQty(apiData.officerTotals[o.id] ?? 0)}</td>)}
-                <td className="border border-border py-1.5 px-2 text-right num">{fmtQty(apiData.grandTotal)}</td>
+                {apiData.officers.map(o => <td key={o.id} className="border border-border py-1.5 px-2 text-center num">{fmtVol(officerVol(o.id))}</td>)}
+                <td className="border border-border py-1.5 px-2 text-right num">{fmtVol(grandVol)}</td>
               </tr>
             </tbody>
           </table>
@@ -471,13 +509,21 @@ export const OfficerWiseSales = () => (
       )];
     }}
     buildCsv={(from, to, d) => {
-      const out: any[][] = [["Product", ...d.officers.map(o => o.name), "Total"]];
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const out: any[][] = [
+        [`Officer Wise Sales — ${from} to ${to} · Qty in Ltr/Kg`],
+        ["Product", ...d.officers.map(o => o.name), "Total"],
+      ];
       d.products.forEach(p => out.push([
         p.reportAlias,
-        ...d.officers.map(o => d.matrix[p.id]?.[o.id] ?? 0),
-        d.productTotals[p.id] ?? 0
+        ...d.officers.map(o => r2(volOf(d.matrix[p.id]?.[o.id] ?? 0, p))),
+        r2(volOf(d.productTotals[p.id] ?? 0, p)),
       ]));
-      out.push(["TOTAL", ...d.officers.map(o => d.officerTotals[o.id] ?? 0), d.grandTotal]);
+      out.push([
+        "TOTAL",
+        ...d.officers.map(o => r2(d.products.reduce((s, p) => s + volOf(d.matrix[p.id]?.[o.id] ?? 0, p), 0))),
+        r2(d.products.reduce((s, p) => s + volOf(d.productTotals[p.id] ?? 0, p), 0)),
+      ]);
       return out;
     }}
   />
@@ -491,7 +537,7 @@ export const CashSalesReport = () => (
     printOrientation="landscape"
     renderPages={(from, to, apiData) =>
       apiData ? renderCashStyleGrid("Cash Sales", from, to, apiData) : []}
-    buildCsv={buildCashGridCsv}
+    buildCsv={makeCashGridCsv(false)}
   />
 );
 
@@ -501,68 +547,227 @@ export const CashSalesReport = () => (
 export const SalesRegister = () => (
   <SalesReportShell<SalesGridResponse>
     title="Sales Register"
-    description="All sales (cash + credit) by product × route"
+    description="Sales by product × route in Ltr/Kg — excludes credit institutions"
     fetcher={(from, to) => fetchSalesRegister({ from, to })}
     printOrientation="landscape"
     renderPages={(from, to, apiData) =>
-      apiData ? renderCashStyleGrid("Sales Register", from, to, apiData) : []}
-    buildCsv={buildCashGridCsv}
+      apiData ? renderCashStyleGrid("Sales Register", from, to, apiData, true) : []}
+    buildCsv={makeCashGridCsv(true)}
   />
 );
 
-// ─── B5. Credit Sales ───────────────────────────────────────────
+// ─── B5. Credit Sales — legacy paper-bill layout (matches the union's PDF) ──
+// One bill page per credit institution + a final summary page. Suppresses the
+// ERP letterhead (printMeta=null) because the bill prints its own header block.
+const UNION_GSTIN = "29AADAH7841L1Z6";
+const UNION_FSSAI = "11223999000033";
+
+// No thousands separators anywhere on the bill (matches the paper output).
+const nAmt  = (n: number) => (Number(n) || 0).toFixed(2);                       // 3540.00
+const nRaw  = (n: number) => String(Math.round((Number(n) || 0) * 1000) / 1000); // 1454.11 / 36.355
+const nRate = (n: number) => String(Math.round((Number(n) || 0) * 100) / 100);
+const nPk   = (n: number) => (n ? String(Math.round(n)) : "");
+const nKg   = (n: number) => {
+  const v = Number(n) || 0;
+  if (!v) return "";
+  return Number.isInteger(v) ? v.toFixed(1) : String(Math.round(v * 100) / 100);
+};
+
+function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
+  // Only days that carry at least one sale appear on the paper bill.
+  const activeRows = b.dailyRows.filter(row => row.qty.some(q => q > 0));
+  const th = "border border-border px-1 py-0.5 align-bottom";
+  const td = "border border-border px-1 py-0.5";
+  return (
+    <div className="text-[10px] leading-tight font-mono">
+      {/* Top banner */}
+      <div className="flex items-center justify-between mb-1">
+        <span className="tracking-[0.25em]">[ H A V E M U L ]</span>
+        <span className="font-bold tracking-wide">HAVERI MILK UNION LTD - HAVERI</span>
+        <span>Page {pageNo}</span>
+      </div>
+
+      {/* Two-column header: buyer block | union GST declaration */}
+      <div className="grid grid-cols-2 border border-border">
+        <div className="p-1.5 whitespace-pre-wrap">
+          <div>To, {b.name}</div>
+          {b.address && <div className="pl-4">{b.address}</div>}
+          {b.city && <div className="pl-4">{b.city}</div>}
+          <div className="mt-1 border-t border-border pt-1">
+            <div>BILL NO&nbsp;&nbsp;{b.billNo}</div>
+            <div>PERIOD&nbsp;&nbsp;&nbsp;{b.periodFrom} {b.periodTo}</div>
+          </div>
+        </div>
+        <div className="p-1.5 border-l border-border">
+          <div>Buyer's GSTIN : {b.gstNumber ?? ""}</div>
+          <div>TAX INVOICE/CR.BILL GSTIN : {UNION_GSTIN} FSSAI NO:{UNION_FSSAI}</div>
+          <div>DECLARATION UNDER GST Act 2017.</div>
+          <div>We declare that we are the first seller in the state liable to tax under GST Act 2017 and that we shall pay the single point tax on above sale.</div>
+        </div>
+      </div>
+
+      {/* Product grid: session / name / HSN / rate header stack, daily qty, footer totals */}
+      <table className="w-full border-collapse mt-1">
+        <thead>
+          <tr>
+            <th className={th}></th>
+            {b.products.map(p => <th key={p.id} className={`${th} text-center`}>{p.session}</th>)}
+            <th className={th}></th>
+          </tr>
+          <tr>
+            <th className={`${th} text-left`}>Pkt</th>
+            {b.products.map(p => <th key={p.id} className={`${th} text-center`}>{p.reportAlias}</th>)}
+            <th className={th}></th>
+          </tr>
+          <tr>
+            <th className={`${th} text-left`}>HSN</th>
+            {b.products.map(p => <th key={p.id} className={`${th} text-center`}>{p.hsn}</th>)}
+            <th className={th}></th>
+          </tr>
+          <tr>
+            <th className={`${th} text-left`}>Rate</th>
+            {b.products.map(p => <th key={p.id} className={`${th} text-center`}>{nRate(p.rate)}</th>)}
+            <th className={th}></th>
+          </tr>
+          <tr className="bg-muted/40">
+            <th className={`${th} text-left`}>Date</th>
+            {b.products.map(p => <th key={p.id} className={`${th} text-center`}>Qty</th>)}
+            <th className={`${th} text-right`}>Total Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {activeRows.map((row, ri) => (
+            <tr key={ri}>
+              <td className={`${td} text-left`}>{row.day}</td>
+              {b.products.map((p, pi) => <td key={p.id} className={`${td} text-right`}>{nPk(row.qty[pi] ?? 0)}</td>)}
+              <td className={`${td} text-right`}>{row.dayTotal ? nAmt(row.dayTotal) : ""}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="font-semibold">
+            <td className={`${td} text-left`}>Pkts</td>
+            {b.products.map((p, i) => <td key={p.id} className={`${td} text-right`}>{nPk(b.totals.pkts[i] ?? 0)}</td>)}
+            <td className={td}></td>
+          </tr>
+          <tr>
+            <td className={`${td} text-left`}>Kg\ltr</td>
+            {b.products.map((p, i) => <td key={p.id} className={`${td} text-right`}>{nKg(b.totals.kgLtr[i] ?? 0)}</td>)}
+            <td className={td}></td>
+          </tr>
+          <tr>
+            <td className={`${td} text-left`}>BASIC</td>
+            {b.products.map((p, i) => <td key={p.id} className={`${td} text-right`}>{nRaw(b.totals.basic[i] ?? 0)}</td>)}
+            <td className={`${td} text-right`}>{nAmt(b.totals.basicGrand)}</td>
+          </tr>
+          <tr>
+            <td className={`${td} text-left`}>CGST</td>
+            {b.products.map((p, i) => <td key={p.id} className={`${td} text-right`}>{nRaw(b.totals.cgst[i] ?? 0)}</td>)}
+            <td className={`${td} text-right`}>{nRaw(b.totals.cgstGrand)}</td>
+          </tr>
+          <tr>
+            <td className={`${td} text-left`}>SGST</td>
+            {b.products.map((p, i) => <td key={p.id} className={`${td} text-right`}>{nRaw(b.totals.sgst[i] ?? 0)}</td>)}
+            <td className={`${td} text-right`}>{nRaw(b.totals.sgstGrand)}</td>
+          </tr>
+          <tr className="font-semibold">
+            <td className={`${td} text-left`}>Amount</td>
+            {b.products.map((p, i) => <td key={p.id} className={`${td} text-right`}>{nAmt(b.totals.amount[i] ?? 0)}</td>)}
+            <td className={`${td} text-right`}>{nAmt(b.totals.amountGrand)}</td>
+          </tr>
+        </tfoot>
+      </table>
+
+      {/* Notes + signature */}
+      <div className="flex justify-between mt-2 text-[9px]">
+        <div>
+          <div>NOTE: - Kindly acknowledge receipt of this bill immediately.</div>
+          <div className="pl-10">- Variation in the above bill if any may be intimated within 15 days.</div>
+          <div className="pl-10">- Demand Draft should be issued in favour of "THE MANAGING DIRECTOR HAVERI</div>
+          <div className="pl-14">CO-OP MILK PRODUCERS SOCIETIES UNION LTD., HAVERI".</div>
+        </div>
+        <div className="self-end whitespace-nowrap">AUTHORISED SIGNATURE.</div>
+      </div>
+    </div>
+  );
+}
+
+function renderCreditSummaryPage(d: CreditSalesResponse, pageNo: number) {
+  return (
+    <div className="text-[11px] leading-tight font-mono">
+      <div className="flex items-center justify-between mb-1">
+        <span className="font-bold">Summary</span>
+        <span>Page {pageNo}</span>
+      </div>
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="bg-muted/40">
+            <th className="border border-border px-2 py-1 text-right w-16">Sl No.</th>
+            <th className="border border-border px-2 py-1 text-left w-28">Code</th>
+            <th className="border border-border px-2 py-1 text-left">Name</th>
+            <th className="border border-border px-2 py-1 text-right w-32">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {d.summary.map(s => (
+            <tr key={s.sl}>
+              <td className="border border-border px-2 py-1 text-right">{s.sl}</td>
+              <td className="border border-border px-2 py-1">{s.code}</td>
+              <td className="border border-border px-2 py-1">{s.name}</td>
+              <td className="border border-border px-2 py-1 text-right">{nAmt(s.total)}</td>
+            </tr>
+          ))}
+          <tr className="font-bold bg-muted/40">
+            <td className="border border-border px-2 py-1" colSpan={3}>Total</td>
+            <td className="border border-border px-2 py-1 text-right">{nAmt(d.summaryTotal)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export const CreditSalesReport = () => (
   <SalesReportShell<CreditSalesResponse>
     title="Credit Sales"
-    description="Credit-bill format with per-customer breakdown"
+    description="Monthly credit bill — credit institutions only"
+    printMeta={null}
     fetcher={(from, to) => fetchCreditSales({ from, to })}
-    renderPages={(from, to, apiData) => {
-      if (!apiData) return [];
-      return apiData.customers.map((b, i) => (
-        <div key={i}>
-          <ReportHeader title="Credit Sales" subtitle={`Period: ${from} to ${to}`} />
-          <div className="text-[11px] mb-2 grid grid-cols-2 gap-1">
-            <div><strong>Customer Code:</strong> {b.code}</div>
-            <div><strong>Customer Name:</strong> {b.name}</div>
-            <div><strong>Address:</strong> {b.address ?? "—"}</div>
-            {b.gstNumber && <div><strong>GSTIN:</strong> <span className="font-mono">{b.gstNumber}</span></div>}
-            <div><strong>Period:</strong> {b.periodFrom} — {b.periodTo}</div>
-          </div>
-          <table className="w-full text-[11px] border-collapse">
-            <thead>
-              <tr className="bg-muted/50">
-                <th className="border border-border py-1 px-1.5 text-left font-bold">Day</th>
-                <th className="border border-border py-1 px-1.5 text-left font-bold">Date</th>
-                {b.products.map(p => (
-                  <th key={p.id} className="border border-border py-1 px-1.5 text-center font-bold">{p.reportAlias}</th>
-                ))}
-                <th className="border border-border py-1 px-1.5 text-right font-bold num">Day Total ₹</th>
-              </tr>
-            </thead>
-            <tbody>
-              {b.dailyRows.map((row, j) => (
-                <tr key={j}>
-                  <td className="border border-border py-0.5 px-1.5 text-center">{row.day}</td>
-                  <td className="border border-border py-0.5 px-1.5">{row.date}</td>
-                  {b.products.map((p, pi) => (
-                    <td key={p.id} className="border border-border py-0.5 px-1.5 text-center num">{fmtQty(row.qty[pi] ?? 0)}</td>
-                  ))}
-                  <td className="border border-border py-0.5 px-1.5 text-right num">{fmtINR(row.dayTotal)}</td>
-                </tr>
-              ))}
-              <tr className="font-bold bg-muted/40">
-                <td colSpan={2} className="border border-border py-1 px-1.5 text-right">TOTAL</td>
-                {b.products.map((p, pi) => (
-                  <td key={p.id} className="border border-border py-1 px-1.5 text-center num">{fmtQty(b.totals.pkts[pi] ?? 0)}</td>
-                ))}
-                <td className="border border-border py-1 px-1.5 text-right num">{fmtINR(b.totals.amountGrand)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+    renderPages={(_from, _to, apiData) => {
+      if (!apiData || apiData.customers.length === 0) return [];
+      const pages: ReactNode[] = apiData.customers.map((b, i) => (
+        <div key={b.id}>{renderCreditBillPage(b, i + 1)}</div>
       ));
+      pages.push(
+        <div key="summary">{renderCreditSummaryPage(apiData, apiData.customers.length + 1)}</div>
+      );
+      return pages;
     }}
-    buildCsv={buildSalesGridCsv as any}   // Using grid helper as per your instruction
+    buildCsv={(_from, _to, d) => {
+      const out: (string | number)[][] = [
+        [`Credit Sales (Credit Institutions) — ${d.periodFrom} to ${d.periodTo}`],
+      ];
+      d.customers.forEach(b => {
+        out.push([]);
+        out.push([`BILL NO ${b.billNo}`, b.code, b.name]);
+        out.push(["Date", ...b.products.map(p => p.reportAlias), "Total Amount"]);
+        b.dailyRows
+          .filter(r => r.qty.some(q => q > 0))
+          .forEach(r => out.push([r.day, ...b.products.map((_, pi) => r.qty[pi] ?? 0), r.dayTotal]));
+        out.push(["Pkts", ...b.totals.pkts, ""]);
+        out.push(["Kg/ltr", ...b.totals.kgLtr, ""]);
+        out.push(["BASIC", ...b.totals.basic, b.totals.basicGrand]);
+        out.push(["CGST", ...b.totals.cgst, b.totals.cgstGrand]);
+        out.push(["SGST", ...b.totals.sgst, b.totals.sgstGrand]);
+        out.push(["Amount", ...b.totals.amount, b.totals.amountGrand]);
+      });
+      out.push([]);
+      out.push(["Summary"]);
+      out.push(["Sl No.", "Code", "Name", "Total"]);
+      d.summary.forEach(s => out.push([s.sl, s.code, s.name, s.total]));
+      out.push(["", "", "Total", d.summaryTotal]);
+      return out;
+    }}
   />
 );
 
@@ -573,8 +778,8 @@ export const CreditSalesReport = () => (
 // summary page (fixed product columns + Milk / Curd totals + amount).
 export const TalukaAgentSales = () => (
   <SalesReportShell<TalukaAgentResponse>
-    title="Taluka / Agent Wise Sales"
-    description="Taluka wise agent wise sales statement — one taluka per page"
+    title="Agent wise sales"
+    description="Agent wise sales statement — one taluka per page"
     printOrientation="landscape"
     fetcher={(from, to) => fetchTalukaAgent({ from, to })}
     renderPages={(from, to, apiData) => {
@@ -582,11 +787,7 @@ export const TalukaAgentSales = () => (
 
       // Cap product columns/page so a landscape A4 fits. Tune after print test.
       const COLUMNS_PER_PAGE = 9;
-      const stmt = `Taluka wise agent wise sales statement · Period ${from} to ${to}`;
-      const fmtVol = (n: number) =>
-        Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      const fmtPeriod = (iso: string) =>
-        new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase();
+      const stmt = `Agent wise sales statement · Period ${from} to ${to}`;
 
       const customerHead = [
         { label: "Sl",   accessor: (r: { sl: number }) => r.sl, width: "30px", num: true },
@@ -594,32 +795,9 @@ export const TalukaAgentSales = () => (
         { label: "Customer Name", accessor: (r: { name: string }) => r.name, width: "170px" },
       ];
 
-      // ── Page 1: Taluka Wise Milk Sales (In Ltrs) overview ──
-      const ms = apiData.talukaMilkSummary;
-      const milkSummaryPage = (
-        <ColumnPagedTable
-          key="milk-summary"
-          title={`Taluka Wise Milk Sales (In Ltrs) · For The Period ${fmtPeriod(from)} To ${fmtPeriod(to)}`}
-          fixedHead={[{ label: "Taluka", accessor: (r) => r.taluka, width: "220px" }]}
-          productCols={[] as ProductLite[]}
-          productCellRender={() => null}
-          trailingHead={[
-            { label: "Total Milk", accessor: (r) => fmtVol(r.totalMilk), num: true, width: "130px" },
-            { label: "Avg milk",   accessor: (r) => fmtVol(r.avgMilk),   num: true, width: "130px" },
-            { label: "Total Curd", accessor: (r) => fmtVol(r.totalCurd), num: true, width: "130px" },
-            { label: "Avg Curd",   accessor: (r) => fmtVol(r.avgCurd),   num: true, width: "130px" },
-          ]}
-          rows={ms?.rows ?? []}
-          rowKey={(r) => r.taluka}
-          totalRow={{
-            fixedCells: ["Total"],
-            productCell: () => null,
-            trailingCells: ms
-              ? [fmtVol(ms.totals.totalMilk), fmtVol(ms.totals.avgMilk), fmtVol(ms.totals.totalCurd), fmtVol(ms.totals.avgCurd)]
-              : ["", "", "", ""],
-          }}
-        />
-      );
+      // NOTE: the Total/Avg Milk + Total/Avg Curd overview page was removed —
+      // it duplicated the Taluka Wise Report's summary page. This report now
+      // starts straight at the first taluka's detailed matrix.
 
       const talukaPages = apiData.talukas.flatMap((t, ti) => {
         const nodes: ReactNode[] = [];
@@ -679,22 +857,11 @@ export const TalukaAgentSales = () => (
         return nodes;
       });
 
-      return [milkSummaryPage, ...talukaPages];
+      return talukaPages;
     }}
     buildCsv={(from, to, d) => {
       const out: (string | number)[][] = [];
-      const fmtP = (iso: string) =>
-        new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase();
-      // Taluka Wise Milk Sales (In Ltrs) overview
-      const ms = d.talukaMilkSummary;
-      if (ms) {
-        out.push([`Taluka Wise Milk Sales (In Ltrs) For The Period ${fmtP(from)} To ${fmtP(to)}`]);
-        out.push(["Taluka", "Total Milk", "Avg milk", "Total Curd", "Avg Curd"]);
-        ms.rows.forEach((r) => out.push([r.taluka, r.totalMilk, r.avgMilk, r.totalCurd, r.avgCurd]));
-        out.push(["Total", ms.totals.totalMilk, ms.totals.avgMilk, ms.totals.totalCurd, ms.totals.avgCurd]);
-        out.push([]);
-      }
-      out.push(["Taluka wise agent wise sales statement", `Period ${from} to ${to}`]);
+      out.push(["Agent wise sales statement", `Period ${from} to ${to}`]);
       d.talukas.forEach((t) => {
         out.push([]);
         out.push([`Taluka Name: ${t.name}`]);
@@ -797,19 +964,54 @@ export const TalukaWiseReport = () => (
         );
       });
 
-      // ── Page 3: Summary — Total / Avg Milk + Total / Avg Curd per taluka ──
+      // ── Page 3: Other sales — taluka × non-milk/curd product ──
+      // Same layout as the milk/curd pages, for everything else (lassi,
+      // buttermilk, ghee, paneer, sweets, …). Only rendered when such
+      // products exist in the period.
+      const otherChunks = paginateColumns(d.otherProducts, COLS_PER_PAGE);
+      if (d.otherProducts.length > 0) {
+        otherChunks.forEach((chunk, pi) => {
+          const isLast = pi === otherChunks.length - 1;
+          pages.push(
+            <ColumnPagedTable
+              key={`other-${pi}`}
+              title={`Taluka Wise Other Sales (Qty) · Period ${from} to ${to}${otherChunks.length > 1 ? ` · Products ${pi + 1}/${otherChunks.length}` : ""}`}
+              fixedLayout
+              productColWidth="78px"
+              fixedHead={[taluka]}
+              productCols={chunk}
+              productCellRender={(row, p) => {
+                const v = row.otherQty[p.id] ?? 0;
+                return v ? fmtVol(v) : "";
+              }}
+              trailingHead={isLast ? [{ label: "Total Other", accessor: (r) => fmtVol(r.totalOther), num: true, width: "110px" }] : undefined}
+              rows={d.rows}
+              rowKey={(r) => r.taluka}
+              totalRow={{
+                fixedCells: ["TOTAL"],
+                productCell: (p) => fmtVol(d.totals.otherQty[p.id] ?? 0),
+                trailingCells: isLast ? [fmtVol(d.totals.totalOther)] : undefined,
+              }}
+            />
+          );
+        });
+      }
+
+      // ── Final page: Summary — Total / Avg per taluka for all three groups ──
       pages.push(
         <ColumnPagedTable
           key="summary"
           title={`Taluka Wise Summary · Period ${from} to ${to} · ${d.numDays} day(s)`}
-          fixedHead={[{ ...taluka, width: "220px" }]}
+          fixedHead={[{ ...taluka, width: "200px" }]}
           productCols={[] as ProductLite[]}
           productCellRender={() => null}
           trailingHead={[
-            { label: "Total Milk (Ltrs)", accessor: (r) => fmtVol(r.totalMilk), num: true, width: "130px" },
-            { label: "Avg Milk (Ltrs)",   accessor: (r) => fmtVol(r.avgMilk),   num: true, width: "130px" },
-            { label: "Total Curd (Kgs)",  accessor: (r) => fmtVol(r.totalCurd), num: true, width: "130px" },
-            { label: "Avg Curd (Kgs)",    accessor: (r) => fmtVol(r.avgCurd),   num: true, width: "130px" },
+            { label: "Total Milk (Ltrs)", accessor: (r) => fmtVol(r.totalMilk), num: true, width: "110px" },
+            { label: "Avg Milk (Ltrs)",   accessor: (r) => fmtVol(r.avgMilk),   num: true, width: "110px" },
+            { label: "Total Curd (Kgs)",  accessor: (r) => fmtVol(r.totalCurd), num: true, width: "110px" },
+            { label: "Avg Curd (Kgs)",    accessor: (r) => fmtVol(r.avgCurd),   num: true, width: "110px" },
+            { label: "Total Other",       accessor: (r) => fmtVol(r.totalOther), num: true, width: "110px" },
+            { label: "Avg Other",         accessor: (r) => fmtVol(r.avgOther),   num: true, width: "110px" },
           ]}
           rows={d.rows}
           rowKey={(r) => r.taluka}
@@ -819,6 +1021,7 @@ export const TalukaWiseReport = () => (
             trailingCells: [
               fmtVol(d.totals.totalMilk), fmtVol(d.totals.avgMilk),
               fmtVol(d.totals.totalCurd), fmtVol(d.totals.avgCurd),
+              fmtVol(d.totals.totalOther), fmtVol(d.totals.avgOther),
             ],
           }}
         />
@@ -840,11 +1043,19 @@ export const TalukaWiseReport = () => (
       d.rows.forEach((r) => out.push([r.taluka, ...d.curdProducts.map((p) => r.curdQty[p.id] ?? 0), r.totalCurd]));
       out.push(["TOTAL", ...d.curdProducts.map((p) => d.totals.curdQty[p.id] ?? 0), d.totals.totalCurd]);
       out.push([]);
+      // Other (Qty)
+      if (d.otherProducts.length > 0) {
+        out.push([`Taluka Wise Other Sales (Qty) — ${from} to ${to}`]);
+        out.push(["Taluka", ...d.otherProducts.map((p) => p.reportAlias), "Total Other"]);
+        d.rows.forEach((r) => out.push([r.taluka, ...d.otherProducts.map((p) => r.otherQty[p.id] ?? 0), r.totalOther]));
+        out.push(["TOTAL", ...d.otherProducts.map((p) => d.totals.otherQty[p.id] ?? 0), d.totals.totalOther]);
+        out.push([]);
+      }
       // Summary
       out.push([`Taluka Wise Summary — ${from} to ${to} (${d.numDays} days)`]);
-      out.push(["Taluka", "Total Milk (Ltrs)", "Avg Milk (Ltrs)", "Total Curd (Kgs)", "Avg Curd (Kgs)"]);
-      d.rows.forEach((r) => out.push([r.taluka, r.totalMilk, r.avgMilk, r.totalCurd, r.avgCurd]));
-      out.push(["TOTAL", d.totals.totalMilk, d.totals.avgMilk, d.totals.totalCurd, d.totals.avgCurd]);
+      out.push(["Taluka", "Total Milk (Ltrs)", "Avg Milk (Ltrs)", "Total Curd (Kgs)", "Avg Curd (Kgs)", "Total Other", "Avg Other"]);
+      d.rows.forEach((r) => out.push([r.taluka, r.totalMilk, r.avgMilk, r.totalCurd, r.avgCurd, r.totalOther, r.avgOther]));
+      out.push(["TOTAL", d.totals.totalMilk, d.totals.avgMilk, d.totals.totalCurd, d.totals.avgCurd, d.totals.totalOther, d.totals.avgOther]);
       return out;
     }}
   />

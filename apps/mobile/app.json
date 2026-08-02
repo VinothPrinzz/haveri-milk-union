@@ -2,7 +2,7 @@
   "expo": {
     "name": "Havemul",
     "slug": "haveri-milk-union",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "scheme": "hmu",
     "userInterfaceStyle": "light",
@@ -24,7 +24,11 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
       },
-      "package": "coop.haverimunion.dealer"
+      "package": "coop.haverimunion.dealer",
+      "versionCode": 2,
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
     },
     "web": {
       "bundler": "metro"
@@ -36,7 +40,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "265356ba-90f5-4f4d-b0ec-ccc2a2402a9d"
+        "projectId": "cabcc12e-6abe-457d-9385-3b4e23514190"
       }
     }
   }

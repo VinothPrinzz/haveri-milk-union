@@ -1,16 +1,16 @@
-import { Job } from "bullmq";
+import type { JobLike } from "../lib/queues.js";
 import { sendPushNotification } from "../lib/fcm.js";
 
-export interface PushNotificationJobData {
+export type PushNotificationJobData = {
   event: "order.confirmed" | "order.dispatched" | "window.opening" | "window.closing" | "payment.reminder" | "custom";
   dealerId?: string;
   zoneId?: string;
   orderId?: string;
   title?: string;
   body?: string;
-}
+};
 
-export async function processPushNotification(job: Job<PushNotificationJobData>) {
+export async function processPushNotification(job: JobLike<PushNotificationJobData>) {
   const { event, dealerId, zoneId, orderId, title, body } = job.data;
 
   let pushTitle = title || "";

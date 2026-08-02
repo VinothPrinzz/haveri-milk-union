@@ -53,6 +53,9 @@ export interface Dealer {
   ledgerBalance: number;
   /** dealers.customer_type — "Credit Inst-*" dealers buy on monthly credit. */
   customerType?: string;
+  /** dealers.rate_category — decides which price this dealer's lines bill
+   *  at. 'Credit Inst-MRP' pays MRP on milk; see lib/ratePrice.ts. */
+  rateCategory?: string;
   locationLabel?: string;
   email?: string;
   gstNumber?: string;

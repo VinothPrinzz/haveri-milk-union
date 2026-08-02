@@ -29,9 +29,6 @@ const envSchema = z.object({
   R2_BUCKET_NAME: z.string().default("hmu-files"),
   R2_PUBLIC_URL: z.string().optional(),
 
-  // Redis (optional in dev — BullMQ only)
-  REDIS_URL: z.string().default("redis://localhost:6379"),
-
   // Firebase (optional in dev)
   FIREBASE_PROJECT_ID: z.string().optional(),
   FIREBASE_PRIVATE_KEY: z.string().optional(),

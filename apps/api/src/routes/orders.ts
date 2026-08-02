@@ -1,10 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
 import {
   orderItems,
-  products,
   dealerWallets,
 } from "@hmu/db/schema";
 import { dealerAuth } from "../middleware/dealer-auth.js";
@@ -12,7 +11,11 @@ import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { signInvoicePdfToken, verifyInvoicePdfToken } from "../lib/auth.js";
-import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
+import {
+  generateInvoicePdfSync,
+  generateEmployeeInvoicePdfSync,
+  reissueInvoiceIfExists,
+} from "../lib/invoice-pdf.js";
 import { adminCancelOrder, RefundError } from "../lib/cancel-order.js";
 import {
   initiateOrderBankRefund,
@@ -24,6 +27,7 @@ import {
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
+import { resolveUnitPrice } from "../lib/rate-price.js";
 import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { fgsAvailable, lockStockProducts } from "../lib/stock-check.js";
@@ -190,6 +194,7 @@ export async function orderRoutes(app: FastifyInstance) {
            WHERE dealer_id = ${dealer.dealerId}
              AND delivery_date = (now() AT TIME ZONE 'Asia/Kolkata')::date
              AND status <> 'cancelled'
+             AND COALESCE(route_id, ${routeId}::uuid) = ${routeId}::uuid
            ORDER BY created_at DESC
            LIMIT 1
         `;
@@ -216,6 +221,7 @@ export async function orderRoutes(app: FastifyInstance) {
           const [tpl] = await pgClient`
             SELECT default_qty FROM dealer_standing_indents
              WHERE dealer_id = ${dealer.dealerId}
+               AND route_id = ${routeId}::uuid
                AND product_id = ${subsidyProduct.id}::uuid
                AND active = true
              LIMIT 1
@@ -236,19 +242,42 @@ export async function orderRoutes(app: FastifyInstance) {
 
       // ── 2. Fetch product details and validate availability ──
       const productIds = lineItems.map((i) => i.productId);
-      const productRows = await db
-        .select({
-          id: products.id,
-          name: products.name,
-          basePrice: products.basePrice,
-          gstPercent: products.gstPercent,
-          stock: products.stock,
-          available: products.available,
-          stockSourceProductId: products.stockSourceProductId,
-        })
-        .from(products)
-        .where(inArray(products.id, productIds));
+      // mrp + category name feed the rate-category price resolver below:
+      // a 'Credit Inst-MRP' dealer pays MRP on milk. See lib/rate-price.ts.
+      const productRows = (await pgClient`
+        SELECT p.id::text                     AS id,
+               p.name                         AS name,
+               p.base_price::text             AS "basePrice",
+               p.mrp::text                    AS mrp,
+               p.gst_percent::text            AS "gstPercent",
+               p.stock                        AS stock,
+               p.available                    AS available,
+               p.stock_source_product_id::text AS "stockSourceProductId",
+               p.code                         AS code,
+               c.name                         AS "categoryName"
+          FROM products p
+          JOIN categories c ON c.id = p.category_id
+         WHERE p.id = ANY(${productIds}::uuid[])
+      `) as Array<{
+        id: string;
+        name: string;
+        basePrice: string;
+        mrp: string | null;
+        gstPercent: string;
+        stock: number;
+        available: boolean;
+        stockSourceProductId: string | null;
+        code: string | null;
+        categoryName: string | null;
+      }>;
       const productMap = new Map(productRows.map((p) => [p.id, p]));
+
+      // The dealer's rate category decides which price each line bills at.
+      const [rateRow] = await pgClient`
+        SELECT rate_category::text AS "rateCategory"
+          FROM dealers WHERE id = ${dealer.dealerId} LIMIT 1
+      `;
+      const rateCategory = (rateRow?.rateCategory ?? null) as string | null;
 
       // A variant SKU (the subsidy line) draws stock from its base SKU —
       // COALESCE(stock_source_product_id, id), migration 0059.
@@ -304,7 +333,10 @@ export async function orderRoutes(app: FastifyInstance) {
       // ── 2b. Enforce Milk order minimum (≥12 L milk; curd has no minimum) ──
       // (The subsidy line is exempt via MIN_QTY_EXEMPT_CODES, so pinning it
       // above neither counts toward nor triggers the 12 L rule.)
-      const minQtyViolations = await findMinQtyViolations(lineItems);
+      const minQtyViolations = await findMinQtyViolations(
+        lineItems,
+        dealer.dealerId
+      );
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
           error: "Minimum order quantity",
@@ -327,7 +359,7 @@ export async function orderRoutes(app: FastifyInstance) {
       }> = [];
       for (const item of lineItems) {
         const product = productMap.get(item.productId)!;
-        const price = parseFloat(product.basePrice);
+        const price = resolveUnitPrice(product, rateCategory);
         const gstPct = parseFloat(product.gstPercent);
         const lineSubtotal = price * item.quantity;
         const lineGst = lineSubtotal * (gstPct / 100);
@@ -381,9 +413,9 @@ export async function orderRoutes(app: FastifyInstance) {
           // old post-deduction UPDATE: the deduction below runs in this same
           // transaction, so either both persist or neither does (see 0049).
           const [order] = await tx`
-            INSERT INTO orders (dealer_id, zone_id, status, payment_mode, payment_reference, subtotal, total_gst, grand_total, item_count, notes, stock_deducted, created_at, updated_at)
+            INSERT INTO orders (dealer_id, zone_id, route_id, status, payment_mode, payment_reference, subtotal, total_gst, grand_total, item_count, notes, stock_deducted, created_at, updated_at)
             VALUES (
-              ${dealer.dealerId}, ${dealer.zoneId}, ${initialStatus}, ${body.paymentMode},
+              ${dealer.dealerId}, ${dealer.zoneId}, ${routeId}::uuid, ${initialStatus}, ${body.paymentMode},
               ${body.paymentReference ?? null},
               ${subtotal.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric, ${grandTotal.toFixed(2)}::numeric,
               ${orderItemsData.length}, ${body.notes ?? null}, true, now(), now()
@@ -422,12 +454,15 @@ export async function orderRoutes(app: FastifyInstance) {
                      cancel_window_ends_at = LEAST(
                        now() + interval '30 minutes',
                        COALESCE(
-                         (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                         (orders.delivery_date + (
+                            SELECT tw.close_time FROM time_windows tw
+                             WHERE tw.route_id = COALESCE(orders.route_id, d.route_id)
+                             ORDER BY tw.close_time DESC LIMIT 1
+                          )) AT TIME ZONE 'Asia/Kolkata',
                          now() + interval '30 minutes'
                        )
                      )
                 FROM dealers d
-                LEFT JOIN time_windows tw ON tw.route_id = d.route_id
                WHERE orders.id = ${order!.id}::uuid
                  AND orders.dealer_id = d.id
             `;
@@ -708,17 +743,38 @@ export async function orderRoutes(app: FastifyInstance) {
       const offset = offsetFromPage(q.page, q.limit);
       const search = q.search ? `%${q.search}%` : null;
 
+      // All Indents spans BOTH indent rails: dealer indents in `orders` and
+      // employee-subsidy indents in `employee_orders`. They're separate tables
+      // because orders.dealer_id is NOT NULL and has 70-odd `JOIN dealers`
+      // readers; unioning at the read edge keeps the employee indent visible
+      // here (it used to be a direct_sales row, which this list never read)
+      // without disturbing any of them.
+      //
+      // party_type is the discriminator: the web list tags employee rows and
+      // withholds the dealer-only actions (cancel / modify) from them.
       const rows = await pgClient`
-        SELECT o.id, o.dealer_id, o.zone_id, o.status, o.payment_mode,
+        WITH dealer_indents AS (
+        SELECT 'dealer'::text AS party_type,
+               o.id, o.dealer_id, o.zone_id, o.status, o.payment_mode,
                o.subtotal, o.total_gst, o.grand_total, o.item_count,
                o.created_at, o.delivery_date, o.confirmed_at, o.dispatched_at,
                d.name  AS dealer_name,
                d.phone AS dealer_phone,
                d.code  AS agent_code,
-               d.route_id,
+               -- ::text so this column agrees with the employee branch of the
+               -- UNION below, which has no dealers.customer_type enum value.
+               d.customer_type::text AS customer_type,
+               COALESCE(o.route_id, d.route_id) AS route_id,
                r.code  AS route_code,
                r.name  AS route_name,
                z.name  AS zone_name,
+               -- The tax invoice for a placed order (one per order — the
+               -- invoices.order_id unique constraint the INSERT's ON CONFLICT
+               -- targets). NULL for drafts / payment_required / never-generated
+               -- rows; the All-Indents list makes the indent # a link when set,
+               -- and generates on demand (GET /orders/:id/invoice) otherwise.
+               inv.id             AS invoice_id,
+               inv.invoice_number AS invoice_number,
                -- Cancellation is only allowed while the order's delivery
                -- window is still open: now() < (delivery_date + route
                -- close_time). Today-not-yet-closed and future dates are
@@ -741,45 +797,133 @@ export async function orderRoutes(app: FastifyInstance) {
               ) AS items
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
-        LEFT JOIN routes r ON r.id = d.route_id
+        LEFT JOIN routes r ON r.id = COALESCE(o.route_id, d.route_id)
         LEFT JOIN zones  z ON z.id = o.zone_id
+        LEFT JOIN invoices inv ON inv.order_id = o.id
         LEFT JOIN LATERAL (
           SELECT close_time FROM time_windows tw
-           WHERE tw.route_id = d.route_id
+           WHERE tw.route_id = COALESCE(o.route_id, d.route_id)
            ORDER BY close_time DESC LIMIT 1
         ) tw ON true
         WHERE (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
           AND (${q.dealerId ?? null}::uuid IS NULL OR o.dealer_id = ${q.dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.zoneId   ?? null}::uuid IS NULL OR o.zone_id   = ${q.zoneId   ?? '00000000-0000-0000-0000-000000000000'}::uuid)
-          AND (${q.routeId  ?? null}::uuid IS NULL OR d.route_id  = ${q.routeId  ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.routeId  ?? null}::uuid IS NULL OR COALESCE(o.route_id, d.route_id) = ${q.routeId  ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.date     ?? null}::date IS NULL OR o.delivery_date = ${q.date ?? '1970-01-01'}::date)
           AND (${q.from     ?? null}::date IS NULL OR o.delivery_date >= ${q.from ?? '1970-01-01'}::date)
           AND (${q.to       ?? null}::date IS NULL OR o.delivery_date <= ${q.to   ?? '9999-12-31'}::date)
           AND (${q.batchId  ?? null}::uuid IS NULL OR EXISTS (
                 SELECT 1 FROM batch_routes br
                 WHERE br.batch_id = ${q.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
-                  AND br.route_id = d.route_id))
-          AND (${search}::text IS NULL OR d.name ILIKE ${search ?? ''} OR d.phone ILIKE ${search ?? ''})
-        ORDER BY o.created_at DESC
+                  AND br.route_id = COALESCE(o.route_id, d.route_id)))
+          AND (${search}::text IS NULL OR d.name ILIKE ${search ?? ''} OR d.phone ILIKE ${search ?? ''} OR o.id::text ILIKE ${search ?? ''})
+        ),
+        employee_indents AS (
+        SELECT 'employee'::text AS party_type,
+               eo.id, eo.employee_id AS dealer_id, NULL::uuid AS zone_id,
+               eo.status, eo.payment_mode,
+               eo.subtotal, eo.total_gst, eo.grand_total, eo.item_count,
+               -- employee_orders has no dispatched_at; the route's dispatch
+               -- run stamps dealer orders only.
+               eo.created_at, eo.delivery_date, eo.confirmed_at,
+               NULL::timestamptz AS dispatched_at,
+               e.name           AS dealer_name,
+               e.phone          AS dealer_phone,
+               e.employee_code  AS agent_code,
+               -- Not a dealers.customer_type value; the web list keys the
+               -- "Employee Subsidy" tag off party_type, and this only labels
+               -- the Payment column.
+               'Employee'::text AS customer_type,
+               eo.route_id,
+               r.code  AS route_code,
+               r.name  AS route_name,
+               NULL::text AS zone_name,
+               inv.id             AS invoice_id,
+               inv.invoice_number AS invoice_number,
+               (COALESCE(
+                  (eo.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                  ((eo.delivery_date + 1)::timestamp) AT TIME ZONE 'Asia/Kolkata'
+                ) > now()) AS window_open,
+               COALESCE(
+                (SELECT json_agg(json_build_object(
+                    'product_id',   eoi.product_id,
+                    'product_name', eoi.product_name,
+                    'quantity',     eoi.quantity,
+                    'unit_price',   eoi.unit_price,
+                    'line_total',   eoi.line_total
+                  ) ORDER BY eoi.product_name)
+                FROM employee_order_items eoi WHERE eoi.employee_order_id = eo.id),
+                '[]'::json
+              ) AS items
+        FROM employee_orders eo
+        JOIN employees e ON e.id = eo.employee_id
+        LEFT JOIN routes r ON r.id = eo.route_id
+        LEFT JOIN invoices inv ON inv.order_id = eo.id
+        LEFT JOIN LATERAL (
+          SELECT close_time FROM time_windows tw
+           WHERE tw.route_id = eo.route_id
+           ORDER BY close_time DESC LIMIT 1
+        ) tw ON true
+        WHERE (${q.status ?? null}::text IS NULL OR eo.status::text = ${q.status ?? ''})
+          -- An employee indent belongs to no dealer and no zone, so any filter
+          -- on either one is asking for dealer indents specifically.
+          AND ${q.dealerId ?? null}::uuid IS NULL
+          AND ${q.zoneId   ?? null}::uuid IS NULL
+          AND (${q.routeId  ?? null}::uuid IS NULL OR eo.route_id = ${q.routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.date     ?? null}::date IS NULL OR eo.delivery_date = ${q.date ?? '1970-01-01'}::date)
+          AND (${q.from     ?? null}::date IS NULL OR eo.delivery_date >= ${q.from ?? '1970-01-01'}::date)
+          AND (${q.to       ?? null}::date IS NULL OR eo.delivery_date <= ${q.to   ?? '9999-12-31'}::date)
+          AND (${q.batchId  ?? null}::uuid IS NULL OR EXISTS (
+                SELECT 1 FROM batch_routes br
+                WHERE br.batch_id = ${q.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
+                  AND br.route_id = eo.route_id))
+          AND (${search}::text IS NULL OR e.name ILIKE ${search ?? ''} OR e.phone ILIKE ${search ?? ''} OR eo.id::text ILIKE ${search ?? ''})
+        )
+        SELECT * FROM (
+          SELECT * FROM dealer_indents
+          UNION ALL
+          SELECT * FROM employee_indents
+        ) all_indents
+        ORDER BY created_at DESC
         LIMIT ${q.limit} OFFSET ${offset}
       `;
 
+      // Counts BOTH rails, with filter predicates identical to the two CTEs
+      // above — a total that disagreed with the page would break paging.
       const [countRow] = await pgClient`
-        SELECT count(*)::int AS count
+        SELECT (
+          SELECT count(*)::int
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
         WHERE (${q.status ?? null}::text IS NULL OR o.status::text = ${q.status ?? ''})
           AND (${q.dealerId ?? null}::uuid IS NULL OR o.dealer_id = ${q.dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.zoneId   ?? null}::uuid IS NULL OR o.zone_id   = ${q.zoneId   ?? '00000000-0000-0000-0000-000000000000'}::uuid)
-          AND (${q.routeId  ?? null}::uuid IS NULL OR d.route_id  = ${q.routeId  ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${q.routeId  ?? null}::uuid IS NULL OR COALESCE(o.route_id, d.route_id) = ${q.routeId  ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${q.date     ?? null}::date IS NULL OR o.delivery_date = ${q.date ?? '1970-01-01'}::date)
           AND (${q.from     ?? null}::date IS NULL OR o.delivery_date >= ${q.from ?? '1970-01-01'}::date)
           AND (${q.to       ?? null}::date IS NULL OR o.delivery_date <= ${q.to   ?? '9999-12-31'}::date)
           AND (${q.batchId  ?? null}::uuid IS NULL OR EXISTS (
                 SELECT 1 FROM batch_routes br
                 WHERE br.batch_id = ${q.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
-                  AND br.route_id = d.route_id))
-          AND (${search}::text IS NULL OR d.name ILIKE ${search ?? ''} OR d.phone ILIKE ${search ?? ''})
+                  AND br.route_id = COALESCE(o.route_id, d.route_id)))
+          AND (${search}::text IS NULL OR d.name ILIKE ${search ?? ''} OR d.phone ILIKE ${search ?? ''} OR o.id::text ILIKE ${search ?? ''})
+        ) + (
+          SELECT count(*)::int
+            FROM employee_orders eo
+            JOIN employees e ON e.id = eo.employee_id
+           WHERE (${q.status ?? null}::text IS NULL OR eo.status::text = ${q.status ?? ''})
+             AND ${q.dealerId ?? null}::uuid IS NULL
+             AND ${q.zoneId   ?? null}::uuid IS NULL
+             AND (${q.routeId  ?? null}::uuid IS NULL OR eo.route_id = ${q.routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+             AND (${q.date     ?? null}::date IS NULL OR eo.delivery_date = ${q.date ?? '1970-01-01'}::date)
+             AND (${q.from     ?? null}::date IS NULL OR eo.delivery_date >= ${q.from ?? '1970-01-01'}::date)
+             AND (${q.to       ?? null}::date IS NULL OR eo.delivery_date <= ${q.to   ?? '9999-12-31'}::date)
+             AND (${q.batchId  ?? null}::uuid IS NULL OR EXISTS (
+                   SELECT 1 FROM batch_routes br
+                   WHERE br.batch_id = ${q.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid
+                     AND br.route_id = eo.route_id))
+             AND (${search}::text IS NULL OR e.name ILIKE ${search ?? ''} OR e.phone ILIKE ${search ?? ''} OR eo.id::text ILIKE ${search ?? ''})
+        ) AS count
       `;
 
       return reply.send({ data: rows, ...paginationMeta(countRow?.count ?? 0, q.page, q.limit) });
@@ -836,7 +980,7 @@ export async function orderRoutes(app: FastifyInstance) {
         JOIN dealers d ON d.id = o.dealer_id
         LEFT JOIN LATERAL (
           SELECT close_time FROM time_windows tw
-           WHERE tw.route_id = d.route_id AND tw.active = true
+           WHERE tw.route_id = COALESCE(o.route_id, d.route_id) AND tw.active = true
            ORDER BY close_time DESC LIMIT 1
         ) tw ON true
         WHERE o.dealer_id = ${dealerId}
@@ -915,8 +1059,68 @@ export async function orderRoutes(app: FastifyInstance) {
         : null;
 
       return reply.status(200).send({ order, items, credit, onlinePayment });
-    }                                                                       
-  ); 
+    }
+  );
+
+  // GET /api/v1/orders/:id/invoice — resolve an indent to its tax invoice,
+  // generating it on demand if the row doesn't exist yet. This backs the
+  // clickable indent # on the admin All-Indents list: only a PLACED order
+  // (confirmed/dispatched/delivered) is a tax document, so unplaced orders
+  // 409 rather than mint one. Generation is idempotent (invoice-pdf uses
+  // ON CONFLICT (order_id)), so repeated clicks are safe.
+  app.get(
+    "/api/v1/orders/:id/invoice",
+    { preHandler: [adminAuth, requireRole("orders.view")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      // The id may name either rail: a dealer indent in `orders` or an
+      // employee-subsidy indent in `employee_orders`. Both are listed by All
+      // Indents, so both must resolve here.
+      let [order] = await pgClient`
+        SELECT id, status::text AS status FROM orders WHERE id = ${id} LIMIT 1
+      `;
+      let isEmployeeOrder = false;
+      if (!order) {
+        [order] = await pgClient`
+          SELECT id, status::text AS status FROM employee_orders WHERE id = ${id} LIMIT 1
+        `;
+        isEmployeeOrder = !!order;
+      }
+      if (!order) return reply.status(404).send({ error: "Order not found" });
+
+      let [inv] = await pgClient`
+        SELECT id, invoice_number FROM invoices WHERE order_id = ${id} LIMIT 1
+      `;
+
+      // Only mint on demand for a genuinely placed order. An existing invoice
+      // (e.g. for a since-cancelled order) is still returned for viewing.
+      if (!inv) {
+        if (!["confirmed", "dispatched", "delivered"].includes(order.status)) {
+          return reply.status(409).send({
+            error: "Invoice not available",
+            message: "This indent isn't confirmed yet, so it has no invoice.",
+          });
+        }
+        try {
+          if (isEmployeeOrder) await generateEmployeeInvoicePdfSync(id);
+          else await generateInvoicePdfSync(id);
+          [inv] = await pgClient`
+            SELECT id, invoice_number FROM invoices WHERE order_id = ${id} LIMIT 1
+          `;
+        } catch (err) {
+          console.error("[invoice] admin generate-on-demand failed:", err);
+          return reply.status(500).send({ error: "Could not generate invoice" });
+        }
+      }
+
+      if (!inv) return reply.status(500).send({ error: "Could not generate invoice" });
+      return reply.send({
+        invoiceId: inv.id,
+        invoiceNumber: inv.invoice_number ?? null,
+      });
+    }
+  );
 
   // PATCH /api/v1/orders/:id/status
   app.patch(
@@ -1052,7 +1256,7 @@ export async function orderRoutes(app: FastifyInstance) {
           JOIN dealers d ON d.id = o.dealer_id
           LEFT JOIN LATERAL (
             SELECT close_time FROM time_windows tw
-             WHERE tw.route_id = d.route_id
+             WHERE tw.route_id = COALESCE(o.route_id, d.route_id)
              ORDER BY close_time DESC LIMIT 1
           ) tw ON true
          WHERE o.id = ${id}
@@ -1118,7 +1322,8 @@ export async function orderRoutes(app: FastifyInstance) {
 
       // Milk order minimum (≥12 L; curd has no minimum) over the lines being kept.
       const modMinQtyViolations = await findMinQtyViolations(
-        body.items.filter((i) => i.quantity > 0)
+        body.items.filter((i) => i.quantity > 0),
+        existing.dealer_id as string
       );
       if (modMinQtyViolations.length > 0) {
         return reply.status(400).send({
@@ -1129,10 +1334,30 @@ export async function orderRoutes(app: FastifyInstance) {
       }
 
       const productIds = body.items.filter(i => i.quantity > 0).map(i => i.productId);
+      // mrp + category name drive the rate-category price (lib/rate-price.ts).
+      // A modify MUST reprice on the same basis as the original placement, or
+      // editing a Credit Inst-MRP order would silently drop it back to the
+      // dealer rate.
       const productRows = productIds.length
-        ? await pgClient`SELECT id, name, base_price, gst_percent, stock FROM products WHERE id = ANY(${productIds}::uuid[])`
+        ? await pgClient`
+            SELECT p.id, p.name,
+                   p.base_price::text  AS "basePrice",
+                   p.mrp::text         AS mrp,
+                   p.gst_percent::text AS "gstPercent",
+                   p.stock,
+                   p.code              AS code,
+                   c.name              AS "categoryName"
+              FROM products p
+              JOIN categories c ON c.id = p.category_id
+             WHERE p.id = ANY(${productIds}::uuid[])`
         : [];
       const productMap = new Map(productRows.map((p: any) => [p.id, p]));
+
+      const [modRateRow] = await pgClient`
+        SELECT rate_category::text AS "rateCategory"
+          FROM dealers WHERE id = ${existing.dealer_id} LIMIT 1
+      `;
+      const modRateCategory = (modRateRow?.rateCategory ?? null) as string | null;
 
       let newSubtotal = 0, newGst = 0;
       const newLines: any[] = [];
@@ -1140,8 +1365,8 @@ export async function orderRoutes(app: FastifyInstance) {
         if (item.quantity === 0) continue;
         const p = productMap.get(item.productId);
         if (!p) return reply.status(400).send({ error: `Product ${item.productId} not found` });
-        const price = parseFloat(p.base_price);
-        const gstPct = parseFloat(p.gst_percent);
+        const price = resolveUnitPrice(p, modRateCategory);
+        const gstPct = parseFloat(p.gstPercent);
         const lineSub = price * item.quantity;
         const lineGst = lineSub * (gstPct / 100);
         newSubtotal += lineSub; newGst += lineGst;
@@ -1313,6 +1538,14 @@ export async function orderRoutes(app: FastifyInstance) {
 
       const items = await pgClient`SELECT product_id, product_name, quantity, unit_price, gst_percent, gst_amount, line_total FROM order_items WHERE order_id = ${id} ORDER BY product_name`;
 
+      // Reissue the tax invoice against the new lines/totals. Runs AFTER the
+      // tx commits so a render failure can't roll back the money movement, and
+      // is a no-op for an order that was never invoiced. Same invoice number
+      // and issue date — only the figures change. Unconditional: this handler
+      // always rewrites order_items, so a swap at an identical grand total
+      // (delta 0) still leaves the printed lines wrong.
+      const invoiceReissue = await reissueInvoiceIfExists(id);
+
       // Recompute credit AFTER the adjustment posts so the Modify screen can
       // show the dealer's new available balance without a second round-trip.
       let credit = null;
@@ -1347,6 +1580,10 @@ export async function orderRoutes(app: FastifyInstance) {
         delta: Number(delta.toFixed(2)),
         credit,
         refund,
+        // "reissued" → the dealer's invoice now matches; "failed" → the order
+        // changed but the PDF still shows the old figures and needs a retry
+        // via GET /orders/:id/invoice.
+        invoice: invoiceReissue,
       });
     }
   );
@@ -1560,30 +1797,54 @@ export async function orderRoutes(app: FastifyInstance) {
 
   // POST /api/v1/admin/invoices/backfill
   // Enqueues invoice generation for every confirmed/dispatched/delivered
-  // order that has no invoice row yet. Safe to run multiple times — the
-  // pdf-invoice worker uses ON CONFLICT DO UPDATE so duplicates are harmless.
+  // order that has no invoice row yet, OR whose invoice no longer agrees with
+  // the order (STALE — an order modified before the reissue-on-modify fix left
+  // the dealer holding a PDF with the pre-modification figures). Safe to run
+  // multiple times — the pdf-invoice worker uses ON CONFLICT DO UPDATE so
+  // duplicates are harmless, and regeneration preserves invoice_number and the
+  // legal invoice_date.
   app.post(
     "/api/v1/admin/invoices/backfill",
     { preHandler: [adminAuth, requireRole("orders.update")] },
-    async (_request, reply) => {
+    async (request, reply) => {
+      // scope=stale repairs only invoices that disagree with their order —
+      // useful because the missing-invoice population is ~1,170 orders, and
+      // an operator fixing modification drift shouldn't have to mint that
+      // whole batch in the same run. Default stays 'all' (prior behaviour).
+      const { scope } = z
+        .object({ scope: z.enum(["all", "missing", "stale"]).default("all") })
+        .parse(request.query);
+
       // Every confirmed/dispatched/delivered order should have an invoice
       // — including online (upi) ones, which only reach 'confirmed' AFTER
       // payment is captured, so they're genuinely paid. (The old query
       // excluded upi back when online invoices were on-demand only; pay-now
       // now enqueues one at capture, so a missing-upi invoice is just a
       // pre-fix gap to recover here.)
-      const missing = await pgClient`
-        SELECT o.id::text AS id
+      // Staleness compares against what the generator actually writes:
+      // total_amount is the ROUNDED grand total (netAmount in invoice-pdf.ts),
+      // while total_tax is stored unrounded — so a sub-rupee gap on the total
+      // is by design and must not be flagged (1,513 invoices sit in that gap),
+      // but any tax drift is real.
+      const targets = await pgClient`
+        SELECT o.id::text AS id,
+               (inv.order_id IS NULL) AS missing
         FROM orders o
+        LEFT JOIN invoices inv ON inv.order_id = o.id
         WHERE o.status IN ('confirmed', 'dispatched', 'delivered')
-          AND NOT EXISTS (
-            SELECT 1 FROM invoices i WHERE i.order_id = o.id
-          )
+          AND (
+                (${scope} IN ('all','missing') AND inv.order_id IS NULL)
+             OR (${scope} IN ('all','stale') AND inv.order_id IS NOT NULL
+                 AND ( abs(inv.total_amount - round(o.grand_total)) > 0.01
+                    OR abs(inv.total_tax   - o.total_gst)           > 0.01 ))
+              )
         ORDER BY o.delivery_date DESC
       `;
 
       let enqueued = 0;
-      for (const row of missing) {
+      let missing = 0, stale = 0;
+      for (const row of targets as any[]) {
+        if (row.missing) missing++; else stale++;
         try {
           await enqueuePDFInvoice(row.id);
           enqueued++;
@@ -1592,7 +1853,7 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      return reply.send({ total: missing.length, enqueued });
+      return reply.send({ scope, total: targets.length, missing, stale, enqueued });
     }
   );
 }

@@ -9,6 +9,8 @@ import {
 import { colors, fonts } from "../lib/theme";
 import type { Product } from "../lib/types";
 import { minQtyFor, snapQtyToMin } from "../lib/minOrderQty";
+import { resolveDisplayPrice } from "../lib/ratePrice";
+import { useAuthStore } from "../store/auth";
 import QtyStepper from "./QtyStepper";
 
 /**
@@ -84,6 +86,8 @@ export default function ProductCard({
   badge,
 }: ProductCardProps) {
   const [imageError, setImageError] = useState(false);
+  // The dealer's rate category decides which price this card prints.
+  const dealer = useAuthStore((s) => s.dealer);
 
   const outOfStock = !product.available || product.stock === 0;
   const lowStock = !outOfStock && product.stock <= lowStockThreshold;
@@ -91,11 +95,11 @@ export default function ProductCard({
   const hasImage = !!product.imageUrl && !imageError;
   const fallbackEmoji = product.icon ?? "📦";
 
-  // Price display: dealers see the Dealer-Price (gross) — the same price
-  // they're billed at. Fall back to MRP / basePrice only if it's missing.
+  // Price display: dealers see the gross price they're billed at, resolved
+  // for their rate category — a 'Credit Inst-MRP' dealer sees MRP on milk.
+  // For every other dealer this is the Dealer-Price exactly as before.
   // Whole rupees get no decimals; fractional show 2dp.
-  const rawPrice =
-    Number(product.dealerPrice ?? product.mrp ?? product.basePrice ?? 0) || 0;
+  const rawPrice = resolveDisplayPrice(product, dealer?.rateCategory);
   const displayedPrice = Number.isInteger(rawPrice)
     ? String(rawPrice)
     : rawPrice.toFixed(2);

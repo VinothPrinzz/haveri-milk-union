@@ -21,6 +21,7 @@ import {
 import {
   findCategoryMinShortfalls, categoryMinMessage, MIN_ORDER_RULE_TEXT,
 } from "@/lib/minOrderQty";
+import { resolveUnitPrice, isCreditInstMrp } from "@/lib/ratePrice";
 
 interface Line {
   id: string;
@@ -120,16 +121,18 @@ export default function RecordIndentsPage() {
     const p = products.find((x: any) => x.id === line.productId);
     if (!p) return { unit: 0, gstPct: 0, sub: 0, gst: 0, total: 0 };
 
-    const rcKey = customer?.rateCategory as string | undefined;
-    const rcPriceMap: Record<string, string> = {
-      "Retail-Dealer": "retailDealerPrice",
-      "Credit Inst-MRP": "creditInstMrpPrice",
-      "Credit Inst-Dealer": "creditInstDealerPrice",
-      "Parlour-Dealer": "parlourDealerPrice",
-    };
-    const rcKeyApi = rcKey && rcPriceMap[rcKey];
-    const unitRaw = (rcKeyApi && (p as any)[rcKeyApi]) ?? p.basePrice;
-    const unit = parseFloat(String(unitRaw)) || 0;
+    // Same resolver the server bills with (lib/ratePrice.ts mirrors
+    // apps/api/src/lib/rate-price.ts): a 'Credit Inst-MRP' customer pays
+    // MRP on milk, everyone else the ordinary dealer price.
+    const unit = resolveUnitPrice(
+      {
+        basePrice: p.basePrice,
+        mrp: (p as any).mrp,
+        gstPercent: p.gstPercent ?? 0,
+        categoryName: (p as any).category,
+      },
+      customer?.rateCategory as string | undefined
+    );
     const gstPct = parseFloat(String(p.gstPercent ?? 0)) || 0;
     const sub = unit * (line.qty || 0);
     const gst = sub * (gstPct / 100);
@@ -157,23 +160,28 @@ export default function RecordIndentsPage() {
   );
 
   // Milk order-minimum shortfalls (total milk < 12 L; curd has no minimum).
+  // 'Credit Inst-MRP' customers are government institutions — supply is
+  // compulsory however small the indent, so the minimum never applies to
+  // them. Mirrors MIN_QTY_EXEMPT_RATE_CATEGORIES on the server.
   const minQtyViolations = useMemo(
     () =>
-      findCategoryMinShortfalls(
-        lines
-          .filter((l) => l.productId && (l.qty ?? 0) > 0)
-          .map((l) => {
-            const p: any = productById.get(l.productId);
-            return {
-              name: p?.name ?? "Item",
-              categoryName: p?.category,
-              unit: p?.unit,
-              packSize: p?.packSize,
-              quantity: l.qty ?? 0,
-            };
-          })
-      ),
-    [lines, productById]
+      isCreditInstMrp(customer?.rateCategory as string | undefined)
+        ? []
+        : findCategoryMinShortfalls(
+            lines
+              .filter((l) => l.productId && (l.qty ?? 0) > 0)
+              .map((l) => {
+                const p: any = productById.get(l.productId);
+                return {
+                  name: p?.name ?? "Item",
+                  categoryName: p?.category,
+                  unit: p?.unit,
+                  packSize: p?.packSize,
+                  quantity: l.qty ?? 0,
+                };
+              })
+          ),
+    [lines, productById, customer]
   );
 
   const addLine = () => setLines(ls => [...ls, { id: rid(), productId: "", qty: undefined }]);

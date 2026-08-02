@@ -9,7 +9,7 @@ import {
   ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X, Factory
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { MODULES, moduleOfPath, type ModuleKey } from "@/components/AppLayout";
+import { MODULES, moduleOfPath, allowedModulesForRole, type ModuleKey } from "@/components/AppLayout";
 import { useAuth } from "@/lib/auth";
 import { allowedBucketsForRole } from "@/lib/stock-buckets";
 
@@ -96,7 +96,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Cash Sales",                path: "/sales-reports/cash-sales",      icon: FileSpreadsheet },
     { label: "Credit Sales",              path: "/sales-reports/credit-sales",    icon: FileSpreadsheet },
     { label: "Sales Register",            path: "/sales-reports/register",        icon: BookOpen },
-    { label: "Taluka/Agent Wise",         path: "/sales-reports/taluka-agent",    icon: FileSpreadsheet },
+    { label: "Agent Wise Sales",          path: "/sales-reports/taluka-agent",    icon: FileSpreadsheet },
     { label: "Taluka Wise Report",        path: "/sales-reports/taluka-wise",     icon: FileSpreadsheet },
     { label: "Adhoc Sales",               path: "/sales-reports/adhoc",           icon: FileSpreadsheet },
     { label: "GST Statement",             path: "/sales-reports/gst",             icon: FileBarChart2 },
@@ -138,6 +138,11 @@ export function AppSidebar({
   const { user } = useAuth();
   const allowedBuckets = allowedBucketsForRole(user?.role);
   const activeModule = moduleOfPath(pathname);
+
+  // Modules this role may see — mirrors the desktop topbar tabs. The mobile
+  // drawer's module switcher is filtered to the same set.
+  const allowedModuleKeys = new Set(allowedModulesForRole(user?.role));
+  const visibleModules = MODULES.filter(m => allowedModuleKeys.has(m.key));
 
   // Hide the Stock Entry link for a bucket the current user can't access.
   const items = (SIDEBAR_NAV[module] ?? []).filter(item => {
@@ -210,7 +215,7 @@ export function AppSidebar({
         <nav data-kbd-region="sidebar" className="flex-1 overflow-y-auto py-1">
           {/* Mobile only: main module switcher (the former top navigation) */}
           <div className="lg:hidden">
-            {MODULES.map(m => {
+            {visibleModules.map(m => {
               const Icon = m.icon;
               const active = activeModule === m.key;
               return (

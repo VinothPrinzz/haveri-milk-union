@@ -5,6 +5,11 @@ export interface ProductLite {
   id: string;
   reportAlias: string;
   sortOrder: number;
+  /** Per-pack volume in the product's macro unit — present on reports that
+   *  render quantities as Ltr (milk) / Kg (curd) instead of packet counts. */
+  packSize?: number;
+  /** Product unit (L / kg / ml / g / …); drives the Ltr/Kg conversion. */
+  unit?: string;
 }
 
 export interface RouteLite {
@@ -43,6 +48,9 @@ export interface RouteSheetCustomer {
   code: string;
   name: string;
   isEmployee?: boolean;
+  /** Credit-institution customer (customer_type 'Credit Inst-*'): amount is
+   *  billed monthly, shown as "(credit)" and excluded from the cash total. */
+  isCredit?: boolean;
   acrossQty: Record<string, number>;
   othersText: string;
   othersQty: number;
@@ -98,7 +106,10 @@ export interface RouteSheetRoute {
   totals: {
     acrossQty: Record<string, number>;
     othersQty: number;
+    /** Cash total — excludes credit-institution customers. */
     netAmount: number;
+    /** Sum of credit-institution customers' amounts (billed monthly). */
+    creditAmount: number;
     crates: number;
     cratePktPlus: number;
     cratePktMinus: number;
@@ -260,6 +271,7 @@ export interface CreditBillProduct {
   reportAlias: string;
   category: string;    // e.g. "MILK", "CURD" (uppercase)
   hsn: string;
+  session: string;     // delivery session label — "EVE" / "MOR" / "AFT"
   rate: number;
   packSize: number;    // e.g. 500 for "500ml"
   gstPct: number;      // combined GST %
@@ -389,12 +401,15 @@ export const fetchTalukaAgent = (params: { from: string; to: string }) =>
 // ═══════════════════════════════════════════════════════════════
 export interface TalukaWiseRow {
   taluka: string;
-  milkQty: Record<string, number>; // productId → litres
-  curdQty: Record<string, number>; // productId → kilograms
+  milkQty: Record<string, number>;  // productId → litres
+  curdQty: Record<string, number>;  // productId → kilograms
+  otherQty: Record<string, number>; // productId → volume (unit-aware)
   totalMilk: number; // Ltrs
   avgMilk: number;   // Ltrs / day
   totalCurd: number; // Kgs
   avgCurd: number;   // Kgs / day
+  totalOther: number; // mixed-unit volume
+  avgOther: number;   // per day
 }
 
 export interface TalukaWiseResponse {
@@ -403,14 +418,18 @@ export interface TalukaWiseResponse {
   numDays: number;
   milkProducts: ProductLite[];
   curdProducts: ProductLite[];
+  otherProducts: ProductLite[];
   rows: TalukaWiseRow[];
   totals: {
     milkQty: Record<string, number>;
     curdQty: Record<string, number>;
+    otherQty: Record<string, number>;
     totalMilk: number;
     avgMilk: number;
     totalCurd: number;
     avgCurd: number;
+    totalOther: number;
+    avgOther: number;
   };
 }
 

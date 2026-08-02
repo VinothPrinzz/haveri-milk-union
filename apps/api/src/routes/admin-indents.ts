@@ -40,6 +40,8 @@ import {
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
+import { enqueuePDFInvoice } from "../lib/queue.js";
+import { resolveUnitPrice } from "../lib/rate-price.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -77,7 +79,8 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 /** Resolve + validate a dealer; throws a 404-shaped error if missing. */
 async function loadDealer(dealerId: string) {
   const [dealer] = await pgClient`
-    SELECT id, name, code, zone_id AS "zoneId"
+    SELECT id, name, code, zone_id AS "zoneId", route_id AS "routeId",
+           rate_category::text AS "rateCategory"
       FROM dealers
      WHERE id = ${dealerId} AND deleted_at IS NULL
      LIMIT 1
@@ -91,7 +94,40 @@ async function loadDealer(dealerId: string) {
       { statusCode: 409 }
     );
   }
-  return dealer as { id: string; name: string; code: string | null; zoneId: string };
+  return dealer as {
+    id: string;
+    name: string;
+    code: string | null;
+    zoneId: string;
+    routeId: string | null;
+    rateCategory: string | null;
+  };
+}
+
+/**
+ * Validates that `routeId` is a delivery route the dealer is actually assigned
+ * to (dealer_routes) — or their primary route — so an admin-picked route on a
+ * dealer's indent/draft lands on a route that will dispatch it. Returns the
+ * validated id, or throws a 400. Mirrors the Record Indent (admin-place) check.
+ */
+async function assertAssignedRoute(
+  dealerId: string,
+  primaryRouteId: string | null,
+  routeId: string
+): Promise<string> {
+  const [assigned] = await pgClient`
+    SELECT 1 FROM dealer_routes
+     WHERE dealer_id = ${dealerId} AND route_id = ${routeId}::uuid
+     LIMIT 1
+  `;
+  const isPrimary = primaryRouteId != null && String(primaryRouteId) === routeId;
+  if (!assigned && !isPrimary) {
+    throw Object.assign(
+      new Error("The selected route is not assigned to this customer."),
+      { statusCode: 400 }
+    );
+  }
+  return routeId;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -108,10 +144,17 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("indents.view")] },
     async (request, reply) => {
       const { dealerId } = z.object({ dealerId: uuid }).parse(request.params);
+      const { routeId } = z.object({ routeId: uuid.optional() }).parse(request.query);
       const dealer = await loadDealer(dealerId);
+      // Templates are per (dealer, route). The admin picks the route (defaults
+      // to the dealer's primary); the current-value columns reflect THAT
+      // route's template.
+      const effectiveRoute = routeId
+        ? await assertAssignedRoute(dealerId, dealer.routeId, routeId)
+        : dealer.routeId;
 
       // Every product the dealer COULD have in a standing indent, LEFT
-      // JOINed with whatever is currently in their template.
+      // JOINed with whatever is currently in their template FOR THIS ROUTE.
       const items = await pgClient`
         SELECT
           p.id                          AS "productId",
@@ -132,6 +175,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         LEFT JOIN dealer_standing_indents dsi
                ON dsi.product_id = p.id
               AND dsi.dealer_id  = ${dealerId}
+              AND dsi.route_id   = ${effectiveRoute ?? null}::uuid
         LEFT JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
           AND p.available = true
@@ -141,6 +185,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
       return reply.send({
         dealer: { id: dealer.id, name: dealer.name, code: dealer.code },
+        routeId: effectiveRoute,
         items,
       });
     }
@@ -155,10 +200,13 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("indents.manage")] },
     async (request, reply) => {
       const { dealerId } = z.object({ dealerId: uuid }).parse(request.params);
-      await loadDealer(dealerId);
+      const dealer = await loadDealer(dealerId);
 
       const body = z
         .object({
+          // Route this template belongs to (admin's pick); defaults to the
+          // dealer's primary. Validated against dealer_routes.
+          routeId: uuid.nullable().optional(),
           items: z
             .array(
               z.object({
@@ -170,6 +218,17 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
             .min(1),
         })
         .parse(request.body);
+
+      const effectiveRoute = body.routeId
+        ? await assertAssignedRoute(dealerId, dealer.routeId, body.routeId)
+        : dealer.routeId;
+      if (!effectiveRoute) {
+        return reply.status(400).send({
+          error: "No route",
+          message:
+            "This customer has no route assigned. Assign a route before setting a standing indent.",
+        });
+      }
 
       const productIds = body.items.map((i) => i.productId);
       const eligible = await pgClient`
@@ -194,7 +253,8 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       const minQtyViolations = await findMinQtyViolations(
         body.items
           .filter((i) => i.active)
-          .map((i) => ({ productId: i.productId, quantity: i.defaultQty }))
+          .map((i) => ({ productId: i.productId, quantity: i.defaultQty })),
+        dealerId
       );
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
@@ -206,6 +266,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
       const rows = body.items.map((it) => ({
         dealer_id: dealerId,
+        route_id: effectiveRoute,
         product_id: it.productId,
         default_qty: it.defaultQty,
         active: it.active,
@@ -213,14 +274,14 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
       await pgClient`
         INSERT INTO dealer_standing_indents
-          ${pgClient(rows, "dealer_id", "product_id", "default_qty", "active")}
-        ON CONFLICT (dealer_id, product_id) DO UPDATE
+          ${pgClient(rows, "dealer_id", "route_id", "product_id", "default_qty", "active")}
+        ON CONFLICT (dealer_id, route_id, product_id) DO UPDATE
           SET default_qty = EXCLUDED.default_qty,
               active      = EXCLUDED.active,
               updated_at  = now()
       `;
 
-      return reply.send({ updated: body.items.length });
+      return reply.send({ updated: body.items.length, routeId: effectiveRoute });
     }
   );
 
@@ -236,7 +297,14 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       const { dealerId, date } = z
         .object({ dealerId: uuid, date: isoDate })
         .parse(request.params);
+      const { routeId } = z.object({ routeId: uuid.optional() }).parse(request.query);
       const dealer = await loadDealer(dealerId);
+      // The draft/preview is scoped to the admin-picked route (defaults to the
+      // dealer's primary), so a two-route dealer's routes are viewed/placed
+      // independently.
+      const effectiveRoute = routeId
+        ? await assertAssignedRoute(dealerId, dealer.routeId, routeId)
+        : dealer.routeId;
 
       // Credit standing — the finance context for this dealer/date.
       // We compute the order total below and re-check with checkDealerCredit
@@ -273,6 +341,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${date}::date
            AND status <> 'cancelled'
+           AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
          ORDER BY created_at DESC
          LIMIT 1
       `;
@@ -332,8 +401,10 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
           p.unit                  AS "unit",
           p.icon                  AS "icon",
           p.image_url             AS "imageUrl",
-          p.base_price::numeric   AS "unitPrice",
+          p.base_price::numeric   AS "basePrice",
+          p.mrp::numeric          AS "mrp",
           p.gst_percent::numeric  AS "gstPercent",
+          p.code                  AS "code",
           (p.code = ${SUBSIDY_PRODUCT_CODE}) AS "isSubsidy",
           c.name                  AS "categoryName"
         FROM dealer_standing_indents dsi
@@ -342,6 +413,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
                        AND p.available = true
         LEFT JOIN categories c ON c.id = p.category_id
         WHERE dsi.dealer_id = ${dealerId}
+          AND dsi.route_id = ${effectiveRoute ?? null}::uuid
           AND dsi.active = true
           AND dsi.default_qty > 0
         ORDER BY p.sort_order, p.name
@@ -350,7 +422,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       let subtotal = 0;
       let totalGst = 0;
       const items = (standing as any[]).map((r) => {
-        const price = parseFloat(r.unitPrice);
+        const price = resolveUnitPrice(r, dealer.rateCategory);
         const gstPct = parseFloat(r.gstPercent);
         const line = calcLine(price, gstPct, r.quantity);
         subtotal += line.subtotal;
@@ -401,6 +473,9 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
       const body = z
         .object({
+          // Delivery route the admin picked for this dealer's draft. Omitted →
+          // the dealer's primary route. Validated against dealer_routes.
+          routeId: uuid.nullable().optional(),
           items: z.array(
             z.object({
               productId: uuid,
@@ -411,12 +486,21 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         .parse(request.body);
       const lineItems = body.items.filter((i) => i.quantity > 0);
 
-      // Reject editing a placed (non-draft) order.
+      // Route the draft is placed for (null = keep existing / fall back to
+      // primary at insert). Explicit choice validated against the dealer's
+      // assigned routes. effectiveRoute is what the order lookups scope to.
+      const requestedRoute = body.routeId
+        ? await assertAssignedRoute(dealerId, dealer.routeId, body.routeId)
+        : null;
+      const effectiveRoute = requestedRoute ?? dealer.routeId;
+
+      // Reject editing a placed (non-draft) order — on THIS route.
       const [active] = await pgClient`
         SELECT id, status::text AS status FROM orders
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${date}::date
            AND status <> 'cancelled'
+           AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
          ORDER BY created_at DESC
          LIMIT 1
       `;
@@ -433,14 +517,18 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         lineItems.length > 0
           ? await pgClient`
               SELECT
-                id::text             AS "id",
-                name                 AS "name",
-                base_price::numeric  AS "basePrice",
-                gst_percent::numeric AS "gstPercent",
-                available            AS "available"
-              FROM products
-              WHERE id = ANY(${lineItems.map((i) => i.productId)}::uuid[])
-                AND deleted_at IS NULL
+                p.id::text             AS "id",
+                p.name                 AS "name",
+                p.base_price::numeric  AS "basePrice",
+                p.mrp::numeric         AS "mrp",
+                p.gst_percent::numeric AS "gstPercent",
+                p.available            AS "available",
+                p.code                 AS "code",
+                c.name                 AS "categoryName"
+              FROM products p
+              LEFT JOIN categories c ON c.id = p.category_id
+              WHERE p.id = ANY(${lineItems.map((i) => i.productId)}::uuid[])
+                AND p.deleted_at IS NULL
             `
           : [];
       const productMap = new Map<string, any>(
@@ -468,7 +556,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       let itemCount = 0;
       const orderItemsRows = lineItems.map((it) => {
         const p = productMap.get(it.productId);
-        const price = parseFloat(p.basePrice);
+        const price = resolveUnitPrice(p, dealer.rateCategory);
         const gstPct = parseFloat(p.gstPercent);
         const line = calcLine(price, gstPct, it.quantity);
         subtotal += line.subtotal;
@@ -489,18 +577,21 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       const orderId = await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
 
-        // Serialize draft creation per (dealer, date) — same advisory
+        // Serialize draft creation per (dealer, route, date) — same advisory
         // lock as the dealer PATCH (the partitioned orders table can't
         // enforce uniqueness, so concurrent edits could insert twins).
         await tx`
-          SELECT pg_advisory_xact_lock(hashtext(${dealerId + ":" + date}))
+          SELECT pg_advisory_xact_lock(hashtext(${dealerId + ":" + (effectiveRoute ?? "") + ":" + date}))
         `;
 
+        // Only ever touch the draft on THIS route (COALESCE catches legacy
+        // NULL-route drafts).
         const [existing] = await tx`
           SELECT id FROM orders
            WHERE dealer_id = ${dealerId}
              AND delivery_date = ${date}::date
              AND status = 'draft'
+             AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
            ORDER BY created_at DESC
            LIMIT 1
         `;
@@ -513,6 +604,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
               total_gst   = ${totalGst.toFixed(2)}::numeric,
               grand_total = ${grandTotal.toFixed(2)}::numeric,
               item_count  = ${itemCount},
+              route_id    = COALESCE(${requestedRoute}::uuid, route_id),
               updated_at  = now()
             WHERE id = ${existing.id}::uuid
           `;
@@ -521,11 +613,11 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         } else {
           const [created] = await tx`
             INSERT INTO orders (
-              dealer_id, zone_id, status, payment_mode,
+              dealer_id, zone_id, route_id, status, payment_mode,
               subtotal, total_gst, grand_total, item_count,
               delivery_date, placed_by
             ) VALUES (
-              ${dealerId}, ${dealer.zoneId}, 'draft', 'credit',
+              ${dealerId}, ${dealer.zoneId}, ${requestedRoute ?? dealer.routeId}::uuid, 'draft', 'credit',
               ${subtotal.toFixed(2)}::numeric,
               ${totalGst.toFixed(2)}::numeric,
               ${grandTotal.toFixed(2)}::numeric,
@@ -576,12 +668,24 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
       const { dealerId, date } = z
         .object({ dealerId: uuid, date: isoDate })
         .parse(request.params);
-      await loadDealer(dealerId);
+      const dealer = await loadDealer(dealerId);
 
-      const body = z.object({ force: z.boolean().default(false) }).parse(
-        request.body ?? {}
-      );
+      const body = z
+        .object({
+          force: z.boolean().default(false),
+          // Delivery route the admin picked; validated against the dealer's
+          // assigned routes. Omitted → keep the draft's route (falling back
+          // to the dealer's primary).
+          routeId: uuid.nullable().optional(),
+        })
+        .parse(request.body ?? {});
 
+      const requestedRoute = body.routeId
+        ? await assertAssignedRoute(dealerId, dealer.routeId, body.routeId)
+        : null;
+      const effectiveRoute = requestedRoute ?? dealer.routeId;
+
+      // Confirm the draft for THIS route (COALESCE catches legacy NULL-route).
       const [order] = await pgClient`
         SELECT id, status::text AS status,
                grand_total::numeric AS grand_total, item_count
@@ -589,6 +693,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${date}::date
            AND status <> 'cancelled'
+           AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
          ORDER BY created_at DESC
          LIMIT 1
       `;
@@ -674,21 +779,31 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
         // cancel_window_ends_at = LEAST(now + 30 min, route's close_time for
         // the delivery date) — same rule as the dealer credit-confirm path.
+        // NOTE: the time-window close_time is resolved with a CORRELATED
+        // SCALAR SUBQUERY in the SET clause, NOT a FROM-clause join. Postgres
+        // rejects a join condition that references the UPDATE target table
+        // (`orders`) — `42P01 invalid reference to FROM-clause entry` — and it
+        // only blows up at runtime, rolling the whole confirm back. SET
+        // expressions and WHERE may reference the target; FROM joins may not.
         await tx`
           UPDATE orders
              SET status       = 'confirmed',
                  payment_mode = 'credit',
                  confirmed_at = now(),
                  updated_at   = now(),
+                 route_id     = COALESCE(${requestedRoute}::uuid, orders.route_id, d.route_id),
                  cancel_window_ends_at = LEAST(
                    now() + interval '30 minutes',
                    COALESCE(
-                     (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                     (orders.delivery_date + (
+                        SELECT tw.close_time FROM time_windows tw
+                         WHERE tw.route_id = COALESCE(${requestedRoute}::uuid, orders.route_id, d.route_id)
+                         ORDER BY tw.close_time DESC LIMIT 1
+                      )) AT TIME ZONE 'Asia/Kolkata',
                      now() + interval '30 minutes'
                    )
                  )
            FROM dealers d
-           LEFT JOIN time_windows tw ON tw.route_id = d.route_id
            WHERE orders.id = ${order.id}::uuid
              AND orders.dealer_id = d.id
         `;
@@ -748,6 +863,11 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         }
         throw err;
       }
+
+      // Generate the tax invoice in the background — same queue every other
+      // confirm path uses (dealer draft-confirm, admin place, subsidy). Without
+      // this, admin-confirmed standing indents never got an invoice row.
+      await enqueuePDFInvoice(order.id);
 
       return reply.send({
         orderId: order.id,

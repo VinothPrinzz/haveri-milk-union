@@ -140,7 +140,7 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
 
       // ── Resolve customer + subsidy product ──
       const [dealer] = await pgClient`
-        SELECT id, zone_id FROM dealers WHERE id = ${body.customerId} AND deleted_at IS NULL
+        SELECT id, zone_id, route_id FROM dealers WHERE id = ${body.customerId} AND deleted_at IS NULL
       `;
       if (!dealer) return reply.status(404).send({ error: "Customer not found" });
       if (!dealer.zone_id) {
@@ -148,6 +148,27 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
           error: "Customer has no zone",
           message: "Assign a zone to this customer before placing indents.",
         });
+      }
+
+      // ── Resolve the order's delivery route ──
+      // Default to the dealer's primary route; an explicitly-picked route must
+      // be one the dealer is assigned to. Snapshotted on the order so it
+      // dispatches/reports under the route it was placed for.
+      let orderRouteId: string | null = dealer.route_id ?? null;
+      if (body.routeId) {
+        const [assigned] = await pgClient`
+          SELECT 1 FROM dealer_routes
+           WHERE dealer_id = ${body.customerId} AND route_id = ${body.routeId}::uuid
+           LIMIT 1
+        `;
+        const isPrimary = dealer.route_id && String(dealer.route_id) === body.routeId;
+        if (!assigned && !isPrimary) {
+          return reply.status(400).send({
+            error: "Route not assigned",
+            message: "The selected route is not assigned to this customer.",
+          });
+        }
+        orderRouteId = body.routeId;
       }
 
       const product = await loadSubsidyProduct();
@@ -191,7 +212,7 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
                  ON oi.order_id = o.id AND oi.product_id = ${product.id}::uuid
           LEFT JOIN LATERAL (
             SELECT close_time FROM time_windows tw
-             WHERE tw.route_id = d.route_id
+             WHERE tw.route_id = COALESCE(o.route_id, d.route_id)
              ORDER BY close_time DESC LIMIT 1
           ) tw ON true
          WHERE o.dealer_id = ${body.customerId}
@@ -258,11 +279,11 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
           // Fresh confirmed order carrying just the subsidy line.
           const [order] = await tx`
             INSERT INTO orders (
-              dealer_id, zone_id, status, payment_mode, payment_reference,
+              dealer_id, zone_id, route_id, status, payment_mode, payment_reference,
               subtotal, total_gst, grand_total, item_count, notes,
               delivery_date, placed_by, confirmed_at, created_at, updated_at
             ) VALUES (
-              ${body.customerId}, ${dealer.zone_id}, 'confirmed', ${body.paymentMode},
+              ${body.customerId}, ${dealer.zone_id}, ${orderRouteId}::uuid, 'confirmed', ${body.paymentMode},
               ${body.paymentReference ?? null},
               ${lineSub.toFixed(2)}::numeric, ${lineGst.toFixed(2)}::numeric,
               ${lineTotal.toFixed(2)}::numeric, 1, ${notesForOrder},

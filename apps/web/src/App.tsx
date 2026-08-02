@@ -1,11 +1,12 @@
+import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Navigate, useLocation } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/components/AuthProvider";
 import { useAuth } from "@/lib/auth";
-import AppLayout from "@/components/AppLayout";
+import AppLayout, { allowedModulesForRole, defaultModulePathForRole, moduleOfPath } from "@/components/AppLayout";
 import LoginPage from "@/pages/LoginPage";
 import Dashboard from "@/pages/Dashboard";
 import CustomersPage from "@/pages/masters/CustomersPage";
@@ -79,6 +80,20 @@ const queryClient = new QueryClient({
   },
 });
 
+// Redirects a restricted-role user (e.g. route officer) away from any module
+// their role can't see, landing them on their first allowed module. The API
+// still enforces access; this keeps the URL bar in sync with the hidden tabs.
+function RequireModuleAccess({
+  role, children,
+}: { role: string | null | undefined; children: ReactNode }) {
+  const { pathname } = useLocation();
+  const allowed = new Set(allowedModulesForRole(role));
+  if (!allowed.has(moduleOfPath(pathname))) {
+    return <Navigate to={defaultModulePathForRole(role)} replace />;
+  }
+  return <>{children}</>;
+}
+
 function AppInner() {
   const { user, loading, login } = useAuth();
 
@@ -104,6 +119,7 @@ function AppInner() {
   return (
     <BrowserRouter>
       <AppLayout>
+       <RequireModuleAccess role={user.role}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           {/* Masters */}
@@ -213,6 +229,7 @@ function AppInner() {
           {/* <Route path="/system/db-health" element={<DatabaseHealthPage />} /> */}
           <Route path="*" element={<NotFound />} />
         </Routes>
+       </RequireModuleAccess>
       </AppLayout>
     </BrowserRouter>
   );

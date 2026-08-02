@@ -88,9 +88,13 @@ export async function salesReportRoutes(app: FastifyInstance) {
       `;
       const dates = dateList.map((r: any) => r.date);
 
-      // Fetch products ordered by sort_order grouped by category
+      // Fetch products ordered by sort_order grouped by category.
+      // pack_size + unit come along so the client can render each column in
+      // Ltr (milk) / Kg (curd) instead of raw packet counts.
       const products = await pgClient`
-        SELECT p.id, p.report_alias, p.name, p.sort_order, c.name AS category_name
+        SELECT p.id, p.report_alias, p.name, p.sort_order,
+               COALESCE(p.pack_size, 0)::numeric AS pack_size, p.unit,
+               c.name AS category_name
         FROM products p
         JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
@@ -146,7 +150,13 @@ export async function salesReportRoutes(app: FastifyInstance) {
         const catSet = new Set(categories.map(c => c.toLowerCase()));
         const groupProds = (products as any[])
           .filter(p => catSet.has((p.category_name ?? "").toLowerCase()))
-          .map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order }));
+          .map(p => ({
+            id: p.id,
+            reportAlias: p.report_alias ?? p.name,
+            sortOrder: p.sort_order,
+            packSize: parseFloat(p.pack_size) || 0,
+            unit: p.unit ?? "",
+          }));
 
         const rows = dates.map(date => {
           const qtyByProd: Record<string, number> = {};
@@ -188,7 +198,6 @@ export async function salesReportRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("sales_reports.view")] },
     async (request, reply) => {
       const q = dateRangeSchema.parse(request.query);
-      const cfg = await loadReportConfig();
 
       const dateList = await pgClient`
         SELECT to_char(d::date, 'YYYY-MM-DD') AS date
@@ -204,19 +213,22 @@ export async function salesReportRoutes(app: FastifyInstance) {
         ORDER BY r.code
       `;
 
-      const cashModes = cfg.cashPaymentModes; // ['cash','upi','wallet']
+      // Day/route sales total. Previously this filtered to cash-mode payments
+      // only, which dropped wallet- and credit-settled orders and undercounted
+      // every route's daily sales. The day/route total must reflect ALL sales
+      // dispatched on the route, regardless of how they were paid, so no
+      // payment_mode filter is applied.
       const salesRows = await pgClient`
         SELECT o.created_at::date AS sale_date,
-               d.route_id,
+               COALESCE(o.route_id, d.route_id) AS route_id,
                SUM(o.grand_total)::numeric AS amount
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
         WHERE o.created_at::date >= ${q.from}::date
           AND o.created_at::date <= ${q.to}::date
           AND o.status IN ('confirmed', 'dispatched', 'delivered')
-          AND o.payment_mode::text = ANY(${cashModes}::text[])
-          AND d.route_id IS NOT NULL
-        GROUP BY o.created_at::date, d.route_id
+          AND COALESCE(o.route_id, d.route_id) IS NOT NULL
+        GROUP BY o.created_at::date, COALESCE(o.route_id, d.route_id)
       `;
 
       const matrix: Record<string, Record<string, number>> = {};
@@ -265,8 +277,11 @@ export async function salesReportRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const q = dateRangeSchema.parse(request.query);
 
+      // pack_size + unit ride along so the client renders each product row in
+      // Ltr (milk) / Kg (curd) instead of raw packet counts.
       const products = await pgClient`
-        SELECT id, report_alias, name, sort_order
+        SELECT id, report_alias, name, sort_order,
+               COALESCE(pack_size, 0)::numeric AS pack_size, unit
         FROM products
         WHERE deleted_at IS NULL AND available = true
         ORDER BY sort_order, name
@@ -338,7 +353,13 @@ export async function salesReportRoutes(app: FastifyInstance) {
       return reply.send({
         from: q.from,
         to: q.to,
-        products: (products as any[]).map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
+        products: (products as any[]).map(p => ({
+          id: p.id,
+          reportAlias: p.report_alias ?? p.name,
+          sortOrder: p.sort_order,
+          packSize: parseFloat(p.pack_size) || 0,
+          unit: p.unit ?? "",
+        })),
         officers: (officers as any[]).map(o => ({ id: o.id, name: o.name })),
         matrix,
         officerTotals,
@@ -370,7 +391,9 @@ export async function salesReportRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const q = dateRangeSchema.parse(request.query);
       const cfg = await loadReportConfig();
-      return reply.send(await buildSalesGrid({ q, cfg, onlyCash: false }));
+      // Sales Register excludes credit-institution customers (billed monthly on
+      // the separate credit-sales bill) and renders quantities in Ltr/Kg.
+      return reply.send(await buildSalesGrid({ q, cfg, onlyCash: false, excludeCreditInst: true }));
     }
   );
 
@@ -391,9 +414,11 @@ export async function salesReportRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const q = dateRangeSchema.parse(request.query);
 
-      // All credit sales line items in range (one row per order_item)
-      // Only keep orders paid on credit; a credit customer might have cash
-      // orders too — those don't belong on the bill.
+      // Credit-institution bill (customer_type 'Credit Inst-*'). These buyers
+      // are billed monthly, so the bill is scoped to the institution — every
+      // purchase they made in the period belongs on it, regardless of the
+      // per-order payment_mode. which_batch (via the dealer's route → primary
+      // batch) drives the EVE/MOR/AFT session label above each product column.
       const lines = await pgClient`
         SELECT d.id   AS dealer_id,
                d.code AS dealer_code,
@@ -402,6 +427,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
                d.city,
                d.gst_number,
                d.rate_category,
+               bt.which_batch AS which_batch,
                oi.product_id,
                p.code AS product_code,
                COALESCE(p.report_alias, p.name) AS product_name,
@@ -420,10 +446,12 @@ export async function salesReportRoutes(app: FastifyInstance) {
         JOIN order_items oi ON oi.order_id = o.id
         JOIN products p   ON p.id = oi.product_id
         JOIN categories c ON c.id = p.category_id
+        LEFT JOIN routes r   ON r.id = COALESCE(o.route_id, d.route_id) AND r.deleted_at IS NULL
+        LEFT JOIN batches bt ON bt.id = r.primary_batch_id AND bt.deleted_at IS NULL
         WHERE o.created_at::date >= ${q.from}::date
           AND o.created_at::date <= ${q.to}::date
           AND o.status IN ('confirmed', 'dispatched', 'delivered')
-          AND o.payment_mode = 'credit'
+          AND COALESCE(d.customer_type::text, '') LIKE 'Credit Inst%'
       `;
 
       // Helpers
@@ -437,8 +465,20 @@ export async function salesReportRoutes(app: FastifyInstance) {
         const m = parts[1] ?? "";
         return `${code ?? ""}\\${Number(m)}\\${y.slice(2)}`;
       };
+      // Delivery-session label printed above each product column (EVE/MOR/AFT),
+      // derived from the batch's which_batch. Defaults to EVE — the evening
+      // dispatch these institutions are served on when no batch is resolvable.
+      const sessionAbbr = (wb: string | null | undefined) => {
+        const w = (wb ?? "").toLowerCase();
+        if (w.includes("morn")) return "MOR";
+        if (w.includes("noon") || w.includes("after")) return "AFT";
+        return "EVE";
+      };
 
-      // Group lines by dealer → product, track daily qty per (dealer, product, date)
+      // Group lines by dealer → product; track daily qty AND daily amount
+      // (line_total) per (dealer, product, date). unit_price is GST-inclusive,
+      // so the footer BASIC/CGST/SGST are backed out of the amount, not added
+      // on top (see the customer build below).
       type ProdAgg = {
         id: string;
         code: string;
@@ -447,10 +487,12 @@ export async function salesReportRoutes(app: FastifyInstance) {
         hsn: string;
         packSize: number;
         unit: string;
-        rate: number;      // unit_price observed (last seen)
+        rate: number;      // unit_price observed (largest seen), GST-inclusive
         gstPct: number;
         sortOrder: number;
-        dailyQty: Map<string, number>; // date → qty
+        session: string;   // EVE / MOR / AFT
+        dailyQty: Map<string, number>;    // date → qty
+        dailyAmount: Map<string, number>; // date → Σ line_total
       };
       type CustAgg = {
         id: string;
@@ -490,12 +532,15 @@ export async function salesReportRoutes(app: FastifyInstance) {
             rate: parseFloat(r.unit_price) || 0,
             gstPct: parseFloat(r.gst_percent) || 0,
             sortOrder: Number(r.sort_order) || 0,
+            session: sessionAbbr(r.which_batch),
             dailyQty: new Map(),
+            dailyAmount: new Map(),
           });
         }
         const prod = cust.products.get(r.product_id)!;
         const iso = new Date(r.sale_date).toISOString().slice(0, 10);
         prod.dailyQty.set(iso, (prod.dailyQty.get(iso) ?? 0) + (Number(r.qty) || 0));
+        prod.dailyAmount.set(iso, (prod.dailyAmount.get(iso) ?? 0) + (parseFloat(r.line_total) || 0));
         // unit_price is usually constant per period; keep the largest seen
         if (parseFloat(r.unit_price) > prod.rate) prod.rate = parseFloat(r.unit_price);
       }
@@ -517,10 +562,13 @@ export async function salesReportRoutes(app: FastifyInstance) {
           const products = Array.from(cust.products.values())
             .sort((a, b) => a.sortOrder - b.sortOrder || a.reportAlias.localeCompare(b.reportAlias));
 
-          // Per-day rows
+          // Per-day rows. The day total is the sum of the actual booked
+          // (GST-inclusive) line amounts for that day, so it ties out to the
+          // Amount footer exactly (rate × qty can drift when a line's price
+          // differs from the largest-seen "rate").
           const dailyRows = dateList.map(iso => {
             const qty = products.map(p => p.dailyQty.get(iso) ?? 0);
-            const dayTotal = qty.reduce((s, q, i) => s + q * (products[i]?.rate ?? 0), 0);
+            const dayTotal = products.reduce((s, p) => s + (p.dailyAmount.get(iso) ?? 0), 0);
             const [_, __, day] = iso.split("-");
             return {
               day,           // "01" .. "31"
@@ -530,15 +578,19 @@ export async function salesReportRoutes(app: FastifyInstance) {
             };
           });
 
-          // Footer totals — all arrays aligned with products[]
+          // Footer totals — all arrays aligned with products[].
+          // Amount is the GST-inclusive booked value; BASIC is reverse-derived
+          // (Amount ÷ (1 + gst%)) and CGST = SGST = (Amount − BASIC) / 2, so
+          // BASIC + CGST + SGST == Amount to the paisa (matches the paper bill).
           const pkts = products.map((_, i) => dailyRows.reduce((s, r) => s + (r.qty[i] ?? 0), 0));
           const kgLtr = products.map((p, i) => round3(toKgLtr(pkts[i] ?? 0, p.packSize, p.unit)));
-          const basic = products.map((p, i) => round2((pkts[i] ?? 0) * p.rate));
+          const amount = products.map(p =>
+            round2(Array.from(p.dailyAmount.values()).reduce((s, v) => s + v, 0)));
+          const basic = products.map((p, i) => round2((amount[i] ?? 0) / (1 + p.gstPct / 100)));
           const cgstPctArr = products.map(p => round2(p.gstPct / 2));
           const sgstPctArr = products.map(p => round2(p.gstPct / 2));
-          const cgst = products.map((p, i) => round3((basic[i] ?? 0) * (p.gstPct / 2) / 100));
-          const sgst = products.map((p, i) => round3((basic[i] ?? 0) * (p.gstPct / 2) / 100));
-          const amount = products.map((_, i) => round2((basic[i] ?? 0) + (cgst[i] ?? 0) + (sgst[i] ?? 0)));
+          const cgst = products.map((_, i) => round3(((amount[i] ?? 0) - (basic[i] ?? 0)) / 2));
+          const sgst = products.map((_, i) => round3(((amount[i] ?? 0) - (basic[i] ?? 0)) / 2));
 
           const basicGrand = round2(basic.reduce((s, v) => s + v, 0));
           const cgstGrand = round3(cgst.reduce((s, v) => s + v, 0));
@@ -562,6 +614,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
               reportAlias: p.reportAlias,
               category: p.category,
               hsn: p.hsn,
+              session: p.session,
               rate: round2(p.rate),
               packSize: p.packSize,
               gstPct: round2(p.gstPct),
@@ -846,6 +899,13 @@ export async function salesReportRoutes(app: FastifyInstance) {
       const curdProducts = (products as any[]).filter(p => curdCatSet.has(catOf(p.category_name)));
       const milkIds = new Set(milkProducts.map(p => p.id));
       const curdIds = new Set(curdProducts.map(p => p.id));
+      // Everything that is neither milk nor curd (lassi, buttermilk, ghee,
+      // paneer, sweets, …) gets its own product page, mirroring the milk/curd
+      // pages. Volume is derived the same way (packets × pack_size, unit-aware).
+      const otherProducts = (products as any[]).filter(
+        p => !milkIds.has(p.id) && !curdIds.has(p.id)
+      );
+      const otherIds = new Set(otherProducts.map(p => p.id));
       const packSizeById = new Map((products as any[]).map(p => [p.id, parseFloat(p.pack_size) || 0]));
       const unitById = new Map((products as any[]).map(p => [p.id, p.unit ?? ""]));
 
@@ -867,13 +927,18 @@ export async function salesReportRoutes(app: FastifyInstance) {
       );
 
       // taluka → { productId → volume } (raw; rounded only on the way out)
-      const talukaMap = new Map<string, { milkVol: Record<string, number>; curdVol: Record<string, number> }>();
+      const talukaMap = new Map<string, {
+        milkVol: Record<string, number>;
+        curdVol: Record<string, number>;
+        otherVol: Record<string, number>;
+      }>();
       for (const r of rows as any[]) {
-        if (!talukaMap.has(r.taluka)) talukaMap.set(r.taluka, { milkVol: {}, curdVol: {} });
+        if (!talukaMap.has(r.taluka)) talukaMap.set(r.taluka, { milkVol: {}, curdVol: {}, otherVol: {} });
         const t = talukaMap.get(r.taluka)!;
         const vol = toKgLtr(Number(r.qty) || 0, packSizeById.get(r.product_id) ?? 0, unitById.get(r.product_id) ?? "");
         if (milkIds.has(r.product_id)) t.milkVol[r.product_id] = (t.milkVol[r.product_id] ?? 0) + vol;
         else if (curdIds.has(r.product_id)) t.curdVol[r.product_id] = (t.curdVol[r.product_id] ?? 0) + vol;
+        else if (otherIds.has(r.product_id)) t.otherVol[r.product_id] = (t.otherVol[r.product_id] ?? 0) + vol;
       }
 
       const talukaRows = Array.from(talukaMap.keys())
@@ -882,14 +947,18 @@ export async function salesReportRoutes(app: FastifyInstance) {
           const t = talukaMap.get(taluka)!;
           const totalMilk = milkProducts.reduce((s, p) => s + (t.milkVol[p.id] ?? 0), 0);
           const totalCurd = curdProducts.reduce((s, p) => s + (t.curdVol[p.id] ?? 0), 0);
+          const totalOther = otherProducts.reduce((s, p) => s + (t.otherVol[p.id] ?? 0), 0);
           return {
             taluka,
             milkQty: Object.fromEntries(milkProducts.map(p => [p.id, round2(t.milkVol[p.id] ?? 0)])),
             curdQty: Object.fromEntries(curdProducts.map(p => [p.id, round2(t.curdVol[p.id] ?? 0)])),
+            otherQty: Object.fromEntries(otherProducts.map(p => [p.id, round2(t.otherVol[p.id] ?? 0)])),
             totalMilk: round2(totalMilk),
             avgMilk: round2(totalMilk / numDays),
             totalCurd: round2(totalCurd),
             avgCurd: round2(totalCurd / numDays),
+            totalOther: round2(totalOther),
+            avgOther: round2(totalOther / numDays),
           };
         });
 
@@ -898,6 +967,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
         round2(talukaRows.reduce((s, r) => s + (sel(r)[id] ?? 0), 0));
       const totalMilk = round2(talukaRows.reduce((s, r) => s + r.totalMilk, 0));
       const totalCurd = round2(talukaRows.reduce((s, r) => s + r.totalCurd, 0));
+      const totalOther = round2(talukaRows.reduce((s, r) => s + r.totalOther, 0));
 
       return reply.send({
         from: q.from,
@@ -905,14 +975,18 @@ export async function salesReportRoutes(app: FastifyInstance) {
         numDays,
         milkProducts: milkProducts.map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
         curdProducts: curdProducts.map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
+        otherProducts: otherProducts.map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
         rows: talukaRows,
         totals: {
           milkQty: Object.fromEntries(milkProducts.map(p => [p.id, colTotal(r => r.milkQty, p.id)])),
           curdQty: Object.fromEntries(curdProducts.map(p => [p.id, colTotal(r => r.curdQty, p.id)])),
+          otherQty: Object.fromEntries(otherProducts.map(p => [p.id, colTotal(r => r.otherQty, p.id)])),
           totalMilk,
           avgMilk: round2(totalMilk / numDays),
           totalCurd,
           avgCurd: round2(totalCurd / numDays),
+          totalOther,
+          avgOther: round2(totalOther / numDays),
         },
       });
     }
@@ -1088,23 +1162,45 @@ export async function salesReportRoutes(app: FastifyInstance) {
       }
 
       // 2. Aggregate sales: one row per (employee, product) inside the
-      //    date range. Uses customer_type='employee_subsidy' to scope.
+      //    date range, across BOTH rails — employee_orders (employee subsidy
+      //    is a real indent now) and the direct_sales rows it was recorded as
+      //    before that change, so a range spanning the switchover still totals
+      //    correctly. The outer GROUP BY re-folds an employee who appears in
+      //    both, so nobody is listed twice.
       const rows = await pgClient`
-        SELECT ds.customer_id                  AS employee_id,
-               e.employee_code                 AS employee_code,
-               e.name                          AS employee_name,
-               dsi.product_id                  AS product_id,
-               SUM(dsi.quantity)::int          AS qty,
-               SUM(dsi.line_total)::numeric    AS total_amount
-        FROM direct_sales ds
-        JOIN direct_sale_items dsi ON dsi.direct_sale_id = ds.id
-        JOIN employees e ON e.id = ds.customer_id
-        WHERE ds.customer_type = 'employee_subsidy'
-          AND ds.sale_date >= ${q.from}::date
-          AND ds.sale_date <= ${q.to}::date
-          AND dsi.product_id = ANY(${eligibleIds}::uuid[])
-        GROUP BY ds.customer_id, e.employee_code, e.name, dsi.product_id
-        ORDER BY e.employee_code NULLS LAST, e.name
+        SELECT s.employee_id,
+               s.employee_code,
+               s.employee_name,
+               s.product_id,
+               SUM(s.qty)::int             AS qty,
+               SUM(s.total_amount)::numeric AS total_amount
+        FROM (
+          SELECT eo.employee_id            AS employee_id,
+                 e.employee_code           AS employee_code,
+                 e.name                    AS employee_name,
+                 eoi.product_id            AS product_id,
+                 eoi.quantity::int         AS qty,
+                 eoi.line_total::numeric   AS total_amount
+          FROM employee_orders eo
+          JOIN employee_order_items eoi ON eoi.employee_order_id = eo.id
+          JOIN employees e ON e.id = eo.employee_id
+          WHERE eo.status <> 'cancelled'
+            AND eo.delivery_date >= ${q.from}::date
+            AND eo.delivery_date <= ${q.to}::date
+            AND eoi.product_id = ANY(${eligibleIds}::uuid[])
+          UNION ALL
+          SELECT ds.customer_id, e.employee_code, e.name,
+                 dsi.product_id, dsi.quantity::int, dsi.line_total::numeric
+          FROM direct_sales ds
+          JOIN direct_sale_items dsi ON dsi.direct_sale_id = ds.id
+          JOIN employees e ON e.id = ds.customer_id
+          WHERE ds.customer_type = 'employee_subsidy'
+            AND ds.sale_date >= ${q.from}::date
+            AND ds.sale_date <= ${q.to}::date
+            AND dsi.product_id = ANY(${eligibleIds}::uuid[])
+        ) s
+        GROUP BY s.employee_id, s.employee_code, s.employee_name, s.product_id
+        ORDER BY s.employee_code NULLS LAST, s.employee_name
       `;
 
       // 3. Pivot into the response shapes.
@@ -1301,7 +1397,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
       // route_id NULL → ADHOC bucket.
       const salesRows = await pgClient`
         WITH combined AS (
-          SELECT d.route_id AS route_id, o.created_at::date AS sale_date,
+          SELECT COALESCE(o.route_id, d.route_id) AS route_id, o.created_at::date AS sale_date,
                  oi.product_id, oi.quantity::int AS qty
           FROM orders o
           JOIN dealers d      ON d.id = o.dealer_id
@@ -1356,7 +1452,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
       // so one continuous range covers both and the CASE splits them.
       const salesRows = await pgClient`
         WITH combined AS (
-          SELECT d.route_id AS route_id, o.created_at::date AS sale_date,
+          SELECT COALESCE(o.route_id, d.route_id) AS route_id, o.created_at::date AS sale_date,
                  oi.product_id, oi.quantity::int AS qty
           FROM orders o
           JOIN dealers d      ON d.id = o.dealer_id
@@ -1395,11 +1491,18 @@ export async function salesReportRoutes(app: FastifyInstance) {
 }
 
 // ── Shared helper: B4 (cash) + B6 (register) produce the same shape ──
-async function buildSalesGrid(opts: { q: { from: string; to: string }; cfg: ReportConfig; onlyCash: boolean }) {
-  const { q, cfg, onlyCash } = opts;
+async function buildSalesGrid(opts: {
+  q: { from: string; to: string };
+  cfg: ReportConfig;
+  onlyCash: boolean;
+  excludeCreditInst?: boolean;
+}) {
+  const { q, cfg, onlyCash, excludeCreditInst = false } = opts;
 
   const products = await pgClient`
-    SELECT p.id, p.report_alias, p.name, p.sort_order, c.name AS category_name
+    SELECT p.id, p.report_alias, p.name, p.sort_order,
+           COALESCE(p.pack_size, 0)::numeric AS pack_size, p.unit,
+           c.name AS category_name
     FROM products p
     JOIN categories c ON c.id = p.category_id
     WHERE p.deleted_at IS NULL AND p.available = true
@@ -1419,7 +1522,7 @@ async function buildSalesGrid(opts: { q: { from: string; to: string }; cfg: Repo
 
   // Per (route, product) qty + amount from orders
   const rowsOrders = await pgClient`
-    SELECT d.route_id, oi.product_id, c.name AS category_name,
+    SELECT COALESCE(o.route_id, d.route_id) AS route_id, oi.product_id, c.name AS category_name,
            SUM(oi.quantity)::int       AS qty,
            SUM(oi.line_total)::numeric AS amount
     FROM orders o
@@ -1430,9 +1533,10 @@ async function buildSalesGrid(opts: { q: { from: string; to: string }; cfg: Repo
     WHERE o.created_at::date >= ${q.from}::date
       AND o.created_at::date <= ${q.to}::date
       AND o.status IN ('confirmed', 'dispatched', 'delivered')
-      AND d.route_id IS NOT NULL
+      AND COALESCE(o.route_id, d.route_id) IS NOT NULL
       AND (${paymentFilter}::text[] IS NULL OR o.payment_mode::text = ANY(${paymentFilter ?? cashModes}::text[]))
-    GROUP BY d.route_id, oi.product_id, c.name
+      AND (${excludeCreditInst}::boolean = false OR COALESCE(d.customer_type::text, '') NOT LIKE 'Credit Inst%')
+    GROUP BY COALESCE(o.route_id, d.route_id), oi.product_id, c.name
   `;
 
   // Per (route, product) from direct sales (register only; cash-sales excludes them to match spec intent)
@@ -1497,7 +1601,13 @@ async function buildSalesGrid(opts: { q: { from: string; to: string }; cfg: Repo
   return {
     from: q.from,
     to: q.to,
-    products: (products as any[]).map(p => ({ id: p.id, reportAlias: p.report_alias ?? p.name, sortOrder: p.sort_order })),
+    products: (products as any[]).map(p => ({
+      id: p.id,
+      reportAlias: p.report_alias ?? p.name,
+      sortOrder: p.sort_order,
+      packSize: parseFloat(p.pack_size) || 0,
+      unit: p.unit ?? "",
+    })),
     routes: routesOut,
     totals,
   };

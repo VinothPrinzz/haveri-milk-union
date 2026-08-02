@@ -1,275 +1,216 @@
+// ═══════════════════════════════════════════════════════════════════════
+// apps/worker/src/index.ts
+//
+// Background worker: in-process cron (croner, IST) + a Postgres outbox
+// poller for jobs enqueued by the API (push notifications, PDF invoices).
+//
+// WHY NO REDIS/BULLMQ: on per-command-billed Upstash, BullMQ's idle
+// polling (8 workers × blocking-wait + Lua move-to-active every ~10s)
+// burned ~560K commands/day ≈ $50+/month with zero jobs flowing. The
+// outbox table (migration 0060) on the existing Supabase Postgres costs
+// nothing and one SELECT every 5s is negligible load.
+// ═══════════════════════════════════════════════════════════════════════
+
 import "dotenv/config";
-import { Worker, Queue } from "bullmq";
-import { redis } from "./lib/redis.js";
+import { Cron } from "croner";
+import { sql } from "./lib/db.js";
 import { processPushNotification } from "./jobs/push-notification.js";
 import { processPDFInvoice } from "./jobs/pdf-invoice.js";
 import { processPartitionCreation } from "./jobs/partition-creation.js";
 import { processPaymentReminders } from "./jobs/payment-reminders.js";
 import { processDispatchPregenerate } from "./jobs/dispatch-pregenerate.js";
-// import {
-//   startPollingReplicator,
-//   stopPollingReplicator,
-// } from "./polling-replication-bootstrap.js";
 import { processMaterializeDrafts } from "./jobs/materialize-drafts.js";
 import { processAutoConfirmDrafts } from "./jobs/auto-confirm-drafts.js";
 import { processReconcilePayments } from "./jobs/reconcile-payments.js";
-import { closeSharedQueues } from "./lib/queues.js";
 
 console.log("═══════════════════════════════════════");
-console.log("  🐄 Haveri Milk Union — BullMQ Worker");
+console.log("  🐄 Haveri Milk Union — Worker");
 console.log("═══════════════════════════════════════");
 
-const connection = redis;
+// ── Outbox poller ──────────────────────────────────────────────────────
+// Claims due background_jobs rows (FOR UPDATE SKIP LOCKED — safe if a
+// second worker instance ever runs), executes them, deletes on success,
+// retries with exponential backoff until max_attempts, then parks the
+// row as 'failed'. A 'processing' row untouched for 5+ minutes is
+// treated as orphaned by a crash and re-claimed.
 
-// ── Shared worker options to slash idle Redis traffic ──
-// On a per-request-billed Redis (Upstash) BullMQ's idle polling is the
-// dominant cost. These two knobs cut it ~7x with no functional change:
-//   • drainDelay: when a queue is empty, block up to 30s before
-//     re-polling (default 5s). Adding a job still wakes the worker
-//     instantly via the marker key, so job latency is unaffected.
-//   • stalledInterval: scan for stalled jobs every 5 min (default 30s).
-//     A job orphaned by a worker crash is retried within 5 min — fine
-//     for these batch jobs.
-const SHARED_WORKER_OPTS = {
-  drainDelay: 30,
-  stalledInterval: 300_000,
-} as const;
+const POLL_INTERVAL_MS = 5_000;
+const CLAIM_BATCH = 10;
 
-// ── Queue Definitions ──
-// These are also used by the API to enqueue jobs
-const QUEUES = {
-  pushNotifications: "push-notifications",
-  pdfInvoice: "pdf-invoice",
-  partitionCreation: "partition-creation",
-  paymentReminders: "payment-reminders",
-  dispatchPregenerate: "dispatch-pregenerate",
-  materializeDrafts:   "materialize-drafts",
-  autoConfirmDrafts:   "auto-confirm-drafts",
-  reconcilePayments:   "reconcile-payments",
-} as const;
-
-// ── Workers ──
-
-// 1. Push Notifications — high concurrency for burst during window
-const pushWorker = new Worker(
-  QUEUES.pushNotifications,
-  processPushNotification,
-  {
-    connection,
-    ...SHARED_WORKER_OPTS,
-    concurrency: 10, // Handle 10 FCM sends in parallel
-    limiter: { max: 100, duration: 1000 }, // Max 100/sec (FCM limit is 500/sec)
-  }
-);
-
-// 2. PDF Invoice Generation — lower concurrency (CPU intensive)
-const pdfWorker = new Worker(
-  QUEUES.pdfInvoice,
-  processPDFInvoice,
-  {
-    connection,
-    ...SHARED_WORKER_OPTS,
-    concurrency: 3,
-  }
-);
-
-// 3. Monthly Partition Creation
-const partitionWorker = new Worker(
-  QUEUES.partitionCreation,
-  processPartitionCreation,
-  {
-    connection,
-    ...SHARED_WORKER_OPTS,
-    concurrency: 1,
-  }
-);
-
-// 4. Payment Reminders
-const paymentWorker = new Worker(
-  QUEUES.paymentReminders,
-  processPaymentReminders,
-  {
-    connection,
-    ...SHARED_WORKER_OPTS,
-    concurrency: 1,
-  }
-);
-
-// 5. Dispatch Pre-generation
-const dispatchWorker = new Worker(
-  QUEUES.dispatchPregenerate,
-  processDispatchPregenerate,
-  {
-    connection,
-    ...SHARED_WORKER_OPTS,
-    concurrency: 1,
-  }
-);
-
-// 6
-const materializeWorker = new Worker(
-  QUEUES.materializeDrafts,
-  processMaterializeDrafts,
-  {
-    connection,
-    ...SHARED_WORKER_OPTS,
-    concurrency: 1, // one batch at a time; the job itself iterates all dealers
-  }
-);
-
-// 7
-const autoConfirmWorker = new Worker(
-  QUEUES.autoConfirmDrafts,
-  processAutoConfirmDrafts,
-  {
-    connection,
-    ...SHARED_WORKER_OPTS,
-    concurrency: 1,
-  }
-);
-
-// 8 — Reconcile captured-but-unapplied Razorpay payments (safety net)
-const reconcilePaymentsWorker = new Worker(
-  QUEUES.reconcilePayments,
-  processReconcilePayments,
-  {
-    connection,
-    ...SHARED_WORKER_OPTS,
-    concurrency: 1,
-  }
-);
-
-// ── Start Polling Replicator (Dual-DB) ──
-// await startPollingReplicator();
-
-// ── Scheduled / Repeatable Jobs (Cron) ──
-async function setupSchedules() {
-  // Monthly partition creation — 25th of every month at 2:00 AM IST
-  const partitionQueue = new Queue(QUEUES.partitionCreation, { connection });
-  await partitionQueue.upsertJobScheduler(
-    "monthly-partition",
-    { pattern: "0 20 24 * *" }, // 2 AM IST = 20:30 UTC previous day (approx)
-    { name: "create-next-month-partition" }
-  );
-  console.log("📅 Scheduled: Monthly partition creation (25th, 2:00 AM)");
-
-  // Daily payment reminders — every day at 10:00 AM IST
-  const paymentQueue = new Queue(QUEUES.paymentReminders, { connection });
-  await paymentQueue.upsertJobScheduler(
-    "daily-payment-reminders",
-    { pattern: "30 4 * * *" }, // 10:00 AM IST = 4:30 UTC
-    { name: "check-overdue-payments" }
-  );
-  console.log("📅 Scheduled: Daily payment reminders (10:00 AM IST)");
-
-  // Daily dispatch pre-generation — every day at 5:00 AM IST
-  const dispatchQueue = new Queue(QUEUES.dispatchPregenerate, { connection });
-  await dispatchQueue.upsertJobScheduler(
-    "daily-dispatch",
-    { pattern: "30 23 * * *" }, // 5:00 AM IST = 23:30 UTC previous day
-    { name: "pregenerate-dispatch-sheet" }
-  );
-  console.log("📅 Scheduled: Daily dispatch pre-generation (5:00 AM IST)");
-
-  // Window opening reminder — every day at 5:55 AM IST
-  const pushQueue = new Queue(QUEUES.pushNotifications, { connection });
-  await pushQueue.upsertJobScheduler(
-    "window-opening-reminder",
-    { pattern: "25 0 * * *" }, // 5:55 AM IST = 0:25 UTC
-    {
-      name: "window-opening",
-      data: { event: "window.opening", title: "Window Opening Soon 🟢", body: "The ordering window opens in 5 minutes!" },
-    }
-  );
-  console.log("📅 Scheduled: Window opening reminder (5:55 AM IST)");
-
-  // Window closing reminder — every day at 7:45 AM IST
-  await pushQueue.upsertJobScheduler(
-    "window-closing-reminder",
-    { pattern: "15 2 * * *" }, // 7:45 AM IST = 2:15 UTC
-    {
-      name: "window-closing",
-      data: { event: "window.closing", title: "Window Closing Soon ⚠️", body: "Only 15 minutes left to place your indent!" },
-    }
-  );
-  console.log("📅 Scheduled: Window closing reminder (7:45 AM IST)");
-
-  // Nightly draft materialization — every day at 04:00 IST
-  // 04:00 IST = 22:30 UTC (previous day). Pattern is in UTC.
-  const materializeQueue = new Queue(QUEUES.materializeDrafts, { connection });
-  await materializeQueue.upsertJobScheduler(
-    "nightly-materialize-drafts",
-    { pattern: "30 22 * * *" }, // 22:30 UTC = 04:00 IST
-    { name: "build-tomorrow-drafts" }
-  );
-  console.log("📅 Scheduled: Nightly draft materialization (04:00 AM IST)");
-  
-  // Auto-confirm drafts at zone close-time — every 5 minutes
-  const autoConfirmQueue = new Queue(QUEUES.autoConfirmDrafts, { connection });
-  await autoConfirmQueue.upsertJobScheduler(
-    "auto-confirm-drafts",
-    { pattern: "*/5 * * * *" }, // every 5 min, the job filters internally
-    { name: "auto-confirm-on-close" }
-  );
-  console.log("📅 Scheduled: Auto-confirm at window close (every 5 min)");
-
-  // Reconcile captured-but-unapplied Razorpay payments — every 10 minutes.
-  // The job filters to rows older than a grace period so in-flight
-  // checkouts are never touched.
-  const reconcileQueue = new Queue(QUEUES.reconcilePayments, { connection });
-  await reconcileQueue.upsertJobScheduler(
-    "reconcile-razorpay-payments",
-    { pattern: "*/10 * * * *" }, // every 10 min
-    { name: "reconcile-stuck-payments" }
-  );
-  console.log("📅 Scheduled: Razorpay payment reconciliation (every 10 min)");
+interface OutboxRow {
+  id: string;
+  queue: string;
+  name: string;
+  data: any;
+  attempts: number;
+  max_attempts: number;
 }
 
-// ── Event Logging ──
+async function claimJobs(): Promise<OutboxRow[]> {
+  return await sql<OutboxRow[]>`
+    UPDATE background_jobs
+       SET status = 'processing', attempts = attempts + 1, updated_at = now()
+     WHERE id IN (
+       SELECT id FROM background_jobs
+        WHERE (status = 'pending' AND run_at <= now())
+           OR (status = 'processing' AND updated_at < now() - interval '5 minutes')
+        ORDER BY run_at
+        LIMIT ${CLAIM_BATCH}
+        FOR UPDATE SKIP LOCKED
+     )
+     RETURNING id, queue, name, data, attempts, max_attempts
+  `;
+}
 
-const workers = [
-  pushWorker,
-  pdfWorker,
-  partitionWorker,
-  paymentWorker,
-  dispatchWorker,
-  materializeWorker,
-  autoConfirmWorker,
-  reconcilePaymentsWorker,
+async function runOutboxJob(row: OutboxRow): Promise<void> {
+  try {
+    switch (row.queue) {
+      case "push-notifications":
+        await processPushNotification({ data: row.data });
+        break;
+      case "pdf-invoice":
+        await processPDFInvoice({ data: row.data });
+        break;
+      default:
+        throw new Error(`Unknown queue: ${row.queue}`);
+    }
+    await sql`DELETE FROM background_jobs WHERE id = ${row.id}`;
+    console.log(`✅ [${row.queue}] ${row.name} done`);
+  } catch (err: any) {
+    const msg = String(err?.message ?? err).slice(0, 500);
+    if (row.attempts >= row.max_attempts) {
+      await sql`
+        UPDATE background_jobs
+           SET status = 'failed', last_error = ${msg}, updated_at = now()
+         WHERE id = ${row.id}
+      `;
+      console.error(`❌ [${row.queue}] ${row.name} permanently failed:`, msg);
+    } else {
+      const delaySecs = 5 * 2 ** (row.attempts - 1); // 5s, 10s, 20s, …
+      await sql`
+        UPDATE background_jobs
+           SET status = 'pending', last_error = ${msg},
+               run_at = now() + make_interval(secs => ${delaySecs}),
+               updated_at = now()
+         WHERE id = ${row.id}
+      `;
+      console.warn(`🔁 [${row.queue}] ${row.name} failed (attempt ${row.attempts}/${row.max_attempts}), retrying in ${delaySecs}s:`, msg);
+    }
+  }
+}
+
+let polling = false;
+let shuttingDown = false;
+
+async function pollOutbox(): Promise<void> {
+  if (polling || shuttingDown) return;
+  polling = true;
+  try {
+    // Drain until empty so bursts (window close) clear immediately.
+    for (;;) {
+      const jobs = await claimJobs();
+      if (jobs.length === 0) break;
+      for (const job of jobs) await runOutboxJob(job);
+      if (shuttingDown) break;
+    }
+  } catch (err: any) {
+    console.error("⚠️ [Outbox] poll error:", err?.message ?? err);
+  } finally {
+    polling = false;
+  }
+}
+
+const pollTimer = setInterval(pollOutbox, POLL_INTERVAL_MS);
+
+// ── Scheduled Jobs (cron, IST — no more UTC offset arithmetic) ────────
+
+const IST = "Asia/Kolkata";
+const running = new Set<string>();
+
+/** Serialize runs of the same job: a tick is skipped while the previous
+ *  one is still going (BullMQ concurrency:1 equivalent). */
+function guarded(name: string, fn: () => Promise<unknown>): () => Promise<void> {
+  return async () => {
+    if (running.has(name) || shuttingDown) {
+      if (running.has(name)) console.warn(`⏭️ [${name}] previous run still active — skipped`);
+      return;
+    }
+    running.add(name);
+    try {
+      await fn();
+      console.log(`✅ [${name}] done`);
+    } catch (err: any) {
+      console.error(`❌ [${name}] failed:`, err?.message ?? err);
+    } finally {
+      running.delete(name);
+    }
+  };
+}
+
+function schedule(pattern: string, name: string, fn: () => Promise<unknown>): Cron {
+  return new Cron(pattern, { timezone: IST, name }, guarded(name, fn));
+}
+
+const crons: Cron[] = [
+  // Monthly partition creation — 25th of every month at 2:00 AM IST
+  schedule("0 2 25 * *", "Partition", processPartitionCreation),
+
+  // Daily payment reminders — 10:00 AM IST
+  schedule("0 10 * * *", "PaymentReminders", processPaymentReminders),
+
+  // Daily dispatch pre-generation — 5:00 AM IST
+  schedule("0 5 * * *", "Dispatch", processDispatchPregenerate),
+
+  // Window opening reminder — 5:55 AM IST (broadcast to all dealers)
+  schedule("55 5 * * *", "WindowOpening", () =>
+    processPushNotification({
+      data: { event: "window.opening", title: "Window Opening Soon 🟢", body: "The ordering window opens in 5 minutes!" },
+    })
+  ),
+
+  // Window closing reminder — 7:45 AM IST (broadcast to all dealers)
+  schedule("45 7 * * *", "WindowClosing", () =>
+    processPushNotification({
+      data: { event: "window.closing", title: "Window Closing Soon ⚠️", body: "Only 15 minutes left to place your indent!" },
+    })
+  ),
+
+  // Nightly draft materialization — 4:00 AM IST
+  schedule("0 4 * * *", "Materialize", processMaterializeDrafts),
+
+  // Auto-confirm drafts at zone close-time — every 5 min (job filters internally)
+  schedule("*/5 * * * *", "AutoConfirm", processAutoConfirmDrafts),
+
+  // Reconcile captured-but-unapplied Razorpay payments — every 10 min.
+  // The job filters to rows older than a grace period so in-flight
+  // checkouts are never touched.
+  schedule("*/10 * * * *", "ReconcilePayments", processReconcilePayments),
+
+  // Purge failed outbox rows older than 7 days — 3:30 AM IST
+  schedule("30 3 * * *", "OutboxCleanup", async () => {
+    const purged = await sql`
+      DELETE FROM background_jobs
+       WHERE status = 'failed' AND updated_at < now() - interval '7 days'
+    `;
+    console.log(`[OutboxCleanup] purged ${purged.count} failed jobs`);
+  }),
 ];
-const names = [
-  "Push",
-  "PDF",
-  "Partition",
-  "Payment",
-  "Dispatch",
-  "Materialize",
-  "AutoConfirm",
-  "ReconcilePayments",
-];
 
-workers.forEach((w, i) => {
-  w.on("completed", (job) => {
-    console.log(`✅ [${names[i]}] Job ${job.id} completed`);
-  });
-  w.on("failed", (job, err) => {
-    console.error(`❌ [${names[i]}] Job ${job?.id} failed:`, err.message);
-  });
-  w.on("error", (err) => {
-    console.error(`⚠️ [${names[i]}] Worker error:`, err.message);
-  });
-});
-
-// ── Graceful Shutdown ──
+// ── Graceful Shutdown ──────────────────────────────────────────────────
 
 async function shutdown() {
-  console.log("\n🛑 Shutting down workers...");
+  console.log("\n🛑 Shutting down worker...");
+  shuttingDown = true;
+  clearInterval(pollTimer);
+  for (const c of crons) c.stop();
 
-  // await stopPollingReplicator();
+  // Let an in-flight poll/job finish (bounded wait).
+  const deadline = Date.now() + 25_000;
+  while ((polling || running.size > 0) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
 
-  await Promise.all(workers.map((w) => w.close()));
-  await closeSharedQueues();
-  await redis.quit();
+  await sql.end({ timeout: 5 });
   console.log("👋 Worker stopped");
   process.exit(0);
 }
@@ -277,23 +218,17 @@ async function shutdown() {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-// ── Start ──
+// ── Start ──────────────────────────────────────────────────────────────
 
-setupSchedules()
-  .then(() => {
-    console.log("");
-    console.log("🚀 All workers running:");
-    console.log("   • push-notifications  (concurrency: 10)");
-    console.log("   • pdf-invoice         (concurrency: 3, 3 retries)");
-    console.log("   • partition-creation   (concurrency: 1, 3 retries)");
-    console.log("   • payment-reminders   (concurrency: 1)");
-    console.log("   • dispatch-pregenerate (concurrency: 1)");
-    console.log("   • materialize-drafts   (concurrency: 1)");
-    console.log("   • auto-confirm-drafts  (concurrency: 1)");
-    console.log("   • reconcile-payments   (concurrency: 1)");
-    console.log("");
-    console.log("Waiting for jobs...");
-  })
-  .catch((err) => {
-    console.error("Failed to setup schedules:", err);
-  });
+console.log("");
+console.log("🚀 Worker running:");
+console.log("   • outbox poller        (push-notifications, pdf-invoice — every 5s)");
+console.log("   • partition-creation   (25th, 2:00 AM IST)");
+console.log("   • payment-reminders    (daily, 10:00 AM IST)");
+console.log("   • dispatch-pregenerate (daily, 5:00 AM IST)");
+console.log("   • window reminders     (5:55 AM / 7:45 AM IST)");
+console.log("   • materialize-drafts   (daily, 4:00 AM IST)");
+console.log("   • auto-confirm-drafts  (every 5 min)");
+console.log("   • reconcile-payments   (every 10 min)");
+console.log("");
+console.log("Waiting for jobs...");

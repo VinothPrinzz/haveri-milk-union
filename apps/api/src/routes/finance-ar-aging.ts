@@ -74,10 +74,12 @@ export async function financeArAgingRoutes(app: FastifyInstance) {
             ELSE 'current'
           END AS "worstBucket"
         FROM dealers d
+        -- Inner join: only dealers with money still outstanding reach this
+        -- report. No deleted_at / active filter — a debt does not disappear
+        -- because the dealer was deactivated or removed from the masters.
         JOIN unpaid_invoices ui ON ui.dealer_id = d.id
         LEFT JOIN routes r ON r.id = d.route_id
-        WHERE d.deleted_at IS NULL
-          AND (${routeId}::uuid IS NULL OR d.route_id = ${routeId}::uuid)
+        WHERE (${routeId}::uuid IS NULL OR d.route_id = ${routeId}::uuid)
           AND (${search}::text  IS NULL OR d.name ILIKE ${search}::text OR d.code ILIKE ${search}::text)
         GROUP BY d.id, d.code, d.name, d.credit_limit, r.name
         HAVING (${bucket}::text IS NULL OR
@@ -106,8 +108,7 @@ export async function financeArAgingRoutes(app: FastifyInstance) {
           SELECT d.id
           FROM dealers d
           JOIN unpaid_invoices ui ON ui.dealer_id = d.id
-          WHERE d.deleted_at IS NULL
-            AND (${routeId}::uuid IS NULL OR d.route_id = ${routeId}::uuid)
+          WHERE (${routeId}::uuid IS NULL OR d.route_id = ${routeId}::uuid)
             AND (${search}::text  IS NULL OR d.name ILIKE ${search}::text OR d.code ILIKE ${search}::text)
           GROUP BY d.id
           HAVING (${bucket}::text IS NULL OR

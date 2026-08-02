@@ -67,3 +67,5 @@ packages/db/src/reconcile-*
 
 # Dual-DB replication tooling (init-polling-replication, verify-replication)
 /scripts/
+# TypeScript incremental build artifacts
+*.tsbuildinfo

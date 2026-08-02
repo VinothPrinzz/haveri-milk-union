@@ -9,6 +9,14 @@ import {
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDown, Printer } from "lucide-react";
+import {
+  PAPERS,
+  applyPrintPageSetup,
+  getPrintOrientation,
+  getPrintPaper,
+  usePrintPaper,
+  type PaperId,
+} from "@/lib/print-paper";
 
 /* ──────────────────────────────────────────────────────────────────
    PageHeader (erp-page-header)
@@ -49,28 +57,26 @@ export default function PageHeader({
 }
 
 /* ──────────────────────────────────────────────────────────────────
-   Print Orientation Helper + PrintButton
+   Print Page-Setup Helper + PrintButton
+   Paper size and orientation both live in @/lib/print-paper, because
+   the Route Sheet paginates against the sheet's usable height and has
+   to react to the same choice this button writes.
    ────────────────────────────────────────────────────────────────── */
 
 /**
- * Mounts (or replaces) a <style id="erp-print-orient"> tag with the
- * given orientation, then triggers window.print().
+ * Mounts (or replaces) the <style id="erp-print-orient"> tag for the
+ * given orientation, on the currently selected paper.
+ * Kept for callers that only care about orientation.
  */
 export function setPrintOrientation(orient: "portrait" | "landscape" | null) {
-  const id = "erp-print-orient";
-  document.getElementById(id)?.remove();
-  if (!orient) return;
-
-  const style = document.createElement("style");
-  style.id = id;
-  style.textContent = `@media print { @page { size: A4 ${orient}; margin: 14mm 12mm 16mm 12mm; } }`;
-  document.head.appendChild(style);
+  applyPrintPageSetup(orient ? getPrintPaper() : null, orient);
 }
 
 /**
  * Drop-in replacement for bare Print buttons.
- * Clicking the main area prints in the last-used orientation.
- * Chevron opens menu to choose Portrait / Landscape / Default.
+ * Clicking the main area prints on the last-used paper + orientation.
+ * Chevron opens a menu to choose the paper size (A4 or the 15" × 12"
+ * continuous stationery still in use) and Portrait / Landscape.
  */
 export function PrintButton({
   className = "",
@@ -84,20 +90,25 @@ export function PrintButton({
   /** Optional pre-print hook — return false to abort */
   beforePrint?: () => boolean | void;
 }) {
-  const stored =
-    typeof window !== "undefined"
-      ? (window.localStorage.getItem("erp:printOrient") as "portrait" | "landscape" | null)
-      : null;
+  const [paper, choosePaper] = usePrintPaper();
+  const orient = getPrintOrientation() ?? defaultOrient;
 
-  const orient = stored ?? defaultOrient;
-
-  const doPrint = (o: "portrait" | "landscape") => {
+  const doPrint = (o: "portrait" | "landscape", p: PaperId = paper) => {
     if (beforePrint && beforePrint() === false) return;
-    setPrintOrientation(o);
+    applyPrintPageSetup(p, o);
     try {
       window.localStorage.setItem("erp:printOrient", o);
     } catch {}
-    setTimeout(() => window.print(), 30);
+
+    const print = () => setTimeout(() => window.print(), 30);
+    if (p === paper) return print();
+
+    // Switching paper mid-click: reports that paginate by sheet height (the
+    // Route Sheet) re-chunk their rows off this same setting, so the print
+    // DOM is stale until React commits. Two frames guarantees a committed
+    // paint first — otherwise the job can capture the old paper's layout and
+    // waste sheets on under-filled pages.
+    requestAnimationFrame(() => requestAnimationFrame(print));
   };
 
   return (
@@ -106,12 +117,12 @@ export function PrintButton({
         type="button"
         onClick={() => doPrint(orient)}
         className="h-8 px-3 inline-flex items-center gap-1.5 text-[12.5px] border border-border bg-background hover:bg-accent rounded-l-sm rounded-r-none border-r-0"
-        title={`Print (${orient})`}
+        title={`Print (${PAPERS[paper].label}, ${orient})`}
       >
         <Printer className="h-3.5 w-3.5" />
         {label}
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground ml-1">
-          {orient === "portrait" ? "P" : "L"}
+          {PAPERS[paper].short} {orient === "portrait" ? "P" : "L"}
         </span>
       </button>
 
@@ -119,13 +130,34 @@ export function PrintButton({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label="Choose orientation"
+            aria-label="Choose paper size and orientation"
             className="h-8 px-1.5 inline-flex items-center border border-border bg-background hover:bg-accent rounded-r-sm rounded-l-none"
           >
             <ChevronDown className="h-3.5 w-3.5" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="text-[12.5px]">
+          <DropdownMenuLabel className="text-[10.5px] uppercase tracking-wide text-muted-foreground">
+            Paper size
+          </DropdownMenuLabel>
+          {(Object.keys(PAPERS) as PaperId[]).map((id) => (
+            <DropdownMenuItem
+              key={id}
+              // Every item in this menu prints — a paper item that only set a
+              // preference and left the menu open just looked like a dead click.
+              // Pass the paper explicitly: `paper` state won't have updated yet.
+              onClick={() => {
+                choosePaper(id);
+                doPrint(orient, id);
+              }}
+            >
+              <span className="mr-2">{id === "a4" ? "▤" : "▦"}</span>
+              {PAPERS[id].label}
+              {paper === id && <span className="ml-auto pl-3 text-[11px] text-primary">●</span>}
+            </DropdownMenuItem>
+          ))}
+
+          <DropdownMenuSeparator />
           <DropdownMenuLabel className="text-[10.5px] uppercase tracking-wide text-muted-foreground">
             Page orientation
           </DropdownMenuLabel>
@@ -140,7 +172,7 @@ export function PrintButton({
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => {
-              setPrintOrientation(null);
+              applyPrintPageSetup(null, null);
               window.print();
             }}
           >

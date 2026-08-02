@@ -204,12 +204,15 @@ async function confirmPaidOrder(
            cancel_window_ends_at = LEAST(
              now() + interval '30 minutes',
              COALESCE(
-               (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+               (orders.delivery_date + (
+                  SELECT tw.close_time FROM time_windows tw
+                   WHERE tw.route_id = COALESCE(orders.route_id, d.route_id)
+                   ORDER BY tw.close_time DESC LIMIT 1
+                )) AT TIME ZONE 'Asia/Kolkata',
                now() + interval '30 minutes'
              )
            )
       FROM dealers d
-      LEFT JOIN time_windows tw ON tw.route_id = d.route_id
      WHERE orders.id = ${orderId}::uuid
        AND orders.dealer_id = d.id
        AND orders.status IN ('draft', 'payment_required')

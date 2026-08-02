@@ -1172,9 +1172,11 @@ function EmployeeSubsidyTab() {
     queryKey: ["emp-subsidy-rules"],
     queryFn: fetchEmployeeSubsidyRules,
   });
+  const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
 
   const today = new Date().toISOString().slice(0, 10);
   const [empId, setEmpId]             = useState<string | null>(null);
+  const [routeId, setRouteId]         = useState<string | null>(null);
 
   // Selected employee's live credit position (limit / available / outstanding)
   const { data: credit } = useQuery({
@@ -1196,6 +1198,11 @@ function EmployeeSubsidyTab() {
       sublabel: [e.employee_code, e.department].filter(Boolean).join(" · "),
     })),
     [employees],
+  );
+
+  const routeOpts: F9Option[] = useMemo(
+    () => (routes as any[]).map(r => ({ value: r.id, label: r.name, sublabel: r.code })),
+    [routes],
   );
 
   const productOpts: F9Option[] = useMemo(
@@ -1230,24 +1237,32 @@ function EmployeeSubsidyTab() {
     mutationFn: () => createEmployeeSubsidySale({
       saleDate: today,
       customerId: empId!,
+      routeId: routeId!,
       paymentMode,
       paymentRef: paymentRef.trim() || undefined,
       notes,
       items: [{ productId: productId!, quantity: qty ?? 0 }],
     }),
-    onSuccess: () => {
-      toast.success("Employee subsidy sale recorded");
+    onSuccess: (res) => {
+      // It's an indent now, not a counter sale — say so, and name the invoice
+      // it raised so the operator can hand it over.
+      toast.success(
+        res.invoiceNumber
+          ? `Employee subsidy indent placed · invoice ${res.invoiceNumber}`
+          : "Employee subsidy indent placed",
+      );
       qc.invalidateQueries({ queryKey: ["direct-sales"] });
       qc.invalidateQueries({ queryKey: ["employee-credit"] });
-      navigate("/sales/direct-sales/recent");
-      setEmpId(null); setProductId(null); setQty(1);
+      qc.invalidateQueries({ queryKey: ["indents"] });
+      navigate("/sales/all-indents");
+      setEmpId(null); setRouteId(null); setProductId(null); setQty(1);
       setPaymentMode("cash"); setPaymentRef(""); setNotes("");
     },
     onError: (e: any) => toast.error(e?.message || "Failed"),
   });
 
   const canSubmit =
-    !!empId && !!productId && (qty ?? 0) > 0 && !submit.isPending &&
+    !!empId && !!routeId && !!productId && (qty ?? 0) > 0 && !submit.isPending &&
     (paymentMode !== "upi" || paymentRef.trim().length > 0);
 
   // Keyboard: Ctrl+S to submit
@@ -1278,6 +1293,17 @@ function EmployeeSubsidyTab() {
               onChange={setEmpId}
               options={empOpts}
               placeholder="Search by name or code"
+            />
+          </Field>
+          {/* Required: this is a real indent, and the dispatch sheet is keyed
+              by route. Deliberately has no default — employees carry no
+              standing route, so the operator states where it loads. */}
+          <Field label="Route" required hint="F9">
+            <F9SearchSelect
+              value={routeId}
+              onChange={setRouteId}
+              options={routeOpts}
+              placeholder="Select delivery route"
             />
           </Field>
           <Field label="Payment Mode" required>

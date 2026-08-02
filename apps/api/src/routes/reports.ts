@@ -3,6 +3,7 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { isCreditInstitutionType } from "../lib/credit-check.js";
 
 // Reports need larger page sizes than the shared paginationSchema allows (max 100).
 // Using a local schema with max(1000) because report tables can legitimately render
@@ -142,8 +143,20 @@ export async function reportsRoutes(app: FastifyInstance) {
                   -- payment_required orders are NOT dispatched, so exclude
                   -- everything except confirmed/dispatched/delivered.
                   AND o.status IN ('confirmed', 'dispatched', 'delivered')
-                  AND d.route_id = r.id
+                  -- The route the order was placed for (snapshotted on the
+                  -- order) wins over the dealer's current primary route.
+                  AND COALESCE(o.route_id, d.route_id) = r.id
              )
+             OR EXISTS (
+               SELECT 1
+                 FROM employee_orders eo
+                WHERE eo.delivery_date = ${q.date}::date
+                  AND eo.status IN ('confirmed', 'dispatched', 'delivered')
+                  AND eo.route_id = r.id
+             )
+             -- Employee subsidy sold before it became a real indent still
+             -- lives in direct_sales; kept so historical route sheets reprint
+             -- exactly as they did.
              OR EXISTS (
                SELECT 1
                  FROM direct_sales ds
@@ -167,17 +180,24 @@ export async function reportsRoutes(app: FastifyInstance) {
       const routeIds = (routes as any[]).map(r => r.id);
  
       // ── 5. Dealers on those routes ──
-      // Pull position from dealer_routes for the dealer's primary route
-      // so the printed sheet matches the delivery driver's actual path.
+      // Roster comes from dealer_routes — the dealer's ASSIGNMENT to each
+      // route — not from dealers.route_id (their primary). A dealer served
+      // by two routes is visited by both and carries a standing indent per
+      // route (migration 0061), so they get a slot on both sheets. Position
+      // is the per-route stop order, so the printed sheet matches the
+      // driver's actual path.
+      // This seeds EMPTY slots only; soft-deleted dealers are skipped here
+      // so they don't print a blank row, but any order they actually placed
+      // still reaches the sheet through the item rows below (§6), which
+      // deliberately do NOT filter on deleted_at.
       const dealers = await pgClient`
-        SELECT d.id, d.code, d.name, d.route_id,
-               dr.position AS position
-          FROM dealers d
-          JOIN dealer_routes dr
-            ON dr.dealer_id = d.id
-           AND dr.route_id  = d.route_id      -- primary route only
+        SELECT d.id, d.code, d.name, d.customer_type,
+               dr.route_id AS route_id,
+               dr.position  AS position
+          FROM dealer_routes dr
+          JOIN dealers d ON d.id = dr.dealer_id
          WHERE d.deleted_at IS NULL
-           AND d.route_id = ANY(${routeIds}::uuid[])
+           AND dr.route_id = ANY(${routeIds}::uuid[])
          ORDER BY dr.route_id, dr.position NULLS LAST, d.code, d.name
       `;
  
@@ -187,25 +207,56 @@ export async function reportsRoutes(app: FastifyInstance) {
       // before delivery, so created_at lands on the prior day — filtering
       // on it would drop them from their own delivery-day route sheet.
       // direct_sales already uses sale_date (below) for the same reason.
+      // route_id here is the order's effective route (snapshotted route, or
+      // the dealer's primary as fallback). dealer_code/name/customer_type +
+      // position are carried so a dealer who ordered on a route that ISN'T
+      // their primary (admin Record Indent, or a route switch) can be added
+      // to that route's sheet on the fly (they aren't in its primary roster).
       const itemRows = await pgClient`
-        SELECT o.id AS order_id, o.dealer_id, d.route_id,
+        SELECT o.id AS order_id, o.dealer_id,
+               COALESCE(o.route_id, d.route_id) AS route_id,
+               d.code          AS dealer_code,
+               d.name          AS dealer_name,
+               d.customer_type AS customer_type,
+               dr.position     AS position,
                oi.product_id, oi.quantity::int AS qty,
                oi.line_total::numeric AS amount
           FROM orders o
           JOIN dealers d      ON d.id = o.dealer_id
           JOIN order_items oi ON oi.order_id = o.id
+          LEFT JOIN dealer_routes dr
+                 ON dr.dealer_id = d.id
+                AND dr.route_id  = COALESCE(o.route_id, d.route_id)
          WHERE o.delivery_date = ${q.date}::date
            -- Match the route-selection filter above: only placed-for-dispatch
            -- orders contribute line items; drafts/pending/payment_required
            -- are excluded so unconfirmed carts never reach the route sheet.
            AND o.status IN ('confirmed', 'dispatched', 'delivered')
-           AND d.route_id = ANY(${routeIds}::uuid[])
+           AND COALESCE(o.route_id, d.route_id) = ANY(${routeIds}::uuid[])
       `;
  
       // ── 6b. Employee-subsidy sale items for the day ──
       // Customer is an employee; route comes from direct_sales.route_id;
       // ordering position comes from employees.route_position.
+      // Two sources: employee_orders (the current rail — employee subsidy is a
+      // real indent) and the direct_sales rows it was recorded as before the
+      // change, so past dates keep reprinting unchanged.
       const empItemRows = await pgClient`
+        SELECT eo.route_id,
+               eo.employee_id            AS employee_id,
+               e.employee_code           AS employee_code,
+               e.name                    AS employee_name,
+               e.route_position          AS route_position,
+               eoi.product_id,
+               eoi.quantity::int         AS qty,
+               eoi.line_total::numeric   AS amount
+          FROM employee_orders eo
+          JOIN employees e               ON e.id = eo.employee_id
+          JOIN employee_order_items eoi  ON eoi.employee_order_id = eo.id
+         WHERE eo.delivery_date = ${q.date}::date
+           AND eo.status IN ('confirmed', 'dispatched', 'delivered')
+           AND eo.route_id = ANY(${routeIds}::uuid[])
+        UNION ALL
         SELECT ds.route_id,
                ds.customer_id            AS employee_id,
                e.employee_code           AS employee_code,
@@ -230,6 +281,11 @@ export async function reportsRoutes(app: FastifyInstance) {
       type CustomerAgg = {
         id: string; code: string; name: string;
         isEmployee: boolean;
+        // Credit-institution customers (dealers.customer_type 'Credit Inst-*')
+        // buy on monthly credit — their amount is billed later, not collected
+        // as cash on this delivery, so it is excluded from the route cash total
+        // and surfaced separately under Credit.
+        isCredit: boolean;
         position: number;
         acrossQty: Record<string, number>;
         othersItems: Array<{ productId: string; alias: string; qty: number; sortOrder: number }>;
@@ -253,6 +309,7 @@ export async function reportsRoutes(app: FastifyInstance) {
         byRoute.get(d.route_id)?.set(d.id, {
           id: d.id, code: d.code ?? "", name: d.name,
           isEmployee: false,
+          isCredit: isCreditInstitutionType(d.customer_type),
           position: Number(d.position) || 9999,
           acrossQty: Object.fromEntries(acrossProducts.map(p => [p.id, 0])),
           othersItems: [],
@@ -264,8 +321,29 @@ export async function reportsRoutes(app: FastifyInstance) {
  
       // 7b. Fold in dealer order items.
       for (const it of itemRows as any[]) {
-        const customer = byRoute.get(it.route_id)?.get(it.dealer_id);
-        if (!customer) continue;
+        const bucket = byRoute.get(it.route_id);
+        if (!bucket) continue; // route not in the selected set
+        let customer = bucket.get(it.dealer_id);
+        if (!customer) {
+          // The dealer placed this order on a route that isn't their primary
+          // (admin Record Indent, or a route switch). They aren't seeded in
+          // this route's roster (7a only seeds primary-route dealers), so add
+          // them here with the metadata carried on the item row.
+          customer = {
+            id: it.dealer_id,
+            code: it.dealer_code ?? "",
+            name: it.dealer_name,
+            isEmployee: false,
+            isCredit: isCreditInstitutionType(it.customer_type),
+            position: Number(it.position) || 9999,
+            acrossQty: Object.fromEntries(acrossProducts.map(p => [p.id, 0])),
+            othersItems: [],
+            othersQty: 0,
+            netAmount: 0,
+            qtyByProduct: new Map(),
+          };
+          bucket.set(it.dealer_id, customer);
+        }
         const meta = productMeta.get(it.product_id);
         if (!meta) continue;
  
@@ -315,6 +393,7 @@ export async function reportsRoutes(app: FastifyInstance) {
             code: it.employee_code ?? "",   // PF number
             name: it.employee_name ?? "",
             isEmployee: true,
+            isCredit: false,   // employee-subsidy sales are never credit-institution
             position: Number(it.route_position) || 9999,
             acrossQty: Object.fromEntries(acrossProducts.map(p => [p.id, 0])),
             othersItems: [],
@@ -405,6 +484,7 @@ export async function reportsRoutes(app: FastifyInstance) {
             code: d.code,
             name: d.name,
             isEmployee: d.isEmployee,
+            isCredit: d.isCredit,
             acrossQty: d.acrossQty,
             othersText: othersList.map(x => `${x.alias} → ${x.qty}`).join(", "),
             othersQty: d.othersQty,
@@ -428,7 +508,10 @@ export async function reportsRoutes(app: FastifyInstance) {
             ])
           ),
           othersQty:      customers.reduce((s, c) => s + c.othersQty, 0),
-          netAmount:      round2(customers.reduce((s, c) => s + c.netAmount, 0)),
+          // Cash total: excludes credit-institution customers (billed monthly,
+          // not collected on this delivery). Their amount goes to creditAmount.
+          netAmount:      round2(customers.reduce((s, c) => s + (c.isCredit ? 0 : c.netAmount), 0)),
+          creditAmount:   round2(customers.reduce((s, c) => s + (c.isCredit ? c.netAmount : 0), 0)),
           crates:         customers.reduce((s, c) => s + c.crates, 0),
           // Net the per-dealer loose packets across the route into one +/−.
           cratePktPlus:   Math.max(0,  routeNetCratePkt),

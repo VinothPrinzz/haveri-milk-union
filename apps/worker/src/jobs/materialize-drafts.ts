@@ -36,9 +36,9 @@
 //   add items manually via the app.
 // ═══════════════════════════════════════════════════════════════════════
 
-import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
-import { pushQueue as notifQueue } from "../lib/queues.js";
+import { enqueuePush } from "../lib/queues.js";
+import { resolveUnitPrice } from "../lib/rate-price.js";
 
 // IST = UTC+5:30, no DST.
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -53,9 +53,11 @@ function tomorrowIstIso(): string {
 interface DealerRow {
   id: string;
   zone_id: string;
+  route_id: string | null;
   name: string;
   fcm_token: string | null;
   notifications_enabled: boolean;
+  rate_category: string | null;
 }
 
 interface StandingItem {
@@ -63,10 +65,28 @@ interface StandingItem {
   default_qty: number;
   name: string;
   base_price: string; // numeric → string from pg driver
+  mrp: string | null;
   gst_percent: string;
+  code: string | null;
+  category_name: string | null;
 }
 
-export async function processMaterializeDrafts(_job: Job) {
+/** Shape resolveUnitPrice() expects, from a snake_case standing-indent row. */
+const pricedFrom = (it: {
+  base_price: string;
+  mrp: string | null;
+  gst_percent: string;
+  code: string | null;
+  category_name: string | null;
+}) => ({
+  basePrice: it.base_price,
+  mrp: it.mrp,
+  gstPercent: it.gst_percent,
+  code: it.code,
+  categoryName: it.category_name,
+});
+
+export async function processMaterializeDrafts() {
   const deliveryDate = tomorrowIstIso();
   console.log(`[Materialize] Building drafts for ${deliveryDate}`);
 
@@ -74,9 +94,11 @@ export async function processMaterializeDrafts(_job: Job) {
     SELECT
       d.id::text         AS id,
       d.zone_id::text    AS zone_id,
+      d.route_id::text   AS route_id,
       d.name             AS name,
       d.fcm_token        AS fcm_token,
-      d.notifications_enabled AS notifications_enabled
+      d.notifications_enabled AS notifications_enabled,
+      d.rate_category::text   AS rate_category
     FROM dealers d
     WHERE d.active = true
       AND d.deleted_at IS NULL
@@ -102,112 +124,136 @@ export async function processMaterializeDrafts(_job: Job) {
         continue;
       }
 
-      // ── 2. Skip if a draft/pending already exists for this date ──
-      const [existing] = await sql`
-        SELECT 1 FROM orders
-         WHERE dealer_id = ${dealer.id}::uuid
-           AND delivery_date = ${deliveryDate}::date
-           AND status IN ('draft', 'pending', 'payment_required', 'confirmed')
-         LIMIT 1
+      // ── 2. Routes this dealer has an active standing indent on ──
+      // Templates are per (dealer, route), so a dealer on two routes gets one
+      // draft per route (two deliveries). route_id is NOT NULL on every usable
+      // template row (routeless dealers can't order).
+      const routes: { route_id: string }[] = await sql`
+        SELECT DISTINCT dsi.route_id::text AS route_id
+          FROM dealer_standing_indents dsi
+         WHERE dsi.dealer_id = ${dealer.id}::uuid
+           AND dsi.active = true
+           AND dsi.default_qty > 0
+           AND dsi.route_id IS NOT NULL
       `;
-      if (existing) {
-        skippedExisting++;
-        continue;
-      }
-
-      // ── 3. Fetch the dealer's standing-indent items ──────────
-      const items: StandingItem[] = await sql`
-        SELECT
-          dsi.product_id::text        AS product_id,
-          dsi.default_qty             AS default_qty,
-          p.name                      AS name,
-          p.base_price::numeric::text AS base_price,
-          p.gst_percent::numeric::text AS gst_percent
-        FROM dealer_standing_indents dsi
-        JOIN products p ON p.id = dsi.product_id
-                       AND p.deleted_at IS NULL
-                       AND p.available = true
-        WHERE dsi.dealer_id = ${dealer.id}::uuid
-          AND dsi.active = true
-          AND dsi.default_qty > 0
-      `;
-
-      if (items.length === 0) {
+      if (routes.length === 0) {
         skippedEmpty++;
         continue;
       }
 
-      // ── 4. Compute totals ───────────────────────────────────
-      let subtotal = 0;
-      let totalGst = 0;
-      let itemCount = 0;
-      const lines = items.map((it) => {
-        const price = parseFloat(it.base_price);
-        const gstPct = parseFloat(it.gst_percent);
-        const lineSub = price * it.default_qty;
-        const lineGst = lineSub * (gstPct / 100);
-        const lineTotal = lineSub + lineGst;
-        subtotal += lineSub;
-        totalGst += lineGst;
-        itemCount += it.default_qty;
-        return {
-          ...it,
-          unitPrice: price.toFixed(2),
-          gstAmount: lineGst.toFixed(2),
-          lineTotal: lineTotal.toFixed(2),
-        };
-      });
-      const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
-
-      // ── 5. Insert order + items atomically ───────────────────
-      const orderId = await sql.begin(async (tx) => {
-        const [row] = await tx`
-          INSERT INTO orders (
-            dealer_id, zone_id, status, payment_mode,
-            subtotal, total_gst, grand_total, item_count,
-            delivery_date
-          ) VALUES (
-            ${dealer.id}::uuid, ${dealer.zone_id}::uuid, 'draft', 'credit',
-            ${subtotal.toFixed(2)}::numeric,
-            ${totalGst.toFixed(2)}::numeric,
-            ${grandTotal.toFixed(2)}::numeric,
-            ${itemCount},
-            ${deliveryDate}::date
-          )
-          RETURNING id::text AS id
+      for (const { route_id: routeId } of routes) {
+        // ── 2a. Skip if a draft/placed order already exists for this
+        //        (dealer, route, date). COALESCE treats a legacy NULL-route
+        //        row as the dealer's active route so we don't double up.
+        const [existing] = await sql`
+          SELECT 1 FROM orders
+           WHERE dealer_id = ${dealer.id}::uuid
+             AND delivery_date = ${deliveryDate}::date
+             AND status IN ('draft', 'pending', 'payment_required', 'confirmed')
+             AND COALESCE(route_id, ${dealer.route_id}::uuid) = ${routeId}::uuid
+           LIMIT 1
         `;
-
-        for (const ln of lines) {
-          await tx`
-            INSERT INTO order_items (
-              order_id, product_id, product_name, quantity,
-              unit_price, gst_percent, gst_amount, line_total
-            ) VALUES (
-              ${row.id}::uuid, ${ln.product_id}::uuid, ${ln.name},
-              ${ln.default_qty}, ${ln.unitPrice}::numeric,
-              ${ln.gst_percent}::numeric, ${ln.gstAmount}::numeric,
-              ${ln.lineTotal}::numeric
-            )
-          `;
+        if (existing) {
+          skippedExisting++;
+          continue;
         }
-        return row.id;
-      });
 
-      created++;
+        // ── 2b. Fetch this route's standing-indent items ──────────
+        const items: StandingItem[] = await sql`
+          SELECT
+            dsi.product_id::text        AS product_id,
+            dsi.default_qty             AS default_qty,
+            p.name                      AS name,
+            p.base_price::numeric::text AS base_price,
+            p.mrp::numeric::text        AS mrp,
+            p.gst_percent::numeric::text AS gst_percent,
+            p.code                      AS code,
+            c.name                      AS category_name
+          FROM dealer_standing_indents dsi
+          JOIN products p ON p.id = dsi.product_id
+                         AND p.deleted_at IS NULL
+                         AND p.available = true
+          LEFT JOIN categories c ON c.id = p.category_id
+          WHERE dsi.dealer_id = ${dealer.id}::uuid
+            AND dsi.route_id = ${routeId}::uuid
+            AND dsi.active = true
+            AND dsi.default_qty > 0
+        `;
+        if (items.length === 0) {
+          skippedEmpty++;
+          continue;
+        }
 
-      // ── 6. Push notification (best-effort, doesn't block) ────
-      if (dealer.notifications_enabled && dealer.fcm_token) {
-        await notifQueue
-          .add("indent-ready", {
+        // ── 2c. Compute totals ───────────────────────────────────
+        let subtotal = 0;
+        let totalGst = 0;
+        let itemCount = 0;
+        const lines = items.map((it) => {
+          const price = resolveUnitPrice(pricedFrom(it), dealer.rate_category);
+          const gstPct = parseFloat(it.gst_percent);
+          const lineSub = price * it.default_qty;
+          const lineGst = lineSub * (gstPct / 100);
+          const lineTotal = lineSub + lineGst;
+          subtotal += lineSub;
+          totalGst += lineGst;
+          itemCount += it.default_qty;
+          return {
+            ...it,
+            unitPrice: price.toFixed(2),
+            gstAmount: lineGst.toFixed(2),
+            lineTotal: lineTotal.toFixed(2),
+          };
+        });
+        const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
+
+        // ── 2d. Insert order + items atomically ───────────────────
+        const orderId = await sql.begin(async (tx) => {
+          const [row] = await tx`
+            INSERT INTO orders (
+              dealer_id, zone_id, route_id, status, payment_mode,
+              subtotal, total_gst, grand_total, item_count,
+              delivery_date
+            ) VALUES (
+              ${dealer.id}::uuid, ${dealer.zone_id}::uuid, ${routeId}::uuid, 'draft', 'credit',
+              ${subtotal.toFixed(2)}::numeric,
+              ${totalGst.toFixed(2)}::numeric,
+              ${grandTotal.toFixed(2)}::numeric,
+              ${itemCount},
+              ${deliveryDate}::date
+            )
+            RETURNING id::text AS id
+          `;
+
+          for (const ln of lines) {
+            await tx`
+              INSERT INTO order_items (
+                order_id, product_id, product_name, quantity,
+                unit_price, gst_percent, gst_amount, line_total
+              ) VALUES (
+                ${row.id}::uuid, ${ln.product_id}::uuid, ${ln.name},
+                ${ln.default_qty}, ${ln.unitPrice}::numeric,
+                ${ln.gst_percent}::numeric, ${ln.gstAmount}::numeric,
+                ${ln.lineTotal}::numeric
+              )
+            `;
+          }
+          return row.id;
+        });
+
+        created++;
+
+        // ── 2e. Push notification (best-effort, doesn't block) ────
+        if (dealer.notifications_enabled && dealer.fcm_token) {
+          await enqueuePush("indent-ready", {
             event: "custom" as const,
             dealerId: dealer.id,
             orderId,
             title: "Tomorrow's indent is ready 📋",
             body: `${itemCount} items · ₹${grandTotal.toFixed(0)}. Tap to review or edit.`,
-          })
-          .catch((e) =>
+          }).catch((e) =>
             console.warn(`[Materialize] notif enqueue failed for dealer ${dealer.id}:`, e?.message)
           );
+        }
       }
     } catch (err: any) {
       failed++;
@@ -218,8 +264,6 @@ export async function processMaterializeDrafts(_job: Job) {
       // Continue with next dealer — one failure shouldn't stop the batch
     }
   }
-
-  // Shared queue is long-lived — closed once on worker shutdown.
 
   // ── Employee standing indents (subsidized, no app / no FCM) ─────────
   const employeeSummary = await materializeEmployeeDrafts(deliveryDate);

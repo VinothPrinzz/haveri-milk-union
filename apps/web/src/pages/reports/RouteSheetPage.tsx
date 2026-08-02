@@ -45,6 +45,12 @@ import {
 } from "@/services/report";
 import { toCsv } from "@/lib/exporters";
 import { computeKgLtr } from "@/lib/kgLtr";
+import {
+  PAPERS,
+  usePrintPaper,
+  usablePageMm,
+  type PaperId,
+} from "@/lib/print-paper";
 
 // ── Display order for the across-product columns ──────────────────
 // Driven by products.abstract_position, set per-product from the admin panel
@@ -111,14 +117,29 @@ function fmtCratePkts(crates: number, pktPlus: number, pktMinus: number): string
 // "not continuous" page. Instead we measure each row in text-line units and
 // pack rows by height so every chunk fits on one sheet.
 //
-// PAGE_UNIT_BUDGET is calibrated against the tightest sheet (page 1, which
+// A4_PAGE_UNIT_BUDGET is calibrated against the tightest sheet (page 1, which
 // also carries the document print-header): ~22 line-units fit there, so 20
 // leaves a safety margin for font/wrap variance.
-const PAGE_UNIT_BUDGET = 20;
+const A4_PAGE_UNIT_BUDGET = 20;
 // The final sheet of a route also carries the TOTAL + Total-Crates rows.
 const TOTAL_ROWS_UNITS = 2;
 // Approx. characters that fit on one line of the capped dealer-name column.
 const DEALER_CHARS_PER_LINE = 30;
+
+// Height the per-page letterhead eats before the first row, in mm.
+const LETTERHEAD_MM = 22;
+// Rows area of the sheet the budget above was calibrated on (A4 landscape).
+const A4_ROWS_MM = usablePageMm("a4", "landscape").heightMm - LETTERHEAD_MM;
+
+// The 15" × 12" continuous stationery is a much deeper sheet than A4
+// landscape, so far more rows fit before the letterhead has to repeat.
+// Row height is identical on both papers (the print CSS pins the ledger to
+// 9pt / 1.4 line-height regardless of paper — see index.css), so the budget
+// scales with the rows area alone and the A4 safety margin carries over.
+function pageUnitBudget(paper: PaperId): number {
+  const rowsMm = usablePageMm(paper, "landscape").heightMm - LETTERHEAD_MM;
+  return Math.max(6, Math.floor((A4_PAGE_UNIT_BUDGET * rowsMm) / A4_ROWS_MM));
+}
 
 // Height of a single customer row, in text-line units (min 1). The row is as
 // tall as its tallest cell: either the wrapped dealer name or the stacked
@@ -132,16 +153,17 @@ function rowUnits(c: RouteSheetRoute["customers"][number]): number {
 }
 
 // Greedily pack customers into printed sheets so each sheet's rows stay within
-// PAGE_UNIT_BUDGET, keeping the table continuous across headed pages.
+// the paper's unit budget, keeping the table continuous across headed pages.
 function paginateRows(
   customers: RouteSheetRoute["customers"],
+  budget: number,
 ): RouteSheetRoute["customers"][] {
   const chunks: RouteSheetRoute["customers"][] = [];
   let current: RouteSheetRoute["customers"] = [];
   let used = 0;
   for (const c of customers) {
     const u = rowUnits(c);
-    if (current.length > 0 && used + u > PAGE_UNIT_BUDGET) {
+    if (current.length > 0 && used + u > budget) {
       chunks.push(current);
       current = [];
       used = 0;
@@ -156,7 +178,7 @@ function paginateRows(
   if (chunks.length > 0) {
     const last = chunks[chunks.length - 1];
     const lastUnits = last.reduce((s, c) => s + rowUnits(c), 0);
-    if (last.length > 1 && lastUnits + TOTAL_ROWS_UNITS > PAGE_UNIT_BUDGET) {
+    if (last.length > 1 && lastUnits + TOTAL_ROWS_UNITS > budget) {
       chunks.push([last.pop()!]);
     }
   }
@@ -169,6 +191,12 @@ export default function RouteSheetPage() {
   const [date, setDate] = useState<string>(today);
   const [routeId, setRouteId]   = useState<string | null>(null);
   const [generated, setGenerated] = useState(false);
+
+  // Paper size — shared with the Print button. The union is still working
+  // through a bundle of 15" × 12" continuous stationery left from the old
+  // software, so sheets must paginate for whichever paper is loaded.
+  const [paper, setPaper] = usePrintPaper();
+  const unitBudget = pageUnitBudget(paper);
 
   const { data: batches = [] } = useQuery({ queryKey: ["batches"], queryFn: fetchBatches });
   const { data: routes  = [] } = useQuery({ queryKey: ["routes"],  queryFn: fetchRoutes  });
@@ -219,7 +247,7 @@ export default function RouteSheetPage() {
   const pageLabels: string[] = [];
 
   routesWithData.forEach(route => {
-    const chunks = paginateRows(route.customers);
+    const chunks = paginateRows(route.customers, unitBudget);
     chunks.forEach((rows, idx) => {
       const isLast = idx === chunks.length - 1;
       pages.push(
@@ -277,7 +305,7 @@ export default function RouteSheetPage() {
             ...acrossProducts.map(p => c.acrossQty[p.id] ?? 0),
             c.othersText,
             fmtCratePkts(c.crates, c.cratePktPlus ?? 0, c.cratePktMinus ?? 0) || String(c.crates),
-            c.netAmount,
+            c.isCredit ? `${c.netAmount} (credit)` : c.netAmount,
           ]);
         }
         rows.push([
@@ -295,7 +323,7 @@ export default function RouteSheetPage() {
   return (
     <ReportShell
       title="Route Sheet"
-      subtitle="Per-route loading sheets — abstract + security checklist appended"
+      subtitle={`Per-route loading sheets — abstract + security checklist appended · ${PAPERS[paper].short} landscape`}
       printOrientation="landscape"
       filters={
         <>
@@ -345,6 +373,23 @@ export default function RouteSheetPage() {
               modalTitle="Select Route"
               className="w-52"
             />
+          </div>
+
+          {/* Paper — drives both the @page size and how many dealer rows
+              are packed onto each sheet. Mirrors the Print button's menu. */}
+          <div>
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
+              Paper
+            </label>
+            <Select value={paper} onValueChange={v => setPaper(v as PaperId)}>
+              <SelectTrigger className="erp-input w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="a4">A4 — 210 × 297 mm</SelectItem>
+                <SelectItem value="cont15x12">15" × 12" continuous</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </>
       }
@@ -450,7 +495,10 @@ function RouteRowsPage({
                   })}
               </td>
               <td className="num">{fmtCratePkts(c.crates, c.cratePktPlus ?? 0, c.cratePktMinus ?? 0) || fmtNum(c.crates)}</td>
-              <td className="num">{fmtINR(c.netAmount)}</td>
+              <td className="num">
+                {fmtINR(c.netAmount)}
+                {c.isCredit && <span className="rs-credit-tag"> (credit)</span>}
+              </td>
             </tr>
           ))}
 
@@ -581,9 +629,9 @@ function AbstractPage({
       <div className="rs-abstract-money">
         <span><strong>Total Free Milk:</strong> 0 Ltr</span>
         <span><strong>Total:</strong> 0 Crates</span>
-        <span><strong>Cash:</strong> {fmtINR(t.amount)}</span>
+        <span><strong>Cash:</strong> {fmtINR(route.totals.netAmount)}</span>
         <span><strong>Bank:</strong> {fmtINR(0)}</span>
-        <span><strong>Credit:</strong> {fmtINR(0)}</span>
+        <span><strong>Credit:</strong> {fmtINR(route.totals.creditAmount)}</span>
       </div>
     </div>
   );
@@ -657,9 +705,9 @@ function SecurityPage({
       <div className="rs-abstract-money">
         <span><strong>Total Free Milk:</strong> 0 Ltr</span>
         <span><strong>Total:</strong> 0 Crates</span>
-        <span><strong>Cash:</strong> {fmtINR(t.amount)}</span>
+        <span><strong>Cash:</strong> {fmtINR(route.totals.netAmount)}</span>
         <span><strong>Bank:</strong> {fmtINR(0)}</span>
-        <span><strong>Credit:</strong> {fmtINR(0)}</span>
+        <span><strong>Credit:</strong> {fmtINR(route.totals.creditAmount)}</span>
       </div>
 
       {/* Return Particulars block */}

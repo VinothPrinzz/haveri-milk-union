@@ -206,7 +206,7 @@ export async function dealerRoutes(app: FastifyInstance) {
                 'routeId', r2.id,
                 'routeCode', r2.code,
                 'routeName', r2.name,
-                'isPrimary', dr.is_primary
+                'isPrimary', dr.is_primary,
                 'position',  dr.position
               ) ORDER BY dr.is_primary DESC, r2.code)
             FROM dealer_routes dr
@@ -397,6 +397,42 @@ export async function dealerRoutes(app: FastifyInstance) {
 
       if (!result) return reply.status(404).send({ error: "Dealer not found" });
       return reply.send({ dealer: result });
+    },
+  );
+
+  // ═══════════════════════════════════════════════════════════════
+  // DELETE /api/v1/dealers/:id — soft delete (tombstone)
+  // Financial history (orders / ledger / wallet all FK to dealer id) is
+  // preserved; the dealer just disappears from every list because every
+  // read filters `deleted_at IS NULL`. We also release the globally-unique
+  // natural keys (phone / username / code) so the same phone or code can be
+  // registered again later — those DB unique constraints are NOT scoped to
+  // deleted_at, so a live tombstone would otherwise block re-creation with a
+  // raw constraint error.
+  // ═══════════════════════════════════════════════════════════════
+  app.delete(
+    "/api/v1/dealers/:id",
+    { preHandler: [adminAuth, requireRole("dealers.manage")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      const [deleted] = await pgClient`
+        UPDATE dealers SET
+          deleted_at = now(),
+          active     = false,
+          -- Free the unique natural keys for future reuse. phone is NOT NULL
+          -- so it is suffixed (id keeps it unique); username / code are
+          -- nullable and simply released.
+          phone      = phone || ':deleted:' || id::text,
+          username   = NULL,
+          code       = NULL,
+          updated_at = now()
+        WHERE id = ${id} AND deleted_at IS NULL
+        RETURNING id
+      `;
+
+      if (!deleted) return reply.status(404).send({ error: "Dealer not found" });
+      return reply.send({ id: deleted.id, deleted: true });
     },
   );
 

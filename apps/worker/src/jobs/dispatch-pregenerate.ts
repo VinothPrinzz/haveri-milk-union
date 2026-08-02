@@ -1,8 +1,7 @@
-import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
-import { pushQueue as notifQueue } from "../lib/queues.js";
+import { enqueuePush } from "../lib/queues.js";
 
-export async function processDispatchPregenerate(job: Job) {
+export async function processDispatchPregenerate() {
   const today = new Date().toISOString().split("T")[0];
 
   console.log(`[Dispatch] Pre-generating dispatch sheet for ${today}`);
@@ -39,7 +38,7 @@ export async function processDispatchPregenerate(job: Job) {
              COALESCE(SUM(item_count), 0)::int AS total_items
       FROM orders o
       JOIN dealers d ON d.id = o.dealer_id
-      WHERE d.route_id = ${route.id}
+      WHERE COALESCE(o.route_id, d.route_id) = ${route.id}
         AND o.delivery_date = ${today}::date
         AND o.status = 'confirmed'
     `;
@@ -67,8 +66,8 @@ export async function processDispatchPregenerate(job: Job) {
 
   console.log(`[Dispatch] ✅ Created ${created} route assignments for ${today}`);
 
-  // Queue window opening notification for all zones (shared queue — not closed here)
-  await notifQueue.add("window-opening-reminder", {
+  // Queue window opening notification for all zones
+  await enqueuePush("window-opening-reminder", {
     event: "window.opening" as const,
     title: "Window Opening Soon 🟢",
     body: "The ordering window opens in 5 minutes. Get ready to place your indent!",

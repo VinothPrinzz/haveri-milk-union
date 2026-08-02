@@ -373,6 +373,11 @@ export async function productRoutes(app: FastifyInstance) {
         region: "auto",
         endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
         credentials: { accessKeyId: accessKey, secretAccessKey: secret },
+        // R2 (and browser PUTs to presigned URLs) break when the SDK bakes a
+        // default CRC32 checksum into the signed URL — it signs the checksum of
+        // an empty body, which never matches the real upload. Only add a
+        // checksum when the operation actually requires one (PutObject doesn't).
+        requestChecksumCalculation: "WHEN_REQUIRED",
       });
 
       const uploadUrl = await getSignedUrl(

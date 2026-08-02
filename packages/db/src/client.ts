@@ -32,8 +32,17 @@ if (!connectionString) {
 const client = postgres(connectionString, {
   // Supabase pgBouncer requires prepare: false in transaction pooling mode
   prepare: false,
-  // Connection pool settings
-  max: 10, // max connections in pool
+  // Connection pool settings.
+  //
+  // max was 10, which is what made the daily 10:00-11:30 IST stall total
+  // rather than partial: once ~10 order-confirm handlers were blocked on the
+  // same product row locks, EVERY other request — admin dashboard, product
+  // list, dealer profile — queued behind them with no timeout and simply sat
+  // pending until the machine was restarted. Postgres allows 60 connections
+  // and we were using 15 of them (10 here + 5 in the worker), so the cap was
+  // self-imposed. A larger pool does not stop confirms from contending, but
+  // it keeps unrelated traffic flowing while they do.
+  max: 25,
   idle_timeout: 20, // close idle connections after 20s
   connect_timeout: 10, // fail if can't connect in 10s
 });

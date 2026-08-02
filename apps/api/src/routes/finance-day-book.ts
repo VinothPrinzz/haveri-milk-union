@@ -11,10 +11,33 @@
 // dealer may top up ₹150 and order for ₹133.33, leaving ₹16.67 in his
 // wallet — so both totals are reported side by side. finance.view.
 //
-// Dates: receipts/sales are booked on the IST calendar day (received_date
-// and voucher_date are already written IST elsewhere; order timestamps are
-// converted here). v1: deposit-to-bank tracking is NOT persisted, so
-// physical-count variance is computed client-side only.
+// Dates: receipts are booked on the IST day the money arrived; dealer
+// ORDER sales are booked on the order's DELIVERY date. Booking them by
+// created date double-counted the union subsidy line: the standing
+// subsidy order materializes at 04:00 for TOMORROW's delivery, so on any
+// day D the book showed D's subsidy (re-homed into the cart order) AND
+// D+1's standing order — twice on D, missing on D+1. v1: deposit-to-bank
+// tracking is NOT persisted, so physical-count variance is client-side.
+//
+// Route: every line that traces back to an ORDER is attributed to that
+// order's SNAPSHOTTED route (orders.route_id), never the dealer's current
+// primary route. A dealer who is re-routed, deactivated or deleted must
+// not retroactively move — or lose — money already posted to a route.
+// dealers.route_id is only the fallback for lines with no order behind
+// them (wallet top-ups, on-account receipts, manual adjustments) and for
+// pre-0040 orders that were never stamped.
+//
+// A soft-deleted / inactive dealer's rows stay in the book: nothing here
+// filters on d.deleted_at or d.active. Day Book is a money record.
+//
+// Cash impact: a dealer's wallet is a LIABILITY, not cash. Real money moves
+// only when a payment arrives (receipt, 'in') or a gateway refund is paid
+// back to his bank ('out'). Everything after a top-up — the wallet debit at
+// checkout, the credit-back when an indent is modified down, a cancellation
+// refund — only reshuffles that liability, so it carries 'none'. Those lines
+// must never be netted as money out: a modify-down already shrinks the order's
+// grand_total, so the sale below is reported net of the change; counting the
+// credit-back again would subtract the same rupees twice.
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { FastifyInstance } from "fastify";
@@ -28,6 +51,10 @@ type DayBookLine = {
   id: string;
   at: string;
   kind: "receipt" | "sale" | "refund" | "adjustment";
+  // Did real money enter / leave the union's cash & bank today? 'none' covers
+  // both revenue lines (the cash leg is the receipt, booked separately) and
+  // internal wallet-liability movements. See the header note.
+  cashImpact: "in" | "out" | "none";
   type: string;
   mode: string | null;
   amount: number;
@@ -65,6 +92,7 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
       const receipts = await pgClient`
         SELECT
           p.id, p.created_at AS at, 'receipt' AS kind,
+          'in' AS "cashImpact",
           CASE
             WHEN dl.reference_type = 'wallet_topup' THEN 'topup'
             WHEN dl.reference_type = 'order'        THEN 'order_payment'
@@ -82,7 +110,6 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         JOIN dealers d ON d.id = p.dealer_id
         LEFT JOIN invoices i ON i.id = p.invoice_id
         LEFT JOIN users u ON u.id = p.received_by
-        LEFT JOIN routes r ON r.id = d.route_id
         LEFT JOIN LATERAL (
           SELECT l.reference_type::text AS reference_type
             FROM dealer_ledger l
@@ -91,16 +118,28 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
            LIMIT 1
         ) dl ON true
         LEFT JOIN LATERAL (
-          SELECT x.kind::text AS kind
+          SELECT x.kind::text AS kind, x.order_id
             FROM razorpay_payments x
            WHERE p.reference IS NOT NULL
              AND x.razorpay_payment_id = p.reference
            LIMIT 1
         ) rp ON true
+        -- Order behind the receipt, if any: a pay-now gateway charge
+        -- (razorpay_payments.order_id) or a receipt settling an invoice
+        -- (invoices.order_id). Its snapshotted route wins over the
+        -- dealer's current one. Lookup is by orders PK (id, created_at)
+        -- so every monthly partition probes its own index.
+        LEFT JOIN LATERAL (
+          SELECT o.route_id
+            FROM orders o
+           WHERE o.id = COALESCE(rp.order_id, i.order_id)
+           LIMIT 1
+        ) ord ON true
+        LEFT JOIN routes r ON r.id = COALESCE(ord.route_id, d.route_id)
         WHERE p.received_date = ${date}::date
           AND ( ${route}::text IS NULL
-                OR (${route}::text = 'unassigned' AND d.route_id IS NULL)
-                OR d.route_id::text = ${route}::text )
+                OR (${route}::text = 'unassigned' AND COALESCE(ord.route_id, d.route_id) IS NULL)
+                OR COALESCE(ord.route_id, d.route_id)::text = ${route}::text )
         ORDER BY p.created_at ASC
       `;
 
@@ -111,6 +150,9 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
       const ledgerTopups = await pgClient`
         SELECT
           dl.id, dl.created_at AS at, 'receipt' AS kind,
+          -- Wallet credit with no receipt behind it: the liability went up,
+          -- but no cash was recorded as arriving.
+          'none' AS "cashImpact",
           'topup_ledger' AS type,
           NULL AS mode, dl.amount::float8 AS amount,
           dl.description AS reference, dl.voucher_no AS "docNo",
@@ -119,6 +161,8 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           u.name AS "byName"
         FROM dealer_ledger dl
         JOIN dealers d ON d.id = dl.dealer_id
+        -- No order behind a top-up — the dealer's own route is the only
+        -- attribution there is.
         LEFT JOIN routes r ON r.id = d.route_id
         LEFT JOIN users u ON u.id = dl.performed_by
         WHERE dl.type = 'credit'
@@ -134,13 +178,31 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         ORDER BY dl.created_at ASC
       `;
 
-      // 2. Sales — dealer orders placed (IST day) that are live. The coarse
-      //    created_at bounds let the planner prune monthly partitions; the
-      //    AT TIME ZONE expression is the exact filter.
+      // 2. Sales — live dealer orders booked on their DELIVERY date (the
+      //    day the milk actually goes out; see header note on the subsidy
+      //    double count). Orders predating the delivery_date column fall
+      //    back to their IST creation day. The coarse created_at bounds let
+      //    the planner prune monthly partitions — standing-indent orders
+      //    are created at most a day ahead, admin indents a few days.
       const orderSales = await pgClient`
         SELECT
           o.id, o.created_at AS at, 'sale' AS kind, 'order_sale' AS type,
-          o.payment_mode::text AS mode, o.grand_total::float8 AS amount,
+          -- Revenue, not a treasury movement: the money arrived as a receipt
+          -- (top-up or pay-now charge) and is counted there.
+          'none' AS "cashImpact",
+          -- Settlement bucket for the day book. Real "credit" is reserved for
+          -- credit-institution dealers (customer_type 'Credit Inst-*', billed
+          -- monthly). Every other dealer pays with their own money — either
+          -- drawn from wallet balance/top-ups ('wallet') or a pay-now UPI
+          -- charge ('upi'). The stored payment_mode='credit' that ledger-
+          -- settled orders carry is a technical marker, NOT real credit, so it
+          -- must not surface as "on credit" for ordinary dealers.
+          CASE
+            WHEN d.customer_type::text LIKE 'Credit Inst%' THEN 'credit'
+            WHEN o.payment_mode::text = 'upi'              THEN 'upi'
+            ELSE 'wallet'
+          END AS mode,
+          o.grand_total::float8 AS amount,
           ('#' || left(o.id::text, 8)) AS reference,
           inv.invoice_number AS "docNo",
           d.code AS "dealerCode", d.name AS "dealerName",
@@ -148,19 +210,21 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           u.name AS "byName"
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
-        LEFT JOIN routes r ON r.id = d.route_id
+        LEFT JOIN routes r ON r.id = COALESCE(o.route_id, d.route_id)
         LEFT JOIN users u ON u.id = o.placed_by
         LEFT JOIN LATERAL (
           SELECT i.invoice_number FROM invoices i
            WHERE i.order_id = o.id LIMIT 1
         ) inv ON true
-        WHERE o.created_at >= ${date}::date - interval '1 day'
+        WHERE o.created_at >= ${date}::date - interval '31 days'
           AND o.created_at <  ${date}::date + interval '2 days'
-          AND (o.created_at AT TIME ZONE 'Asia/Kolkata')::date = ${date}::date
+          AND COALESCE(o.delivery_date,
+                       (o.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+              = ${date}::date
           AND o.status IN ('confirmed', 'dispatched', 'delivered')
           AND ( ${route}::text IS NULL
-                OR (${route}::text = 'unassigned' AND d.route_id IS NULL)
-                OR d.route_id::text = ${route}::text )
+                OR (${route}::text = 'unassigned' AND COALESCE(o.route_id, d.route_id) IS NULL)
+                OR COALESCE(o.route_id, d.route_id)::text = ${route}::text )
         ORDER BY o.created_at ASC
       `;
 
@@ -170,6 +234,9 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
       const counterSales = await pgClient`
         SELECT
           ds.id, ds.created_at AS at, 'sale' AS kind, 'counter_sale' AS type,
+          -- Revenue line. Counter cash never lands in the payments table, so
+          -- it stays out of the cash section here exactly as it always has.
+          'none' AS "cashImpact",
           ds.payment_mode::text AS mode, ds.grand_total::float8 AS amount,
           ds.payment_ref AS reference, NULL AS "docNo",
           dd.code AS "dealerCode",
@@ -192,11 +259,13 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         ORDER BY ds.created_at ASC
       `;
 
-      // 3. Refunds out (processed that day).
+      // 3. Refunds out (processed that day) — the ONLY refund path that
+      //    actually takes money out of the union: the gateway pays it back to
+      //    the dealer's bank.
       const refunds = await pgClient`
         SELECT
           rf.id, COALESCE(rf.processed_at, rf.created_at) AS at,
-          'refund' AS kind, 'refund' AS type,
+          'refund' AS kind, 'out' AS "cashImpact", 'refund' AS type,
           'upi' AS mode, rf.amount::float8 AS amount,
           COALESCE(rf.razorpay_refund_id, rf.razorpay_payment_id) AS reference,
           NULL AS "docNo",
@@ -205,14 +274,97 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           u.name AS "byName"
         FROM razorpay_refunds rf
         JOIN dealers d ON d.id = rf.dealer_id
-        LEFT JOIN routes r ON r.id = d.route_id
         LEFT JOIN users u ON u.id = rf.initiated_by
+        -- A refund reverses a gateway payment; when that payment was for an
+        -- order, the money goes back out of that order's route.
+        LEFT JOIN razorpay_payments rp ON rp.id = rf.razorpay_payment_row
+        LEFT JOIN LATERAL (
+          SELECT o.route_id FROM orders o WHERE o.id = rp.order_id LIMIT 1
+        ) ord ON true
+        LEFT JOIN routes r ON r.id = COALESCE(ord.route_id, d.route_id)
         WHERE rf.status = 'processed'
           AND rf.processed_at::date = ${date}::date
           AND ( ${route}::text IS NULL
-                OR (${route}::text = 'unassigned' AND d.route_id IS NULL)
-                OR d.route_id::text = ${route}::text )
+                OR (${route}::text = 'unassigned' AND COALESCE(ord.route_id, d.route_id) IS NULL)
+                OR COALESCE(ord.route_id, d.route_id)::text = ${route}::text )
         ORDER BY rf.processed_at ASC
+      `;
+
+      // 3b. Order-change balance movements — the ledger rows an indent
+      //     modification or cancellation writes straight into dealer_ledger
+      //     with no payments / razorpay_refunds / ledger_adjustments row,
+      //     so none of the other sections ever saw them:
+      //       • modify up   → debit,  reference_type 'adjustment'
+      //       • modify down → credit, reference_type 'adjustment'
+      //         (also the admin subsidy-revise credit)
+      //       • cancel of a wallet order → credit, reference_type 'refund'
+      //       • cancel to available balance → credit, reference_type
+      //         'order' with voucher 'Adjustment'
+      //       • cheque bounce / return charges / cancellation → debit,
+      //         reference_type 'adjustment', voucher 'Adjustment' (labelled
+      //         from the CB-/CC-/CX- voucher prefix; order changes never set
+      //         voucher_no, so the prefixes can't collide)
+      //     Razorpay refund reversals are debits on 'refund' → excluded;
+      //     manual notes carry a ledger_adjustments row → excluded.
+      //
+      //     NON-WALLET RECEIPTS ARE EXCLUDED BY voucher_type. A cash/cheque/
+      //     on-account receipt also lands on reference_type 'adjustment'
+      //     (finance.ts: only wallet-mode receipts get 'wallet_topup'), so
+      //     without the guard every one of them was double-counted here as a
+      //     'modify_refund' — money IN reported as money OUT, on top of its
+      //     correct row in section 1.
+      const orderChanges = await pgClient`
+        SELECT
+          dl.id, dl.created_at AS at,
+          CASE WHEN dl.type = 'credit' THEN 'refund' ELSE 'adjustment' END AS kind,
+          -- Wallet-liability movements only: the rupees never leave (or enter)
+          -- the union's cash & bank, and the order row above already carries
+          -- the modified grand_total.
+          'none' AS "cashImpact",
+          CASE
+            WHEN dl.voucher_no LIKE 'CB-%'          THEN 'cheque_bounce'
+            WHEN dl.voucher_no LIKE 'CC-%'          THEN 'cheque_charges'
+            WHEN dl.voucher_no LIKE 'CX-%'          THEN 'cheque_cancel'
+            WHEN dl.type = 'debit'                  THEN 'modify_debit'
+            WHEN dl.reference_type = 'adjustment'   THEN 'modify_refund'
+            ELSE 'cancel_refund'
+          END AS type,
+          'balance' AS mode, dl.amount::float8 AS amount,
+          dl.description AS reference, dl.voucher_no AS "docNo",
+          d.code AS "dealerCode", d.name AS "dealerName",
+          r.id::text AS "routeId", r.name AS "routeName",
+          u.name AS "byName"
+        FROM dealer_ledger dl
+        JOIN dealers d ON d.id = dl.dealer_id
+        LEFT JOIN users u ON u.id = dl.performed_by
+        -- Every row selected below is written by an order modify/cancel with
+        -- reference_id = the order id ('order', 'adjustment', and the cancel
+        -- 'refund' credit all follow that convention), so the movement is
+        -- booked to the order's own route.
+        LEFT JOIN LATERAL (
+          SELECT o.route_id FROM orders o WHERE o.id = dl.reference_id LIMIT 1
+        ) ord ON true
+        LEFT JOIN routes r ON r.id = COALESCE(ord.route_id, d.route_id)
+        WHERE (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date = ${date}::date
+          AND dl.amount > 0
+          AND (
+                dl.reference_type = 'adjustment'
+             OR (dl.type = 'credit' AND dl.reference_type = 'refund')
+             OR (dl.type = 'credit' AND dl.reference_type = 'order'
+                 AND dl.voucher_type = 'Adjustment')
+              )
+          AND COALESCE(dl.voucher_type, '') <> 'Receipt'
+          AND NOT EXISTS (
+                SELECT 1 FROM payments p WHERE p.id = dl.reference_id
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM ledger_adjustments a
+                 WHERE a.ledger_entry_id = dl.id
+              )
+          AND ( ${route}::text IS NULL
+                OR (${route}::text = 'unassigned' AND COALESCE(ord.route_id, d.route_id) IS NULL)
+                OR COALESCE(ord.route_id, d.route_id)::text = ${route}::text )
+        ORDER BY dl.created_at ASC
       `;
 
       // 4. Manual ledger adjustments posted that day (journal, credit/debit
@@ -221,6 +373,8 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
       const adjustments = await pgClient`
         SELECT
           dl.id, dl.created_at AS at, 'adjustment' AS kind,
+          -- Journal / credit / debit notes post to the ledger only.
+          'none' AS "cashImpact",
           CASE dl.type::text WHEN 'credit' THEN 'adjustment_credit'
                              ELSE 'adjustment_debit' END AS type,
           a.voucher_type AS mode, dl.amount::float8 AS amount,
@@ -231,6 +385,8 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         FROM ledger_adjustments a
         JOIN dealer_ledger dl ON dl.id = a.ledger_entry_id
         JOIN dealers d ON d.id = dl.dealer_id
+        -- Manual journal / credit / debit notes are posted against the
+        -- dealer, not an order — dealer route is the correct attribution.
         LEFT JOIN routes r ON r.id = d.route_id
         LEFT JOIN users u ON u.id = a.initiated_by
         WHERE dl.voucher_date = ${date}::date
@@ -247,6 +403,7 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         ...(orderSales as unknown as DayBookLine[]),
         ...(counterSales as unknown as DayBookLine[]),
         ...(refunds as unknown as DayBookLine[]),
+        ...(orderChanges as unknown as DayBookLine[]),
         ...(adjustments as unknown as DayBookLine[]),
       ].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 
@@ -263,17 +420,38 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
       const ledgerTopupTotal = (ledgerTopups as unknown as DayBookLine[])
         .reduce((s, l) => s + l.amount, 0);
 
+      // Composition card breaks dealer orders down by how each was settled:
+      //   • 'credit' → credit-institution orders (billed monthly)
+      //   • 'wallet' → paid from wallet balance / top-ups (the dealer's own
+      //                money that was already sitting in the wallet)
+      //   • online methods ('upi', 'card', …) → paid now at checkout via the
+      //     gateway. Each surfaces as its own line and is NOT folded into
+      //     wallet. (Today the gateway path only records 'upi'; any other
+      //     method appears automatically if it is ever captured.)
+      // The buckets sum to the full dealer-orders total.
       const salesByMode: Record<string, number> = {};
       let ordersTotal = 0;
       for (const l of orderSales as unknown as DayBookLine[]) {
         ordersTotal += l.amount;
-        if (l.mode) salesByMode[l.mode] = (salesByMode[l.mode] ?? 0) + l.amount;
+        const bucket = l.mode ?? "wallet";
+        salesByMode[bucket] = (salesByMode[bucket] ?? 0) + l.amount;
       }
       const counterTotal = (counterSales as unknown as DayBookLine[])
         .reduce((s, l) => s + l.amount, 0);
 
       const refundsTotal = (refunds as unknown as DayBookLine[])
         .reduce((s, l) => s + l.amount, 0);
+
+      // Balance-side money from order changes: refunds credited back to the
+      // dealer's available balance (modify down / cancellations) and extra
+      // debits taken from it (modify up). NOT cash — see the header note. They
+      // are reported on their own so finance can see the wallet liability
+      // move without them polluting refundsOut / net.
+      let ocRefunds = 0, ocRefundsCount = 0, ocDebits = 0, ocDebitsCount = 0;
+      for (const l of orderChanges as unknown as DayBookLine[]) {
+        if (l.kind === "refund") { ocRefunds += l.amount; ocRefundsCount += 1; }
+        else { ocDebits += l.amount; ocDebitsCount += 1; }
+      }
 
       let adjCredit = 0, adjDebit = 0;
       for (const l of adjustments as unknown as DayBookLine[]) {
@@ -322,6 +500,8 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           byMode,
           byType,
           cashCollected,
+          // Bank refunds only. Wallet credit-backs live under orderChanges and
+          // are deliberately excluded here and from `net`.
           refundsOut: refundsTotal,
           refundsCount: (refunds as unknown as DayBookLine[]).length,
           net: totalReceipts - refundsTotal,
@@ -336,6 +516,15 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           ledgerTopups: {
             count: (ledgerTopups as unknown as DayBookLine[]).length,
             total: ledgerTopupTotal,
+          },
+          orderChanges: {
+            refundsToBalance: ocRefunds,
+            refundsCount: ocRefundsCount,
+            extraDebits: ocDebits,
+            debitsCount: ocDebitsCount,
+            // Net rupees the day's order changes pushed back into dealer
+            // wallets (negative = pulled out of them). Liability movement.
+            netToWallet: ocRefunds - ocDebits,
           },
           adjustments: {
             count: (adjustments as unknown as DayBookLine[]).length,

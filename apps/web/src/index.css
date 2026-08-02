@@ -361,7 +361,18 @@
   .report-canvas[data-orient="landscape"] {
     min-width: 1080px;
   }
-  
+
+  /* 15" × 12" continuous stationery — a much wider sheet than A4, so the
+     preview widens to match its printable area (351 mm ≈ 1326 px @ 96 dpi
+     landscape, 275 mm ≈ 1040 px portrait). Without this the screen preview
+     would understate how much fits on a row. */
+  .report-canvas[data-paper="cont15x12"] {
+    min-width: 1040px;
+  }
+  .report-canvas[data-paper="cont15x12"][data-orient="landscape"] {
+    min-width: 1326px;
+  }
+
   /* In fullscreen mode the canvas should fill, not just sit centered. */
   body.report-fullscreen .report-canvas {
     margin: 0;
@@ -829,6 +840,17 @@
      max-width: 200px;
    }
    .rs-ledger td.dealer-cell .dealer-sep { color: #555; margin: 0 2px; }
+
+   /* "(credit)" marker beside a credit-institution customer's Net Amount —
+      that amount is billed monthly, so it is not part of the route cash total. */
+   .rs-ledger td .rs-credit-tag {
+     font-size: 9px;
+     font-style: italic;
+     font-weight: 600;
+     text-transform: lowercase;
+     color: #b45309;
+     white-space: nowrap;
+   }
    
    /* Vertical product headers — span inside makes layout real and the
    row auto-grows to wrap the longest alias. No fixed heights. */
@@ -982,7 +1004,16 @@
 .erp-clean-shell .report-canvas { margin: 0 auto; }
 
 /* ──────────────────────────────────────────────────────────────────
-   PRINT — A4 landscape, per-route pages with page breaks
+   PRINT — landscape, per-route pages with page breaks.
+   Sheet size + margins come from the runtime <style id="erp-print-orient">
+   tag (see @/lib/print-paper), so these rules serve both A4 and the
+   15" × 12" continuous stationery.
+
+   INVARIANT: the ledger's font-size / line-height / cell padding below are
+   deliberately the SAME on every paper. RouteSheetPage packs rows onto a
+   sheet by scaling its A4 budget with the paper's usable height, which only
+   holds while row height is paper-independent. Bumping type for the bigger
+   sheet would silently overflow pages onto header-less continuation sheets.
    ────────────────────────────────────────────────────────────────── */
 @media print {
 

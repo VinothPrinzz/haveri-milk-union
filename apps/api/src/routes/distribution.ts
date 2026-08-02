@@ -9,7 +9,9 @@ export async function distributionRoutes(app: FastifyInstance) {
   // GET /api/v1/routes — all routes with stop details
   app.get(
     "/api/v1/routes",
-    { preHandler: [adminAuth, requireRole("distribution.view")] },
+    // routes.view, not distribution.view: this is the route-master lookup that
+    // feeds filter dropdowns in other modules (Finance included).
+    { preHandler: [adminAuth, requireRole("routes.view")] },
     async (request, reply) => {
       const allRoutes = await pgClient`
         SELECT r.id, r.code, r.name, r.stops, r.distance_km, r.active,
@@ -57,7 +59,7 @@ export async function distributionRoutes(app: FastifyInstance) {
         const [lastRoute] = await pgClient`
           SELECT code FROM routes
           WHERE code ~ '^R[0-9]+$'
-          ORDER BY CAST(SUBSTRING(code FROM 2) AS integer) DESC LIMIT 1
+          ORDER BY CAST(SUBSTRING(code FROM 2) AS integer) DESC
           LIMIT 1
         `;
         const lastNum = lastRoute ? parseInt(lastRoute.code.slice(1)) : 0;
@@ -311,7 +313,7 @@ export async function distributionRoutes(app: FastifyInstance) {
         SELECT ra.id, ra.route_id, ra.date, ra.driver_name, ra.vehicle_number,
                ra.departure_time, ra.actual_departure_time,
                ra.dealer_count, ra.item_count, ra.status,
-               r.name AS route_name, r.code AS route_code, r.stop_details,
+               r.name AS route_name, r.code AS route_code, r.stop_details
         FROM route_assignments ra
         JOIN routes r ON r.id = ra.route_id
         WHERE ra.date = ${targetDate}::date
@@ -324,7 +326,7 @@ export async function distributionRoutes(app: FastifyInstance) {
                  o.item_count, o.grand_total, o.status AS order_status
           FROM orders o
           JOIN dealers d ON d.id = o.dealer_id
-          WHERE d.route_id = ${a.route_id}::uuid
+          WHERE COALESCE(o.route_id, d.route_id) = ${a.route_id}::uuid
             AND o.delivery_date = ${targetDate}::date
             AND o.status != 'cancelled'
           ORDER BY d.name
@@ -425,25 +427,33 @@ export async function distributionRoutes(app: FastifyInstance) {
           WHERE id = ${id}
         `;
         // Cascade to child orders when the assignment goes dispatched/delivered.
+        // The dealer join resolves the order's route only — it must NOT filter
+        // on d.deleted_at / d.active, or a dealer deleted after placing an
+        // order would leave that order stuck at 'confirmed' forever, dropping
+        // it out of every delivered-status report.
         if (goingToDispatched) {
           await tx`
-            UPDATE orders SET
+            UPDATE orders o SET
               status = 'dispatched',
               dispatched_at = now(),
               updated_at = now()
-            WHERE dealer_id IN (SELECT id FROM dealers WHERE route_id = ${existing.route_id}::uuid AND deleted_at IS NULL)
-              AND created_at::date = ${existing.date}::date
-              AND status = 'confirmed'
+            FROM dealers d
+            WHERE o.dealer_id = d.id
+              AND COALESCE(o.route_id, d.route_id) = ${existing.route_id}::uuid
+              AND o.created_at::date = ${existing.date}::date
+              AND o.status = 'confirmed'
           `;
         } else if (goingToDelivered) {
           await tx`
-            UPDATE orders SET
+            UPDATE orders o SET
               status = 'delivered',
               delivered_at = now(),
               updated_at = now()
-            WHERE dealer_id IN (SELECT id FROM dealers WHERE route_id = ${existing.route_id}::uuid AND deleted_at IS NULL)
-              AND created_at::date = ${existing.date}::date
-              AND status = 'dispatched'
+            FROM dealers d
+            WHERE o.dealer_id = d.id
+              AND COALESCE(o.route_id, d.route_id) = ${existing.route_id}::uuid
+              AND o.created_at::date = ${existing.date}::date
+              AND o.status = 'dispatched'
           `;
         }
       });

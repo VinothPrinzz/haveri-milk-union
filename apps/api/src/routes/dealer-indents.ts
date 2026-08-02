@@ -33,6 +33,7 @@ import {
 } from "../lib/min-order-qty.js";
 import { enqueuePDFInvoice } from "../lib/queue.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
+import { resolveUnitPrice } from "../lib/rate-price.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -59,6 +60,18 @@ function getDealerZoneId(request: FastifyRequest): string {
   return d.zoneId;
 }
 
+/**
+ * The dealer's rate category — decides which price their lines bill at.
+ * 'Credit Inst-MRP' pays MRP on milk; see lib/rate-price.ts.
+ */
+async function dealerRateCategory(dealerId: string): Promise<string | null> {
+  const [row] = await pgClient`
+    SELECT rate_category::text AS "rateCategory"
+      FROM dealers WHERE id = ${dealerId} LIMIT 1
+  `;
+  return (row?.rateCategory ?? null) as string | null;
+}
+
 /** Line totals from (price_excl_gst, gst_percent, quantity), rupees @ 2dp. */
 function calcLine(basePrice: number, gstPercent: number, qty: number) {
   const subtotal = basePrice * qty;
@@ -83,30 +96,41 @@ function calcLine(basePrice: number, gstPercent: number, qty: number) {
  * orders are never mutated. Drafts whose template is now empty are left
  * empty (item_count=0); the close-time job cancels empty drafts.
  */
-async function resyncEditableDrafts(dealerId: string): Promise<number> {
-  // Canonical line set from the live standing template.
+async function resyncEditableDrafts(
+  dealerId: string,
+  routeId: string
+): Promise<number> {
+  // Canonical line set from the live standing template FOR THIS ROUTE.
+  // mrp + category name drive the rate-category price (lib/rate-price.ts).
   const standing = await pgClient`
     SELECT
       dsi.product_id::text         AS "productId",
       dsi.default_qty              AS "quantity",
       p.name                       AS "productName",
       p.base_price::numeric        AS "basePrice",
-      p.gst_percent::numeric       AS "gstPercent"
+      p.mrp::numeric               AS "mrp",
+      p.gst_percent::numeric       AS "gstPercent",
+      p.code                       AS "code",
+      c.name                       AS "categoryName"
     FROM dealer_standing_indents dsi
     JOIN products p ON p.id = dsi.product_id
                    AND p.deleted_at IS NULL
                    AND p.available = true
+    LEFT JOIN categories c ON c.id = p.category_id
     WHERE dsi.dealer_id = ${dealerId}
+      AND dsi.route_id = ${routeId}::uuid
       AND dsi.active = true
       AND dsi.default_qty > 0
   `;
+
+  const rateCategory = await dealerRateCategory(dealerId);
 
   let subtotal = 0;
   let totalGst = 0;
   let itemCount = 0;
   const lines = standing.map((r: any) => {
     const qty = Number(r.quantity);
-    const price = parseFloat(r.basePrice);
+    const price = resolveUnitPrice(r, rateCategory);
     const gstPct = parseFloat(r.gstPercent);
     const line = calcLine(price, gstPct, qty);
     subtotal += line.subtotal;
@@ -124,12 +148,14 @@ async function resyncEditableDrafts(dealerId: string): Promise<number> {
   });
   const grandTotal = Math.round((subtotal + totalGst) * 100) / 100;
 
-  // Editable drafts: today (IST) onward, still status='draft'.
+  // Editable drafts for THIS ROUTE: today (IST) onward, still status='draft'.
+  // (COALESCE catches legacy NULL-route drafts as the active route.)
   const targets = await pgClient`
     SELECT id::text AS id FROM orders
      WHERE dealer_id = ${dealerId}
        AND status = 'draft'
        AND delivery_date >= (now() AT TIME ZONE 'Asia/Kolkata')::date
+       AND COALESCE(route_id, ${routeId}::uuid) = ${routeId}::uuid
   `;
 
   for (const t of targets) {
@@ -176,6 +202,11 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     { preHandler: [dealerAuth] },
     async (request, reply) => {
       const dealerId = getDealerId(request);
+      // Templates are per (dealer, route); show the dealer's ACTIVE route's
+      // template (the route they picked on the Profile switch). No route ⇒
+      // nothing to show.
+      const routeId = await getDealerRouteId(dealerId);
+      if (!routeId) return reply.send({ items: [] });
       const rows = await pgClient`
         SELECT
           dsi.product_id          AS "productId",
@@ -191,6 +222,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         FROM dealer_standing_indents dsi
         JOIN products p ON p.id = dsi.product_id AND p.deleted_at IS NULL
         WHERE dsi.dealer_id = ${dealerId}
+          AND dsi.route_id = ${routeId}::uuid
         ORDER BY p.sort_order, p.name
       `;
       return reply.send({ items: rows });
@@ -203,6 +235,9 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     { preHandler: [dealerAuth] },
     async (request, reply) => {
       const dealerId = getDealerId(request);
+      // Current-value columns reflect the ACTIVE route's template (null route
+      // ⇒ all zero, dealer builds it fresh once assigned a route).
+      const routeId = await getDealerRouteId(dealerId);
       const rows = await pgClient`
         SELECT
           p.id                      AS "productId",
@@ -219,6 +254,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         LEFT JOIN dealer_standing_indents dsi
                ON dsi.product_id = p.id
               AND dsi.dealer_id = ${dealerId}
+              AND dsi.route_id = ${routeId ?? null}::uuid
         LEFT JOIN categories c ON c.id = p.category_id
         WHERE p.deleted_at IS NULL
           AND p.available = true
@@ -235,6 +271,10 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     { preHandler: [dealerAuth] },
     async (request, reply) => {
       const dealerId = getDealerId(request);
+      // The template being edited belongs to the dealer's ACTIVE route. No
+      // route ⇒ they can't hold a template (nor order).
+      const routeId = await getDealerRouteId(dealerId);
+      if (!routeId) return reply.status(403).send(NO_ROUTE_RESPONSE);
 
       const schema = z.object({
         items: z
@@ -273,7 +313,8 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       const minQtyViolations = await findMinQtyViolations(
         body.items
           .filter((i) => i.active)
-          .map((i) => ({ productId: i.productId, quantity: i.defaultQty }))
+          .map((i) => ({ productId: i.productId, quantity: i.defaultQty })),
+        dealerId
       );
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
@@ -285,6 +326,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
 
       const rows = body.items.map((it) => ({
         dealer_id:   dealerId,
+        route_id:    routeId,
         product_id:  it.productId,
         default_qty: it.defaultQty,
         active:      it.active,
@@ -292,8 +334,8 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
 
       await pgClient`
         INSERT INTO dealer_standing_indents
-          ${pgClient(rows, "dealer_id", "product_id", "default_qty", "active")}
-        ON CONFLICT (dealer_id, product_id) DO UPDATE
+          ${pgClient(rows, "dealer_id", "route_id", "product_id", "default_qty", "active")}
+        ON CONFLICT (dealer_id, route_id, product_id) DO UPDATE
           SET default_qty = EXCLUDED.default_qty,
               active      = EXCLUDED.active,
               updated_at  = now()
@@ -305,7 +347,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       // must not fail the template save itself.
       let resyncedDrafts = 0;
       try {
-        resyncedDrafts = await resyncEditableDrafts(dealerId);
+        resyncedDrafts = await resyncEditableDrafts(dealerId, routeId);
       } catch (err) {
         request.log.warn(
           { err },
@@ -323,7 +365,11 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const dealerId = getDealerId(request);
       const params = z.object({ date: isoDate }).parse(request.params);
-   
+      // The app always works on the dealer's ACTIVE route: scope the order
+      // lookup + the synthesized preview to it, so a two-route dealer's other
+      // (admin-managed) route order never leaks into the app view.
+      const activeRouteId = await getDealerRouteId(dealerId);
+
       // Pause check
       const pausedRow = await pgClient`
         SELECT reason FROM dealer_indent_pauses
@@ -357,6 +403,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
          WHERE o.dealer_id = ${dealerId}
            AND o.delivery_date = ${params.date}::date
            AND o.status <> 'cancelled'
+           AND COALESCE(o.route_id, ${activeRouteId ?? null}::uuid) IS NOT DISTINCT FROM ${activeRouteId ?? null}::uuid
          ORDER BY o.created_at DESC
          LIMIT 1
       `;
@@ -430,8 +477,10 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           p.unit                  AS "unit",
           p.icon                  AS "icon",
           p.image_url             AS "imageUrl",
-          p.base_price::numeric   AS "unitPrice",
+          p.base_price::numeric   AS "basePrice",
+          p.mrp::numeric          AS "mrp",
           p.gst_percent::numeric  AS "gstPercent",
+          p.code                  AS "code",
           (p.code = ${SUBSIDY_PRODUCT_CODE}) AS "isSubsidy",
           c.name                  AS "categoryName"
         FROM dealer_standing_indents dsi
@@ -440,16 +489,19 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
                        AND p.available = true
         LEFT JOIN categories c ON c.id = p.category_id
         WHERE dsi.dealer_id = ${dealerId}
+          AND dsi.route_id = ${activeRouteId ?? null}::uuid
           AND dsi.active = true
           AND dsi.default_qty > 0
         ORDER BY p.sort_order, p.name
       `;
 
+      const previewRateCategory = await dealerRateCategory(dealerId);
+
       let subtotal = 0;
       let totalGst = 0;
       const items = standing.map((r: any) => {
         const qty = r.quantity;
-        const price = parseFloat(r.unitPrice);
+        const price = resolveUnitPrice(r, previewRateCategory);
         const gstPct = parseFloat(r.gstPercent);
         const line = calcLine(price, gstPct, qty);
         subtotal += line.subtotal;
@@ -494,8 +546,11 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       const params = z.object({ date: isoDate }).parse(request.params);
 
       // A dealer with no delivery route can't place orders — block building
-      // the indent at all so they never reach a dead-end at confirm.
-      if (!(await getDealerRouteId(dealerId))) {
+      // the indent at all so they never reach a dead-end at confirm. The
+      // active route is snapshotted onto the draft so it dispatches/reports
+      // under the route the dealer is currently on.
+      const activeRouteId = await getDealerRouteId(dealerId);
+      if (!activeRouteId) {
         return reply.status(403).send(NO_ROUTE_RESPONSE);
       }
 
@@ -518,6 +573,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${params.date}::date
            AND status <> 'cancelled'
+           AND COALESCE(route_id, ${activeRouteId}::uuid) = ${activeRouteId}::uuid
          ORDER BY created_at DESC
          LIMIT 1
       `;
@@ -554,6 +610,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
           const [tpl] = await pgClient`
             SELECT default_qty FROM dealer_standing_indents
              WHERE dealer_id = ${dealerId}
+               AND route_id = ${activeRouteId}::uuid
                AND product_id = ${subsidyProduct.id}::uuid
                AND active = true
              LIMIT 1
@@ -570,19 +627,25 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         lineItems.length > 0
           ? await pgClient`
               SELECT
-                id::text             AS "id",
-                name                 AS "name",
-                base_price::numeric  AS "basePrice",
-                gst_percent::numeric AS "gstPercent",
-                available            AS "available"
-              FROM products
-              WHERE id = ANY(${lineItems.map((i) => i.productId)}::uuid[])
-                AND deleted_at IS NULL
+                p.id::text             AS "id",
+                p.name                 AS "name",
+                p.base_price::numeric  AS "basePrice",
+                p.mrp::numeric         AS "mrp",
+                p.gst_percent::numeric AS "gstPercent",
+                p.available            AS "available",
+                p.code                 AS "code",
+                c.name                 AS "categoryName"
+              FROM products p
+              LEFT JOIN categories c ON c.id = p.category_id
+              WHERE p.id = ANY(${lineItems.map((i) => i.productId)}::uuid[])
+                AND p.deleted_at IS NULL
             `
           : [];
       const productMap = new Map<string, any>(
         productRows.map((p: any) => [p.id, p])
       );
+
+      const draftRateCategory = await dealerRateCategory(dealerId);
    
       for (const it of lineItems) {
         const p = productMap.get(it.productId);
@@ -605,7 +668,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       let itemCount = 0;
       const orderItemsRows = lineItems.map((it) => {
         const p = productMap.get(it.productId);
-        const price = parseFloat(p.basePrice);
+        const price = resolveUnitPrice(p, draftRateCategory);
         const gstPct = parseFloat(p.gstPercent);
         const line = calcLine(price, gstPct, it.quantity);
         subtotal += line.subtotal;
@@ -634,16 +697,18 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         // advisory lock makes the second wait until the first commits,
         // so its SELECT below finds the committed draft and UPDATEs it.
         await tx`
-          SELECT pg_advisory_xact_lock(hashtext(${dealerId + ":" + params.date}))
+          SELECT pg_advisory_xact_lock(hashtext(${dealerId + ":" + activeRouteId + ":" + params.date}))
         `;
 
-        // Only ever update an existing DRAFT. (A placed order was already
-        // rejected above; this guard keeps the transaction consistent.)
+        // Only ever update an existing DRAFT on THIS route. (A placed order
+        // was already rejected above; this guard keeps the transaction
+        // consistent.) COALESCE catches legacy NULL-route drafts.
         const [existing] = await tx`
           SELECT id FROM orders
            WHERE dealer_id = ${dealerId}
              AND delivery_date = ${params.date}::date
              AND status = 'draft'
+             AND COALESCE(route_id, ${activeRouteId}::uuid) = ${activeRouteId}::uuid
            ORDER BY created_at DESC
            LIMIT 1
         `;
@@ -664,11 +729,11 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         } else {
           const [created] = await tx`
             INSERT INTO orders (
-              dealer_id, zone_id, status, payment_mode,
+              dealer_id, zone_id, route_id, status, payment_mode,
               subtotal, total_gst, grand_total, item_count,
               delivery_date
             ) VALUES (
-              ${dealerId}, ${zoneId}, 'draft', 'credit',
+              ${dealerId}, ${zoneId}, ${activeRouteId}::uuid, 'draft', 'credit',
               ${subtotal.toFixed(2)}::numeric,
               ${totalGst.toFixed(2)}::numeric,
               ${grandTotal.toFixed(2)}::numeric,
@@ -719,8 +784,10 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
 
       // Guard: an unrouted dealer must not be able to place an order, even if
       // a draft was somehow materialised (e.g. by the nightly standing-indent
-      // job before their route was removed).
-      if (!(await getDealerRouteId(dealerId))) {
+      // job before their route was removed). The app confirms the ACTIVE
+      // route's order for the date.
+      const activeRouteId = await getDealerRouteId(dealerId);
+      if (!activeRouteId) {
         return reply.status(403).send(NO_ROUTE_RESPONSE);
       }
 
@@ -737,7 +804,8 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
  
-      // Look at ANY non-cancelled order for this date (not just 'draft').
+      // Look at ANY non-cancelled order for this date on the ACTIVE route
+      // (not just 'draft'). COALESCE catches legacy NULL-route orders.
       const [order] = await pgClient`
         SELECT id, status::text AS status,
                grand_total::numeric AS grand_total, item_count
@@ -745,6 +813,7 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${params.date}::date
            AND status <> 'cancelled'
+           AND COALESCE(route_id, ${activeRouteId}::uuid) = ${activeRouteId}::uuid
          ORDER BY created_at DESC
          LIMIT 1
       `;
@@ -842,15 +911,19 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
                  payment_mode = 'credit',
                  confirmed_at = now(),
                  updated_at   = now(),
+                 route_id     = COALESCE(orders.route_id, d.route_id),
                  cancel_window_ends_at = LEAST(
                    now() + interval '30 minutes',
                    COALESCE(
-                     (delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                     (orders.delivery_date + (
+                        SELECT tw.close_time FROM time_windows tw
+                         WHERE tw.route_id = COALESCE(orders.route_id, d.route_id)
+                         ORDER BY tw.close_time DESC LIMIT 1
+                      )) AT TIME ZONE 'Asia/Kolkata',
                      now() + interval '30 minutes'
                    )
                  )
            FROM dealers d
-           LEFT JOIN time_windows tw ON tw.route_id = d.route_id
            WHERE orders.id = ${order.id}::uuid
              AND d.id = ${dealerId}
         `;

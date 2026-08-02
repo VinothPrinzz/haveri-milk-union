@@ -16,9 +16,8 @@
 // https://api.example.com) and INTERNAL_JOB_SECRET (shared with the API).
 // ═══════════════════════════════════════════════════════════════════════
 
-import { Job } from "bullmq";
 
-export async function processReconcilePayments(_job: Job) {
+export async function processReconcilePayments() {
   const base = process.env.API_INTERNAL_URL || process.env.API_URL;
   const secret = process.env.INTERNAL_JOB_SECRET;
 

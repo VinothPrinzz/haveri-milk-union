@@ -22,7 +22,7 @@ import {
   type EmployeeCreditRow,
 } from "@/services/api";
 
-const CAN_EDIT = new Set(["accountant", "super_admin"]);
+const CAN_EDIT = new Set(["accountant", "super_admin", "call_desk"]);
 
 export default function EmployeeCreditLimitsPage() {
   const { user } = useAuth();

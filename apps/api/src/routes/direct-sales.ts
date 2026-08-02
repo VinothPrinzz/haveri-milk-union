@@ -3,6 +3,7 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { generateEmployeeInvoicePdfSync } from "../lib/invoice-pdf.js";
 
 const saleItemSchema = z.object({
   productId: z.string().uuid(),
@@ -79,9 +80,15 @@ export async function directSalesRoutes(app: FastifyInstance) {
       const dateTo = query.dateTo ?? null;
       const officerId = query.officerId ?? null;
 
+      // Employee subsidy is placed as an indent (employee_orders) rather than
+      // a direct sale, but it still belongs on this list — so the two are
+      // unioned here. The employee branch is skipped whenever the caller
+      // filters on a customerType (only 'agent'/'cash' are selectable) or on
+      // an officer, neither of which an employee indent carries.
       const rows = await pgClient`
-        SELECT 
-          ds.id, ds.gp_no, ds.customer_type, ds.customer_id,
+        WITH sales AS (
+        SELECT
+          ds.id, ds.gp_no, ds.customer_type::text AS customer_type, ds.customer_id,
           ds.route_id, ds.sale_date, ds.payment_mode,
           ds.subtotal, ds.total_gst, ds.grand_total, ds.notes, ds.created_at,
           r.code AS route_code, r.name AS route_name,
@@ -120,18 +127,62 @@ export async function directSalesRoutes(app: FastifyInstance) {
           AND (${dateFrom}::date IS NULL OR ds.sale_date >= ${dateFrom ?? '1970-01-01'}::date)
           AND (${dateTo}::date IS NULL OR ds.sale_date <= ${dateTo ?? '9999-12-31'}::date)
           AND (${officerId}::uuid IS NULL OR ds.officer_id = ${officerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
-        ORDER BY ds.created_at DESC
+        UNION ALL
+        SELECT
+          eo.id, NULL::text AS gp_no, 'employee_subsidy'::text AS customer_type,
+          eo.employee_id AS customer_id,
+          eo.route_id, eo.delivery_date AS sale_date, eo.payment_mode,
+          eo.subtotal, eo.total_gst, eo.grand_total, eo.notes, eo.created_at,
+          r.code AS route_code, r.name AS route_name,
+          u.name AS officer_name,
+          NULL::text AS batch_name,
+          i.id AS invoice_id,
+          e.name  AS customer_name,
+          e.phone AS customer_phone,
+          COALESCE(
+            (SELECT json_agg(json_build_object(
+                'product_name', eoi.product_name,
+                'quantity',     eoi.quantity,
+                'unit_price',   eoi.unit_price,
+                'line_total',   eoi.line_total
+              ) ORDER BY eoi.product_name)
+              FROM employee_order_items eoi WHERE eoi.employee_order_id = eo.id),
+            '[]'::json
+          ) AS items,
+          (SELECT count(*)::int FROM employee_order_items eoi WHERE eoi.employee_order_id = eo.id) AS item_count
+        FROM employee_orders eo
+        JOIN employees e   ON e.id = eo.employee_id
+        LEFT JOIN routes r ON r.id = eo.route_id
+        LEFT JOIN users u  ON u.id = eo.placed_by
+        LEFT JOIN invoices i ON i.order_id = eo.id
+        WHERE ${customerType}::text IS NULL
+          AND ${officerId}::uuid IS NULL
+          AND (${routeId}::uuid IS NULL OR eo.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${dateFrom}::date IS NULL OR eo.delivery_date >= ${dateFrom ?? '1970-01-01'}::date)
+          AND (${dateTo}::date IS NULL OR eo.delivery_date <= ${dateTo ?? '9999-12-31'}::date)
+        )
+        SELECT * FROM sales
+        ORDER BY created_at DESC
         LIMIT ${query.limit} OFFSET ${offset}
       `;
 
-      // Count query also updated for consistency (though not strictly required)
+      // Counts both rails, with predicates identical to the union above.
       const [countRow] = await pgClient`
-        SELECT count(*)::int AS count FROM direct_sales ds
+        SELECT (
+          SELECT count(*)::int FROM direct_sales ds
         WHERE (${customerType}::text IS NULL OR ds.customer_type = ${customerType ?? 'agent'}::direct_sale_customer_type)
           AND (${routeId}::uuid IS NULL OR ds.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${dateFrom}::date IS NULL OR ds.sale_date >= ${dateFrom ?? '1970-01-01'}::date)
           AND (${dateTo}::date IS NULL OR ds.sale_date <= ${dateTo ?? '9999-12-31'}::date)
           AND (${officerId}::uuid IS NULL OR ds.officer_id = ${officerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+        ) + (
+          SELECT count(*)::int FROM employee_orders eo
+           WHERE ${customerType}::text IS NULL
+             AND ${officerId}::uuid IS NULL
+             AND (${routeId}::uuid IS NULL OR eo.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+             AND (${dateFrom}::date IS NULL OR eo.delivery_date >= ${dateFrom ?? '1970-01-01'}::date)
+             AND (${dateTo}::date IS NULL OR eo.delivery_date <= ${dateTo ?? '9999-12-31'}::date)
+        ) AS count
       `;
 
       return reply.send({
@@ -459,6 +510,24 @@ export async function directSalesRoutes(app: FastifyInstance) {
   // POST /api/v1/direct-sales/employee-subsidy
   // Employee buys at MRP × (1 − subsidy%). Server applies discount, staff cannot override.
   // Only products with an active row in employee_subsidy_rules are accepted.
+  //
+  // This places a real INDENT (employee_orders + employee_order_items), not
+  // a direct_sales row. It used to write direct_sales — but neither All
+  // Indents (GET /orders) nor the Dispatch Sheet (GET /dispatch-sheet) reads
+  // that table, so the subsidy goods were invisible to the office and to the
+  // loading staff, and no tax invoice was ever raised. Both screens now union
+  // employee_orders in, so an employee indent behaves like any other:
+  // it dispatches on a route, it appears in All Indents, and it is invoiced.
+  //
+  // routeId is REQUIRED. The Dispatch Sheet is keyed by route, and employees
+  // carry no standing route (employees.route_id is NULL for all of them), so
+  // a route-less employee indent would have nowhere to be loaded.
+  //
+  // Create-or-append, like the customer subsidy flow (subsidy-indents.ts):
+  // uq_employee_orders_emp_delivery_active (migration 0062) allows at most
+  // one non-cancelled employee order per (employee, delivery_date), so a
+  // second subsidy sale on the same day SETS its lines on that day's order
+  // rather than opening a second one.
   // ────────────────────────────────────────────────────────────────────
   app.post(
     "/api/v1/direct-sales/employee-subsidy",
@@ -466,8 +535,7 @@ export async function directSalesRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = z.object({
         customerId:  z.string().uuid(),   // employees.id
-        routeId:     z.string().uuid().optional(),
-        batchId:     z.string().uuid().optional(),
+        routeId:     z.string().uuid(),   // required — see header
         saleDate:    z.string().optional(),
         paymentMode: z.enum(["cash", "upi", "credit"]).default("cash"),
         paymentRef:  z.string().optional(),
@@ -479,25 +547,31 @@ export async function directSalesRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "paymentRef is required for UPI" });
       }
 
-      const saleDate = body.saleDate ?? new Date().toISOString().slice(0, 10);
+      // Delivery date defaults to today in IST — resolved in Postgres so the
+      // ::date casts below never round-trip a JS Date through the driver.
+      const [d] = await pgClient`
+        SELECT to_char((now() AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS today
+      `;
+      const deliveryDate = body.saleDate ?? String(d!.today);
 
       // Resolve employee
       const [employee] = await pgClient`
-        SELECT id, name, active, route_id FROM employees
+        SELECT id, name, active FROM employees
         WHERE id = ${body.customerId} AND deleted_at IS NULL
       `;
       if (!employee)         return reply.status(400).send({ error: "Employee not found" });
       if (!employee.active)  return reply.status(400).send({ error: "Employee is inactive" });
 
-      // Explicit routeId wins; otherwise fall back to the employee's
-      // standing route (migration 0037). NULL if the employee has none.
-      const effectiveRouteId = body.routeId ?? employee.route_id ?? null;
+      const [route] = await pgClient`
+        SELECT id FROM routes WHERE id = ${body.routeId}::uuid AND deleted_at IS NULL
+      `;
+      if (!route) return reply.status(400).send({ error: "Route not found" });
 
       // Validate every line is in the eligible product list, and resolve the
       // fixed (GST-inclusive) employee price.
       const productIds = body.items.map(i => i.productId);
       const eligible = await pgClient`
-        SELECT r.product_id, r.subsidy_price,
+        SELECT r.product_id, r.subsidy_price, r.subsidy_percent,
               p.name, p.base_price, p.gst_percent
         FROM employee_subsidy_rules r
         JOIN products p ON p.id = r.product_id
@@ -514,7 +588,6 @@ export async function directSalesRoutes(app: FastifyInstance) {
         }
       }
 
-      let subtotal = 0, totalGst = 0;
       const lineItems: any[] = [];
 
       for (const it of body.items) {
@@ -530,9 +603,6 @@ export async function directSalesRoutes(app: FastifyInstance) {
         const lineSub    = +(unitPrice * it.quantity).toFixed(2);
         const gstAmount  = +(lineTotal - lineSub).toFixed(2);
 
-        subtotal += lineSub;
-        totalGst += gstAmount;
-
         lineItems.push({
           productId:   it.productId,
           productName: rule.name,
@@ -542,10 +612,10 @@ export async function directSalesRoutes(app: FastifyInstance) {
           gstAmount,
           lineTotal,
           empPrice,
+          subsidyPercent: parseFloat(rule.subsidy_percent ?? "0"),
           mrpReference:   mrp,
         });
       }
-      const grandTotal = +(subtotal + totalGst).toFixed(2);
 
       const subsidyNote = lineItems
         .map(li => `${li.productName}: employee price ₹${li.empPrice} (incl. GST) × ${li.quantity}`)
@@ -553,35 +623,77 @@ export async function directSalesRoutes(app: FastifyInstance) {
 
       const performedBy = request.admin!.userId;
 
-      let sale: any;
+      // ── The day's existing non-cancelled indent, if any ──
+      const [existing] = await pgClient`
+        SELECT id, status::text AS status, grand_total::numeric AS grand_total
+          FROM employee_orders
+         WHERE employee_id = ${body.customerId}
+           AND delivery_date = ${deliveryDate}::date
+           AND status <> 'cancelled'
+         ORDER BY created_at DESC
+         LIMIT 1
+      `;
+      if (existing?.status === "delivered") {
+        return reply.status(409).send({
+          error: "Indent already delivered",
+          message: `This employee's indent for ${deliveryDate} is already delivered and can no longer be changed.`,
+        });
+      }
+
+      const oldTotal = existing ? parseFloat(existing.grand_total) : 0;
+
+      let orderId: string = "";
+      let grandTotal = 0;
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
 
-        [sale] = await tx`
-          INSERT INTO direct_sales (
-            customer_type, customer_id, recipient_name, route_id, officer_id, batch_id,
-            sale_date, payment_mode, payment_ref,
-            subtotal, total_gst, grand_total, notes
-          )
-          VALUES (
-            'employee_subsidy', ${body.customerId}, ${employee.name},
-            ${effectiveRouteId}, ${performedBy}, ${body.batchId ?? null},
-            ${saleDate}::date, ${body.paymentMode}::payment_mode, ${body.paymentRef ?? null},
-            ${subtotal}, ${totalGst}, ${grandTotal},
-            ${body.notes ? `${body.notes} | ${subsidyNote}` : subsidyNote}
-          )
-          RETURNING *
-        `;
-        if (!sale) throw new Error("Failed to create sale");
+        if (existing) {
+          orderId = existing.id;
+          await tx`
+            UPDATE employee_orders
+               SET route_id     = ${body.routeId}::uuid,
+                   payment_mode = ${body.paymentMode}::payment_mode,
+                   notes        = COALESCE(${body.notes ?? null}, notes),
+                   updated_at   = now()
+             WHERE id = ${orderId}::uuid
+          `;
+        } else {
+          const [order] = await tx`
+            INSERT INTO employee_orders (
+              employee_id, route_id, status, payment_mode,
+              subtotal, total_gst, grand_total, item_count,
+              delivery_date, notes, placed_by, confirmed_at, created_at, updated_at
+            ) VALUES (
+              ${body.customerId}, ${body.routeId}::uuid, 'confirmed',
+              ${body.paymentMode}::payment_mode,
+              0, 0, 0, 0,
+              ${deliveryDate}::date,
+              ${body.notes ? `${body.notes} | ${subsidyNote}` : subsidyNote},
+              ${performedBy}, now(), now(), now()
+            )
+            RETURNING id
+          `;
+          orderId = order!.id;
+        }
 
+        // Set-not-add per product, mirroring the customer subsidy flow: a
+        // repeat sale of the same SKU on the same day REPLACES the line
+        // rather than stacking a duplicate onto the indent.
         for (const it of lineItems) {
           await tx`
-            INSERT INTO direct_sale_items (
-              direct_sale_id, product_id, product_name, quantity,
-              unit_price, gst_percent, gst_amount, line_total
+            DELETE FROM employee_order_items
+             WHERE employee_order_id = ${orderId}::uuid
+               AND product_id = ${it.productId}::uuid
+          `;
+          await tx`
+            INSERT INTO employee_order_items (
+              employee_order_id, product_id, product_name, quantity,
+              unit_price, gst_percent, gst_amount, line_total,
+              subsidy_percent, mrp_reference
             ) VALUES (
-              ${sale.id}, ${it.productId}, ${it.productName}, ${it.quantity},
-              ${it.unitPrice}, ${it.gstPercent}, ${it.gstAmount}, ${it.lineTotal}
+              ${orderId}::uuid, ${it.productId}::uuid, ${it.productName}, ${it.quantity},
+              ${it.unitPrice}, ${it.gstPercent}, ${it.gstAmount}, ${it.lineTotal},
+              ${it.subsidyPercent}, ${it.mrpReference}
             )
           `;
           await tx`
@@ -590,9 +702,33 @@ export async function directSalesRoutes(app: FastifyInstance) {
           `;
         }
 
+        // Re-total from ALL the indent's lines so an append leaves the
+        // pre-existing ones exactly as they were.
+        const [tot] = await tx`
+          SELECT
+            COALESCE(SUM(line_total), 0)::numeric                   AS grand_total,
+            COALESCE(SUM(gst_amount), 0)::numeric                   AS total_gst,
+            COALESCE(SUM(line_total) - SUM(gst_amount), 0)::numeric AS subtotal,
+            COUNT(*)::int                                           AS item_count
+          FROM employee_order_items WHERE employee_order_id = ${orderId}::uuid
+        `;
+        grandTotal = parseFloat(tot!.grand_total);
+        await tx`
+          UPDATE employee_orders SET
+            subtotal    = ${tot!.subtotal}::numeric,
+            total_gst   = ${tot!.total_gst}::numeric,
+            grand_total = ${tot!.grand_total}::numeric,
+            item_count  = ${tot!.item_count},
+            updated_at  = now()
+          WHERE id = ${orderId}::uuid
+        `;
+
         // Credit sale → debit the employee_ledger so the balance is reflected
-        // in Finance → Employee Credit (same maths as the indent-release flow).
-        if (body.paymentMode === "credit") {
+        // in Finance → Employee Credit. Only the DELTA over what this indent
+        // already carried is charged, so appending a line to the day's indent
+        // never re-bills the lines already on it.
+        const chargeDelta = +(grandTotal - oldTotal).toFixed(2);
+        if (body.paymentMode === "credit" && chargeDelta !== 0) {
           const [bal] = await tx`
             SELECT
               COALESCE(e.opening_balance, 0)
@@ -607,22 +743,58 @@ export async function directSalesRoutes(app: FastifyInstance) {
               AS bal
             FROM employees e WHERE e.id = ${body.customerId}
           `;
-          const balanceAfter = parseFloat(bal!.bal) - grandTotal;
+          const balance = parseFloat(bal!.bal);
 
-          await tx`
-            INSERT INTO employee_ledger
-              (employee_id, type, amount, reference_id, reference_type,
-               voucher_type, voucher_date, description, balance_after, performed_by)
-            VALUES
-              (${body.customerId}, 'debit', ${grandTotal.toFixed(2)}::numeric,
-               ${sale.id}, 'direct_sale', 'Invoice', ${saleDate}::date,
-               ${"Employee subsidy credit sale " + sale.id},
-               ${balanceAfter.toFixed(2)}::numeric, ${performedBy})
-          `;
+          if (chargeDelta > 0) {
+            await tx`
+              INSERT INTO employee_ledger
+                (employee_id, type, amount, reference_id, reference_type,
+                 voucher_type, voucher_date, description, balance_after, performed_by)
+              VALUES
+                (${body.customerId}, 'debit', ${chargeDelta.toFixed(2)}::numeric,
+                 ${orderId}, 'order', 'Invoice', ${deliveryDate}::date,
+                 ${"Employee subsidy indent " + orderId},
+                 ${(balance - chargeDelta).toFixed(2)}::numeric, ${performedBy})
+            `;
+          } else {
+            const refund = Math.abs(chargeDelta);
+            await tx`
+              INSERT INTO employee_ledger
+                (employee_id, type, amount, reference_id, reference_type,
+                 voucher_type, voucher_date, description, balance_after, performed_by)
+              VALUES
+                (${body.customerId}, 'credit', ${refund.toFixed(2)}::numeric,
+                 ${orderId}, 'adjustment', 'Adjustment', ${deliveryDate}::date,
+                 ${"Employee subsidy indent revised " + orderId},
+                 ${(balance + refund).toFixed(2)}::numeric, ${performedBy})
+            `;
+          }
         }
       });
 
-      return reply.status(201).send({ sale, items: lineItems });
+      // ── Invoice (best-effort, outside the tx) ──
+      // The money and the goods are already committed; a PDF render or an R2
+      // hiccup must not fail the request or suggest the sale itself failed.
+      let invoiceNumber: string | null = null;
+      let invoicePdfUrl: string | null = null;
+      try {
+        const pdf = await generateEmployeeInvoicePdfSync(orderId);
+        invoicePdfUrl = pdf.pdfUrl;
+        invoiceNumber = pdf.invoiceNumber;
+      } catch (err) {
+        console.error("[employee-subsidy] Invoice generation failed:", err);
+      }
+
+      return reply.status(201).send({
+        orderId,
+        deliveryDate,
+        status: existing?.status ?? "confirmed",
+        appended: !!existing,
+        grandTotal: grandTotal.toFixed(2),
+        invoiceNumber,
+        invoicePdfUrl,
+        items: lineItems,
+      });
     }
   );
 

@@ -21,6 +21,8 @@ import {
   findCategoryMinShortfalls,
   categoryMinMessage,
 } from "../lib/minOrderQty";
+import { isCreditInstMrp } from "../lib/ratePrice";
+import { useAuthStore } from "../store/auth";
 
 /**
  * IndentCart - the full cart review screen (spec section 6.8).
@@ -92,6 +94,8 @@ export default function IndentCart({
   onOrderPlaced,
 }: IndentCartProps) {
   const insets = useSafeAreaInsets();
+  // Rate category drives the milk-minimum exemption below.
+  const dealer = useAuthStore((s) => s.dealer);
 
   // Cart state subscriptions - granular so we don't re-render the whole tree
   const items       = useCartStore((s) => s.getItems());
@@ -133,14 +137,26 @@ export default function IndentCart({
     if (isEmpty || submitting) return;
 
     // Milk order minimum (≥12 L milk; curd has no minimum) — block before the API.
-    const minShortfalls = findCategoryMinShortfalls(
-      items.map((i) => ({
-        name: i.name,
-        categoryName: i.categoryName,
-        unit: i.unit,
-        quantity: i.quantity,
-      }))
-    );
+    // The union subsidy line is exempt (the server exempts it via
+    // MIN_QTY_EXEMPT_CODES) — it must neither count toward nor trigger the rule.
+    //
+    // 'Credit Inst-MRP' dealers are government institutions: supply is
+    // compulsory however small the indent, so the minimum never applies to
+    // them. This local check runs BEFORE the API call, so without this the
+    // server-side exemption alone could never let their small order through.
+    // Mirrors MIN_QTY_EXEMPT_RATE_CATEGORIES on the server.
+    const minShortfalls = isCreditInstMrp(dealer?.rateCategory)
+      ? []
+      : findCategoryMinShortfalls(
+          items
+            .filter((i) => !i.isSubsidy)
+            .map((i) => ({
+              name: i.name,
+              categoryName: i.categoryName,
+              unit: i.unit,
+              quantity: i.quantity,
+            }))
+        );
     if (minShortfalls.length > 0) {
       Alert.alert("Minimum order quantity", categoryMinMessage(minShortfalls));
       return;
@@ -300,9 +316,15 @@ export default function IndentCart({
 
       {/* Item rows */}
       {items.map((item) => {
+        // Dealers see the gross price they're billed at. Derive it from the
+        // line the cart actually computed so it always agrees with the
+        // total — including a Credit Inst-MRP dealer's MRP milk lines and
+        // the fixed-price subsidy line.
         const displayedUnitPrice = Math.round(
-          item.dealerPrice ?? item.mrp ?? item.basePrice ?? 0
-        ); // Dealers see the Dealer-Price (gross) they're billed at
+          item.quantity > 0
+            ? item.lineTotal / item.quantity
+            : item.dealerPrice ?? item.mrp ?? item.basePrice ?? 0
+        );
         return (
           <View key={item.id} style={styles.cartItem}>
             <View style={styles.ciEmo}>
@@ -314,6 +336,7 @@ export default function IndentCart({
               </Text>
               <Text style={styles.ciSize} numberOfLines={1}>
                 {item.unit}
+                {item.isSubsidy ? " · Union scheme (fixed)" : ""}
               </Text>
               <Text style={styles.ciPrice}>
                 ₹{displayedUnitPrice} × {item.quantity} ={" "}
@@ -323,25 +346,34 @@ export default function IndentCart({
               </Text>
             </View>
 
-            <View style={styles.ciCtrl}>
-              <TouchableOpacity
-                style={[styles.ciBtn, styles.ciBtnActive]}
-                activeOpacity={0.6}
-                onPress={() => removeItem(item.id)}
-                accessibilityLabel={`Decrease ${item.name}`}
-              >
-                <Text style={styles.ciBtnIconActive}>−</Text>
-              </TouchableOpacity>
-              <Text style={styles.ciQty}>{item.quantity}</Text>
-              <TouchableOpacity
-                style={[styles.ciBtn, styles.ciBtnActive]}
-                activeOpacity={0.6}
-                onPress={() => addItem(item)}
-                accessibilityLabel={`Increase ${item.name}`}
-              >
-                <Text style={styles.ciBtnIconActive}>+</Text>
-              </TouchableOpacity>
-            </View>
+            {item.isSubsidy ? (
+              // Union-assigned subsidy line — quantity is set by the dairy
+              // and pinned server-side; no steppers, can't be removed.
+              <View style={styles.ciLocked}>
+                <Text style={styles.ciLockedQty}>×{item.quantity}</Text>
+                <Text style={styles.ciLockedTag}>🔒 Fixed</Text>
+              </View>
+            ) : (
+              <View style={styles.ciCtrl}>
+                <TouchableOpacity
+                  style={[styles.ciBtn, styles.ciBtnActive]}
+                  activeOpacity={0.6}
+                  onPress={() => removeItem(item.id)}
+                  accessibilityLabel={`Decrease ${item.name}`}
+                >
+                  <Text style={styles.ciBtnIconActive}>−</Text>
+                </TouchableOpacity>
+                <Text style={styles.ciQty}>{item.quantity}</Text>
+                <TouchableOpacity
+                  style={[styles.ciBtn, styles.ciBtnActive]}
+                  activeOpacity={0.6}
+                  onPress={() => addItem(item)}
+                  accessibilityLabel={`Increase ${item.name}`}
+                >
+                  <Text style={styles.ciBtnIconActive}>+</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         );
       })}
@@ -724,6 +756,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: fonts.extrabold,
     color: colors.foreground,
+  },
+  // Locked (union subsidy) line — fixed quantity, no steppers
+  ciLocked: {
+    alignItems: "center",
+    gap: 2,
+    paddingHorizontal: 4,
+  },
+  ciLockedQty: {
+    fontSize: 13,
+    fontFamily: fonts.extrabold,
+    color: colors.foreground,
+  },
+  ciLockedTag: {
+    fontSize: 8,
+    fontFamily: fonts.bold,
+    color: colors.mutedForeground,
   },
 
   // Cancel note -----------------------------------------------------

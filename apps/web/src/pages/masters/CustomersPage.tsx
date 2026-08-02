@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tansta
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Plus, Search, Download, ChevronLeft, ChevronRight } from "lucide-react";
+import { Plus, Search, Download, ChevronLeft, ChevronRight, Trash2, AlertTriangle } from "lucide-react";
 import PageHeader, {
   FilterBar, FormSection, Field, FormFooter, StatusPill,
 } from "@/components/PageHeader";
@@ -856,6 +856,24 @@ function CustomerFormBody({
     onError: (e: any) => toast.error(e?.message || "Save failed"),
   });
 
+  // Delete (edit mode only). Soft-deletes on the server; the customer
+  // disappears from every list but financial history is retained.
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const remove = useMutation({
+    mutationFn: async () => {
+      const { deleteCustomer } = await import("@/services/api"); // lazy to avoid circular
+      return deleteCustomer(initial.id);
+    },
+    onSuccess: () => {
+      toast.success("Customer deleted");
+      qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["customers-page"] });
+      setConfirmDelete(false);
+      onSaved();
+    },
+    onError: (e: any) => toast.error(e?.message || "Failed to delete customer"),
+  });
+
   // F9 option lists
   const zoneOpts: F9Option[]     = useMemo(() => zones.map((z: any) => ({ value: z.id, label: z.name })), [zones]);
   const rateCatOpts: F9Option[]  = useMemo(() => (rateCategories ?? []).map((r: any) => ({ value: r.value ?? r, label: r.label ?? r })), [rateCategories]);
@@ -1014,6 +1032,19 @@ function CustomerFormBody({
       </FormSection>
 
       <FormFooter>
+        {mode === "edit" && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 mr-auto border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            disabled={save.isPending || remove.isPending}
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+            Delete Customer
+          </Button>
+        )}
         <Button type="button" variant="ghost" size="sm" className="h-8" onClick={onCancel}>
           Cancel
         </Button>
@@ -1027,6 +1058,50 @@ function CustomerFormBody({
           {save.isPending ? "Saving..." : "Save Customer"}
         </Button>
       </FormFooter>
+
+      {/* Delete confirmation — edit mode only */}
+      <Dialog open={confirmDelete} onOpenChange={o => !o && !remove.isPending && setConfirmDelete(false)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="w-4 h-4" />
+              Delete customer?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-[13px]">
+            <p>
+              You are about to delete{" "}
+              <span className="font-semibold">{initial?.code}{initial?.name ? ` — ${initial.name}` : ""}</span>.
+            </p>
+            <p className="text-muted-foreground">
+              The customer will be removed from all lists and can no longer place indents or log in
+              to the app. Past orders, invoices and ledger history are kept for records. This action
+              cannot be undone from here.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8"
+              disabled={remove.isPending}
+              onClick={() => setConfirmDelete(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
+              {remove.isPending ? "Deleting..." : "Delete Customer"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </form>
   );
 }

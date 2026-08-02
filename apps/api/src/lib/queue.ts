@@ -1,24 +1,13 @@
-import { Queue } from "bullmq";
-import { Redis } from "ioredis";
+// ════════════════════════════════════════════════════════════════════
+// apps/api/src/lib/queue.ts
+//
+// Background-job enqueue helpers. Jobs are rows in the background_jobs
+// outbox table (migration 0060) on the existing Postgres — the worker
+// polls it every ~5s. This replaced BullMQ/Redis: on per-command-billed
+// Upstash, BullMQ's idle polling alone cost ~$50/month.
+// ════════════════════════════════════════════════════════════════════
 
-const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
-
-let redis: Redis | null = null;
-const queues: Record<string, Queue> = {};
-
-function getRedis(): Redis {
-  if (!redis) {
-    redis = new Redis(REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
-  }
-  return redis;
-}
-
-function getQueue(name: string): Queue {
-  if (!queues[name]) {
-    queues[name] = new Queue(name, { connection: getRedis() });
-  }
-  return queues[name]!;
-}
+import { pgClient as sql } from "./db.js";
 
 /**
  * Enqueue a push notification to be sent by the worker.
@@ -32,10 +21,10 @@ export async function enqueuePushNotification(data: {
   body?: string;
 }) {
   try {
-    await getQueue("push-notifications").add(`push-${data.event}`, data, {
-      removeOnComplete: 100,
-      removeOnFail: 500,
-    });
+    await sql`
+      INSERT INTO background_jobs (queue, name, data)
+      VALUES ('push-notifications', ${`push-${data.event}`}, ${JSON.stringify(data)}::jsonb)
+    `;
   } catch (err) {
     console.warn("[Queue] Failed to enqueue push notification:", err);
     // Don't throw — push notifications are non-critical
@@ -44,26 +33,15 @@ export async function enqueuePushNotification(data: {
 
 /**
  * Enqueue PDF invoice generation after an order is placed.
+ * Retried up to 3 times with exponential backoff by the worker.
  */
 export async function enqueuePDFInvoice(orderId: string) {
   try {
-    await getQueue("pdf-invoice").add(`invoice-${orderId.slice(0, 8)}`, { orderId }, {
-      removeOnComplete: 100,
-      removeOnFail: 500,
-      attempts: 3,
-      backoff: { type: "exponential", delay: 5000 },
-    });
+    await sql`
+      INSERT INTO background_jobs (queue, name, data, max_attempts)
+      VALUES ('pdf-invoice', ${`invoice-${orderId.slice(0, 8)}`}, ${JSON.stringify({ orderId })}::jsonb, 3)
+    `;
   } catch (err) {
     console.warn("[Queue] Failed to enqueue PDF generation:", err);
   }
-}
-
-/**
- * Clean up Redis connections on shutdown.
- */
-export async function closeQueues() {
-  for (const q of Object.values(queues)) {
-    await q.close();
-  }
-  if (redis) await redis.quit();
 }

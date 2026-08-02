@@ -47,6 +47,7 @@ import { useProducts, useCategories } from "../hooks/useProducts";
 import { useBanners } from "../hooks/useBanners";
 import { useNotifications } from "../hooks/useNotifications";
 import type { Product, Banner } from "../lib/types";
+import { resolveUnitPrice } from "../lib/ratePrice";
 
 interface HomeScreenProps {
   onOpenIndent: () => void;
@@ -174,6 +175,10 @@ export default function HomeScreen({
     icon: p.icon ?? "📦",
     unit: p.unit,
     basePrice: p.basePrice,
+    // NET price this dealer is billed — a 'Credit Inst-MRP' dealer pays MRP
+    // on milk. Resolved here because the store can't see the logged-in
+    // dealer. Mirrors what the server charges (apps/api/lib/rate-price.ts).
+    unitPrice: resolveUnitPrice(p, dealer?.rateCategory),
     dealerPrice: p.dealerPrice,
     mrp: p.mrp,
     gstPercent: p.gstPercent,
@@ -191,10 +196,12 @@ export default function HomeScreen({
   //   • only for an editable, not-yet-placed draft, whose window is open,
   //     for a routed dealer who can actually place it.
   // The dealer keeps every existing action (add / remove / change qty).
-  // The union subsidy line (PD0191S) is intentionally left out: it isn't
-  // in the catalog, so the lookup below skips it — it stays on the
-  // server-managed draft/auto-confirm path exactly as before. If the
-  // dealer never places, that draft still auto-confirms unchanged.
+  // The union subsidy line (PD0191S) is hidden from the catalog, so it is
+  // seeded from the draft's OWN fields as a locked row (no steppers in the
+  // cart UI). It goes in even when the dealer has already started a cart:
+  // the server pins this line onto every order placed for today, so the
+  // cart must show it — and bill for it — no matter what. If the dealer
+  // never places, the draft still auto-confirms unchanged.
   useEffect(() => {
     if (seededDayRef.current === today) return;
     const draft = todayDraftQuery.data;
@@ -216,15 +223,42 @@ export default function HomeScreen({
     }
 
     if (products.length === 0) return; // need the catalog for price/display
-    if (useCartStore.getState().getItemCount() > 0) {
+
+    const subsidy = draftItems.find((i) => i.isSubsidy);
+    if (subsidy && !useCartStore.getState().items[subsidy.productId]) {
+      addItem({
+        id: subsidy.productId,
+        name: subsidy.productName,
+        icon: subsidy.icon ?? "🥛",
+        unit: subsidy.unit,
+        basePrice: subsidy.unitPrice,
+        // The subsidy SKU is a Milk product with a FIXED half-price scheme
+        // rate — it must NOT go through the rate resolver, or a Credit
+        // Inst-MRP dealer would be shown MRP for it.
+        unitPrice: subsidy.unitPrice,
+        // Billed gross (base + GST) — mirrors what the catalog's
+        // dealerPrice shows for regular products.
+        dealerPrice:
+          Math.round(subsidy.unitPrice * (1 + subsidy.gstPercent / 100) * 100) /
+          100,
+        mrp: subsidy.unitPrice,
+        gstPercent: subsidy.gstPercent,
+        categoryName: subsidy.categoryName ?? undefined,
+        isSubsidy: true,
+      });
+      setQuantity(subsidy.productId, subsidy.quantity);
+    }
+
+    if (useCartStore.getState().getItems().some((i) => !i.isSubsidy)) {
       seededDayRef.current = today; // dealer is already building a cart
       return;
     }
 
     const byId = new Map(products.map((p) => [p.id, p]));
     for (const it of draftItems) {
+      if (it.isSubsidy) continue; // seeded above from the draft's fields
       const p = byId.get(it.productId);
-      if (!p) continue; // hidden/unavailable (e.g. subsidy SKU) — skip
+      if (!p) continue; // hidden/unavailable — skip
       addItem(toCartProduct(p));
       setQuantity(p.id, it.quantity);
     }

@@ -1,6 +1,6 @@
 // apps/web/src/pages/finance/DayBookPage.tsx
 // Finance → Day Book  (/finance/day-book, finance.view)
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import PageHeader, { StatCard, EmptyState, fmtINR, fmtDate, PrintButton } from "@/components/PageHeader";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
@@ -19,7 +19,13 @@ const TYPE_LABEL: Record<string, string> = {
   on_account: "On-account",
   order_sale: "Sale — Order",
   counter_sale: "Sale — Counter",
-  refund: "Refund",
+  refund: "Refund (Bank)",
+  modify_refund: "Modify — Refund to Balance",
+  modify_debit: "Modify — Debit from Balance",
+  cancel_refund: "Cancel — Refund to Balance",
+  cheque_bounce: "Cheque Bounced — Reversal",
+  cheque_charges: "Cheque Return Charges",
+  cheque_cancel: "Cheque Cancelled — Reversal",
   adjustment_credit: "Adjustment (Cr)",
   adjustment_debit: "Adjustment (Dr)",
 };
@@ -32,9 +38,32 @@ const TYPE_TONE: Record<string, string> = {
   order_sale: "bg-info/15 text-info",
   counter_sale: "bg-info/10 text-info",
   refund: "bg-destructive/15 text-destructive",
+  // Wallet movements are not cash out — keep them off the destructive tone
+  // that signals money leaving the union.
+  modify_refund: "bg-muted text-muted-foreground",
+  modify_debit: "bg-muted text-muted-foreground",
+  cancel_refund: "bg-muted text-muted-foreground",
+  // A bounced cheque reverses money the union thought it had — still not a
+  // cash outflow today, but finance needs it to stand out.
+  cheque_bounce: "bg-warning/20 text-warning",
+  cheque_charges: "bg-warning/10 text-warning",
+  cheque_cancel: "bg-warning/20 text-warning",
   adjustment_credit: "bg-warning/10 text-warning",
   adjustment_debit: "bg-warning/10 text-warning",
 };
+// Online (gateway) settlement methods a dealer order can carry. Anything in
+// s.sales.byMode that is neither of these two is treated as an online method
+// and gets its own line — so a method only ever shows when it was used.
+const WALLET_BUCKET = "wallet";
+const CREDIT_BUCKET = "credit";
+const ONLINE_METHOD_LABEL: Record<string, string> = {
+  upi: "UPI",
+  card: "Card",
+  netbanking: "Net Banking",
+};
+const onlineMethodLabel = (k: string) =>
+  ONLINE_METHOD_LABEL[k] ?? k.replace(/_/g, " ").toUpperCase();
+
 const KIND_TABS: Array<{ key: DayBookKind | "all"; label: string }> = [
   { key: "all", label: "All" },
   { key: "receipt", label: "Receipts" },
@@ -76,12 +105,23 @@ export default function DayBookPage() {
     () => (data?.lines ?? []).filter((l) => kind === "all" || l.kind === kind),
     [data, kind]
   );
+  // "Out" is cash that actually left the union — gateway refunds to a bank
+  // account, nothing else. Credits back to a dealer's balance (modify down,
+  // cancellation) and debits taken from it (modify up) only move the wallet
+  // liability, and the sale line already carries the modified total, so they
+  // get their own tally instead of being netted against the day's money.
   const visibleTotals = useMemo(() => {
-    const t = { in: 0, sales: 0, out: 0 };
+    const t = { in: 0, sales: 0, out: 0, toBalance: 0, fromBalance: 0 };
     for (const l of visible) {
-      if (l.kind === "receipt" && l.type !== "topup_ledger") t.in += l.amount;
+      if (l.cashImpact === "out") t.out += l.amount;
+      else if (l.cashImpact === "in") t.in += l.amount;
       else if (l.kind === "sale") t.sales += l.amount;
-      else if (l.kind === "refund" || l.type === "adjustment_debit") t.out += l.amount;
+      // Everything left is a balance movement. Credits (refunds back, journal
+      // credits, receipt-less top-ups) raise the dealer's balance; the rest
+      // (modify-up debits, cheque reversals, debit notes) lower it.
+      else if (l.kind === "refund" || l.type === "adjustment_credit" || l.type === "topup_ledger")
+        t.toBalance += l.amount;
+      else t.fromBalance += l.amount;
     }
     return t;
   }, [visible]);
@@ -114,12 +154,15 @@ export default function DayBookPage() {
             <StatCard label="Total Sales" tone="info" value={fmtINR(s.sales.total)} />
             <StatCard label="Cash" tone="success" value={fmtINR(s.byMode["cash"] ?? 0)} />
             <StatCard label="UPI" value={fmtINR(s.byMode["upi"] ?? 0)} />
-            <StatCard label="Refunds Out" tone="warning" value={fmtINR(s.refundsOut)} />
+            <StatCard label="Refunds Out (bank)" tone="warning" value={fmtINR(s.refundsOut)}
+              hint={s.orderChanges.refundsToBalance > 0
+                ? `+ ${fmtINR(s.orderChanges.refundsToBalance)} credited back to dealer balances — no cash out`
+                : undefined} />
             <StatCard label="Net Receipts" value={fmtINR(s.net)} />
           </div>
 
           {/* Receipts vs sales composition — why receipts ≠ sales */}
-          <div className="grid md:grid-cols-2 gap-3">
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
             <div className="erp-panel p-3">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Receipts by purpose</div>
               <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[12px]">
@@ -138,12 +181,33 @@ export default function DayBookPage() {
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Sales composition</div>
               <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[12px]">
                 <span className="text-muted-foreground">Dealer orders ({s.sales.ordersCount})</span><span className="num text-right">{fmtINR(s.sales.ordersTotal)}</span>
-                <span className="text-muted-foreground pl-3">· paid from wallet</span><span className="num text-right">{fmtINR(s.sales.byMode["wallet"] ?? 0)}</span>
-                <span className="text-muted-foreground pl-3">· on credit</span><span className="num text-right">{fmtINR(s.sales.byMode["credit"] ?? 0)}</span>
+                <span className="text-muted-foreground pl-3">· paid from wallet</span><span className="num text-right">{fmtINR(s.sales.byMode[WALLET_BUCKET] ?? 0)}</span>
+                {Object.entries(s.sales.byMode)
+                  .filter(([k, v]) => k !== WALLET_BUCKET && k !== CREDIT_BUCKET && v > 0)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([k, v]) => (
+                    <Fragment key={k}>
+                      <span className="text-muted-foreground pl-3">· paid online — {onlineMethodLabel(k)}</span><span className="num text-right">{fmtINR(v)}</span>
+                    </Fragment>
+                  ))}
+                <span className="text-muted-foreground pl-3">· on credit</span><span className="num text-right">{fmtINR(s.sales.byMode[CREDIT_BUCKET] ?? 0)}</span>
                 <span className="text-muted-foreground">Counter sales ({s.sales.counterCount})</span><span className="num text-right">{fmtINR(s.sales.counterTotal)}</span>
               </div>
               <div className="mt-2 text-[11px] text-muted-foreground">
-                Receipts and sales differ when a top-up is bigger than the order — the balance stays in the dealer&apos;s wallet — or when orders go on credit.
+                Wallet covers orders settled from available balance or top-ups; pay-now orders show under their online method (UPI/card). Receipts and sales differ when a top-up is bigger than the order — the balance stays in the dealer&apos;s wallet — or when orders go on credit.
+              </div>
+            </div>
+            <div className="erp-panel p-3">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Refunds &amp; order changes</div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[12px]">
+                <span className="text-muted-foreground">Bank refunds ({s.refundsCount}) — cash out</span><span className="num text-right text-destructive">{fmtINR(s.refundsOut)}</span>
+                <span className="text-muted-foreground pt-1 col-span-2 text-[11px] uppercase tracking-wide">Dealer balance — no cash movement</span>
+                <span className="text-muted-foreground pl-3">· refunds to balance ({s.orderChanges.refundsCount})</span><span className="num text-right">{fmtINR(s.orderChanges.refundsToBalance)}</span>
+                <span className="text-muted-foreground pl-3">· extra debits — modify ({s.orderChanges.debitsCount})</span><span className="num text-right">{fmtINR(s.orderChanges.extraDebits)}</span>
+                <span className="text-muted-foreground pl-3">· net to dealer balances</span><span className="num text-right">{fmtINR(s.orderChanges.netToWallet)}</span>
+              </div>
+              <div className="mt-2 text-[11px] text-muted-foreground">
+                Only bank refunds take money out of the union. Indent modifications and cancellations just move the dealer&apos;s own balance — his wallet is money the union already holds, so crediting it back is not an outflow, and the sale above is already shown net of the change. Counting it twice would understate the day.
               </div>
             </div>
           </div>
@@ -222,7 +286,11 @@ export default function DayBookPage() {
                 </thead>
                 <tbody>
                   {visible.map((l) => {
-                    const out = l.kind === "refund" || l.type === "adjustment_debit";
+                    // Only true cash out is signed and painted red; balance
+                    // movements are shown plain so they don't read as an
+                    // outflow the union never made.
+                    const out = l.cashImpact === "out";
+                    const balanceMove = l.cashImpact === "none" && l.kind !== "sale";
                     return (
                       <tr key={`${l.kind}-${l.id}`}>
                         <td className="text-[12px] num">{fmtTime(l.at)}</td>
@@ -233,7 +301,7 @@ export default function DayBookPage() {
                         <td className="text-[12px] font-mono max-w-[220px] truncate" title={l.reference ?? undefined}>{l.reference ?? "—"}</td>
                         <td className="text-[12px] font-mono">{l.docNo ?? "—"}</td>
                         <td className="text-[12px]">{l.byName ?? "—"}</td>
-                        <td className={`num font-medium ${out ? "text-destructive" : l.kind === "sale" ? "text-info" : "text-success"}`} style={{ textAlign: "right" }}>
+                        <td className={`num font-medium ${out ? "text-destructive" : balanceMove ? "text-muted-foreground" : l.kind === "sale" ? "text-info" : "text-success"}`} style={{ textAlign: "right" }}>
                           {out ? "−" : ""}{fmtINR(l.amount)}
                         </td>
                       </tr>
@@ -245,7 +313,12 @@ export default function DayBookPage() {
                     <td colSpan={8} className="text-[12px] text-muted-foreground">
                       Totals (shown rows) — Receipts in: <span className="text-success num">{fmtINR(visibleTotals.in)}</span>
                       {" · "}Sales: <span className="text-info num">{fmtINR(visibleTotals.sales)}</span>
-                      {" · "}Out: <span className="text-destructive num">{fmtINR(visibleTotals.out)}</span>
+                      {" · "}Cash out: <span className="text-destructive num">{fmtINR(visibleTotals.out)}</span>
+                      {(visibleTotals.toBalance > 0 || visibleTotals.fromBalance > 0) && (<>
+                        {" · "}To dealer balances: <span className="num">{fmtINR(visibleTotals.toBalance)}</span>
+                        {" · "}From dealer balances: <span className="num">{fmtINR(visibleTotals.fromBalance)}</span>
+                        {" "}<span className="text-[11px]">(no cash movement)</span>
+                      </>)}
                     </td>
                     <td />
                   </tr>

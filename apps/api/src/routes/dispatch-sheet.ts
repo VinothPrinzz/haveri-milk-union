@@ -94,30 +94,75 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
           -- line_total is GST-inclusive (orders.ts), so SUM(line_total) per
           -- order == grand_total — the unbucketed total matches the old query.
           SELECT
-            d.route_id,
+            COALESCE(o.route_id, d.route_id) AS route_id,
             COUNT(DISTINCT o.id)::int AS order_count,
             COUNT(oi.id)::int AS line_count,
             COALESCE(SUM(oi.line_total), 0)::numeric AS total_amount
           FROM orders o
-          JOIN dealers d        ON d.id = o.dealer_id AND d.deleted_at IS NULL
+          -- No deleted_at / active filter on the dealer: a confirmed order is
+          -- goods that must still be loaded and delivered, and deleting or
+          -- deactivating the dealer afterwards must never erase it from the
+          -- dispatch totals.
+          JOIN dealers d        ON d.id = o.dealer_id
           JOIN order_items oi   ON oi.order_id = o.id
           JOIN products p       ON p.id = oi.product_id AND p.deleted_at IS NULL
           LEFT JOIN categories c ON c.id = p.category_id
           WHERE o.delivery_date = ${targetDate}::date
             AND o.status::text = ANY(${DISPATCHABLE_STATUSES as unknown as string[]}::text[])
-            AND d.route_id IS NOT NULL
+            AND COALESCE(o.route_id, d.route_id) IS NOT NULL
             AND (${routeId}::uuid IS NULL
-                 OR d.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+                 OR COALESCE(o.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
             AND (${batchId}::uuid IS NULL
                  OR EXISTS (SELECT 1 FROM batch_routes br
-                            WHERE br.route_id = d.route_id
+                            WHERE br.route_id = COALESCE(o.route_id, d.route_id)
                               AND br.batch_id = ${batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
             AND (
               ${effectiveBucket}::text IS NULL
               OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
               OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
             )
-          GROUP BY d.route_id
+          GROUP BY COALESCE(o.route_id, d.route_id)
+        ),
+        -- Employee-subsidy indents ride the same vehicle but live in
+        -- employee_orders (orders.dealer_id is NOT NULL, so they cannot sit in
+        -- the orders table). Without this branch the loading checklist
+        -- silently omitted them and the goods were never put on the truck.
+        employee_route_orders AS (
+          SELECT
+            eo.route_id AS route_id,
+            COUNT(DISTINCT eo.id)::int AS order_count,
+            COUNT(eoi.id)::int AS line_count,
+            COALESCE(SUM(eoi.line_total), 0)::numeric AS total_amount
+          FROM employee_orders eo
+          JOIN employee_order_items eoi ON eoi.employee_order_id = eo.id
+          JOIN products p       ON p.id = eoi.product_id AND p.deleted_at IS NULL
+          LEFT JOIN categories c ON c.id = p.category_id
+          WHERE eo.delivery_date = ${targetDate}::date
+            AND eo.status::text = ANY(${DISPATCHABLE_STATUSES as unknown as string[]}::text[])
+            AND eo.route_id IS NOT NULL
+            AND (${routeId}::uuid IS NULL OR eo.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+            AND (${batchId}::uuid IS NULL
+                 OR EXISTS (SELECT 1 FROM batch_routes br
+                            WHERE br.route_id = eo.route_id
+                              AND br.batch_id = ${batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
+            AND (
+              ${effectiveBucket}::text IS NULL
+              OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
+              OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
+            )
+          GROUP BY eo.route_id
+        ),
+        all_route_orders AS (
+          SELECT route_id,
+                 SUM(order_count)::int      AS order_count,
+                 SUM(line_count)::int       AS line_count,
+                 SUM(total_amount)::numeric AS total_amount
+            FROM (
+              SELECT * FROM route_orders
+              UNION ALL
+              SELECT * FROM employee_route_orders
+            ) u
+           GROUP BY route_id
         )
         SELECT
           r.id          AS "routeId",
@@ -134,7 +179,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
           ro.order_count   AS "dealerCount",
           ro.line_count    AS "lineCount",
           ro.total_amount  AS "totalAmount"
-        FROM route_orders ro
+        FROM all_route_orders ro
         JOIN routes r           ON r.id = ro.route_id AND r.deleted_at IS NULL
         LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
         LEFT JOIN route_assignments ra
@@ -153,47 +198,70 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
       // ── Item-level aggregation per (route, product).
       // Crates/loose math is done in SQL with safe division
       // (packets_crate may be 0 or NULL for some products).
+      // Dealer and employee lines are folded into one (route, product) stream
+      // BEFORE aggregation, so a product carried by both rails reports a single
+      // combined row — and its crates/loose split is computed once from the
+      // combined quantity, never rounded per rail and then added up.
       const items = await pgClient`
+        WITH dispatch_lines AS (
+          SELECT COALESCE(o.route_id, d.route_id) AS route_id,
+                 oi.product_id                    AS product_id,
+                 oi.quantity                      AS quantity
+            FROM orders o
+            JOIN dealers d      ON d.id = o.dealer_id
+            JOIN order_items oi ON oi.order_id = o.id
+           WHERE o.delivery_date = ${targetDate}::date
+             AND o.status::text = ANY(${DISPATCHABLE_STATUSES as unknown as string[]}::text[])
+             AND COALESCE(o.route_id, d.route_id) IS NOT NULL
+             AND (${routeId}::uuid IS NULL
+                  OR COALESCE(o.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+             AND (${batchId}::uuid IS NULL
+                  OR EXISTS (SELECT 1 FROM batch_routes br
+                             WHERE br.route_id = COALESCE(o.route_id, d.route_id)
+                               AND br.batch_id = ${batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
+          UNION ALL
+          SELECT eo.route_id, eoi.product_id, eoi.quantity
+            FROM employee_orders eo
+            JOIN employee_order_items eoi ON eoi.employee_order_id = eo.id
+           WHERE eo.delivery_date = ${targetDate}::date
+             AND eo.status::text = ANY(${DISPATCHABLE_STATUSES as unknown as string[]}::text[])
+             AND eo.route_id IS NOT NULL
+             AND (${routeId}::uuid IS NULL
+                  OR eo.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+             AND (${batchId}::uuid IS NULL
+                  OR EXISTS (SELECT 1 FROM batch_routes br
+                             WHERE br.route_id = eo.route_id
+                               AND br.batch_id = ${batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
+        )
         SELECT
-          d.route_id              AS "routeId",
+          dl.route_id             AS "routeId",
           p.id                    AS "productId",
           COALESCE(p.report_alias, p.name) AS "productName",
           c.name                  AS "category",
           p.unit                  AS "unit",
           p.pack_size             AS "packSize",
           COALESCE(p.packets_crate, 0)::int AS "packetsPerCrate",
-          SUM(oi.quantity)::int   AS "totalPackets",
+          SUM(dl.quantity)::int   AS "totalPackets",
           CASE WHEN COALESCE(p.packets_crate, 0) > 0
-            THEN FLOOR(SUM(oi.quantity)::numeric / p.packets_crate)::int
+            THEN FLOOR(SUM(dl.quantity)::numeric / p.packets_crate)::int
             ELSE 0
           END AS "crates",
           CASE WHEN COALESCE(p.packets_crate, 0) > 0
-            THEN (SUM(oi.quantity)::int % p.packets_crate)::int
-            ELSE SUM(oi.quantity)::int
+            THEN (SUM(dl.quantity)::int % p.packets_crate)::int
+            ELSE SUM(dl.quantity)::int
           END AS "loosePackets",
           p.sort_order            AS "sortOrder"
-        FROM orders o
-        JOIN dealers d        ON d.id = o.dealer_id AND d.deleted_at IS NULL
-        JOIN order_items oi   ON oi.order_id = o.id
-        JOIN products p       ON p.id = oi.product_id AND p.deleted_at IS NULL
+        FROM dispatch_lines dl
+        JOIN products p       ON p.id = dl.product_id AND p.deleted_at IS NULL
         LEFT JOIN categories c ON c.id = p.category_id
-        WHERE o.delivery_date = ${targetDate}::date
-          AND o.status::text = ANY(${DISPATCHABLE_STATUSES as unknown as string[]}::text[])
-          AND d.route_id IS NOT NULL
-          AND (${routeId}::uuid IS NULL
-               OR d.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
-          AND (${batchId}::uuid IS NULL
-               OR EXISTS (SELECT 1 FROM batch_routes br
-                          WHERE br.route_id = d.route_id
-                            AND br.batch_id = ${batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
-          AND (
+        WHERE (
             ${effectiveBucket}::text IS NULL
             OR (${effectiveBucket}::text = 'milk-curd' AND LOWER(c.name) = ANY(${MILK_CURD_CATEGORIES}::text[]))
             OR (${effectiveBucket}::text = 'others'    AND LOWER(c.name) <> ALL(${MILK_CURD_CATEGORIES}::text[]))
           )
-        GROUP BY d.route_id, p.id, p.report_alias, p.name, c.name,
+        GROUP BY dl.route_id, p.id, p.report_alias, p.name, c.name,
                  p.unit, p.pack_size, p.packets_crate, p.sort_order
-        ORDER BY d.route_id, p.sort_order, p.name
+        ORDER BY dl.route_id, p.sort_order, p.name
       `;
 
       // ── Stitch items into routes + compute per-route totals
@@ -276,9 +344,9 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
       // contractor, dispatch_time from batch/route) so the form can be
       // submitted with empty fields.
       const [route] = await pgClient`
-        SELECT r.id, r.code, r.name, r.zone_id, r.contractor_id,
+        SELECT r.id, r.code, r.name, r.contractor_id,
                r.dispatch_time AS route_dispatch_time,
-               ct.vehicle_number AS contractor_vehicle,
+               ct.vehicle_number AS contractor_vehicle
         FROM routes r
         LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
         WHERE r.id = ${body.routeId} AND r.deleted_at IS NULL
@@ -342,7 +410,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
             WHERE o.id       = ANY(${body.indentIds}::uuid[])
               AND o.status   = 'confirmed'
               AND o.delivery_date = ${body.date}::date
-              AND d.route_id = ${body.routeId}::uuid
+              AND COALESCE(o.route_id, d.route_id) = ${body.routeId}::uuid
           `;
 
           // ── C. Recompute aggregate counters from authoritative source
@@ -355,7 +423,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
             FROM orders o
             JOIN dealers d ON d.id = o.dealer_id
             WHERE o.delivery_date = ${body.date}::date
-              AND d.route_id = ${body.routeId}::uuid
+              AND COALESCE(o.route_id, d.route_id) = ${body.routeId}::uuid
               AND o.status IN ('confirmed','dispatched','delivered')
           `;
 
@@ -453,7 +521,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
           FROM dealers d
           WHERE o.dealer_id = d.id
             AND o.delivery_date = ${body.date}::date
-            AND d.route_id = ${body.routeId}::uuid
+            AND COALESCE(o.route_id, d.route_id) = ${body.routeId}::uuid
             AND o.status   = 'confirmed'
           RETURNING o.id
         `;

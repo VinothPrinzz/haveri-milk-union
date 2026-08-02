@@ -10,6 +10,7 @@ import {
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
+import { resolveUnitPrice } from "../lib/rate-price.js";
 
 export async function financeRoutes(app: FastifyInstance) {
   // ═══ INVOICES ═══
@@ -56,7 +57,11 @@ export async function financeRoutes(app: FastifyInstance) {
           i.dealer_gst_number      AS "dealerGstNumber",
           d.id                     AS "dealerId",
           d.code                   AS "dealerCode",
-          i.route_id               AS "routeId",
+          -- invoices.route_id is never populated at creation, so the route
+          -- comes from the order's snapshotted route (falling back to the
+          -- dealer's primary for pre-0040 orders) — same rule as the invoice
+          -- detail endpoint and the PDF renderer.
+          COALESCE(o.route_id, d.route_id) AS "routeId",
           r.code                   AS "routeCode",
           r.name                   AS "routeName",
           o.payment_mode           AS "paymentMode",
@@ -71,30 +76,31 @@ export async function financeRoutes(app: FastifyInstance) {
         FROM invoices i
         JOIN dealers d       ON d.id = i.dealer_id
         LEFT JOIN orders o   ON o.id = i.order_id
-        LEFT JOIN routes r   ON r.id = i.route_id
+        LEFT JOIN routes r   ON r.id = COALESCE(o.route_id, d.route_id)
         WHERE (${dealerSearch}::text  IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
           AND (${generalSearch}::text IS NULL OR
                d.name ILIKE ${generalSearch ?? ''} OR
                i.invoice_number ILIKE ${generalSearch ?? ''})
           AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
           AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
-          AND (${routeId}::uuid IS NULL OR i.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${routeId}::uuid IS NULL OR COALESCE(o.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
         ORDER BY i.invoice_date DESC
         LIMIT ${q.limit} OFFSET ${offset}
       `;
-   
+
       const [countRow] = await pgClient`
         SELECT count(*)::int AS count
         FROM invoices i
-        JOIN dealers d ON d.id = i.dealer_id
+        JOIN dealers d       ON d.id = i.dealer_id
+        LEFT JOIN orders o   ON o.id = i.order_id
         WHERE (${dealerSearch}::text  IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
           AND (${generalSearch}::text IS NULL OR
                d.name ILIKE ${generalSearch ?? ''} OR
                i.invoice_number ILIKE ${generalSearch ?? ''})
           AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
           AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
-          AND (${routeId}::uuid IS NULL OR i.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${routeId}::uuid IS NULL OR COALESCE(o.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
       `;
    
@@ -130,20 +136,24 @@ export async function financeRoutes(app: FastifyInstance) {
           i.dealer_name         AS "dealerName",
           i.dealer_gst_number   AS "dealerGstNumber",
           i.dealer_address      AS "dealerAddressSnapshot",
-          i.route_id            AS "routeId",
-          o.status              AS "orderStatus",
-          o.payment_mode        AS "paymentMode",
-          o.item_count          AS "itemCount",
-          o.delivery_date       AS "deliveryDate",
-          o.subtotal            AS "orderSubtotal",
-          o.total_gst           AS "orderTotalGst",
-          o.grand_total         AS "orderGrandTotal",
-          -- Dealer block (live, not snapshot — use dealer_* fields on
-          -- invoice itself for GST number / name at invoice time)
-          d.id                  AS "dealerId",
-          d.code                AS "dealerCode",
-          d.name                AS "currentDealerName",
-          d.phone               AS "dealerPhone",
+          COALESCE(o.route_id, eo.route_id, d.route_id) AS "routeId",
+          COALESCE(o.status, eo.status)            AS "orderStatus",
+          COALESCE(o.payment_mode, eo.payment_mode) AS "paymentMode",
+          COALESCE(o.item_count, eo.item_count)    AS "itemCount",
+          COALESCE(o.delivery_date, eo.delivery_date) AS "deliveryDate",
+          COALESCE(o.subtotal, eo.subtotal)        AS "orderSubtotal",
+          COALESCE(o.total_gst, eo.total_gst)      AS "orderTotalGst",
+          COALESCE(o.grand_total, eo.grand_total)  AS "orderGrandTotal",
+          -- Party block (live, not snapshot — use the dealer_* columns on the
+          -- invoice itself for the GST number / name as at invoice time).
+          -- An employee-subsidy invoice has dealer_id NULL and employee_id set
+          -- (migration 0062), so the party fields fall back to the employee.
+          CASE WHEN i.employee_id IS NOT NULL THEN 'employee' ELSE 'dealer' END
+                                AS "partyType",
+          COALESCE(d.id, e.id)  AS "dealerId",
+          COALESCE(d.code, e.employee_code) AS "dealerCode",
+          COALESCE(d.name, e.name)  AS "currentDealerName",
+          COALESCE(d.phone, e.phone) AS "dealerPhone",
           d.gst_number          AS "dealerCurrentGst",
           d.address             AS "dealerAddress",
           d.city                AS "dealerCity",
@@ -153,12 +163,15 @@ export async function financeRoutes(app: FastifyInstance) {
           r.code                AS "routeCode",
           r.name                AS "routeName"
         FROM invoices i
-        JOIN dealers d     ON d.id = i.dealer_id
-        LEFT JOIN orders o ON o.id = i.order_id
-        -- Route is derived from the dealer's assigned route (invoices.route_id
-        -- is not populated at creation — mirrors the server-side PDF renderer
-        -- which joins routes via d.route_id).
-        LEFT JOIN routes r ON r.id = d.route_id
+        LEFT JOIN dealers d   ON d.id = i.dealer_id
+        LEFT JOIN employees e ON e.id = i.employee_id
+        LEFT JOIN orders o    ON o.id = i.order_id
+        LEFT JOIN employee_orders eo ON eo.id = i.order_id
+        -- Route is derived from the order's snapshotted route (the route it was
+        -- placed for), falling back to the dealer's primary route — mirrors the
+        -- server-side PDF renderer. invoices.route_id is not populated for
+        -- dealer invoices at creation, so it isn't used here.
+        LEFT JOIN routes r ON r.id = COALESCE(o.route_id, eo.route_id, d.route_id)
         WHERE i.id = ${id}
         LIMIT 1
       `;
@@ -187,7 +200,23 @@ export async function financeRoutes(app: FastifyInstance) {
         FROM order_items oi
         LEFT JOIN products p ON p.id = oi.product_id
         WHERE oi.order_id = ${(invoice as any).orderId}
-        ORDER BY oi.product_name
+        UNION ALL
+        -- Employee-subsidy invoices point at an employee_orders id; only one of
+        -- these two branches can match a given invoice.
+        SELECT
+          eoi.product_id, eoi.product_name,
+          COALESCE(p.hsn_no, ''), COALESCE(p.pack_size::text, ''),
+          eoi.quantity, eoi.unit_price, eoi.gst_percent,
+          (eoi.gst_amount / 2)::numeric(10,2),
+          (eoi.gst_amount / 2)::numeric(10,2),
+          (eoi.gst_percent / 2)::numeric(5,2),
+          (eoi.gst_percent / 2)::numeric(5,2),
+          eoi.gst_amount, eoi.line_total,
+          (eoi.quantity * eoi.unit_price)::numeric(10,2)
+        FROM employee_order_items eoi
+        LEFT JOIN products p ON p.id = eoi.product_id
+        WHERE eoi.employee_order_id = ${(invoice as any).orderId}
+        ORDER BY "productName"
       `;
    
       // Payments recorded against this invoice (may be empty).
@@ -325,7 +354,9 @@ export async function financeRoutes(app: FastifyInstance) {
         JOIN zones z ON z.id = d.zone_id
         LEFT JOIN orders o ON o.dealer_id = d.id AND o.status != 'cancelled'
         LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
-        WHERE d.deleted_at IS NULL
+        -- Soft-deleted dealers still count toward revenue they actually
+        -- generated — they are only hidden when they have nothing to show.
+        WHERE (d.deleted_at IS NULL OR o.id IS NOT NULL)
         GROUP BY d.id, d.name, z.name, w.balance
         ORDER BY revenue DESC LIMIT 10
       `;
@@ -352,7 +383,9 @@ export async function financeRoutes(app: FastifyInstance) {
         JOIN zones z ON z.id = d.zone_id
         LEFT JOIN orders o ON o.dealer_id = d.id AND o.status != 'cancelled'
         LEFT JOIN dealer_wallets w ON w.dealer_id = d.id
-        WHERE d.deleted_at IS NULL
+        -- Deleting a dealer must not delete the revenue they booked: keep
+        -- them in the report as long as they have orders behind them.
+        WHERE (d.deleted_at IS NULL OR o.id IS NOT NULL)
         GROUP BY d.id, d.name, z.name, w.balance
         ORDER BY revenue DESC
       `;
@@ -436,6 +469,10 @@ export async function financeRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const schema = z.object({
         dealerId: z.string().uuid(),
+        // The delivery route this indent is for. The admin picks it from the
+        // dealer's assigned routes (Record Indent page); omitted → the
+        // dealer's primary/active route.
+        routeId: z.string().uuid().nullable().optional(),
         items: z.array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1) })).min(1),
         paymentMode: z.enum(["wallet", "upi", "credit"]).default("upi"),
         paymentReference: z.string().optional(),            // ← NEW
@@ -443,13 +480,55 @@ export async function financeRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      // Get dealer zone
-      const [dealer] = await pgClient`SELECT id, zone_id FROM dealers WHERE id = ${body.dealerId} AND deleted_at IS NULL`;
+      // Get dealer zone + primary route
+      const [dealer] = await pgClient`SELECT id, zone_id, route_id FROM dealers WHERE id = ${body.dealerId} AND deleted_at IS NULL`;
       if (!dealer) return reply.status(404).send({ error: "Dealer not found" });
 
+      // ── Resolve the order's delivery route ──
+      // Default to the dealer's primary route; if the admin picked one, it
+      // must be a route the dealer is actually assigned to (dealer_routes) so
+      // the order lands on a route that will dispatch it. Snapshotting it on
+      // the order keeps dispatch/route-sheets grouping stable even if the
+      // dealer's primary route later changes.
+      let routeId: string | null = dealer.route_id ?? null;
+      if (body.routeId) {
+        const [assigned] = await pgClient`
+          SELECT 1 FROM dealer_routes
+           WHERE dealer_id = ${body.dealerId} AND route_id = ${body.routeId}::uuid
+           LIMIT 1
+        `;
+        const isPrimary = dealer.route_id && String(dealer.route_id) === body.routeId;
+        if (!assigned && !isPrimary) {
+          return reply.status(400).send({
+            error: "Route not assigned",
+            message: "The selected route is not assigned to this customer.",
+          });
+        }
+        routeId = body.routeId;
+      }
+
       // Get products
-      const productRows = await pgClient`SELECT id, name, base_price, gst_percent, stock, available FROM products WHERE id = ANY(${body.items.map(i => i.productId)}::uuid[])`;
+      // mrp + category name feed the rate-category price resolver: a
+      // 'Credit Inst-MRP' customer pays MRP on milk. See lib/rate-price.ts.
+      const productRows = await pgClient`
+        SELECT p.id, p.name,
+               p.base_price::text  AS "basePrice",
+               p.mrp::text         AS mrp,
+               p.gst_percent::text AS "gstPercent",
+               p.stock, p.available,
+               p.code              AS code,
+               c.name              AS "categoryName"
+          FROM products p
+          JOIN categories c ON c.id = p.category_id
+         WHERE p.id = ANY(${body.items.map(i => i.productId)}::uuid[])`;
       const productMap = new Map(productRows.map((p: any) => [p.id, p]));
+
+      // The customer's rate category decides which price each line bills at.
+      const [rateRow] = await pgClient`
+        SELECT rate_category::text AS "rateCategory"
+          FROM dealers WHERE id = ${body.dealerId} LIMIT 1
+      `;
+      const rateCategory = (rateRow?.rateCategory ?? null) as string | null;
 
       // Validate + calculate
       let subtotal = 0, totalGst = 0;
@@ -459,7 +538,7 @@ export async function financeRoutes(app: FastifyInstance) {
         if (!product) return reply.status(400).send({ error: `Product ${item.productId} not found` });
         if (!product.available) return reply.status(400).send({ error: `${product.name} unavailable` });
         if (product.stock < item.quantity) return reply.status(400).send({ error: `${product.name}: only ${product.stock} in stock` });
-        const price = parseFloat(product.base_price), gstPct = parseFloat(product.gst_percent);
+        const price = resolveUnitPrice(product, rateCategory), gstPct = parseFloat(product.gstPercent);
         const lineSub = price * item.quantity, lineGst = lineSub * (gstPct / 100);
         subtotal += lineSub; totalGst += lineGst;
         orderItemsData.push({
@@ -476,7 +555,10 @@ export async function financeRoutes(app: FastifyInstance) {
       const grandTotal = subtotal + totalGst;
 
       // Milk order minimum (≥12 L milk; curd has no minimum).
-      const minQtyViolations = await findMinQtyViolations(body.items);
+      const minQtyViolations = await findMinQtyViolations(
+        body.items,
+        body.dealerId
+      );
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
           error: "Minimum order quantity",
@@ -501,12 +583,12 @@ export async function financeRoutes(app: FastifyInstance) {
           const tx = _tx as unknown as typeof pgClient;
           const [order] = await tx`
             INSERT INTO orders (
-              dealer_id, zone_id, status, payment_mode, payment_reference,   -- ← NEW
+              dealer_id, zone_id, route_id, status, payment_mode, payment_reference,   -- ← NEW
               subtotal, total_gst, grand_total, item_count, notes, placed_by,
               created_at, updated_at
             )
             VALUES (
-              ${body.dealerId}, ${dealer.zone_id}, 'confirmed', ${body.paymentMode},
+              ${body.dealerId}, ${dealer.zone_id}, ${routeId}::uuid, 'confirmed', ${body.paymentMode},
               ${body.paymentReference ?? null},                             -- ← NEW
               ${subtotal.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric,
               ${grandTotal.toFixed(2)}::numeric, ${orderItemsData.length},
@@ -536,12 +618,15 @@ export async function financeRoutes(app: FastifyInstance) {
                    cancel_window_ends_at = LEAST(
                      now() + interval '30 minutes',
                      COALESCE(
-                       (orders.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
+                       (orders.delivery_date + (
+                          SELECT tw.close_time FROM time_windows tw
+                           WHERE tw.route_id = COALESCE(orders.route_id, d.route_id)
+                           ORDER BY tw.close_time DESC LIMIT 1
+                        )) AT TIME ZONE 'Asia/Kolkata',
                        now() + interval '30 minutes'
                      )
                    )
               FROM dealers d
-              LEFT JOIN time_windows tw ON tw.route_id = d.route_id
              WHERE orders.id = ${order!.id}::uuid
                AND orders.dealer_id = d.id
           `;
