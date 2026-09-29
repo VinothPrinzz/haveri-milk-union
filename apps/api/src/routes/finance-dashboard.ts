@@ -12,11 +12,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
+import { istToday } from "../lib/ist-date.js";
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
 
 function rangeForPeriod(period: string, from?: string, to?: string): { from: string; to: string } {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = istToday();
   if (period === "custom" && from && to) return { from, to };
   if (period === "today") return { from: todayStr, to: todayStr };
   if (period === "last30") {
@@ -45,17 +46,40 @@ export async function financeDashboardRoutes(app: FastifyInstance) {
         WITH unpaid_invoices AS (
           SELECT
             i.dealer_id,
-            (i.total_amount - i.paid_amount)::numeric AS outstanding,
+            (i.total_amount - COALESCE(i.paid_amount, 0))::numeric AS outstanding,
+            -- COALESCE, not a due_date IS NOT NULL filter: the column was NULL
+            -- on every invoice, so this block reported ₹0 receivables rather
+            -- than admitting it had nothing to age. See finance-ar-aging.ts.
             CASE
-              WHEN i.due_date >= CURRENT_DATE                    THEN 'current'
-              WHEN (CURRENT_DATE - i.due_date) BETWEEN 1  AND 30 THEN 'b1_30'
-              WHEN (CURRENT_DATE - i.due_date) BETWEEN 31 AND 60 THEN 'b31_60'
-              WHEN (CURRENT_DATE - i.due_date) BETWEEN 61 AND 90 THEN 'b61_90'
+              WHEN ag.due >= ag.today                    THEN 'current'
+              WHEN (ag.today - ag.due) BETWEEN 1  AND 30 THEN 'b1_30'
+              WHEN (ag.today - ag.due) BETWEEN 31 AND 60 THEN 'b31_60'
+              WHEN (ag.today - ag.due) BETWEEN 61 AND 90 THEN 'b61_90'
               ELSE 'b90_plus'
             END AS bucket
           FROM invoices i
-          WHERE i.payment_status <> 'paid' AND i.due_date IS NOT NULL
-            AND (i.total_amount - i.paid_amount) > 0
+          -- The date this invoice ages from, and today, both on the IST
+          -- calendar day. Mirrors finance-ar-aging.ts, which this tile links
+          -- through to, so the two cannot drift a day apart.
+          CROSS JOIN LATERAL (
+            SELECT COALESCE(i.due_date,
+                            (i.invoice_date AT TIME ZONE 'Asia/Kolkata')::date) AS due,
+                   (now() AT TIME ZONE 'Asia/Kolkata')::date                    AS today
+          ) ag
+          WHERE i.payment_status <> 'paid'
+            -- Employee subsidy indents carry no dealer and are recovered from
+            -- salary off-system; AR aging excludes them, so this must too.
+            AND i.dealer_id IS NOT NULL
+            AND (i.total_amount - COALESCE(i.paid_amount, 0)) > 0
+            -- A cancelled sale is not a receivable on either rail, and neither
+            -- is a draft. Same clauses as finance-ar-aging.ts, which this tile
+            -- links through to: without them the tile read ₹27,737.14 higher
+            -- than the report it opens.
+            AND NOT EXISTS (SELECT 1 FROM direct_sales ds
+                             WHERE ds.id = i.order_id AND ds.status = 'cancelled')
+            AND NOT EXISTS (SELECT 1 FROM orders o
+                             WHERE o.id = i.order_id
+                               AND o.status IN ('cancelled', 'draft'))
         )
         SELECT
           COALESCE(SUM(outstanding), 0)::float8 AS "totalOutstanding",
@@ -73,8 +97,12 @@ export async function financeDashboardRoutes(app: FastifyInstance) {
       // ── Collections ──
       const [coll] = await pgClient`
         SELECT
-          COALESCE(SUM(amount) FILTER (WHERE received_date = CURRENT_DATE), 0)::float8 AS "today",
-          COALESCE(SUM(amount) FILTER (WHERE received_date >= date_trunc('month', CURRENT_DATE)), 0)::float8 AS "thisMonth",
+          COALESCE(SUM(amount) FILTER (
+            WHERE received_date = (now() AT TIME ZONE 'Asia/Kolkata')::date
+          ), 0)::float8 AS "today",
+          COALESCE(SUM(amount) FILTER (
+            WHERE received_date >= date_trunc('month', (now() AT TIME ZONE 'Asia/Kolkata')::date)
+          ), 0)::float8 AS "thisMonth",
           COALESCE(SUM(amount) FILTER (WHERE mode = 'cash'),   0)::float8 AS "cash",
           COALESCE(SUM(amount) FILTER (WHERE mode = 'upi'),    0)::float8 AS "upi",
           COALESCE(SUM(amount) FILTER (WHERE mode = 'cheque'), 0)::float8 AS "cheque",
@@ -107,7 +135,9 @@ export async function financeDashboardRoutes(app: FastifyInstance) {
           COALESCE(SUM(amount) FILTER (WHERE status='deposited'), 0)::float8 AS "inBankAmount",
           COUNT(*) FILTER (WHERE status='deposited')::int AS "inBankCount",
           COALESCE(SUM(amount) FILTER (WHERE status='bounced'
-            AND bounced_date >= date_trunc('month', CURRENT_DATE)), 0)::float8 AS "bouncedThisMonth"
+            AND bounced_date >= date_trunc('month',
+                                           (now() AT TIME ZONE 'Asia/Kolkata')::date)),
+            0)::float8 AS "bouncedThisMonth"
         FROM cheques
       `;
 
@@ -157,7 +187,7 @@ export async function financeDashboardRoutes(app: FastifyInstance) {
           ) x WHERE x.cnt > 0
           UNION ALL
           SELECT 'medium', 'Cheques in hand awaiting deposit > 3 days', COUNT(*)::int, '/finance/cheques?status=received', 3
-          FROM cheques WHERE status='received' AND received_date < CURRENT_DATE - 3
+          FROM cheques WHERE status='received' AND received_date < (now() AT TIME ZONE 'Asia/Kolkata')::date - 3
           HAVING COUNT(*) > 0
           UNION ALL
           SELECT 'medium', 'Refunds pending at gateway', COUNT(*)::int, '/finance/refunds?status=pending', 3
@@ -165,7 +195,18 @@ export async function financeDashboardRoutes(app: FastifyInstance) {
           HAVING COUNT(*) > 0
           UNION ALL
           SELECT 'high', '90+ day overdue dealers', COUNT(DISTINCT dealer_id)::int, '/finance/ar-aging?bucket=b90_plus', 2
-          FROM invoices WHERE payment_status <> 'paid' AND due_date < CURRENT_DATE - 90
+          FROM invoices i
+           WHERE i.payment_status <> 'paid'
+             AND COALESCE(i.due_date,
+                          (i.invoice_date AT TIME ZONE 'Asia/Kolkata')::date)
+                   < (now() AT TIME ZONE 'Asia/Kolkata')::date - 90
+             AND (i.total_amount - COALESCE(i.paid_amount, 0)) > 0
+             AND i.dealer_id IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM direct_sales ds
+                              WHERE ds.id = i.order_id AND ds.status = 'cancelled')
+             AND NOT EXISTS (SELECT 1 FROM orders o
+                              WHERE o.id = i.order_id
+                                AND o.status IN ('cancelled', 'draft'))
           HAVING COUNT(*) > 0
         ) feed
         ORDER BY ord, label
@@ -178,6 +219,11 @@ export async function financeDashboardRoutes(app: FastifyInstance) {
                dl.amount::float8 AS amount, dl.voucher_no AS "voucherNo"
           FROM dealer_ledger dl
           JOIN dealers d ON d.id = dl.dealer_id
+          -- Play Store demo route: a reviewer's test activity is not the union's
+          -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+          AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                           WHERE demo_rt.code = 'DEMO'
+                             AND demo_rt.id = d.route_id)
          ORDER BY dl.created_at DESC
          LIMIT 15
       `;

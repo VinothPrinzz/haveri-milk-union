@@ -18,6 +18,7 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { istToday } from "../lib/ist-date.js";
 
 function adminUserId(request: FastifyRequest): string {
   const a = (request as unknown as { admin?: { userId: string } }).admin;
@@ -229,7 +230,7 @@ export async function financeAdjustmentsRoutes(app: FastifyInstance) {
 
         const delta = ledgerType === "credit" ? body.amount : -body.amount;
         const newBalance = parseFloat((bal as any).bal) + delta;
-        const voucherDate = body.voucherDate ?? new Date().toISOString().slice(0, 10);
+        const voucherDate = body.voucherDate ?? istToday();
 
         const prefix = body.voucherType === "Credit Note" ? "CN"
                      : body.voucherType === "Debit Note"  ? "DN"
@@ -357,7 +358,7 @@ export async function financeAdjustmentsRoutes(app: FastifyInstance) {
         `;
         const delta = flipped === "credit" ? amount : -amount;
         const newBalance = parseFloat((bal as any).bal) + delta;
-        const voucherDate = new Date().toISOString().slice(0, 10);
+        const voucherDate = istToday();
         const voucherNo = `REV-${voucherDate.replace(/-/g, "")}-${String((src as any).ledger_entry_id).slice(0, 6).toUpperCase()}`;
 
         const [led] = await tx`

@@ -42,6 +42,7 @@ import {
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { enqueuePDFInvoice } from "../lib/queue.js";
 import { resolveUnitPrice } from "../lib/rate-price.js";
+import { calcLine } from "../lib/line-totals.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -63,16 +64,6 @@ function adminUserId(request: FastifyRequest): string {
   return a.userId;
 }
 
-/** Line totals from (price_excl_gst, gst_percent, quantity), rupees @ 2dp. */
-function calcLine(basePrice: number, gstPercent: number, qty: number) {
-  const subtotal = basePrice * qty;
-  const gst = subtotal * (gstPercent / 100);
-  return {
-    subtotal: Math.round(subtotal * 100) / 100,
-    gst: Math.round(gst * 100) / 100,
-    total: Math.round((subtotal + gst) * 100) / 100,
-  };
-}
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -90,7 +81,7 @@ async function loadDealer(dealerId: string) {
   }
   if (!dealer.zoneId) {
     throw Object.assign(
-      new Error("Dealer has no zone assigned — set a zone before placing indents"),
+      new Error("Dealer has no zone assigned. Set a zone before placing indents"),
       { statusCode: 409 }
     );
   }
@@ -247,14 +238,18 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // Milk order minimum (≥12 L milk; curd has no minimum). Only ACTIVE lines
+      // Milk + curd order minimum (≥12 L/kg combined). Only ACTIVE lines
       // with a positive default get auto-placed, so the aggregate is checked
       // over those.
+      //
+      // No route/date context on purpose: a TEMPLATE produces the day's
+      // FIRST order on the route every day, so it always carries the floor
+      // (see the dealer-facing copy in routes/dealer-indents.ts).
       const minQtyViolations = await findMinQtyViolations(
         body.items
           .filter((i) => i.active)
           .map((i) => ({ productId: i.productId, quantity: i.defaultQty })),
-        dealerId
+        { dealerId }
       );
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
@@ -724,8 +719,10 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
 
       const grandTotal = parseFloat(order.grand_total);
 
-      // ── Milk order-minimum gate (≥12 L; curd has no minimum) ── blocks even a
+      // ── Milk + curd order-minimum gate (≥12 L/kg combined) ── blocks even a
       // forced confirm; the draft stays editable to top up quantities.
+      // findOrderMinQtyViolations reads the order's own route and delivery
+      // date, so it only bites on the FIRST live order of that run.
       const minQtyViolations = await findOrderMinQtyViolations(order.id);
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({

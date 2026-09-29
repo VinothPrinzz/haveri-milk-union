@@ -5,9 +5,10 @@
 //   GET /api/v1/finance/day-book?date=YYYY-MM-DD&routeId=<uuid|unassigned>
 //
 // The classic daily cash book — every money movement for the chosen day:
-// receipts (typed: top-up / order payment / invoice payment / on-account),
-// sales (dealer orders + counter sales), refunds and adjustments, plus a
-// cash-position tally and a route-wise breakdown. Receipts ≠ sales — a
+// receipts (typed: top-up / order payment / invoice payment / on-account /
+// counter QR collection / counter cash), sales (dealer orders + counter
+// sales), refunds and adjustments, plus a cash-position tally and a route-wise breakdown.
+// Receipts ≠ sales — a
 // dealer may top up ₹150 and order for ₹133.33, leaving ₹16.67 in his
 // wallet — so both totals are reported side by side. finance.view.
 //
@@ -25,7 +26,13 @@
 // not retroactively move — or lose — money already posted to a route.
 // dealers.route_id is only the fallback for lines with no order behind
 // them (wallet top-ups, on-account receipts, manual adjustments) and for
-// pre-0040 orders that were never stamped.
+// pre-0040 orders that were never stamped. Gate-pass receipts are the one
+// exception: they take the pass's own route or none at all, matching the
+// counter sale they pay for.
+//
+// Receipts have exactly ONE source, the payments table. Both counter rails
+// book a row there — a scanned QR at capture, physical cash at issue — so
+// nothing reads razorpay_payments for receipts any more.
 //
 // A soft-deleted / inactive dealer's rows stay in the book: nothing here
 // filters on d.deleted_at or d.active. Day Book is a money record.
@@ -44,6 +51,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
+import { istToday } from "../lib/ist-date.js";
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
 
@@ -80,7 +88,7 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
             .optional(),
         })
         .parse(request.query);
-      const date = q.date ?? new Date().toISOString().slice(0, 10);
+      const date = q.date ?? istToday();
       // Scalar param only — the transaction pooler can't Bind array/json
       // params, and the in-SQL null-check keeps one prepared shape.
       const route = q.routeId ?? null;
@@ -97,19 +105,33 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
             WHEN dl.reference_type = 'wallet_topup' THEN 'topup'
             WHEN dl.reference_type = 'order'        THEN 'order_payment'
             WHEN rp.kind = 'credit_topup'           THEN 'topup'
+            -- Counter QR scanned against a gate pass. applyPaidGatePassPayment
+            -- books a real payments receipt for it (reference = the pay_*
+            -- id), so THIS row is the counter collection and the Day Book no
+            -- longer reads razorpay_payments for it. Tested before the cash
+            -- branch below because both rails resolve the same gate pass.
+            WHEN rp.kind = 'gate_pass'              THEN 'counter_collection'
             WHEN rp.kind = 'order_payment'          THEN 'order_payment'
+            -- Physical cash taken across the counter for a gate pass. It has
+            -- no ledger row and no gateway row, so without this branch it
+            -- would read as an unexplained 'on_account' receipt.
+            WHEN gp.gp_no IS NOT NULL               THEN 'counter_cash'
             WHEN p.invoice_id IS NOT NULL           THEN 'invoice_payment'
             ELSE 'on_account'
           END AS type,
           p.mode, p.amount::float8 AS amount,
-          p.reference, i.invoice_number AS "docNo",
+          p.reference, COALESCE(i.invoice_number, gp.gp_no) AS "docNo",
           d.code AS "dealerCode", d.name AS "dealerName",
           r.id::text AS "routeId", r.name AS "routeName",
           u.name AS "byName"
         FROM payments p
         JOIN dealers d ON d.id = p.dealer_id
+                       -- Play Store demo dealer: parked on the DEMO route so a
+                       -- reviewer's test activity never reaches the books.
+                       -- See routes/sales-reports.ts for the same guard.
+                       AND NOT EXISTS (SELECT 1 FROM routes dr
+                                        WHERE dr.code = 'DEMO' AND dr.id = d.route_id)
         LEFT JOIN invoices i ON i.id = p.invoice_id
-        LEFT JOIN users u ON u.id = p.received_by
         LEFT JOIN LATERAL (
           SELECT l.reference_type::text AS reference_type
             FROM dealer_ledger l
@@ -118,7 +140,7 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
            LIMIT 1
         ) dl ON true
         LEFT JOIN LATERAL (
-          SELECT x.kind::text AS kind, x.order_id
+          SELECT x.kind::text AS kind, x.order_id, x.direct_sale_id
             FROM razorpay_payments x
            WHERE p.reference IS NOT NULL
              AND x.razorpay_payment_id = p.reference
@@ -135,11 +157,40 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
            WHERE o.id = COALESCE(rp.order_id, i.order_id)
            LIMIT 1
         ) ord ON true
-        LEFT JOIN routes r ON r.id = COALESCE(ord.route_id, d.route_id)
+        -- Gate pass behind a counter receipt, on EITHER rail:
+        --   - counter CASH: matched on the pass number carried in
+        --     payments.reference, because the receipt is written the moment
+        --     the pass is saved and the invoice may not exist yet, so
+        --     invoice_id cannot be relied on for the link;
+        --   - counter QR: matched through the gateway row, because there
+        --     payments.reference is a pay_* id, not a pass number.
+        LEFT JOIN LATERAL (
+          SELECT ds.id, ds.gp_no, ds.route_id, ds.officer_id
+            FROM direct_sales ds
+           WHERE ds.gp_no IS NOT NULL
+             AND ( ds.id = rp.direct_sale_id
+                OR (ds.customer_type = 'agent' AND ds.gp_no = p.reference) )
+           LIMIT 1
+        ) gp ON true
+        -- Who took the money: the receipt's own taker, falling back to the
+        -- officer who raised the pass (the gate-pass insert sets no
+        -- received_by, so without this the counter lines had a blank By).
+        LEFT JOIN users u ON u.id = COALESCE(p.received_by, gp.officer_id)
+        -- Route. An order behind the receipt wins (its snapshotted route),
+        -- then the pass's own route. A gate pass NEVER falls back to the
+        -- dealer's home route: it is a counter sale, and when it carries no
+        -- route it belongs in the unassigned/adhoc bucket exactly as its sale
+        -- line does in section 2b. Filing the receipt on the dealer's route
+        -- while the sale sits unassigned would stop the route-wise table
+        -- tying out.
+        LEFT JOIN routes r ON r.id = COALESCE(ord.route_id, gp.route_id,
+                                              CASE WHEN gp.id IS NULL THEN d.route_id END)
         WHERE p.received_date = ${date}::date
           AND ( ${route}::text IS NULL
-                OR (${route}::text = 'unassigned' AND COALESCE(ord.route_id, d.route_id) IS NULL)
-                OR COALESCE(ord.route_id, d.route_id)::text = ${route}::text )
+                OR (${route}::text = 'unassigned' AND COALESCE(ord.route_id, gp.route_id,
+                      CASE WHEN gp.id IS NULL THEN d.route_id END) IS NULL)
+                OR COALESCE(ord.route_id, gp.route_id,
+                     CASE WHEN gp.id IS NULL THEN d.route_id END)::text = ${route}::text )
         ORDER BY p.created_at ASC
       `;
 
@@ -161,6 +212,11 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           u.name AS "byName"
         FROM dealer_ledger dl
         JOIN dealers d ON d.id = dl.dealer_id
+                       -- Play Store demo dealer: parked on the DEMO route so a
+                       -- reviewer's test activity never reaches the books.
+                       -- See routes/sales-reports.ts for the same guard.
+                       AND NOT EXISTS (SELECT 1 FROM routes dr
+                                        WHERE dr.code = 'DEMO' AND dr.id = d.route_id)
         -- No order behind a top-up — the dealer's own route is the only
         -- attribution there is.
         LEFT JOIN routes r ON r.id = d.route_id
@@ -190,16 +246,26 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           -- Revenue, not a treasury movement: the money arrived as a receipt
           -- (top-up or pay-now charge) and is counted there.
           'none' AS "cashImpact",
-          -- Settlement bucket for the day book. Real "credit" is reserved for
+          -- Settlement bucket for the day book. "credit" means the goods went
+          -- out against a bill settled later; it is reserved for
           -- credit-institution dealers (customer_type 'Credit Inst-*', billed
           -- monthly). Every other dealer pays with their own money — either
           -- drawn from wallet balance/top-ups ('wallet') or a pay-now UPI
           -- charge ('upi'). The stored payment_mode='credit' that ledger-
           -- settled orders carry is a technical marker, NOT real credit, so it
           -- must not surface as "on credit" for ordinary dealers.
+          --
+          -- A pay-now gateway charge is tested FIRST, before the customer
+          -- class. A credit institution is free to pay up front through the
+          -- app, and when it does (orders.payment_mode='upi', a captured
+          -- razorpay_payments row and a 'upi' receipt in section 1 above) the
+          -- money is already in the bank on this very day book. Ranking the
+          -- customer class first filed that sale under Credit while its own
+          -- receipt sat in the UPI receipts total on the same page — the same
+          -- rupees reported as both collected and outstanding.
           CASE
-            WHEN d.customer_type::text LIKE 'Credit Inst%' THEN 'credit'
             WHEN o.payment_mode::text = 'upi'              THEN 'upi'
+            WHEN d.customer_type::text LIKE 'Credit Inst%' THEN 'credit'
             ELSE 'wallet'
           END AS mode,
           o.grand_total::float8 AS amount,
@@ -210,6 +276,11 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           u.name AS "byName"
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
+                       -- Play Store demo dealer: keep reviewer test orders out
+                       -- of the day's sales.
+                       AND NOT EXISTS (SELECT 1 FROM routes dr
+                                        WHERE dr.code = 'DEMO'
+                                          AND dr.id = COALESCE(o.route_id, d.route_id))
         LEFT JOIN routes r ON r.id = COALESCE(o.route_id, d.route_id)
         LEFT JOIN users u ON u.id = o.placed_by
         LEFT JOIN LATERAL (
@@ -229,13 +300,17 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
       `;
 
       // 2b. Counter / direct sales (gate pass, cash customers, VIP,
-      //     employee subsidy). Their cash never enters `payments`, so they
-      //     count toward sales but not receipts.
+      //     employee subsidy) — the revenue side of the counter.
       const counterSales = await pgClient`
         SELECT
           ds.id, ds.created_at AS at, 'sale' AS kind, 'counter_sale' AS type,
-          -- Revenue line. Counter cash never lands in the payments table, so
-          -- it stays out of the cash section here exactly as it always has.
+          -- Revenue, not a treasury movement — same rule as a dealer order
+          -- above. Every rail now has its own receipt line, so the cash leg
+          -- is counted exactly once and never here: both counter rails book a
+          -- real payments receipt read by section 1 — a scanned QR at
+          -- capture (applyPaidGatePassPayment) and physical cash at issue
+          -- (recordCounterCashReceipt). A wallet or credit pass moves the
+          -- agent's ledger, not the union's cash, so it has no receipt at all.
           'none' AS "cashImpact",
           ds.payment_mode::text AS mode, ds.grand_total::float8 AS amount,
           ds.payment_ref AS reference, NULL AS "docNo",
@@ -253,6 +328,9 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         LEFT JOIN routes r ON r.id = ds.route_id
         LEFT JOIN users u ON u.id = ds.officer_id
         WHERE ds.sale_date = ${date}::date
+          AND ds.status = 'confirmed'
+          -- Play Store demo route: never a real counter sale.
+          AND NOT EXISTS (SELECT 1 FROM routes dr WHERE dr.code = 'DEMO' AND dr.id = ds.route_id)
           AND ( ${route}::text IS NULL
                 OR (${route}::text = 'unassigned' AND ds.route_id IS NULL)
                 OR ds.route_id::text = ${route}::text )
@@ -274,6 +352,11 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           u.name AS "byName"
         FROM razorpay_refunds rf
         JOIN dealers d ON d.id = rf.dealer_id
+                       -- Play Store demo dealer: parked on the DEMO route so a
+                       -- reviewer's test activity never reaches the books.
+                       -- See routes/sales-reports.ts for the same guard.
+                       AND NOT EXISTS (SELECT 1 FROM routes dr
+                                        WHERE dr.code = 'DEMO' AND dr.id = d.route_id)
         LEFT JOIN users u ON u.id = rf.initiated_by
         -- A refund reverses a gateway payment; when that payment was for an
         -- order, the money goes back out of that order's route.
@@ -283,7 +366,7 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         ) ord ON true
         LEFT JOIN routes r ON r.id = COALESCE(ord.route_id, d.route_id)
         WHERE rf.status = 'processed'
-          AND rf.processed_at::date = ${date}::date
+          AND (rf.processed_at AT TIME ZONE 'Asia/Kolkata')::date = ${date}::date
           AND ( ${route}::text IS NULL
                 OR (${route}::text = 'unassigned' AND COALESCE(ord.route_id, d.route_id) IS NULL)
                 OR COALESCE(ord.route_id, d.route_id)::text = ${route}::text )
@@ -336,6 +419,11 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
           u.name AS "byName"
         FROM dealer_ledger dl
         JOIN dealers d ON d.id = dl.dealer_id
+                       -- Play Store demo dealer: parked on the DEMO route so a
+                       -- reviewer's test activity never reaches the books.
+                       -- See routes/sales-reports.ts for the same guard.
+                       AND NOT EXISTS (SELECT 1 FROM routes dr
+                                        WHERE dr.code = 'DEMO' AND dr.id = d.route_id)
         LEFT JOIN users u ON u.id = dl.performed_by
         -- Every row selected below is written by an order modify/cancel with
         -- reference_id = the order id ('order', 'adjustment', and the cancel
@@ -385,6 +473,11 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         FROM ledger_adjustments a
         JOIN dealer_ledger dl ON dl.id = a.ledger_entry_id
         JOIN dealers d ON d.id = dl.dealer_id
+                       -- Play Store demo dealer: parked on the DEMO route so a
+                       -- reviewer's test activity never reaches the books.
+                       -- See routes/sales-reports.ts for the same guard.
+                       AND NOT EXISTS (SELECT 1 FROM routes dr
+                                        WHERE dr.code = 'DEMO' AND dr.id = d.route_id)
         -- Manual journal / credit / debit notes are posted against the
         -- dealer, not an order — dealer route is the correct attribution.
         LEFT JOIN routes r ON r.id = d.route_id
@@ -397,8 +490,20 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
       `;
 
       // ── Merge + summarize ──
+      // Section 1 is the ONE receipts rail. Counter QR collections used to be
+      // read a second time straight off razorpay_payments (old section 1c),
+      // written when the gate-pass rail was believed never to book a
+      // `payments` row. It does now — applyPaidGatePassPayment writes one at
+      // capture so the money shows in Payments Overview — so every scanned
+      // pass was counted TWICE: once correctly as 'counter_collection', and
+      // once more as an unattributable 'on_account' receipt, because the
+      // classifier could not tie a pay_* reference back to its pass.
+      const receiptLines = (receipts as unknown as DayBookLine[])
+        .slice()
+        .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+
       const lines = [
-        ...(receipts as unknown as DayBookLine[]),
+        ...receiptLines,
         ...(ledgerTopups as unknown as DayBookLine[]),
         ...(orderSales as unknown as DayBookLine[]),
         ...(counterSales as unknown as DayBookLine[]),
@@ -410,7 +515,7 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
       const byMode: Record<string, number> = {};
       const byType: Record<string, number> = {};
       let totalReceipts = 0;
-      for (const l of receipts as unknown as DayBookLine[]) {
+      for (const l of receiptLines) {
         totalReceipts += l.amount;
         if (l.mode) byMode[l.mode] = (byMode[l.mode] ?? 0) + l.amount;
         byType[l.type] = (byType[l.type] ?? 0) + l.amount;
@@ -421,13 +526,15 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         .reduce((s, l) => s + l.amount, 0);
 
       // Composition card breaks dealer orders down by how each was settled:
-      //   • 'credit' → credit-institution orders (billed monthly)
+      //   • 'credit' → credit-institution orders left to the monthly bill
       //   • 'wallet' → paid from wallet balance / top-ups (the dealer's own
       //                money that was already sitting in the wallet)
       //   • online methods ('upi', 'card', …) → paid now at checkout via the
       //     gateway. Each surfaces as its own line and is NOT folded into
       //     wallet. (Today the gateway path only records 'upi'; any other
-      //     method appears automatically if it is ever captured.)
+      //     method appears automatically if it is ever captured.) A credit
+      //     institution that pays at checkout lands here, not under credit —
+      //     see the CASE in section 2.
       // The buckets sum to the full dealer-orders total.
       const salesByMode: Record<string, number> = {};
       let ordersTotal = 0;
@@ -476,7 +583,7 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
         }
         return r;
       };
-      for (const l of receipts as unknown as DayBookLine[]) {
+      for (const l of receiptLines) {
         const r = routeBucket(l);
         r.receipts += 1;
         r.collected += l.amount;

@@ -52,6 +52,7 @@
 import { sql } from "../lib/db.js";
 import { enqueuePush, enqueuePdf } from "../lib/queues.js";
 import { resolveUnitPrice } from "../lib/rate-price.js";
+import { calcLine } from "../lib/line-totals.js";
 
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
 
@@ -61,6 +62,7 @@ function istNow(): Date {
 function istTodayIso(): string {
   return istNow().toISOString().slice(0, 10);
 }
+/** Amounts settle in paise, so they carry two decimals. */
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -139,14 +141,20 @@ async function workerStockShortfalls(
   }));
 }
 
-// Order-level Milk minimum (mirror of apps/api/src/lib/min-order-qty.ts —
-// kept in sync because the worker is its own package). Within one order the
-// TOTAL milk must reach 12 L; it applies only when milk is present. Curd has
-// no minimum. Pack sizes normalise to L (ml→L).
-const WORKER_CATEGORY_MIN = { milk: 12 } as const;
+// Order-level Milk + Curd minimum (mirror of apps/api/src/lib/min-order-qty.ts
+// — kept in sync because the worker is its own package). Within one order the
+// TOTAL of milk AND curd must reach 12, counting litres and kilograms as one
+// number; it applies only when milk or curd is present, so a curd-only order
+// is restricted too. Pack sizes normalise to L (ml→L) and kg (g→kg).
+//
+// The floor binds only the dealer's FIRST live order on a route for a
+// delivery date: if they already have a live order there that itself cleared
+// 12, this one goes through however small it is. See
+// workerHasQualifyingSiblingOrder below and the long note in the API lib.
+const WORKER_ORDER_MIN = { min: 12, unit: "L/kg" } as const;
 
-// Measure-matched: only volume-measured milk counts toward the litre minimum
-// (the Milk category also holds gram-measured chocolates).
+// Measure-matched: pack sizes normalise to litres or kilograms, then the two
+// are added into one combined total.
 const WORKER_SIZE_TOKEN = /(\d+(?:\.\d+)?)\s*(kg|kilogram|ltr|litre|liter|ml|gm|g|l)\b/i;
 function workerParseMeasure(text: string): { litres: number; kg: number } | null {
   const m = text.match(WORKER_SIZE_TOKEN);
@@ -174,15 +182,84 @@ function workerUnitMeasure(unit: string | null, packSize: string | number | null
   return { litres: 0, kg: 0 };
 }
 
-interface WorkerCategoryShortfall { category: "milk"; total: number; min: number; unit: string; }
+interface WorkerCategoryShortfall { total: number; min: number; unit: string; }
 
-/** Milk category in this order whose L total is below the minimum. */
+interface WorkerMeasuredLine {
+  quantity: number;
+  unit: string | null;
+  pack_size: string | number | null;
+  name: string | null;
+}
+
+/** Combined milk + curd size of a set of lines: litres and kilograms added. */
+function workerCombinedTotal(lines: WorkerMeasuredLine[]): number {
+  let total = 0;
+  for (const l of lines) {
+    if (!(Number(l.quantity) > 0)) continue;
+    const m = workerUnitMeasure(l.unit, l.pack_size, l.name);
+    total += Number(l.quantity) * (m.litres + m.kg);
+  }
+  return Math.round(total * 1000) / 1000;
+}
+
+/**
+ * True when the dealer already has a LIVE order on the same route and
+ * delivery date whose own milk + curd total reaches 12 — so the order being
+ * auto-confirmed is not the first one for that run and skips the floor.
+ * Mirror of hasQualifyingSiblingOrder in apps/api/src/lib/min-order-qty.ts.
+ */
+async function workerHasQualifyingSiblingOrder(orderId: string): Promise<boolean> {
+  const rows = (await sql`
+    SELECT o.id::text     AS order_id,
+           oi.quantity    AS quantity,
+           p.unit         AS unit,
+           p.pack_size    AS pack_size,
+           p.name         AS name
+      FROM orders w
+      JOIN dealers wd     ON wd.id = w.dealer_id
+      JOIN orders o       ON o.dealer_id = w.dealer_id
+                         AND o.delivery_date = w.delivery_date
+                         AND o.id <> w.id
+      JOIN dealers d      ON d.id = o.dealer_id
+      JOIN order_items oi ON oi.order_id = o.id
+      JOIN products p     ON p.id = oi.product_id
+      JOIN categories c   ON c.id = p.category_id
+     WHERE w.id = ${orderId}::uuid
+       AND COALESCE(o.route_id, d.route_id)
+             IS NOT DISTINCT FROM COALESCE(w.route_id, wd.route_id)
+       -- Live only: a draft/payment_required sibling is exactly what the
+       -- supersede rule cancels when this order lands.
+       AND o.status IN ('confirmed', 'dispatched', 'delivered', 'pending')
+       AND oi.quantity > 0
+       AND lower(c.name) IN ('milk', 'curd')
+       -- Subsidy milk never counts toward nor triggers the minimum:
+       -- the live SKU by code, plus any other scheme SKU by name (two
+       -- older 'HTM 1000ML SUBSIDY' rows exist, both under code P06,
+       -- which is ALSO a live goodlife SKU and so must not be matched
+       -- on code). See MIN_QTY_EXEMPT_CODES.
+       AND COALESCE(p.code, '') <> 'PD0191S'
+       AND p.name NOT ILIKE '%subsid%'
+  `) as any[];
+
+  const byOrder = new Map<string, WorkerMeasuredLine[]>();
+  for (const r of rows) {
+    const list = byOrder.get(r.order_id) ?? [];
+    list.push({ quantity: Number(r.quantity), unit: r.unit, pack_size: r.pack_size, name: r.name });
+    byOrder.set(r.order_id, list);
+  }
+  for (const lines of byOrder.values()) {
+    if (workerCombinedTotal(lines) >= WORKER_ORDER_MIN.min) return true;
+  }
+  return false;
+}
+
+/** Shortfall when this order's milk + curd total is below the minimum. */
 async function workerCategoryMinShortfalls(orderId: string): Promise<WorkerCategoryShortfall[]> {
   // 'Credit Inst-MRP' dealers are government institutions: supply is
-  // compulsory however small the indent, so the 12 L floor never applies to
+  // compulsory however small the indent, so the floor never applies to
   // them. Mirror of MIN_QTY_EXEMPT_RATE_CATEGORIES in
   // apps/api/src/lib/min-order-qty.ts. WITHOUT this the nightly auto-confirm
-  // would keep rejecting their sub-12 L standing indents even though every
+  // would keep rejecting their small standing indents even though every
   // API path lets the same order through.
   const [owner] = (await sql`
     SELECT d.rate_category::text AS rate_category
@@ -193,33 +270,38 @@ async function workerCategoryMinShortfalls(orderId: string): Promise<WorkerCateg
   `) as any[];
   if (String(owner?.rate_category ?? "").trim() === "Credit Inst-MRP") return [];
 
+  // Not the first live order on this route for the day → no floor.
+  if (await workerHasQualifyingSiblingOrder(orderId)) return [];
+
   // The subsidy HTM 1000ML SKU (code PD0191S, migration 0056) is EXEMPT from
-  // the milk minimum — it's a half-price scheme line, so a subsidy-milk-only
+  // the minimum — it's a half-price scheme line, so a subsidy-milk-only
   // standing indent still auto-confirms. Mirror of MIN_QTY_EXEMPT_CODES in
   // apps/api/src/lib/min-order-qty.ts (the worker is its own package).
-  const rows = await sql`
-    SELECT c.name AS category, oi.quantity AS quantity,
+  const rows = (await sql`
+    SELECT oi.quantity AS quantity,
            p.unit AS unit, p.pack_size AS pack_size, p.name AS name
       FROM order_items oi
       JOIN products p   ON p.id = oi.product_id
       JOIN categories c ON c.id = p.category_id
      WHERE oi.order_id = ${orderId}::uuid
        AND oi.quantity > 0
-       AND lower(c.name) = 'milk'
+       AND lower(c.name) IN ('milk', 'curd')
+       -- Subsidy milk never counts toward nor triggers the minimum:
+       -- the live SKU by code, plus any other scheme SKU by name (two
+       -- older 'HTM 1000ML SUBSIDY' rows exist, both under code P06,
+       -- which is ALSO a live goodlife SKU and so must not be matched
+       -- on code). See MIN_QTY_EXEMPT_CODES.
        AND COALESCE(p.code, '') <> 'PD0191S'
-  `;
-  let milkLitres = 0;
-  for (const r of rows as any[]) {
-    const cat = String(r.category).trim().toLowerCase();
-    const m = workerUnitMeasure(r.unit, r.pack_size, r.name);
-    if (cat === "milk") milkLitres += Number(r.quantity) * m.litres;
+       AND p.name NOT ILIKE '%subsid%'
+  `) as any[];
+
+  const total = workerCombinedTotal(
+    rows.map((r) => ({ quantity: Number(r.quantity), unit: r.unit, pack_size: r.pack_size, name: r.name })),
+  );
+  if (total > 0 && total < WORKER_ORDER_MIN.min) {
+    return [{ total, min: WORKER_ORDER_MIN.min, unit: WORKER_ORDER_MIN.unit }];
   }
-  const out: WorkerCategoryShortfall[] = [];
-  const milk = Math.round(milkLitres * 1000) / 1000;
-  if (milk > 0 && milk < WORKER_CATEGORY_MIN.milk) {
-    out.push({ category: "milk", total: milk, min: WORKER_CATEGORY_MIN.milk, unit: "L" });
-  }
-  return out;
+  return [];
 }
 
 // Thrown when a line can't be satisfied during the guarded deduction
@@ -507,10 +589,11 @@ export async function processAutoConfirmDrafts() {
     const lines = items.map((it) => {
       const price = resolveUnitPrice(pricedFrom(it), dealer.rate_category);
       const gstPct = parseFloat(it.gst_percent);
-      const lineSub = price * it.default_qty;
-      const lineGst = lineSub * (gstPct / 100);
-      subtotal += lineSub;
-      totalGst += lineGst;
+      // Round at the line, then add up, so the draft's grand_total is the
+      // exact sum of its printed lines. See lib/line-totals.ts.
+      const line = calcLine(price, gstPct, it.default_qty);
+      subtotal = round2(subtotal + line.subtotal);
+      totalGst = round2(totalGst + line.gst);
       itemCount += it.default_qty;
       return {
         product_id: it.product_id,
@@ -518,8 +601,8 @@ export async function processAutoConfirmDrafts() {
         default_qty: it.default_qty,
         unitPrice: price.toFixed(2),
         gst_percent: gstPct.toFixed(2),
-        gstAmount: lineGst.toFixed(2),
-        lineTotal: (lineSub + lineGst).toFixed(2),
+        gstAmount: line.gst.toFixed(2),
+        lineTotal: line.total.toFixed(2),
       };
     });
     const grandTotal = round2(subtotal + totalGst);
@@ -584,14 +667,16 @@ export async function processAutoConfirmDrafts() {
       }
     };
 
-    // ── Min-order gate ── never auto-confirm an order whose Milk total is
-    // below 12 L (curd has no minimum). Leave it a draft so the dealer/
-    // admin can top up the standing indent, then it re-confirms on a later tick.
+    // ── Min-order gate ── never auto-confirm an order whose milk + curd
+    // total is below 12 L/kg combined, unless the dealer already has a live
+    // order clearing 12 on this route for the day. Leave it a draft so the
+    // dealer/admin can top up the standing indent, then it re-confirms on a
+    // later tick.
     const minShortfalls = await workerCategoryMinShortfalls(orderId);
     if (minShortfalls.length > 0) {
       console.warn(
         `[AutoConfirm] min-order-blocked order=${orderId} dealer=${dealer.dealer_id}: ` +
-          minShortfalls.map((s) => `${s.category} ${s.total}${s.unit} < ${s.min}${s.unit}`).join(", ")
+          minShortfalls.map((s) => `milk+curd ${s.total}${s.unit} < ${s.min}${s.unit}`).join(", ")
       );
       return "min_qty_blocked";
     }

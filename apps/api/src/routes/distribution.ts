@@ -4,6 +4,7 @@ import { isNull, asc } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
 import { vehicles } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
+import { istToday } from "../lib/ist-date.js";
 
 export async function distributionRoutes(app: FastifyInstance) {
   // GET /api/v1/routes — all routes with stop details
@@ -53,7 +54,10 @@ export async function distributionRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      // Auto-generate route code if not provided
+      // Auto-generate route code if not provided. Deleted routes are counted
+      // too (no deleted_at filter): they keep their code for the history that
+      // prints under it, so the next R number carries on past them instead of
+      // handing an old route's code to a new one.
       let routeCode = body.code;
       if (!routeCode) {
         const [lastRoute] = await pgClient`
@@ -64,6 +68,21 @@ export async function distributionRoutes(app: FastifyInstance) {
         `;
         const lastNum = lastRoute ? parseInt(lastRoute.code.slice(1)) : 0;
         routeCode = `R${lastNum + 1}`;
+      } else {
+        // Hand-typed code: say plainly that it is taken rather than letting the
+        // unique constraint surface as a 500. A deleted route still holds its
+        // own code, so name the state in the message.
+        const [clash] = await pgClient`
+          SELECT name, (deleted_at IS NOT NULL) AS deleted
+          FROM routes WHERE code = ${routeCode} LIMIT 1
+        `;
+        if (clash) {
+          return reply.status(409).send({
+            error: "Route code already used",
+            message: `Code ${routeCode} belongs to ${clash.name}` +
+              (clash.deleted ? ", a deleted route that keeps it for its past sheets." : "."),
+          });
+        }
       }
 
       const stopDetails = body.stopDetails ?? [];
@@ -165,7 +184,16 @@ export async function distributionRoutes(app: FastifyInstance) {
     }
   );
 
-  // DELETE /api/v1/routes/:id — soft delete + renumber remaining R-codes
+  // DELETE /api/v1/routes/:id — soft delete, nothing else renamed
+  //
+  // The route keeps its code and the other routes keep theirs. Deleting R14
+  // used to rename it to "__DEL_<id8>" (freeing the slot) and then shift R15,
+  // R16, R17… down one, which rewrote history: every sheet already printed
+  // under R15 reprints as R14, and the deleted route printed under no code at
+  // all. A code identifies the route that earned it, so it is now pinned for
+  // good — including on the deleted row, which is why new codes never reuse
+  // it (the generator above takes MAX + 1 across every route, deleted ones
+  // included).
   app.delete(
     "/api/v1/routes/:id",
     { preHandler: [adminAuth, requireRole("distribution.manage")] },
@@ -175,46 +203,36 @@ export async function distributionRoutes(app: FastifyInstance) {
       await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
 
-        // Fetch the route before deleting so we know its code
         const [route] = await tx`
-          SELECT code FROM routes WHERE id = ${id} AND deleted_at IS NULL
+          SELECT id FROM routes WHERE id = ${id} AND deleted_at IS NULL
         `;
         if (!route) return; // already gone
 
-        // Rename to a temp code first so the R<N> slot becomes available for
-        // renumbering without hitting the unique constraint
+        // active = false as well: a deleted route must never read as live to
+        // a query that only checks the flag.
         await tx`
           UPDATE routes
-          SET code = ${"__DEL_" + id.slice(0, 8)}, deleted_at = now()
+          SET deleted_at = now(), active = false, updated_at = now()
           WHERE id = ${id}
         `;
 
-        // Detach dealers pointing to this route
+        // Detach dealers pointing to this route. Orders already placed keep
+        // their own route_id snapshot, so nothing that has happened is lost:
+        // every report reads the order's route, not the dealer's current one.
         await tx`UPDATE dealers SET route_id = NULL WHERE route_id = ${id}`;
 
-        // Renumber only when the deleted code is a standard R<N> code
-        if (/^R\d+$/.test(route.code)) {
-          const deletedNum = parseInt(route.code.slice(1));
+        // Stop the standing indents held against this route. They are keyed
+        // per (dealer, route, product), so without this the nightly job keeps
+        // raising a daily draft indent on a route that no longer exists and
+        // can never be loaded. The rows are deactivated, not deleted: the
+        // template is still there if the route is ever restored, and a dealer
+        // who also runs on another route keeps that route's template running.
+        await tx`
+          UPDATE dealer_standing_indents
+          SET active = false, updated_at = now()
+          WHERE route_id = ${id} AND active = true
+        `;
 
-          // Fetch all routes that need to shift down, in ascending order
-          const toRenumber = await tx`
-            SELECT id, code
-            FROM routes
-            WHERE deleted_at IS NULL
-              AND code ~ '^R[0-9]+$'
-              AND CAST(SUBSTRING(code FROM 2) AS integer) > ${deletedNum}
-            ORDER BY CAST(SUBSTRING(code FROM 2) AS integer) ASC
-          `;
-
-          // Process ascending: each step frees the slot below before the next
-          for (const r of toRenumber) {
-            const newCode = `R${parseInt(r.code.slice(1)) - 1}`;
-            await tx`
-              UPDATE routes SET code = ${newCode}, updated_at = now()
-              WHERE id = ${r.id}
-            `;
-          }
-        }
       });
 
       return reply.send({ message: "Route deleted" });
@@ -259,6 +277,11 @@ export async function distributionRoutes(app: FastifyInstance) {
         SELECT d.id, d.code, d.name, dr.position, dr.is_primary
           FROM dealer_routes dr
           JOIN dealers d ON d.id = dr.dealer_id AND d.deleted_at IS NULL
+          -- Play Store demo route: a reviewer's test activity is not the union's
+          -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+          AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                           WHERE demo_rt.code = 'DEMO'
+                             AND demo_rt.id = dr.route_id)
         WHERE dr.route_id = ${routeId}::uuid
         ORDER BY dr.position NULLS LAST, d.code, d.name
       `;
@@ -283,7 +306,7 @@ export async function distributionRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const querySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() });
       const { date } = querySchema.parse(request.query);
-      const targetDate = date ?? new Date().toISOString().slice(0, 10);
+      const targetDate = date ?? istToday();
       const assignments = await pgClient`
         SELECT ra.id, ra.date, ra.driver_name, ra.driver_phone,
                ra.departure_time, ra.actual_departure_time,
@@ -308,7 +331,7 @@ export async function distributionRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const querySchema = z.object({ date: z.string().optional() });
       const { date } = querySchema.parse(request.query);
-      const targetDate = date ?? new Date().toISOString().slice(0, 10);
+      const targetDate = date ?? istToday();
       const assignments = await pgClient`
         SELECT ra.id, ra.route_id, ra.date, ra.driver_name, ra.vehicle_number,
                ra.departure_time, ra.actual_departure_time,
@@ -326,6 +349,11 @@ export async function distributionRoutes(app: FastifyInstance) {
                  o.item_count, o.grand_total, o.status AS order_status
           FROM orders o
           JOIN dealers d ON d.id = o.dealer_id
+          -- Play Store demo route: a reviewer's test activity is not the union's
+          -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+          AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                           WHERE demo_rt.code = 'DEMO'
+                             AND demo_rt.id = COALESCE(o.route_id, d.route_id))
           WHERE COALESCE(o.route_id, d.route_id) = ${a.route_id}::uuid
             AND o.delivery_date = ${targetDate}::date
             AND o.status != 'cancelled'
@@ -440,7 +468,7 @@ export async function distributionRoutes(app: FastifyInstance) {
             FROM dealers d
             WHERE o.dealer_id = d.id
               AND COALESCE(o.route_id, d.route_id) = ${existing.route_id}::uuid
-              AND o.created_at::date = ${existing.date}::date
+              AND (o.created_at AT TIME ZONE 'Asia/Kolkata')::date = ${existing.date}::date
               AND o.status = 'confirmed'
           `;
         } else if (goingToDelivered) {
@@ -452,7 +480,7 @@ export async function distributionRoutes(app: FastifyInstance) {
             FROM dealers d
             WHERE o.dealer_id = d.id
               AND COALESCE(o.route_id, d.route_id) = ${existing.route_id}::uuid
-              AND o.created_at::date = ${existing.date}::date
+              AND (o.created_at AT TIME ZONE 'Asia/Kolkata')::date = ${existing.date}::date
               AND o.status = 'dispatched'
           `;
         }

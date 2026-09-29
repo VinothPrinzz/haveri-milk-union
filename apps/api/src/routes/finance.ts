@@ -11,6 +11,7 @@ import {
 } from "../lib/min-order-qty.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { resolveUnitPrice } from "../lib/rate-price.js";
+import { istToday } from "../lib/ist-date.js";
 
 export async function financeRoutes(app: FastifyInstance) {
   // ═══ INVOICES ═══
@@ -21,7 +22,8 @@ export async function financeRoutes(app: FastifyInstance) {
     { preHandler: [adminAuth, requireRole("finance.view")] },
     async (request, reply) => {
       const querySchema = paginationSchema.extend({
-        dealer:        z.string().optional(),
+        dealer:        z.string().optional(),        // dealer NAME, fuzzy
+        dealerId:      z.string().uuid().optional(), // exact dealer, for pickers
         dateFrom:      z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         dateTo:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         routeId:       z.string().uuid().optional(),
@@ -30,8 +32,9 @@ export async function financeRoutes(app: FastifyInstance) {
       });
       const q = querySchema.parse(request.query);
       const offset = offsetFromPage(q.page, q.limit);
-   
+
       const dealerSearch  = q.dealer ? `%${q.dealer}%` : null;
+      const dealerId      = q.dealerId ?? null;
       const generalSearch = q.search ? `%${q.search}%` : null;
       const dateFrom      = q.dateFrom ?? null;
       const dateTo        = q.dateTo   ? q.dateTo + "T23:59:59Z" : null;
@@ -51,6 +54,9 @@ export async function financeRoutes(app: FastifyInstance) {
           i.total_tax              AS "totalTax",
           i.total_amount           AS "totalAmount",
           i.paid_amount            AS "paidAmount",
+          -- Outstanding on this invoice. Payment pickers key off this, so it
+          -- ships from the server rather than being re-derived per caller.
+          GREATEST(0, i.total_amount - COALESCE(i.paid_amount, 0)) AS "balanceAmount",
           i.payment_status         AS "paymentStatus",
           i.pdf_url                AS "pdfUrl",
           i.dealer_name            AS "dealerName",
@@ -61,29 +67,42 @@ export async function financeRoutes(app: FastifyInstance) {
           -- comes from the order's snapshotted route (falling back to the
           -- dealer's primary for pre-0040 orders) — same rule as the invoice
           -- detail endpoint and the PDF renderer.
-          COALESCE(o.route_id, d.route_id) AS "routeId",
+          COALESCE(o.route_id, ds.route_id, d.route_id) AS "routeId",
           r.code                   AS "routeCode",
           r.name                   AS "routeName",
-          o.payment_mode           AS "paymentMode",
-          o.item_count             AS "itemCount",
-          o.delivery_date          AS "deliveryDate",
+          -- A counter sale / gate pass invoice points at direct_sales, not
+          -- orders, so these three read NULL without the ds fallback.
+          COALESCE(o.payment_mode::text, ds.payment_mode::text) AS "paymentMode",
+          COALESCE(
+            o.item_count,
+            (SELECT count(*)::int FROM direct_sale_items dsi
+              WHERE dsi.direct_sale_id = ds.id)
+          )                        AS "itemCount",
+          COALESCE(o.delivery_date, ds.sale_date) AS "deliveryDate",
           -- Overdue days: only for unpaid/partial with a due_date in the past
           CASE
             WHEN i.payment_status <> 'paid' AND i.due_date IS NOT NULL
-            THEN GREATEST(0, (CURRENT_DATE - i.due_date))
+            THEN GREATEST(0, ((now() AT TIME ZONE 'Asia/Kolkata')::date - i.due_date))
             ELSE 0
           END                      AS "overdueDays"
         FROM invoices i
         JOIN dealers d       ON d.id = i.dealer_id
+        -- Play Store demo route: a reviewer's test activity is not the union's
+        -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+        AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                         WHERE demo_rt.code = 'DEMO'
+                           AND demo_rt.id = d.route_id)
         LEFT JOIN orders o   ON o.id = i.order_id
-        LEFT JOIN routes r   ON r.id = COALESCE(o.route_id, d.route_id)
+        LEFT JOIN direct_sales ds ON ds.id = i.order_id
+        LEFT JOIN routes r   ON r.id = COALESCE(o.route_id, ds.route_id, d.route_id)
         WHERE (${dealerSearch}::text  IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
+          AND (${dealerId}::uuid IS NULL OR i.dealer_id = ${dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${generalSearch}::text IS NULL OR
                d.name ILIKE ${generalSearch ?? ''} OR
                i.invoice_number ILIKE ${generalSearch ?? ''})
           AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
           AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
-          AND (${routeId}::uuid IS NULL OR COALESCE(o.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${routeId}::uuid IS NULL OR COALESCE(o.route_id, ds.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
         ORDER BY i.invoice_date DESC
         LIMIT ${q.limit} OFFSET ${offset}
@@ -93,14 +112,21 @@ export async function financeRoutes(app: FastifyInstance) {
         SELECT count(*)::int AS count
         FROM invoices i
         JOIN dealers d       ON d.id = i.dealer_id
+        -- Play Store demo route: a reviewer's test activity is not the union's
+        -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+        AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                         WHERE demo_rt.code = 'DEMO'
+                           AND demo_rt.id = d.route_id)
         LEFT JOIN orders o   ON o.id = i.order_id
+        LEFT JOIN direct_sales ds ON ds.id = i.order_id
         WHERE (${dealerSearch}::text  IS NULL OR d.name ILIKE ${dealerSearch ?? ''})
+          AND (${dealerId}::uuid IS NULL OR i.dealer_id = ${dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${generalSearch}::text IS NULL OR
                d.name ILIKE ${generalSearch ?? ''} OR
                i.invoice_number ILIKE ${generalSearch ?? ''})
           AND (${dateFrom}::timestamptz IS NULL OR i.invoice_date >= ${dateFrom ?? '1970-01-01'}::timestamptz)
           AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
-          AND (${routeId}::uuid IS NULL OR COALESCE(o.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${routeId}::uuid IS NULL OR COALESCE(o.route_id, ds.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
       `;
    
@@ -136,14 +162,23 @@ export async function financeRoutes(app: FastifyInstance) {
           i.dealer_name         AS "dealerName",
           i.dealer_gst_number   AS "dealerGstNumber",
           i.dealer_address      AS "dealerAddressSnapshot",
-          COALESCE(o.route_id, eo.route_id, d.route_id) AS "routeId",
+          COALESCE(o.route_id, eo.route_id, ds.route_id, d.route_id) AS "routeId",
+          -- orderStatus drives the page's "a placed order is settled, so it
+          -- reads PAID" fallback. A direct sale is deliberately NOT folded in:
+          -- a gate pass taken on credit is 'confirmed' too, and would then
+          -- wrongly read PAID. Counter sales carry a real payment_status on the
+          -- invoice row instead (see generateDirectSaleInvoicePdfSync).
           COALESCE(o.status, eo.status)            AS "orderStatus",
-          COALESCE(o.payment_mode, eo.payment_mode) AS "paymentMode",
-          COALESCE(o.item_count, eo.item_count)    AS "itemCount",
-          COALESCE(o.delivery_date, eo.delivery_date) AS "deliveryDate",
-          COALESCE(o.subtotal, eo.subtotal)        AS "orderSubtotal",
-          COALESCE(o.total_gst, eo.total_gst)      AS "orderTotalGst",
-          COALESCE(o.grand_total, eo.grand_total)  AS "orderGrandTotal",
+          COALESCE(o.payment_mode, eo.payment_mode, ds.payment_mode) AS "paymentMode",
+          COALESCE(
+            o.item_count, eo.item_count,
+            (SELECT count(*)::int FROM direct_sale_items dsi
+              WHERE dsi.direct_sale_id = ds.id)
+          )                                        AS "itemCount",
+          COALESCE(o.delivery_date, eo.delivery_date, ds.sale_date) AS "deliveryDate",
+          COALESCE(o.subtotal, eo.subtotal, ds.subtotal)        AS "orderSubtotal",
+          COALESCE(o.total_gst, eo.total_gst, ds.total_gst)     AS "orderTotalGst",
+          COALESCE(o.grand_total, eo.grand_total, ds.grand_total) AS "orderGrandTotal",
           -- Party block (live, not snapshot — use the dealer_* columns on the
           -- invoice itself for the GST number / name as at invoice time).
           -- An employee-subsidy invoice has dealer_id NULL and employee_id set
@@ -167,11 +202,16 @@ export async function financeRoutes(app: FastifyInstance) {
         LEFT JOIN employees e ON e.id = i.employee_id
         LEFT JOIN orders o    ON o.id = i.order_id
         LEFT JOIN employee_orders eo ON eo.id = i.order_id
+        -- Third rail: a counter sale / gate pass. invoices.order_id points at
+        -- direct_sales.id there, so without this join the header came back with
+        -- NULL status / mode / delivery date and the page footed the invoice at
+        -- GST-only. Exactly one of these three can match a given invoice.
+        LEFT JOIN direct_sales ds ON ds.id = i.order_id
         -- Route is derived from the order's snapshotted route (the route it was
         -- placed for), falling back to the dealer's primary route — mirrors the
         -- server-side PDF renderer. invoices.route_id is not populated for
         -- dealer invoices at creation, so it isn't used here.
-        LEFT JOIN routes r ON r.id = COALESCE(o.route_id, eo.route_id, d.route_id)
+        LEFT JOIN routes r ON r.id = COALESCE(o.route_id, eo.route_id, ds.route_id, d.route_id)
         WHERE i.id = ${id}
         LIMIT 1
       `;
@@ -202,7 +242,7 @@ export async function financeRoutes(app: FastifyInstance) {
         WHERE oi.order_id = ${(invoice as any).orderId}
         UNION ALL
         -- Employee-subsidy invoices point at an employee_orders id; only one of
-        -- these two branches can match a given invoice.
+        -- these three branches can match a given invoice.
         SELECT
           eoi.product_id, eoi.product_name,
           COALESCE(p.hsn_no, ''), COALESCE(p.pack_size::text, ''),
@@ -216,6 +256,23 @@ export async function financeRoutes(app: FastifyInstance) {
         FROM employee_order_items eoi
         LEFT JOIN products p ON p.id = eoi.product_id
         WHERE eoi.employee_order_id = ${(invoice as any).orderId}
+        UNION ALL
+        -- Counter sale / gate pass. The page computes the taxable value and the
+        -- grand total by summing these lines, so a missing branch here did not
+        -- just blank the table — it footed the whole invoice at GST only.
+        SELECT
+          dsi.product_id, dsi.product_name,
+          COALESCE(p.hsn_no, ''), COALESCE(p.pack_size::text, ''),
+          dsi.quantity, dsi.unit_price, dsi.gst_percent,
+          (dsi.gst_amount / 2)::numeric(10,2),
+          (dsi.gst_amount / 2)::numeric(10,2),
+          (dsi.gst_percent / 2)::numeric(5,2),
+          (dsi.gst_percent / 2)::numeric(5,2),
+          dsi.gst_amount, dsi.line_total,
+          (dsi.quantity * dsi.unit_price)::numeric(10,2)
+        FROM direct_sale_items dsi
+        LEFT JOIN products p ON p.id = dsi.product_id
+        WHERE dsi.direct_sale_id = ${(invoice as any).orderId}
         ORDER BY "productName"
       `;
    
@@ -405,7 +462,11 @@ export async function financeRoutes(app: FastifyInstance) {
                count(CASE WHEN ra.status = 'dispatched' OR ra.status = 'delivered' THEN 1 END)::int AS completed
         FROM routes r
         LEFT JOIN route_assignments ra ON ra.route_id = r.id
+        -- A deleted route keeps its line for as long as it has trips behind
+        -- it: this is a record of dispatches that happened, not of routes that
+        -- still run. It drops off once it never dispatched anything.
         WHERE r.deleted_at IS NULL
+           OR EXISTS (SELECT 1 FROM route_assignments ra2 WHERE ra2.route_id = r.id)
         GROUP BY r.id, r.name ORDER BY r.name
       `;
       return reply.send({ data: rows });
@@ -441,8 +502,11 @@ export async function financeRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const schema = z.object({ dateFrom: z.string().optional(), dateTo: z.string().optional() });
       const query = schema.parse(request.query);
-      const targetDate = (query.dateFrom ?? new Date().toISOString().split("T")[0]) as string;
+      const targetDate = (query.dateFrom ?? istToday()) as string;
 
+      // Reads the STORED fgs_stock_log columns verbatim — deliberately left on
+      // the raw table rather than fgs_day, so a historical movement report
+      // reproduces exactly what was recorded on the day.
       const rows = await pgClient`
         SELECT p.id, p.name, p.icon, c.name AS category_name,
                COALESCE(f.opening, p.stock) AS opening,
@@ -554,11 +618,16 @@ export async function financeRoutes(app: FastifyInstance) {
 
       const grandTotal = subtotal + totalGst;
 
-      // Milk order minimum (≥12 L milk; curd has no minimum).
-      const minQtyViolations = await findMinQtyViolations(
-        body.items,
-        body.dealerId
-      );
+      // Milk + curd order minimum (≥12 L/kg combined). Only the FIRST live
+      // order on this route for the delivery date carries it, so a call-desk
+      // top-up onto a run the customer has already booked goes straight
+      // through. Admin-placed indents land on today IST (the INSERT below
+      // leaves delivery_date to its default), which is what the sibling
+      // lookup assumes when no date is passed.
+      const minQtyViolations = await findMinQtyViolations(body.items, {
+        dealerId: body.dealerId,
+        routeId,
+      });
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
           error: "Minimum order quantity",
@@ -836,6 +905,11 @@ export async function financeRoutes(app: FastifyInstance) {
           p.created_at                       AS "createdAt"
         FROM payments p
         JOIN dealers d        ON d.id = p.dealer_id
+        -- Play Store demo route: a reviewer's test activity is not the union's
+        -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+        AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                         WHERE demo_rt.code = 'DEMO'
+                           AND demo_rt.id = d.route_id)
         LEFT JOIN invoices i  ON i.id = p.invoice_id
         LEFT JOIN users u     ON u.id = p.received_by
         LEFT JOIN cheques ch  ON ch.payment_id = p.id
@@ -855,6 +929,11 @@ export async function financeRoutes(app: FastifyInstance) {
         SELECT count(*)::int AS count
         FROM payments p
         JOIN dealers d        ON d.id = p.dealer_id
+        -- Play Store demo route: a reviewer's test activity is not the union's
+        -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+        AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                         WHERE demo_rt.code = 'DEMO'
+                           AND demo_rt.id = d.route_id)
         LEFT JOIN invoices i  ON i.id = p.invoice_id
         WHERE (${dateFrom}::date IS NULL OR p.received_date >= ${dateFrom ?? '1970-01-01'}::date)
           AND (${dateTo}::date   IS NULL OR p.received_date <= ${dateTo   ?? '9999-12-31'}::date)
@@ -874,7 +953,7 @@ export async function financeRoutes(app: FastifyInstance) {
           COALESCE(SUM(CASE WHEN ch.status IN ('bounced','cancelled')
                             THEN 0 ELSE p.amount END), 0)::numeric AS total_received,
           COUNT(*)::int                        AS total_count,
-          COALESCE(SUM(CASE WHEN p.received_date = CURRENT_DATE
+          COALESCE(SUM(CASE WHEN p.received_date = (now() AT TIME ZONE 'Asia/Kolkata')::date
                              AND (ch.status IS NULL OR ch.status NOT IN ('bounced','cancelled'))
                             THEN p.amount ELSE 0 END), 0)::numeric AS received_today
         FROM payments p
@@ -925,7 +1004,7 @@ export async function financeRoutes(app: FastifyInstance) {
         }).optional(),
       });
       const body = schema.parse(request.body);
-      const receivedDate = body.receivedDate ?? new Date().toISOString().slice(0, 10);
+      const receivedDate = body.receivedDate ?? istToday();
   
       // Validate dealer + fetch wallet balance (for ledger balance_after).
       const [dealer] = await pgClient`
@@ -984,9 +1063,9 @@ export async function financeRoutes(app: FastifyInstance) {
                 bank_name, branch, amount, status, received_date, received_by
               ) VALUES (
                 ${payment.id}::uuid, ${body.dealerId}::uuid,
-                ${body.cheque?.chequeNumber ?? (body.reference?.trim() || "—")},
+                ${body.cheque?.chequeNumber ?? (body.reference?.trim() || "")},
                 ${(body.cheque?.chequeDate ?? receivedDate)}::date,
-                ${body.cheque?.bankName ?? "— unspecified —"},
+                ${body.cheque?.bankName ?? "Unspecified"},
                 ${body.cheque?.branch ?? null},
                 ${body.amount.toFixed(2)}::numeric,
                 'received'::cheque_status,
@@ -1111,6 +1190,11 @@ export async function financeRoutes(app: FastifyInstance) {
                d.name AS dealer_name
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
+        -- Play Store demo route: a reviewer's test activity is not the union's
+        -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+        AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                         WHERE demo_rt.code = 'DEMO'
+                           AND demo_rt.id = COALESCE(o.route_id, d.route_id))
         WHERE o.status != 'cancelled'
           AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ''})
           AND (${methodFilter}::text IS NULL OR o.payment_mode::text = ${methodFilter ?? ''})

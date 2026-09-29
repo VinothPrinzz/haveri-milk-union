@@ -22,6 +22,12 @@ import {
 // packages/db seed-password.ts; override via env for non-prod environments.
 const DEFAULT_DEALER_PASSWORD = process.env.DEFAULT_DEALER_PASSWORD || "password123";
 
+// dealers.city is the "District" field. The union trades inside one district
+// only, so it is a constant here and any client value is ignored — the taluka
+// (zones.name via zone_id) is the address field that actually varies.
+// See migration 0073_district_haveri_only.sql.
+const DISTRICT = "Haveri";
+
 export async function dealerRoutes(app: FastifyInstance) {
   // ═══════════════════════════════════════════════════════════════
   // GET /api/v1/dealers — paginated dealer list with marketing fields
@@ -48,10 +54,14 @@ export async function dealerRoutes(app: FastifyInstance) {
         typeFilter: z.string().optional(),
         batchId: z.string().uuid().optional(),
         activeFilter: z.enum(["true", "false"]).optional(),
+        // deleted=true lists ONLY soft-deleted customers (the All Customers
+        // "Deleted" status filter); otherwise tombstones stay hidden as before.
+        deleted: z.enum(["true", "false"]).optional(),
       });
 
       const query = querySchema.parse(request.query);
       const offset = offsetFromPage(query.page, query.limit);
+      const onlyDeleted = query.deleted === "true";
       const searchTerm = query.search ? `%${query.search}%` : null;
       const zoneId = query.zoneId ?? null;
       const customerType = query.customerType ?? null;
@@ -72,9 +82,13 @@ export async function dealerRoutes(app: FastifyInstance) {
           GROUP BY dl.dealer_id
         )
         SELECT
-          d.id, d.name, d.phone, d.email, d.gst_number,
+          d.id, d.name,
+          -- A soft delete suffixes the phone (':deleted:<id>') to release the
+          -- unique key; show the original number. Live rows are unchanged.
+          split_part(d.phone, ':deleted:', 1) AS phone,
+          d.email, d.gst_number,
           d.city, d.active, d.address, d.pin_code, d.location_label,
-          d.created_at,
+          d.created_at, d.deleted_at,
           d.code, d.customer_type, d.rate_category, d.pay_mode,
           d.route_id,
           d.bank, d.officer_name,
@@ -120,7 +134,7 @@ export async function dealerRoutes(app: FastifyInstance) {
         JOIN zones z ON z.id = d.zone_id
         LEFT JOIN routes r       ON r.id = d.route_id AND r.deleted_at IS NULL
         LEFT JOIN ledger_totals lt ON lt.dealer_id = d.id
-        WHERE d.deleted_at IS NULL
+        WHERE (d.deleted_at IS NOT NULL) = ${onlyDeleted}::boolean
           AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""})
           AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId ?? "00000000-0000-0000-0000-000000000000"}::uuid)
           AND (${customerType}::text IS NULL OR d.customer_type::text = ${customerType ?? ""})
@@ -142,7 +156,7 @@ export async function dealerRoutes(app: FastifyInstance) {
 
       const [countRow] = await pgClient`
         SELECT count(*)::int AS count FROM dealers d
-        WHERE d.deleted_at IS NULL
+        WHERE (d.deleted_at IS NOT NULL) = ${onlyDeleted}::boolean
           AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""})
           AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId ?? "00000000-0000-0000-0000-000000000000"}::uuid)
           AND (${query.customerType ?? null}::text IS NULL OR d.customer_type::text = ${query.customerType ?? ""})
@@ -288,7 +302,7 @@ export async function dealerRoutes(app: FastifyInstance) {
         )
         VALUES (
           ${body.name}, ${body.phone}, ${body.phone}, ${passwordHash}, ${body.email || null}, ${body.gstNumber || null},
-          ${body.zoneId || (await getDefaultZoneId())}, ${body.address || null}, ${body.city || null},
+          ${body.zoneId || (await getDefaultZoneId())}, ${body.address || null}, ${DISTRICT},
           ${body.pinCode || null}, ${body.locationLabel || null},
           ${body.code || null}, ${body.customerType || "Retail-Dealer"},
           ${body.rateCategory || body.customerType || "Retail-Dealer"}, ${body.payMode || "Cash"},
@@ -355,10 +369,11 @@ export async function dealerRoutes(app: FastifyInstance) {
             -- phone is changed here it is auto-captured as the username too.
             username = COALESCE(${body.phone ?? null}, username),
             email = CASE WHEN ${body.email !== undefined} THEN ${body.email ?? null} ELSE email END,
-            gst_number = CASE WHEN ${body.gstNumber !== undefined} THEN ${body.gstNumber ?? null} ELSE gst_number END,
+            gst_number = CASE WHEN ${body.gstNumber !== undefined} THEN ${body.gstNumber || null} ELSE gst_number END,
             active = COALESCE(${body.active ?? null}::boolean, active),
             address = CASE WHEN ${body.address !== undefined} THEN ${body.address ?? null} ELSE address END,
-            city = CASE WHEN ${body.city !== undefined} THEN ${body.city ?? null} ELSE city END,
+            -- District is fixed (see DISTRICT above); the client value is ignored.
+            city = ${DISTRICT},
             pin_code = CASE WHEN ${body.pinCode !== undefined} THEN ${body.pinCode ?? null} ELSE pin_code END,
             code = CASE WHEN ${body.code !== undefined} THEN ${body.code ?? null} ELSE code END,
             customer_type = COALESCE(${body.customerType ?? null}::customer_type, customer_type),
@@ -635,7 +650,7 @@ export async function dealerRoutes(app: FastifyInstance) {
             dl.voucher_no        AS "voucherNo",
             dl.voucher_type      AS "voucherType",
             dl.particulars,
-            COALESCE(dl.voucher_date, dl.created_at::date) AS "voucherDate",
+            COALESCE(dl.voucher_date, (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date) AS "voucherDate",
             dl.created_at        AS "createdAt",
             dl.balance_after     AS "storedBalance",
             -- Running balance: cumulative credit - debit within the
@@ -646,8 +661,14 @@ export async function dealerRoutes(app: FastifyInstance) {
               AS running_delta
           FROM dealer_ledger dl
           WHERE dl.dealer_id = ${id}
-            AND (${from}::date IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) >= ${from ?? '1970-01-01'}::date)
-            AND (${to}::date   IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) <= ${to   ?? '9999-12-31'}::date)
+            AND (${from}::date IS NULL
+                 OR COALESCE(dl.voucher_date,
+                             (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                      >= ${from ?? '1970-01-01'}::date)
+            AND (${to}::date IS NULL
+                 OR COALESCE(dl.voucher_date,
+                             (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                      <= ${to   ?? '9999-12-31'}::date)
         )
         SELECT * FROM filtered
         ORDER BY "createdAt" DESC, id DESC
@@ -658,8 +679,14 @@ export async function dealerRoutes(app: FastifyInstance) {
         SELECT count(*)::int AS count
         FROM dealer_ledger dl
         WHERE dl.dealer_id = ${id}
-          AND (${from}::date IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) >= ${from ?? '1970-01-01'}::date)
-          AND (${to}::date   IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) <= ${to   ?? '9999-12-31'}::date)
+          AND (${from}::date IS NULL
+               OR COALESCE(dl.voucher_date,
+                           (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                    >= ${from ?? '1970-01-01'}::date)
+          AND (${to}::date IS NULL
+               OR COALESCE(dl.voucher_date,
+                           (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                    <= ${to   ?? '9999-12-31'}::date)
       `;
    
       return reply.send({
@@ -719,7 +746,9 @@ export async function dealerRoutes(app: FastifyInstance) {
           COALESCE(SUM(
             CASE
               WHEN ${from}::date IS NOT NULL
-               AND COALESCE(dl.voucher_date, dl.created_at::date) < ${from ?? '1970-01-01'}::date
+               AND COALESCE(dl.voucher_date,
+                            (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                     < ${from ?? '1970-01-01'}::date
               THEN (CASE WHEN dl.type = 'credit' THEN dl.amount ELSE -dl.amount END)
               ELSE 0
             END
@@ -727,8 +756,14 @@ export async function dealerRoutes(app: FastifyInstance) {
           -- Range debits
           COALESCE(SUM(
             CASE
-              WHEN (${from}::date IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) >= ${from ?? '1970-01-01'}::date)
-               AND (${to}::date   IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) <= ${to   ?? '9999-12-31'}::date)
+              WHEN (${from}::date IS NULL
+                    OR COALESCE(dl.voucher_date,
+                                (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                         >= ${from ?? '1970-01-01'}::date)
+               AND (${to}::date IS NULL
+                    OR COALESCE(dl.voucher_date,
+                                (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                         <= ${to   ?? '9999-12-31'}::date)
                AND dl.type = 'debit'
                AND COALESCE(dl.voucher_type, '') <> 'Opening'
               THEN dl.amount ELSE 0
@@ -737,8 +772,14 @@ export async function dealerRoutes(app: FastifyInstance) {
           -- Range credits
           COALESCE(SUM(
             CASE
-              WHEN (${from}::date IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) >= ${from ?? '1970-01-01'}::date)
-               AND (${to}::date   IS NULL OR COALESCE(dl.voucher_date, dl.created_at::date) <= ${to   ?? '9999-12-31'}::date)
+              WHEN (${from}::date IS NULL
+                    OR COALESCE(dl.voucher_date,
+                                (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                         >= ${from ?? '1970-01-01'}::date)
+               AND (${to}::date IS NULL
+                    OR COALESCE(dl.voucher_date,
+                                (dl.created_at AT TIME ZONE 'Asia/Kolkata')::date)
+                         <= ${to   ?? '9999-12-31'}::date)
                AND dl.type = 'credit'
                AND COALESCE(dl.voucher_type, '') <> 'Opening'
               THEN dl.amount ELSE 0

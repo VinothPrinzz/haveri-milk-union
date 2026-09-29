@@ -3,6 +3,7 @@
 // Finance → Dealer Statements
 //
 //   GET /api/v1/finance/dealer-statements           — dealer index
+//   GET /api/v1/finance/dealer-statements/dealers   — dealer picker list
 //   GET /api/v1/finance/dealer-statements/:id        — period statement (JSON)
 //   GET /api/v1/finance/dealer-statements/:id/print  — printable HTML
 //
@@ -58,18 +59,10 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
-
-// A real calendar date, not just the right shape. `from` is compared in JS
-// rather than handed to Postgres, so a syntactically-valid-but-impossible
-// value like 2026-13-99 would otherwise sail through and silently produce a
-// nonsense period instead of an error.
-const isoDate = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
-  .refine((s) => {
-    const d = new Date(s + "T00:00:00Z");
-    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
-  }, "not a valid calendar date");
+// `from` is compared in JS rather than handed to Postgres, so `isoDate` has to
+// reject a syntactically-valid-but-impossible value like 2026-13-99 that would
+// otherwise sail through and silently produce a nonsense period.
+import { isoDate, istToday } from "../lib/ist-date.js";
 
 const periodSchema = z
   .object({ from: isoDate.optional(), to: isoDate.optional() })
@@ -78,10 +71,6 @@ const periodSchema = z
     path: ["from"],
   });
 
-/** IST calendar day — the union books everything on Asia/Kolkata dates. */
-function istToday(): string {
-  return new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
-}
 function defaultFrom(): string {
   return istToday().slice(0, 8) + "01";
 }
@@ -169,7 +158,7 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
         WHEN inv.invoice_number IS NOT NULL
           THEN 'Invoice ' || inv.invoice_number
         ELSE 'Order #' || left(o.id::text, 8)
-      END || ' — ' || COALESCE(itm.n, 0)::text
+      END || ', ' || COALESCE(itm.n, 0)::text
         || CASE WHEN COALESCE(itm.n, 0) = 1 THEN ' item' ELSE ' items' END
                                             AS particulars,
       'debit'                               AS type,
@@ -193,6 +182,44 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
 
     UNION ALL
 
+    -- 1b. GATE PASSES (debit) — counter supply is billed to the agent just
+    --     like an indent is. Omitting this rail did not merely hide the
+    --     sale: a cash pass now writes a receipt (section 2 below), so
+    --     without its matching debit the statement would show the agent
+    --     paying for goods it never billed them for, and a wallet pass's
+    --     ledger drawdown would move the balance with nothing to explain it.
+    --     Cancelled passes are excluded — the sale no longer stands.
+    SELECT
+      'ds:' || ds.id::text                  AS id,
+      ds.sale_date                          AS "voucherDate",
+      ds.created_at                         AS at,
+      'invoice'                             AS kind,
+      'Invoice'                             AS "voucherType",
+      COALESCE(inv.invoice_number, ds.gp_no, '#' || left(ds.id::text, 8))
+                                            AS "voucherNo",
+      'Gate pass ' || COALESCE(ds.gp_no, '#' || left(ds.id::text, 8))
+        || ', ' || COALESCE(itm.n, 0)::text
+        || CASE WHEN COALESCE(itm.n, 0) = 1 THEN ' item' ELSE ' items' END
+                                            AS particulars,
+      'debit'                               AS type,
+      ds.grand_total::float8                AS amount,
+      ds.payment_mode::text                 AS mode,
+      ds.id::text                           AS "orderId"
+    FROM direct_sales ds
+    LEFT JOIN LATERAL (
+      SELECT i.invoice_number FROM invoices i WHERE i.order_id = ds.id LIMIT 1
+    ) inv ON true
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS n FROM direct_sale_items dsi
+       WHERE dsi.direct_sale_id = ds.id
+    ) itm ON true
+    WHERE ds.customer_type = 'agent'
+      AND ds.customer_id = ${dealerId}::uuid
+      AND ds.status = 'confirmed'
+      AND ds.sale_date <= ${to}::date
+
+    UNION ALL
+
     -- 2. RECEIPTS (credit) — every rupee received, whichever way it came
     --    in. Split topup vs payment the same way the Day Book does: the
     --    linked ledger credit is authoritative, the gateway kind covers
@@ -213,12 +240,19 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
         WHEN dl.reference_type = 'wallet_topup' OR rp.kind = 'credit_topup'
           THEN 'Wallet top-up'
         WHEN rp.kind = 'order_payment' THEN 'Payment at checkout'
+        -- Counter QR scanned against a gate pass. It reaches this section as
+        -- an ordinary receipt (applyPaidGatePassPayment books one at capture
+        -- with reference = the pay_* id), and without this arm it read as an
+        -- unexplained 'Receipt on account' next to the pass billed in 1b.
+        WHEN rp.kind = 'gate_pass'
+          THEN 'Counter QR payment for gate pass '
+               || COALESCE(gp.gp_no, '#' || left(gp.id::text, 8))
         WHEN i.invoice_number IS NOT NULL
           THEN 'Receipt against invoice ' || i.invoice_number
         ELSE 'Receipt on account'
       END
       || ' (' || upper(p.mode) || ')'
-      || COALESCE(' — ' || NULLIF(p.reference, ''), ''),
+      || COALESCE(', ' || NULLIF(p.reference, ''), ''),
       'credit',
       p.amount::float8,
       p.mode,
@@ -233,12 +267,17 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
        LIMIT 1
     ) dl ON true
     LEFT JOIN LATERAL (
-      SELECT x.kind::text AS kind, x.order_id
+      SELECT x.kind::text AS kind, x.order_id, x.direct_sale_id
         FROM razorpay_payments x
        WHERE p.reference IS NOT NULL
          AND x.razorpay_payment_id = p.reference
        LIMIT 1
     ) rp ON true
+    LEFT JOIN LATERAL (
+      SELECT ds.id, ds.gp_no FROM direct_sales ds
+       WHERE ds.id = rp.direct_sale_id
+       LIMIT 1
+    ) gp ON true
     WHERE p.dealer_id = ${dealerId}::uuid
       AND p.received_date <= ${to}::date
 
@@ -248,13 +287,13 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
     --    bank, so the union holds less of their money.
     SELECT
       'r:' || rf.id::text,
-      COALESCE(rf.processed_at, rf.created_at)::date,
+      (COALESCE(rf.processed_at, rf.created_at) AT TIME ZONE 'Asia/Kolkata')::date,
       COALESCE(rf.processed_at, rf.created_at),
       'refund',
       'Refund',
       'RF-' || upper(right(rf.razorpay_refund_id, 8)),
       'Refund to bank'
-        || COALESCE(' — ' || NULLIF(rf.reason, ''), '')
+        || COALESCE(', ' || NULLIF(rf.reason, ''), '')
         || ' (' || rf.razorpay_refund_id || ')',
       'debit',
       rf.amount::float8,
@@ -263,7 +302,7 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
     FROM razorpay_refunds rf
     WHERE rf.dealer_id = ${dealerId}::uuid
       AND rf.status = 'processed'
-      AND COALESCE(rf.processed_at, rf.created_at)::date <= ${to}::date
+      AND (COALESCE(rf.processed_at, rf.created_at) AT TIME ZONE 'Asia/Kolkata')::date <= ${to}::date
 
     UNION ALL
 
@@ -394,7 +433,13 @@ export async function loadStatement(dealerId: string, from: string, to: string) 
     SELECT d.id, d.code, d.name, d.pay_mode::text AS "payMode",
            d.customer_type::text AS "customerType",
            d.gst_number AS "gstNumber", d.address, d.city, d.state,
-           d.phone, d.credit_limit::float8 AS "creditLimit",
+           -- A soft delete suffixes the phone (':deleted:<id>') and nulls the
+           -- code; show the original number, and carry the IST deletion day
+           -- so the statement can say the account is closed.
+           split_part(d.phone, ':deleted:', 1) AS phone,
+           to_char((d.deleted_at AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD')
+                                   AS "deletedOn",
+           d.credit_limit::float8 AS "creditLimit",
            COALESCE(d.opening_balance, 0)::float8 AS "openingBalanceSeed",
            r.name AS "routeName",
            COALESCE(w.balance, 0)::float8 AS "walletBalance",
@@ -464,10 +509,11 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
             COALESCE(d.opening_balance, 0)
             + COALESCE(pay.amt, 0)
             - COALESCE(ord.amt, 0)
+            - COALESCE(gp.amt, 0)
             - COALESCE(ref.amt, 0)
             + COALESCE(adj.amt, 0)
           )::float8 AS "closingBalance",
-          COALESCE(ord.amt, 0)::float8 AS "billedTotal",
+          (COALESCE(ord.amt, 0) + COALESCE(gp.amt, 0))::float8 AS "billedTotal",
           COALESCE(pay.amt, 0)::float8 AS "receivedTotal",
           pay.last_at AS "lastPaymentAt"
         FROM dealers d
@@ -479,6 +525,20 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
            WHERE o.dealer_id = d.id
              AND o.status IN ('confirmed', 'dispatched', 'delivered')
         ) ord ON true
+        -- Gate passes are billed to the agent too. Kept as its own lateral so
+        -- the closing balance here agrees with the statement, which bills them
+        -- in its section 1b.
+        LEFT JOIN LATERAL (
+          SELECT SUM(ds.grand_total) AS amt
+            FROM direct_sales ds
+           WHERE ds.customer_type = 'agent'
+             AND ds.customer_id = d.id
+             AND ds.status = 'confirmed'
+        ) gp ON true
+        -- Every receipt rail, counter QR included: a scanned gate pass books
+        -- a payments row at capture, so summing razorpay_payments on top of
+        -- this (as a second lateral once did) credited that money twice and
+        -- flattered the agent's closing balance.
         LEFT JOIN LATERAL (
           SELECT SUM(p.amount) AS amt, MAX(p.received_date) AS last_at
             FROM payments p WHERE p.dealer_id = d.id
@@ -501,11 +561,24 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
                 OR a.id IS NOT NULL )
         ) adj ON true
         -- A soft-deleted dealer stays listed while they still have history,
-        -- so their statement remains reachable.
+        -- so their statement remains reachable. Same rule as the picker.
         WHERE (d.deleted_at IS NULL
+               OR COALESCE(d.opening_balance, 0) <> 0
+               OR EXISTS (SELECT 1 FROM orders o2
+                           WHERE o2.dealer_id = d.id
+                             AND o2.status IN ('confirmed', 'dispatched', 'delivered'))
+               OR EXISTS (SELECT 1 FROM payments p2 WHERE p2.dealer_id = d.id)
                OR EXISTS (SELECT 1 FROM dealer_ledger dl2 WHERE dl2.dealer_id = d.id)
-               OR EXISTS (SELECT 1 FROM payments p2 WHERE p2.dealer_id = d.id))
+               OR EXISTS (SELECT 1 FROM direct_sales ds2
+                           WHERE ds2.customer_type = 'agent' AND ds2.customer_id = d.id)
+               OR EXISTS (SELECT 1 FROM razorpay_refunds rf2
+                           WHERE rf2.dealer_id = d.id AND rf2.status = 'processed'))
           AND (${routeId}::uuid IS NULL OR d.route_id = ${routeId}::uuid)
+          -- Play Store demo route: a reviewer's test activity is not the union's
+          -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+          AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                           WHERE demo_rt.code = 'DEMO'
+                             AND demo_rt.id = d.route_id)
           AND (${search}::text  IS NULL OR d.name ILIKE ${search}::text OR d.code ILIKE ${search}::text)
         ORDER BY d.name ASC
         LIMIT ${q.limit} OFFSET ${offset}
@@ -513,9 +586,22 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
         pgClient`
         SELECT count(*)::int AS count FROM dealers d
         WHERE (d.deleted_at IS NULL
+               OR COALESCE(d.opening_balance, 0) <> 0
+               OR EXISTS (SELECT 1 FROM orders o2
+                           WHERE o2.dealer_id = d.id
+                             AND o2.status IN ('confirmed', 'dispatched', 'delivered'))
+               OR EXISTS (SELECT 1 FROM payments p2 WHERE p2.dealer_id = d.id)
                OR EXISTS (SELECT 1 FROM dealer_ledger dl2 WHERE dl2.dealer_id = d.id)
-               OR EXISTS (SELECT 1 FROM payments p2 WHERE p2.dealer_id = d.id))
+               OR EXISTS (SELECT 1 FROM direct_sales ds2
+                           WHERE ds2.customer_type = 'agent' AND ds2.customer_id = d.id)
+               OR EXISTS (SELECT 1 FROM razorpay_refunds rf2
+                           WHERE rf2.dealer_id = d.id AND rf2.status = 'processed'))
           AND (${routeId}::uuid IS NULL OR d.route_id = ${routeId}::uuid)
+          -- Play Store demo route: a reviewer's test activity is not the union's
+          -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+          AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                           WHERE demo_rt.code = 'DEMO'
+                             AND demo_rt.id = d.route_id)
           AND (${search}::text  IS NULL OR d.name ILIKE ${search}::text OR d.code ILIKE ${search}::text)
       `,
       ]);
@@ -524,6 +610,43 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
         data: rows,
         ...paginationMeta(countRow?.count ?? 0, q.page, q.limit),
       });
+    }
+  );
+
+  // ── GET /api/v1/finance/dealer-statements/dealers (picker) ──
+  // Every dealer whose statement can be generated: all live dealers plus the
+  // soft-deleted ones that still carry history (same rule as the index).
+  // The page used to fill its dealer picker from /dealers, which hides every
+  // deleted dealer, so a closed account's statement was unreachable. No
+  // balances here, so the whole list loads in one call. A delete nulls the
+  // code, which is why a deleted dealer carries its deletion day instead.
+  app.get(
+    "/api/v1/finance/dealer-statements/dealers",
+    { preHandler: [adminAuth, requireRole("finance.view")] },
+    async (_request, reply) => {
+      const rows = await pgClient`
+        SELECT d.id, d.code, d.name,
+               to_char((d.deleted_at AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD')
+                 AS "deletedOn"
+          FROM dealers d
+         WHERE (d.deleted_at IS NULL
+                OR COALESCE(d.opening_balance, 0) <> 0
+                OR EXISTS (SELECT 1 FROM orders o2
+                            WHERE o2.dealer_id = d.id
+                              AND o2.status IN ('confirmed', 'dispatched', 'delivered'))
+                OR EXISTS (SELECT 1 FROM payments p2 WHERE p2.dealer_id = d.id)
+                OR EXISTS (SELECT 1 FROM dealer_ledger dl2 WHERE dl2.dealer_id = d.id)
+                OR EXISTS (SELECT 1 FROM direct_sales ds2
+                            WHERE ds2.customer_type = 'agent' AND ds2.customer_id = d.id)
+                OR EXISTS (SELECT 1 FROM razorpay_refunds rf2
+                            WHERE rf2.dealer_id = d.id AND rf2.status = 'processed'))
+           -- Play Store demo route: never part of this report (see the index).
+           AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                            WHERE demo_rt.code = 'DEMO'
+                              AND demo_rt.id = d.route_id)
+         ORDER BY d.name ASC, d.deleted_at DESC NULLS FIRST
+      `;
+      return reply.send({ data: rows });
     }
   );
 
@@ -641,7 +764,7 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
         </table>`;
 
       const html = `<!doctype html><html><head><meta charset="utf-8">
-        <title>Statement — ${esc(d.name)}</title>
+        <title>Statement: ${esc(d.name)}</title>
         <style>
           body{font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#111;margin:24px;}
           h1{font-size:18px;margin:0;} h2{font-size:13px;margin:18px 0 4px;}
@@ -666,9 +789,10 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
           <div class="sub">Statement of Account · Period: ${esc(from)} to ${esc(to)}</div>
         </div>
         <div class="meta">
-          <div><b>Dealer:</b> ${esc(d.code)} — ${esc(d.name)}</div>
-          <div><b>Route:</b> ${esc(d.routeName ?? "—")}</div>
-          <div><b>GSTIN:</b> ${esc(d.gstNumber ?? "—")}</div>
+          <div><b>Dealer:</b> ${esc(d.code ? `${d.code}: ${d.name}` : d.name)}${
+            d.deletedOn ? ` (account deleted on ${esc(d.deletedOn)})` : ""}</div>
+          <div><b>Route:</b> ${esc(d.routeName ?? "")}</div>
+          <div><b>GSTIN:</b> ${esc(d.gstNumber ?? "")}</div>
         </div>
         <div class="cards">
           <div class="card"><div class="k">Opening</div><div class="v">${drcrLabel(stmt.openingBalance)}</div></div>

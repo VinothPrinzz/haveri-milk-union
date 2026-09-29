@@ -88,6 +88,16 @@ const num = (v: number | string | null | undefined): number => {
   return Number.isFinite(n) ? (n as number) : NaN;
 };
 
+/**
+ * Prices are rupees and paise. Every net price this module hands back is
+ * rounded to two decimals, because that is the only precision a dealer is
+ * ever billed at — line_total, gst_amount and grand_total all land on the
+ * paisa, so a third decimal in unit_price can never reach a bill. It only
+ * ever leaked into reports that group lines by the stored price, splitting
+ * one SKU into two identical-looking rows.
+ */
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
 export interface PricedProduct {
   /** products.base_price — NET, pre-GST. The default for every tier. */
   basePrice: number | string;
@@ -115,7 +125,7 @@ export function resolveUnitPrice(
   rateCategory: string | null | undefined
 ): number {
   const basePrice = num(product.basePrice);
-  const safeBase = Number.isFinite(basePrice) ? basePrice : 0;
+  const safeBase = round2(Number.isFinite(basePrice) ? basePrice : 0);
 
   if (!isCreditInstMrp(rateCategory)) return safeBase;
   if (!isMilkCategory(product.categoryName)) return safeBase;
@@ -126,7 +136,7 @@ export function resolveUnitPrice(
   if (!Number.isFinite(gross) || gross <= 0) return safeBase;
 
   const gstPct = num(product.gstPercent);
-  const net = gross / (1 + (Number.isFinite(gstPct) ? gstPct : 0) / 100);
+  const net = round2(gross / (1 + (Number.isFinite(gstPct) ? gstPct : 0) / 100));
 
   // Never bill an institution BELOW the dealer rate. This also makes the
   // GST-bearing members of the Milk category (chocolates, rusk) a no-op:

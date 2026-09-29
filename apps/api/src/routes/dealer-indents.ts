@@ -34,6 +34,7 @@ import {
 import { enqueuePDFInvoice } from "../lib/queue.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { resolveUnitPrice } from "../lib/rate-price.js";
+import { calcLine } from "../lib/line-totals.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -72,16 +73,6 @@ async function dealerRateCategory(dealerId: string): Promise<string | null> {
   return (row?.rateCategory ?? null) as string | null;
 }
 
-/** Line totals from (price_excl_gst, gst_percent, quantity), rupees @ 2dp. */
-function calcLine(basePrice: number, gstPercent: number, qty: number) {
-  const subtotal = basePrice * qty;
-  const gst = subtotal * (gstPercent / 100);
-  return {
-    subtotal: Math.round(subtotal * 100) / 100,
-    gst: Math.round(gst * 100) / 100,
-    total: Math.round((subtotal + gst) * 100) / 100,
-  };
-}
 
 /**
  * Re-sync the dealer's still-editable draft orders (today + future,
@@ -306,15 +297,20 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // Milk order minimum (≥12 L milk; curd has no minimum). Only ACTIVE lines
+      // Milk + curd order minimum (≥12 L/kg combined). Only ACTIVE lines
       // with a positive default get auto-placed, so the aggregate is checked
       // over those — a standing indent that totals under the minimum would
       // otherwise auto-confirm into an order that breaks the rule.
+      //
+      // No route/date context on purpose: a TEMPLATE is what produces the
+      // day's FIRST order on the route, every day, so it always carries the
+      // floor. The "second order is exempt" relief belongs to the orders
+      // placed on top of it, not to the template itself.
       const minQtyViolations = await findMinQtyViolations(
         body.items
           .filter((i) => i.active)
           .map((i) => ({ productId: i.productId, quantity: i.defaultQty })),
-        dealerId
+        { dealerId }
       );
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
@@ -851,8 +847,11 @@ export async function dealerIndentsRoutes(app: FastifyInstance) {
         });
       }
 
-      // ── Milk order-minimum gate (≥12 L; curd has no minimum) ── leave the order a
-      // draft so the dealer can top up the quantities, then re-confirm.
+      // ── Milk + curd order-minimum gate (≥12 L/kg combined) ── leave the
+      // order a draft so the dealer can top up the quantities, then
+      // re-confirm. findOrderMinQtyViolations reads the order's own route and
+      // delivery date, so a draft confirmed onto a run the dealer has already
+      // booked today is waved through however small it is.
       const minQtyViolations = await findOrderMinQtyViolations(order.id);
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({

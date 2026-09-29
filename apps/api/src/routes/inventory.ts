@@ -11,6 +11,74 @@ import {
   bucketsForRole,
 } from "../lib/stock-buckets.js";
 
+/**
+ * Re-derive the stored opening/dispatched/closing of every LATER entry for one
+ * product, after its entry for `savedDate` changed.
+ *
+ * Why this has to exist. `opening` is not display data — it is the carry-forward
+ * link, and the next entry's anchor reads the stored COLUMN, not the derived
+ * value. Saving a day only ever wrote that one date's row, so editing an earlier
+ * day left every later stored opening frozen at its pre-edit value, and the
+ * chain silently broke: the sheet showed one closing while the following day
+ * carried a different opening.
+ *
+ * That is not hypothetical. On 2026-08-05 an operator saved PD0245's 5th at
+ * 06:07:04 and then edited the 4th at 06:08:33. The 5th's stored opening stayed
+ * at the pre-edit 13 while the chain moved to 10, so the 5th closed at 4 and the
+ * 6th opened at 7 — three units conjured out of nothing, carried forward into
+ * every later day.
+ *
+ * Walks forward in ASCENDING date order because each row's corrected opening is
+ * what the next one derives from; a single set-based pass would fix each row
+ * against the stale chain and re-create the drift one day along.
+ *
+ * A row flagged `opening_manual` (the cutover baseline, or a physical re-count
+ * per migration 0063) keeps its typed opening — fgs_day already returns that
+ * value for such a row, so assigning the derived figure is a no-op there — but
+ * its dispatched/closing still re-sync and propagation CONTINUES past it, since
+ * later rows carry from it.
+ *
+ * Returns the dates actually rewritten, for the response.
+ */
+export async function propagateOpeningsForward(
+  tx: typeof pgClient,
+  productId: string,
+  savedDate: string,
+): Promise<string[]> {
+  // Pre-cutover rows are frozen legacy display (migration 0064) and never serve
+  // as an anchor, so an edit there cannot reach the carry-forward era at all.
+  const later = (await tx`
+    SELECT date::text AS d
+      FROM fgs_stock_log
+     WHERE product_id = ${productId}::uuid
+       AND date > ${savedDate}::date
+       AND date >= COALESCE(
+             (SELECT MIN(date) FROM fgs_stock_log WHERE opening_manual),
+             ${savedDate}::date)
+     ORDER BY date
+  `) as any[];
+
+  const rewritten: string[] = [];
+  for (const { d } of later) {
+    const res = await tx`
+      UPDATE fgs_stock_log f
+         SET opening    = x.opening,
+             dispatched = x.dispatched,
+             closing    = x.closing,
+             updated_at = now()
+        FROM fgs_day(${d}::date) x
+       WHERE x.product_id = f.product_id
+         AND f.product_id = ${productId}::uuid
+         AND f.date       = ${d}::date
+         AND (f.opening, f.dispatched, f.closing)
+             IS DISTINCT FROM (x.opening, x.dispatched, x.closing)
+      RETURNING f.date
+    `;
+    if (res.count > 0) rewritten.push(d);
+  }
+  return rewritten;
+}
+
 export async function inventoryRoutes(app: FastifyInstance) {
   // GET /api/v1/fgs/overview — current stock for all products
   app.get(
@@ -34,40 +102,20 @@ export async function inventoryRoutes(app: FastifyInstance) {
       // joined with products (some products may not have an entry that day).
       if (date) {
         const stockData = await pgClient`
-          WITH dispatched_qty AS (
-            -- Auto-dispatched: what actually left the plant for this delivery
-            -- date, summed from dispatched/delivered order lines. This is the
-            -- source of truth for the Stock Entry "Dispatched" column (both
-            -- buckets) — the operator no longer types it by hand.
-            SELECT oi.product_id, SUM(oi.quantity)::int AS qty
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.id
-            WHERE o.delivery_date = ${date}::date
-              AND o.status IN ('dispatched', 'delivered')
-            GROUP BY oi.product_id
-          ),
-          base AS (
+          WITH base AS (
             SELECT p.id, p.name, p.icon, p.unit, p.available, p.sort_order,
                    p.low_stock_threshold, p.critical_stock_threshold,
                    c.name AS category_name,
-                   -- Opening auto-fills from the most recent prior day's closing
-                   -- when this date has no entry yet (falls back to 0 for a brand
-                   -- new product with no history).
-                   COALESCE(
-                     fsl.opening,
-                     (SELECT prev.closing
-                        FROM fgs_stock_log prev
-                       WHERE prev.product_id = p.id
-                         AND prev.date < ${date}::date
-                       ORDER BY prev.date DESC
-                       LIMIT 1),
-                     0
-                   ) AS opening,
-                   COALESCE(fsl.received, 0) AS received,
-                   -- Dispatched is derived from orders (see dispatched_qty),
-                   -- NOT from the stored fgs_stock_log value.
-                   COALESCE(dq.qty, 0) AS dispatched,
-                   COALESCE(fsl.wastage, 0) AS wastage,
+                   -- Opening / dispatched come from fgs_day (migration 0063),
+                   -- the one definition the dealer app and the order stock gate
+                   -- also read. Opening is the PREVIOUS entry's closing — it is
+                   -- no longer typed, and no stored value can override it
+                   -- outside a flagged baseline row. Dispatched is the stock
+                   -- committed to live orders for this delivery date.
+                   COALESCE(fd.opening, 0)    AS opening,
+                   COALESCE(fd.received, 0)   AS received,
+                   COALESCE(fd.dispatched, 0) AS dispatched,
+                   COALESCE(fd.wastage, 0)    AS wastage,
                    -- GRN receipt lines for this product on this day (who supplied
                    -- the received stock + cost). Empty array when none recorded.
                    COALESCE(
@@ -86,8 +134,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
                    ) AS receipts
             FROM products p
             JOIN categories c ON c.id = p.category_id
-            LEFT JOIN fgs_stock_log fsl ON fsl.product_id = p.id AND fsl.date = ${date}::date
-            LEFT JOIN dispatched_qty dq ON dq.product_id = p.id
+            LEFT JOIN fgs_day(${date}::date) fd ON fd.product_id = p.id
             WHERE p.deleted_at IS NULL
               -- Subsidy-only SKU (migration 0056) has no stock of its own.
               AND p.code IS DISTINCT FROM 'PD0191S'
@@ -170,9 +217,14 @@ export async function inventoryRoutes(app: FastifyInstance) {
         entries: z.array(
           z.object({
             productId: z.string().uuid(),
-            opening: z.number().int().min(0),
+            // opening and dispatched are DERIVED, never taken from the client:
+            // opening is the previous entry's closing (migration 0063) and
+            // dispatched is the stock committed to that date's live orders.
+            // Both stay in the schema as optional so an older deployed client
+            // that still posts them is accepted — the values are ignored.
+            opening: z.number().int().min(0).optional(),
             received: z.number().int().min(0),
-            dispatched: z.number().int().min(0),
+            dispatched: z.number().int().min(0).optional(),
             wastage: z.number().int().min(0),
             // Optional GRN receipt lines — who the received stock was purchased
             // from + at what cost. When present, `received` is DERIVED as the
@@ -221,24 +273,22 @@ export async function inventoryRoutes(app: FastifyInstance) {
         }
       }
 
-      // Dispatched is derived, never taken from the client: sum the dispatched/
-      // delivered order lines for each edited product on this date. Computed
-      // once up-front so every product's log + closing + products.stock stay in
-      // step with what the Stock Entry / Overview screens display.
-      const dispatchedByProduct = new Map<string, number>();
+      // Opening and dispatched are derived, never taken from the client —
+      // opening carries forward from the previous entry's closing, dispatched
+      // is what this date's live orders have committed. Read both from the
+      // same fgs_day function the Stock Entry screen renders, in one pass, so
+      // what gets stored is exactly what the operator was looking at.
+      const derivedByProduct = new Map<string, { opening: number; dispatched: number }>();
       if (body.entries.length > 0) {
-        const productIds = body.entries.map(e => e.productId);
-        const dispatchedRows = await pgClient`
-          SELECT oi.product_id, SUM(oi.quantity)::int AS qty
-          FROM orders o
-          JOIN order_items oi ON oi.order_id = o.id
-          WHERE o.delivery_date = ${body.date}::date
-            AND o.status IN ('dispatched', 'delivered')
-            AND oi.product_id = ANY(${productIds}::uuid[])
-          GROUP BY oi.product_id
+        const derivedRows = await pgClient`
+          SELECT product_id, opening, dispatched
+            FROM fgs_day(${body.date}::date)
         `;
-        for (const r of dispatchedRows) {
-          dispatchedByProduct.set(r.product_id as string, Number(r.qty));
+        for (const r of derivedRows) {
+          derivedByProduct.set(r.product_id as string, {
+            opening: Number(r.opening),
+            dispatched: Number(r.dispatched),
+          });
         }
       }
 
@@ -253,11 +303,12 @@ export async function inventoryRoutes(app: FastifyInstance) {
           ? entry.receipts!.reduce((sum, r) => sum + r.quantity, 0)
           : entry.received;
 
-        // Ignore entry.dispatched — it is auto-derived from orders.
-        const dispatched = dispatchedByProduct.get(entry.productId) ?? 0;
+        // entry.opening / entry.dispatched are ignored (see the schema note).
+        const derived = derivedByProduct.get(entry.productId);
+        const opening = derived?.opening ?? 0;
+        const dispatched = derived?.dispatched ?? 0;
 
-        const closing =
-          entry.opening + received - dispatched - entry.wastage;
+        const closing = opening + received - dispatched - entry.wastage;
 
         // Each product's log upsert + receipt replacement + stock update is one
         // atomic unit — a failed receipt insert must not leave the rolled-up
@@ -265,10 +316,14 @@ export async function inventoryRoutes(app: FastifyInstance) {
         const row = await pgClient.begin(async (_tx) => {
           const tx = _tx as unknown as typeof pgClient;
 
-          // Upsert — one entry per product per date
+          // Upsert — one entry per product per date. opening_manual is
+          // deliberately absent from the UPDATE list: a baseline row (the
+          // cutover snapshot, or a post-stock-count re-baseline) must keep its
+          // flag, and the opening written back above is that same flagged
+          // value, so saving the sheet never breaks the chain.
           const [logRow] = await tx`
             INSERT INTO fgs_stock_log (product_id, date, opening, received, dispatched, wastage, closing, entered_by)
-            VALUES (${entry.productId}, ${body.date}::date, ${entry.opening}, ${received},
+            VALUES (${entry.productId}, ${body.date}::date, ${opening}, ${received},
                     ${dispatched}, ${entry.wastage}, ${closing}, ${request.admin!.userId})
             ON CONFLICT (product_id, date) DO UPDATE SET
               opening = EXCLUDED.opening,
@@ -310,14 +365,33 @@ export async function inventoryRoutes(app: FastifyInstance) {
             WHERE id = ${entry.productId}
           `;
 
-          return logRow;
+          // Carry this edit forward. Saving a back-dated day changes what every
+          // later day opens at, and the next entry anchors on the stored column
+          // — so without this the chain breaks silently. Same transaction as the
+          // upsert: a partial propagation would leave a worse chain than not
+          // propagating at all.
+          const propagated = await propagateOpeningsForward(
+            tx,
+            entry.productId,
+            body.date,
+          );
+
+          return { ...logRow, propagatedDates: propagated };
         });
 
         results.push(row);
       }
 
+      const propagatedCount = results.reduce(
+        (n, r: any) => n + (r.propagatedDates?.length ?? 0),
+        0,
+      );
       return reply.status(200).send({
-        message: `Updated ${results.length} stock entries for ${body.date}`,
+        message:
+          `Updated ${results.length} stock entries for ${body.date}` +
+          (propagatedCount > 0
+            ? `; re-derived ${propagatedCount} later ${propagatedCount === 1 ? "entry" : "entries"}`
+            : ""),
         entries: results,
       });
     }

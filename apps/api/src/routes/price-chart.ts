@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
+import { istToday } from "../lib/ist-date.js";
 
 export async function priceChartRoutes(app: FastifyInstance) {
   // ═══ RATE CATEGORIES ═══
@@ -113,7 +114,7 @@ export async function priceChartRoutes(app: FastifyInstance) {
         effectiveFrom: z.string().optional(), // ISO date, defaults to today
       });
       const body = schema.parse(request.body);
-      const effectiveFrom = body.effectiveFrom ?? new Date().toISOString().slice(0, 10);
+      const effectiveFrom = body.effectiveFrom ?? istToday();
 
       // Close any existing active price for this product + category
       await pgClient`
@@ -151,7 +152,7 @@ export async function priceChartRoutes(app: FastifyInstance) {
         effectiveFrom: z.string().optional(),
       });
       const body = schema.parse(request.body);
-      const effectiveFrom = body.effectiveFrom ?? new Date().toISOString().slice(0, 10);
+      const effectiveFrom = body.effectiveFrom ?? istToday();
 
       let count = 0;
       for (const entry of body.entries) {

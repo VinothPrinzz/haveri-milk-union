@@ -105,6 +105,64 @@ export function isCreditInstitutionType(
   return !!customerType && customerType.startsWith("Credit Inst");
 }
 
+// ═══════════════════════════════════════════════════════════════
+// IS A DEALER ORDER A CREDIT SUPPLY?
+//
+// One rule, because it decides the cash / credit side of the Day Book, the
+// Route Sheet, the Cash Sales bill (B4), the Credit Sales bill (B5), the
+// Sales Register (B6), the GST Statement (B7), Day Route Cash and the
+// payment column on All Indents. It used to be spelled out per report as
+// "the customer is a credit institution", and each copy got it wrong the
+// same way.
+//
+// A sale is CREDIT only when the union is still owed the money for it:
+//
+//     credit institution  AND  not paid at checkout
+//
+// Being a credit institution is not enough on its own. Those buyers are
+// free to pay up front in the dealer app, and when they do the order
+// carries payment_mode='upi' with a captured Razorpay charge and a 'upi'
+// row in `payments` — the money is in the bank the same day. Testing only
+// the customer class filed such a sale under Credit while its own receipt
+// sat in the UPI collections total, so the same rupees were reported as
+// both collected and outstanding.
+//
+// The converse trap is why the payment_mode test alone will not do either:
+// on the ORDERS rail payment_mode='credit' is a technical marker for a
+// ledger settlement, which for an ordinary dealer is prepaid wallet money
+// the union already holds. Only for a credit institution does that ledger
+// debit book a receivable. (On the direct_sales and employee_orders rails
+// payment_mode IS the answer and means the opposite — see
+// lib/direct-sale-money.ts.)
+//
+// SQL callers spell the same predicate inline rather than importing a
+// fragment: sales-reports.ts keeps its filters as literal text so
+// diag-explain-changed-queries.ts still plans the real clause. Keep the
+// two in step — the canonical text is:
+//
+//   COALESCE(d.customer_type::text, '') LIKE 'Credit Inst%'
+//     AND o.payment_mode::text <> 'upi'
+// ═══════════════════════════════════════════════════════════════
+
+/** Paid at checkout through the gateway, so nothing is owed on it. */
+export function isPaidUpFrontOrder(
+  paymentMode: string | null | undefined
+): boolean {
+  return String(paymentMode ?? "").toLowerCase() === "upi";
+}
+
+/**
+ * Is this dealer order supply billed later rather than money the union
+ * already holds? See the block above for the full reasoning.
+ */
+export function isCreditSupplyOrder(args: {
+  customerType: string | null | undefined;
+  paymentMode: string | null | undefined;
+}): boolean {
+  return isCreditInstitutionType(args.customerType)
+    && !isPaidUpFrontOrder(args.paymentMode);
+}
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }

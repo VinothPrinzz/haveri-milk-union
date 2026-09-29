@@ -176,8 +176,9 @@ export async function systemRoutes(app: FastifyInstance) {
       if (req.type === "new_registration") {
         const data = JSON.parse(req.submittedData);
         const [dealer] = await pgClient`
+          -- city = District, fixed to Haveri for every dealer (migration 0073).
           INSERT INTO dealers (name, phone, gst_number, zone_id, address, city, pin_code)
-          VALUES (${data.name}, ${data.phone}, ${data.gstNumber ?? null}, ${data.zoneId}, ${data.address ?? null}, ${data.city ?? null}, ${data.pinCode ?? null})
+          VALUES (${data.name}, ${data.phone}, ${data.gstNumber ?? null}, ${data.zoneId}, ${data.address ?? null}, 'Haveri', ${data.pinCode ?? null})
           ON CONFLICT (phone) DO NOTHING RETURNING id
         `;
         if (dealer) {

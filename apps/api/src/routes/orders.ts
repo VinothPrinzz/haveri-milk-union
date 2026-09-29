@@ -24,14 +24,17 @@ import {
 } from "../lib/order-refund.js";
 import {
   findMinQtyViolations,
+  getMinQtyRequirement,
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
 import { checkDealerCredit } from "../lib/credit-check.js";
 import { resolveUnitPrice } from "../lib/rate-price.js";
+import { calcLine, sumLines, round2, type LineTotals } from "../lib/line-totals.js";
 import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { fgsAvailable, lockStockProducts } from "../lib/stock-check.js";
 import { PDFDocument } from "pdf-lib";
+import { istToday } from "../lib/ist-date.js";
 import jwt from "jsonwebtoken"
 
 // The half-price HTM 1000ML SKU (migration 0056). The subsidy scheme is
@@ -330,13 +333,17 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      // ── 2b. Enforce Milk order minimum (≥12 L milk; curd has no minimum) ──
+      // ── 2b. Enforce the milk + curd order minimum (≥12 L/kg combined) ──
       // (The subsidy line is exempt via MIN_QTY_EXEMPT_CODES, so pinning it
-      // above neither counts toward nor triggers the 12 L rule.)
-      const minQtyViolations = await findMinQtyViolations(
-        lineItems,
-        dealer.dealerId
-      );
+      // above neither counts toward nor triggers the rule.)
+      // Only the FIRST live order on this route for the day carries the
+      // floor; a cart order always lands on today's delivery date (the
+      // INSERT below leaves delivery_date to its default), so the sibling
+      // lookup defaults to today IST too.
+      const minQtyViolations = await findMinQtyViolations(lineItems, {
+        dealerId: dealer.dealerId,
+        routeId,
+      });
       if (minQtyViolations.length > 0) {
         return reply.status(400).send({
           error: "Minimum order quantity",
@@ -357,26 +364,27 @@ export async function orderRoutes(app: FastifyInstance) {
         gstAmount: string;
         lineTotal: string;
       }> = [];
+      // Round at the line, then add up — so grand_total is exactly the sum
+      // of the amounts printed on the invoice. See lib/line-totals.ts.
+      const placedLines: LineTotals[] = [];
       for (const item of lineItems) {
         const product = productMap.get(item.productId)!;
         const price = resolveUnitPrice(product, rateCategory);
         const gstPct = parseFloat(product.gstPercent);
-        const lineSubtotal = price * item.quantity;
-        const lineGst = lineSubtotal * (gstPct / 100);
-        const lineTotal = lineSubtotal + lineGst;
-        subtotal += lineSubtotal;
-        totalGst += lineGst;
+        const line = calcLine(price, gstPct, item.quantity);
+        placedLines.push(line);
         orderItemsData.push({
           productId: item.productId,
           productName: product.name,
           quantity: item.quantity,
           unitPrice: price.toFixed(2),
           gstPercent: gstPct.toFixed(2),
-          gstAmount: lineGst.toFixed(2),
-          lineTotal: lineTotal.toFixed(2),
+          gstAmount: line.gst.toFixed(2),
+          lineTotal: line.total.toFixed(2),
         });
       }
-      const grandTotal = subtotal + totalGst;
+      ({ subtotal, totalGst } = sumLines(placedLines));
+      const grandTotal = round2(subtotal + totalGst);
 
       // Prepaid balance pre-check: block if the order exceeds available balance
       // (opening + top-ups − purchases). No credit limit — customers spend only
@@ -712,8 +720,8 @@ export async function orderRoutes(app: FastifyInstance) {
           return reply.status(409).send({
             error: "Insufficient Stock",
             message: err.productName
-              ? `${err.productName} has only ${Math.max(0, err.available ?? 0)} units available — please refresh and retry`
-              : `Stock depleted for product ${err.productId} — please refresh and retry`,
+              ? `${err.productName} has only ${Math.max(0, err.available ?? 0)} units available. Please refresh and retry`
+              : `Stock depleted for product ${err.productId}. Please refresh and retry`,
           });
         }
         throw err;
@@ -1184,7 +1192,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
       if (legacyPending.length === 0) {
         return reply.status(200).send({
-          message: "No legacy pending orders found — all orders already confirmed",
+          message: "No legacy pending orders found. All orders already confirmed",
           requested: ids.length,
           confirmed: 0,
           skipped: ids.length,
@@ -1277,7 +1285,7 @@ export async function orderRoutes(app: FastifyInstance) {
       if (!order.window_open)
         return reply.status(400).send({
           error: "Window closed",
-          message: "This order's cancellation window has closed — past orders cannot be cancelled.",
+          message: "This order's cancellation window has closed. Past orders cannot be cancelled.",
         });
 
       try {
@@ -1312,7 +1320,10 @@ export async function orderRoutes(app: FastifyInstance) {
       const body = schema.parse(request.body);
 
       const [existing] = await pgClient`
-        SELECT id, dealer_id, status, payment_mode, grand_total, created_at
+        SELECT id, dealer_id, status, payment_mode, grand_total, created_at,
+               -- route_id + delivery_date place this order on a run, which
+               -- decides whether the milk + curd minimum still applies to it.
+               route_id, delivery_date::text AS delivery_date
         FROM orders WHERE id = ${id} FOR UPDATE
       `;
       if (!existing) return reply.status(404).send({ error: "Order not found" });
@@ -1320,10 +1331,34 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(409).send({ error: `Cannot modify ${existing.status} order` });
       }
 
-      // Milk order minimum (≥12 L; curd has no minimum) over the lines being kept.
+      // An edit that zeroes every line is a cancellation wearing a modify's
+      // clothes, and a bad one: it refunds the whole order here while leaving
+      // it 'confirmed', so it can then be cancelled a second time and refund
+      // again down a different rail. That is how order 75b8e03f
+      // (2026-08-29) paid Rs 1,323.88 back to the available balance on the
+      // update and another Rs 1,323.88 to the bank on the cancel. Emptying an
+      // indent belongs to Cancel, which reverses the money exactly once.
+      if (!body.items.some((i) => i.quantity > 0)) {
+        return reply.status(400).send({
+          error: "Cannot empty an indent",
+          message:
+            "An indent cannot be updated to zero. Use Cancel on the indent instead, " +
+            "which restores the stock and refunds the dealer in one step.",
+        });
+      }
+
+      // Milk + curd order minimum (≥12 L/kg combined) over the lines being
+      // kept. Scoped to this order's own run, and excluding itself: an order
+      // can never license its own edit, so the run's qualifying order still
+      // has to stay above 12 when it is the one being trimmed.
       const modMinQtyViolations = await findMinQtyViolations(
         body.items.filter((i) => i.quantity > 0),
-        existing.dealer_id as string
+        {
+          dealerId: existing.dealer_id as string,
+          routeId: (existing.route_id as string | null) ?? null,
+          deliveryDate: (existing.delivery_date as string | null) ?? null,
+          excludeOrderId: id,
+        }
       );
       if (modMinQtyViolations.length > 0) {
         return reply.status(400).send({
@@ -1359,7 +1394,9 @@ export async function orderRoutes(app: FastifyInstance) {
       `;
       const modRateCategory = (modRateRow?.rateCategory ?? null) as string | null;
 
-      let newSubtotal = 0, newGst = 0;
+      // Same line-first rounding as placement, so a modified indent's
+      // invoice foots exactly like an unmodified one.
+      const modLineTotals: LineTotals[] = [];
       const newLines: any[] = [];
       for (const item of body.items) {
         if (item.quantity === 0) continue;
@@ -1367,22 +1404,35 @@ export async function orderRoutes(app: FastifyInstance) {
         if (!p) return reply.status(400).send({ error: `Product ${item.productId} not found` });
         const price = resolveUnitPrice(p, modRateCategory);
         const gstPct = parseFloat(p.gstPercent);
-        const lineSub = price * item.quantity;
-        const lineGst = lineSub * (gstPct / 100);
-        newSubtotal += lineSub; newGst += lineGst;
+        const line = calcLine(price, gstPct, item.quantity);
+        modLineTotals.push(line);
         newLines.push({
           productId: item.productId,
           productName: p.name,
           quantity: item.quantity,
           unitPrice: price.toFixed(2),
           gstPercent: gstPct.toFixed(2),
-          gstAmount: lineGst.toFixed(2),
-          lineTotal: (lineSub + lineGst).toFixed(2)
+          gstAmount: line.gst.toFixed(2),
+          lineTotal: line.total.toFixed(2)
         });
       }
-      const newGrandTotal = newSubtotal + newGst;
+      const modTotals = sumLines(modLineTotals);
+      const newSubtotal = modTotals.subtotal;
+      const newGst = modTotals.totalGst;
+      const newGrandTotal = modTotals.grandTotal;
       const oldGrandTotal = parseFloat(existing.grand_total);
       const delta = newGrandTotal - oldGrandTotal;
+
+      // Belt-and-braces on the zero guard above: quantities can be non-zero
+      // and still price to nothing. Same reasoning, same answer.
+      if (newLines.length === 0 || newGrandTotal <= 0) {
+        return reply.status(400).send({
+          error: "Cannot empty an indent",
+          message:
+            "An indent cannot be updated to a zero total. Use Cancel on the indent instead, " +
+            "which restores the stock and refunds the dealer in one step.",
+        });
+      }
 
       // ── Balance gate (prepaid model) ─────────────────────────────────
       // An UPWARD change on a non-wallet order (credit or upi) posts an extra
@@ -1790,7 +1840,7 @@ export async function orderRoutes(app: FastifyInstance) {
       return reply
         .header("Content-Type", "application/pdf")
         .header("Content-Disposition",
-          `inline; filename="invoices-${new Date().toISOString().slice(0,10)}.pdf"`)
+          `inline; filename="invoices-${istToday()}.pdf"`)
         .send(Buffer.from(out));
     }
   );
@@ -1854,6 +1904,76 @@ export async function orderRoutes(app: FastifyInstance) {
       }
 
       return reply.send({ scope, total: targets.length, missing, stale, enqueued });
+    }
+  );
+
+  // ══════════════════════════════════════════════════════════════════
+  // Milk + curd order minimum: does it apply to the next order?
+  //
+  // The floor only binds the FIRST live order a dealer puts on a route
+  // for a delivery date (lib/min-order-qty.ts). The client-side guards
+  // cannot work that out for themselves, and a guard that blocks an
+  // order the server would accept is worse than no guard at all, so
+  // both surfaces ask here before they refuse to submit.
+  //
+  // Two registrations over one helper: the admin panel names the dealer,
+  // the dealer app is the dealer.
+  // ══════════════════════════════════════════════════════════════════
+
+  // GET /api/v1/orders/min-qty-status — admin panel (Record Indents,
+  // Dealer Indents). routeId defaults to the dealer's primary route,
+  // date to today IST.
+  app.get(
+    "/api/v1/orders/min-qty-status",
+    { preHandler: [adminAuth, requireRole("orders.create")] },
+    async (request, reply) => {
+      const q = z
+        .object({
+          dealerId: z.string().uuid(),
+          routeId: z.string().uuid().optional(),
+          date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+        .parse(request.query);
+
+      let routeId: string | null = q.routeId ?? null;
+      if (!routeId) {
+        const [d] = await pgClient`
+          SELECT route_id::text AS route_id
+            FROM dealers WHERE id = ${q.dealerId} AND deleted_at IS NULL LIMIT 1
+        `;
+        routeId = (d?.route_id as string | null) ?? null;
+      }
+
+      return reply.send(
+        await getMinQtyRequirement({
+          dealerId: q.dealerId,
+          routeId,
+          deliveryDate: q.date ?? null,
+        })
+      );
+    }
+  );
+
+  // GET /api/v1/dealer/orders/min-qty-status — dealer app cart / indent
+  // screen. The dealer and their active route come from the token, the
+  // same way POST /api/v1/orders resolves them.
+  app.get(
+    "/api/v1/dealer/orders/min-qty-status",
+    { preHandler: [dealerAuth] },
+    async (request, reply) => {
+      const q = z
+        .object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })
+        .parse(request.query);
+      const dealerId = request.dealer!.dealerId;
+      const routeId = await getDealerRouteId(dealerId);
+
+      return reply.send(
+        await getMinQtyRequirement({
+          dealerId,
+          routeId,
+          deliveryDate: q.date ?? null,
+        })
+      );
     }
   );
 }

@@ -52,6 +52,7 @@ import { subsidyIndentsRoutes } from "./routes/subsidy-indents.js";
 import { financeEmployeeCreditRoutes } from "./routes/finance-employee-credit.js";
 import { dealerPaymentsRoutes } from "./routes/dealer-payments.js";
 import { paymentReconciliationRoutes } from "./routes/payment-reconciliation.js";
+import { gatePassSweepRoutes } from "./routes/gate-pass-sweep.js";
 
 // // ▼▼▼ DUAL-DB (Temporarily Commented Out) ▼▼▼
 // import {
@@ -229,6 +230,7 @@ await app.register(officerRoutes);
 await app.register(dealerIndentsRoutes);
 await app.register(dealerPaymentsRoutes);
 await app.register(paymentReconciliationRoutes);
+await app.register(gatePassSweepRoutes);
 
 await app.register(adminIndentsRoutes);
 await app.register(employeeIndentsRoutes);

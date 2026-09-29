@@ -43,6 +43,7 @@ import { resolveUnitPrice } from "../lib/rate-price.js";
 // IST = UTC+5:30, no DST.
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
 
+/** Amounts settle in paise, so they carry two decimals — rates too. */
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 function tomorrowIstIso(): string {
@@ -131,6 +132,10 @@ export async function processMaterializeDrafts() {
       const routes: { route_id: string }[] = await sql`
         SELECT DISTINCT dsi.route_id::text AS route_id
           FROM dealer_standing_indents dsi
+          -- A deleted route can carry no delivery, so it must raise no draft.
+          -- Deleting a route deactivates its templates, so this is belt and
+          -- braces for any row that gets left active another way.
+          JOIN routes r ON r.id = dsi.route_id AND r.deleted_at IS NULL
          WHERE dsi.dealer_id = ${dealer.id}::uuid
            AND dsi.active = true
            AND dsi.default_qty > 0

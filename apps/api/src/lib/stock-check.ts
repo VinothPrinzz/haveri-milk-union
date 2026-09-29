@@ -11,7 +11,11 @@
 //
 // Two stock figures exist and they DISAGREE:
 //   • fgsAvailable() below — the day-aware FGS availability the dealer app's
-//     product list shows (opening + received − wastage − live reservations).
+//     product list shows (opening + received − wastage − live commitments).
+//     Since migration 0063 the opening half of that is a pure carry-forward of
+//     the previous entry's closing — nobody types it any more — and the
+//     arithmetic lives in the fgs_available/fgs_day SQL functions so the gate,
+//     the dealer app and the Stock Entry sheet share one definition.
 //   • products.stock — a free-floating counter that drifts (it carries across
 //     days and for any SKU set outside the morning Stock Entry flow).
 // Gating an order on products.stock is what wrongly blocked SKUs that had real
@@ -68,18 +72,22 @@ export function describeShortfalls(shortfalls: StockShortfall[]): string {
 
 /**
  * Day-aware available quantity for ONE stock-owning product, computed from the
- * FGS daily model — the SAME formula the dealer app's product list uses
- * (productRoutes GET /products). This is the number the dealer sees, so an
- * order gate must agree with it rather than with the drifting products.stock
- * counter:
+ * FGS daily model — the SAME expression the dealer app's product list and the
+ * Stock Entry sheet's Closing column use, because all three now call the
+ * fgs_available / fgs_day pair defined in migration 0063. That shared
+ * definition is the point: an order gate must agree with the number the dealer
+ * is looking at, not with the drifting products.stock counter.
  *
- *   opening (today's fgs_stock_log, else the most recent prior day's closing,
- *            else 0)  + received − wastage
- *   − reservations already claimed by live orders for today's delivery
- *     (every order with stock_deducted = true, keyed to the stock-owning SKU).
+ *   opening (carried from the previous entry's closing, or a baseline row)
+ *   + received − wastage
+ *   − stock committed to live orders for today's delivery
+ *     (orders.stock_deducted = true and not cancelled, keyed to the
+ *      stock-owning SKU).
  *
  * Pass the STOCK product id — resolve a variant to its base with
- * COALESCE(stock_source_product_id, id) first (migration 0059). Returns the
+ * COALESCE(stock_source_product_id, id) first (migration 0059). dateISO
+ * defaults to today in IST; the direct-sale rails pass their sale date, which
+ * is the day those goods come off the sheet. Returns the
  * RAW, possibly-negative figure so callers can both display it (floor at 0)
  * and, once an order is latched, read < 0 as oversell. Scalar param only →
  * safe through the Supabase transaction pooler (array-bound params crash Bind
@@ -87,38 +95,14 @@ export function describeShortfalls(shortfalls: StockShortfall[]): string {
  */
 export async function fgsAvailable(
   client: typeof pgClient,
-  stockProductId: string
+  stockProductId: string,
+  dateISO?: string
 ): Promise<number> {
   const [row] = await client`
-    WITH today AS (SELECT (now() AT TIME ZONE 'Asia/Kolkata')::date AS d),
-    reserved AS (
-      SELECT COALESCE(SUM(oi.quantity), 0)::int AS qty
-        FROM orders o
-        JOIN order_items oi ON oi.order_id = o.id
-        JOIN products pp    ON pp.id = oi.product_id
-       WHERE o.delivery_date = (SELECT d FROM today)
-         AND o.stock_deducted = true
-         AND COALESCE(pp.stock_source_product_id, pp.id) = ${stockProductId}::uuid
-    )
-    SELECT (
-        COALESCE(
-          fsl.opening,
-          (SELECT prev.closing
-             FROM fgs_stock_log prev
-            WHERE prev.product_id = ${stockProductId}::uuid
-              AND prev.date < (SELECT d FROM today)
-            ORDER BY prev.date DESC
-            LIMIT 1),
-          0
-        )
-        + COALESCE(fsl.received, 0)
-        - COALESCE(fsl.wastage, 0)
-        - (SELECT qty FROM reserved)
-      )::int AS available
-      FROM (SELECT 1) _one
-      LEFT JOIN fgs_stock_log fsl
-             ON fsl.product_id = ${stockProductId}::uuid
-            AND fsl.date = (SELECT d FROM today)
+    SELECT fgs_available(
+             ${stockProductId}::uuid,
+             COALESCE(${dateISO ?? null}::date, (now() AT TIME ZONE 'Asia/Kolkata')::date)
+           ) AS available
   `;
   return Number((row as any)?.available ?? 0);
 }
@@ -341,4 +325,157 @@ export async function restoreOrderStock(
        WHERE id = ${it.stockProductId}::uuid
     `;
   }
+}
+
+/** One product's demand on a rail that has no reservation latch of its own. */
+export interface StockDemandLine {
+  productId: string;
+  /** Snapshot name for the error message; falls back to the master's name. */
+  productName?: string;
+  quantity: number;
+}
+
+/**
+ * Fold a rail's lines onto the STOCK-owning product: a variant SKU draws from
+ * its base (migration 0059), and two lines of one product on the same sale
+ * must count once. Non-positive quantities drop out — an edit that CUTS a
+ * line frees stock and is never something to gate.
+ *
+ * Scalar param per product: array-bound params crash Bind through the Supabase
+ * transaction pooler, and a counter sale has a handful of lines at most.
+ */
+async function foldDemand(
+  client: typeof pgClient,
+  lines: StockDemandLine[]
+): Promise<Map<string, { productName: string; quantity: number }>> {
+  const demand = new Map<string, { productName: string; quantity: number }>();
+  for (const line of lines) {
+    if (!(line.quantity > 0)) continue;
+    const [row] = await client`
+      SELECT COALESCE(p.stock_source_product_id, p.id)::text AS "stockProductId",
+             p.name
+        FROM products p
+       WHERE p.id = ${line.productId}::uuid
+    `;
+    if (!row) continue; // unknown product — the caller's own validation rejects it
+    const key = String((row as any).stockProductId);
+    const prev = demand.get(key);
+    demand.set(key, {
+      productName: prev?.productName ?? line.productName ?? String((row as any).name),
+      quantity: (prev?.quantity ?? 0) + line.quantity,
+    });
+  }
+  return demand;
+}
+
+/**
+ * The dates a sale has to fit on. Opening carries forward, so units taken out
+ * of a past day come off every day after it: a back-dated sale that fits on
+ * the day it is dated can still push TODAY below zero, and both have to hold.
+ */
+async function datesToCheck(
+  client: typeof pgClient,
+  dateISO: string
+): Promise<string[]> {
+  const [d] = await client`
+    SELECT to_char((now() AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS today
+  `;
+  const today = String((d as any)!.today);
+  return dateISO < today ? [dateISO, today] : [dateISO];
+}
+
+/**
+ * Read-only pre-check for the non-order rails: could `lines` be covered right
+ * now, BEFORE they are written? Empty array → yes.
+ *
+ * Advisory, exactly like getOrderStockShortfalls: it takes no lock, so a
+ * concurrent sale can still drain the stock between this and the write. Use it
+ * to refuse early where a later refusal would be expensive — the modify
+ * endpoint calls a payment gateway before its transaction opens, and money
+ * must not leave the bank for an edit that is about to be rejected.
+ * assertNoOversell inside the transaction stays the authority.
+ */
+export async function getDemandShortfalls(
+  client: typeof pgClient,
+  lines: StockDemandLine[],
+  dateISO: string
+): Promise<StockShortfall[]> {
+  const demand = await foldDemand(client, lines);
+  if (demand.size === 0) return [];
+  const dates = await datesToCheck(client, dateISO);
+
+  const shortfalls: StockShortfall[] = [];
+  for (const [stockProductId, want] of demand) {
+    let available = Infinity;
+    for (const date of dates) {
+      const on = await fgsAvailable(client, stockProductId, date);
+      if (on < available) available = on;
+    }
+    if (want.quantity > available) {
+      shortfalls.push({
+        productId: stockProductId,
+        productName: want.productName,
+        ordered: want.quantity,
+        // Floored, so a SKU already oversold reads "have 0" rather than a
+        // negative the operator has never been shown (every screen floors it).
+        available: Math.max(0, available),
+      });
+    }
+  }
+  return shortfalls;
+}
+
+/**
+ * Oversell guard for the rails that carry NO stock_deducted latch: direct
+ * sales (gate pass, cash counter sale, VIP sample) and employee subsidy
+ * indents. Since migration 0072 both streams feed fgs_available straight off
+ * their own rows — a direct sale by sale_date, an employee indent by
+ * delivery_date — so nothing extra has to be flagged for the goods to leave
+ * the sheet. What was missing is the other half: NOTHING checked whether the
+ * sheet could cover them, so a counter sale of a SKU sitting at zero simply
+ * drove the day's availability negative.
+ *
+ * Shape mirrors deductOrderStock deliberately: WRITE the rows first, then
+ * lock and re-read. Because the rows are already in the transaction,
+ * fgs_available counts this sale, and a negative remainder IS the oversell —
+ * no separate before/after arithmetic to keep in step. Concurrent sales of the
+ * same SKU serialize on the advisory lock, so the second one to check sees the
+ * first's committed rows.
+ *
+ * Pass the DELTA, not the new quantity, on any path that replaces existing
+ * lines (the modify endpoint, an appended employee indent): only the increase
+ * is new demand on the floor, and a line being cut must never be refused.
+ *
+ * MUST run inside a transaction — that is what makes the throw a rollback.
+ * Throws StockConflictError, which the routes turn into a 409.
+ */
+export async function assertNoOversell(
+  tx: typeof pgClient,
+  lines: StockDemandLine[],
+  dateISO: string
+): Promise<void> {
+  const demand = await foldDemand(tx, lines);
+  if (demand.size === 0) return;
+
+  await lockStockProducts(tx, [...demand.keys()]);
+  const dates = await datesToCheck(tx, dateISO);
+
+  const shortfalls: StockShortfall[] = [];
+  for (const [stockProductId, want] of demand) {
+    let worst = Infinity;
+    for (const date of dates) {
+      const remaining = await fgsAvailable(tx, stockProductId, date); // counts this sale
+      if (remaining < worst) worst = remaining;
+    }
+    if (worst < 0) {
+      shortfalls.push({
+        productId: stockProductId,
+        productName: want.productName,
+        ordered: want.quantity,
+        // Availability before this sale, floored for the same reason as above.
+        available: Math.max(0, want.quantity + worst),
+      });
+    }
+  }
+  if (shortfalls.length > 0) throw new StockConflictError(shortfalls);
 }

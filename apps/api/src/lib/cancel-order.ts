@@ -1,6 +1,12 @@
 import { pgClient } from "./db.js";
 import { restoreOrderStock } from "./stock-check.js";
 import { isRazorpayConfigured, createRazorpayRefund } from "./razorpay-client.js";
+import { refreshInvoiceSettlement } from "./invoice-settlement.js";
+import {
+  balanceRefundedForOrder,
+  refundableToBank,
+  walletDebitedForOrder,
+} from "./refund-accounting.js";
 
 /**
  * Raised when a cancellation's refund can't be carried out the way the
@@ -34,6 +40,8 @@ export interface RefundSummary {
     amount: number;
     razorpayRefundId?: string;
     status?: string;
+    /** Why nothing moved, when method is "none" for a paid order. */
+    note?: string;
   };
 }
 
@@ -121,7 +129,7 @@ export async function cancelOrderWithReversal(
         (${order.dealer_id}, 'credit',
          ${plan.amount.toFixed(2)}::numeric,
          ${orderId}, 'order', 'Adjustment', now()::date,
-         ${'Cancellation credit — order ' + orderId},
+         ${'Cancellation credit for order ' + orderId},
          ${balanceAfter.toFixed(2)}::numeric, ${performedBy})
     `;
   }
@@ -163,23 +171,57 @@ export async function adminCancelOrder(
   // Captured online payment for this order (if any). Needed both to issue a
   // bank refund and to know an online-paid order actually had money change
   // hands (so "balance" only grants store credit for what was paid).
+  //
+  // 'refunded' rows count too: a payment already handed back in full still
+  // proves money changed hands, which is what tells the cancel below to pass
+  // quietly instead of rejecting the operator's refund destination. The
+  // ordering keeps a still-refundable payment ahead of a spent one.
   const [rp] = await pgClient`
     SELECT id, dealer_id::text AS "dealerId",
            amount::numeric AS amount, amount_refunded::numeric AS "amountRefunded",
            razorpay_payment_id AS "rzpPaymentId"
       FROM razorpay_payments
-     WHERE order_id = ${orderId} AND kind = 'order_payment' AND status = 'paid'
-     ORDER BY created_at DESC
+     WHERE order_id = ${orderId} AND kind = 'order_payment'
+       AND status IN ('paid', 'refunded')
+     ORDER BY (amount - amount_refunded) DESC, created_at DESC
      LIMIT 1
   `;
   const paidRemaining = rp
     ? Math.max(0, parseFloat(rp.amount) - parseFloat(rp.amountRefunded))
     : 0;
-  const canBankRefund = !!rp && paidRemaining > 0.001;
+
+  // ── How much this cancel is still allowed to put back ────────────────
+  // grand_total is the order's CURRENT value. A downward "modify indent"
+  // has already handed the difference back — and when it went to the
+  // available balance or the wallet, the gateway's amount_refunded counter
+  // (and therefore paidRemaining) never moved. Reading paidRemaining alone
+  // then refunds the same rupees a second time on cancel: order
+  // 75b8e03f-c197-4568-ba16-b48f297f94ea (2026-08-29) was modified to zero
+  // with Rs 1,323.88 credited to the balance and then cancelled to the bank
+  // for another Rs 1,323.88 against a single Rs 1,323.88 payment.
+  //
+  // Netting off what the balance rail has already returned closes it in both
+  // directions: an order taken to zero has nothing left to refund, and one
+  // taken from Rs 1,000 to Rs 600 can still refund Rs 600 whichever rail the
+  // first Rs 400 went down. grand_total is kept in the floor as an
+  // independent check, since a modify lowers it by exactly what it refunded.
+  const refundable = Math.min(
+    refundableToBank(paidRemaining, await balanceRefundedForOrder(pgClient, orderId)),
+    Math.max(0, grandTotal),
+  );
+  const canBankRefund = !!rp && refundable > 0.001;
+
+  // The order took an online payment, but a modify has already returned all
+  // of it. The indent still needs cancelling, so cancel it and refund
+  // nothing rather than rejecting the operator's choice of destination.
+  const alreadyRefunded = !!rp && refundable <= 0.001;
 
   // ── Resolve the effective refund method ──
   let method: RefundMethod | "none";
-  if (refundMethod === "razorpay") {
+  if (alreadyRefunded) {
+    // Nothing is owed on either rail; the destination choice is moot.
+    method = "none";
+  } else if (refundMethod === "razorpay") {
     if (!canBankRefund) {
       throw new RefundError(
         "This order has no refundable online payment, so it can't be refunded to a bank account. Choose 'available balance' instead.",
@@ -202,19 +244,19 @@ export async function adminCancelOrder(
   if (method === "razorpay") {
     if (!isRazorpayConfigured()) {
       throw new RefundError(
-        "Razorpay is not configured — cannot refund to a bank account. Cancel aborted.",
+        "Razorpay is not configured, so this cannot be refunded to a bank account. Cancel aborted.",
       );
     }
     if (!rp!.rzpPaymentId) {
       throw new RefundError(
-        "This order's payment has no Razorpay payment id — cannot refund to a bank account. Cancel aborted.",
+        "This order's payment has no Razorpay payment id, so it cannot be refunded to a bank account. Cancel aborted.",
       );
     }
     let rzpRefund: { id: string; status: string };
     try {
       rzpRefund = await createRazorpayRefund({
         paymentId: rp!.rzpPaymentId,
-        amountInRupees: paidRemaining,
+        amountInRupees: refundable,
         notes: { reason, orderId, dealerId: rp!.dealerId },
       });
     } catch (err: any) {
@@ -226,22 +268,41 @@ export async function adminCancelOrder(
       rpRowId: rp!.id,
       rzpPaymentId: rp!.rzpPaymentId,
       dealerId: rp!.dealerId,
-      refundAmt: paidRemaining,
+      refundAmt: refundable,
       rzpRefund,
     };
   }
 
   // ── Balance path: decide what (if anything) to credit back ──
   let plan: BalancePlan = { to: "none" };
+  // A wallet-mode order whose wallet was never actually debited. Tracked so
+  // the response can say so in words: an operator who just chose a refund
+  // destination and saw nothing move needs to know why.
+  let walletNeverDebited = false;
   if (method === "balance") {
     if (order.payment_mode === "wallet") {
-      plan = { to: "wallet", amount: grandTotal };
+      // Size the reversal from what the wallet ACTUALLY gave up, never from
+      // grand_total. payment_mode = 'wallet' is an intention: prod carries
+      // wallet-mode orders that never debited the wallet, and refunding
+      // grand_total on one of those invents money the union never took —
+      // the same phantom-credit trap the direct-sale rail documents in
+      // lib/direct-sale-money.ts. A downward modify is already netted off
+      // by the ledger, so grand_total only survives as an independent
+      // floor (it drops by exactly what a modify handed back), mirroring
+      // the bank ceiling computed above.
+      const walletDebited = await walletDebitedForOrder(pgClient, orderId);
+      if (walletDebited > 0.001) {
+        plan = { to: "wallet", amount: Math.min(walletDebited, Math.max(0, grandTotal)) };
+      } else {
+        plan = { to: "none" };
+        walletNeverDebited = true;
+      }
     } else if (order.payment_mode === "credit") {
       plan = { to: "ledger", amount: grandTotal };
     } else if (canBankRefund) {
       // Online-paid order, but the admin chose store credit over a bank
-      // refund — credit the paid amount to the available balance.
-      plan = { to: "ledger", amount: paidRemaining };
+      // refund — credit what is still unrefunded to the available balance.
+      plan = { to: "ledger", amount: refundable };
     } else {
       // Unpaid (e.g. payment_required) or cash — nothing was collected, so
       // there is nothing to put on the balance. Order still cancels.
@@ -282,7 +343,7 @@ export async function adminCancelOrder(
            WHERE d.id = ${upi.dealerId}::uuid
         `;
         const balanceAfter = parseFloat(bal!.bal) - upi.refundAmt;
-        const desc = `Razorpay refund ${upi.rzpRefund.id} for ${upi.rzpPaymentId} — cancel: ${reason}`;
+        const desc = `Razorpay refund ${upi.rzpRefund.id} for ${upi.rzpPaymentId}, cancel: ${reason}`;
         const [led] = await tx`
           INSERT INTO dealer_ledger (
             dealer_id, type, amount,
@@ -329,6 +390,13 @@ export async function adminCancelOrder(
     }
   });
 
+  // The invoice was minted when the order was confirmed and still carries the
+  // settlement as of that moment. Now that the money has gone back — to the
+  // bank, the wallet or the balance — re-derive it, or the invoice would keep
+  // reading "paid" for an order the dealer no longer owes anything on. Runs
+  // after commit and never throws; the cancel itself is already done.
+  await refreshInvoiceSettlement(orderId);
+
   if (upi)
     return {
       paymentMode: order.payment_mode,
@@ -343,6 +411,28 @@ export async function adminCancelOrder(
     return { paymentMode: order.payment_mode, refund: { method: "wallet", amount: plan.amount } };
   if (plan.to === "ledger")
     return { paymentMode: order.payment_mode, refund: { method: "credit", amount: plan.amount } };
-  // Unpaid / cash / nothing to refund (order still cancelled + stock restored)
-  return { paymentMode: order.payment_mode, refund: { method: "none", amount: 0 } };
+  // Unpaid / cash / nothing left to refund (order still cancelled + stock
+  // restored). Spell out the "already refunded" case — an operator who just
+  // picked a refund destination needs to know why no money moved.
+  return {
+    paymentMode: order.payment_mode,
+    refund: {
+      method: "none",
+      amount: 0,
+      ...(alreadyRefunded
+        ? {
+            note:
+              "This indent had already been refunded in full by an earlier change to it, " +
+              "so cancelling it did not refund anything again.",
+          }
+        : walletNeverDebited
+          ? {
+              note:
+                "This indent is marked as a wallet order but no money was ever taken " +
+                "from the dealer's wallet for it, so there is nothing to refund. " +
+                "The indent has been cancelled and the stock released.",
+            }
+          : {}),
+    },
+  };
 }

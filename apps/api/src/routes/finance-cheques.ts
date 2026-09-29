@@ -20,6 +20,7 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { istToday } from "../lib/ist-date.js";
 
 function adminUserId(request: FastifyRequest): string {
   const a = (request as unknown as { admin?: { userId: string } }).admin;
@@ -94,8 +95,8 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           c.bounce_reason     AS "bounceReason",
           c.bank_charges::float8 AS "bankCharges",
           CASE c.status
-            WHEN 'received'  THEN CURRENT_DATE - c.received_date
-            WHEN 'deposited' THEN CURRENT_DATE - c.deposited_date
+            WHEN 'received'  THEN (now() AT TIME ZONE 'Asia/Kolkata')::date - c.received_date
+            WHEN 'deposited' THEN (now() AT TIME ZONE 'Asia/Kolkata')::date - c.deposited_date
             ELSE 0
           END                 AS "ageingDays",
           d.id                AS "dealerId",
@@ -174,7 +175,9 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           COALESCE(SUM(amount) FILTER (WHERE status = 'bounced'
                              AND bounced_date BETWEEN ${dateFrom}::date AND ${dateTo}::date), 0)::float8 AS "bouncedAmount",
           COUNT(*) FILTER (WHERE status = 'received'
-                             AND received_date < CURRENT_DATE - 3)::int        AS "stagnantInHandCount"
+                             AND received_date
+                                   < (now() AT TIME ZONE 'Asia/Kolkata')::date - 3)::int
+                                                                   AS "stagnantInHandCount"
         FROM cheques
       `;
       return reply.send({ summary: s });
@@ -204,7 +207,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
       const body = (rows as any[]).map((r, i) => `
         <tr>
           <td>${i + 1}</td>
-          <td>${esc(r.dealerCode)} — ${esc(r.dealerName)}</td>
+          <td>${esc(r.dealerCode)}: ${esc(r.dealerName)}</td>
           <td>${esc(r.bankName)}${r.branch ? " / " + esc(r.branch) : ""}</td>
           <td>${esc(r.chequeNumber)}</td>
           <td class="num">${inr(r.amount)}</td>
@@ -220,8 +223,8 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           tfoot td{font-weight:bold;background:#fafafa;}
           @media print{button{display:none;}}
         </style></head><body>
-        <h1>HAVERI MILK UNION — Cheque Deposit Slip</h1>
-        <div>Date: ${esc(new Date().toISOString().slice(0, 10))} · Cheques: ${rows.length}</div>
+        <h1>HAVERI MILK UNION: Cheque Deposit Slip</h1>
+        <div>Date: ${esc(istToday())} · Cheques: ${rows.length}</div>
         <table>
           <thead><tr><th>#</th><th>Dealer</th><th>Bank</th><th>Cheque No.</th><th class="num">Amount</th></tr></thead>
           <tbody>${body || `<tr><td colspan="5">No cheques in hand</td></tr>`}</tbody>
@@ -374,7 +377,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           ) VALUES (
             ${c.dealer_id}::uuid, 'debit', ${amount.toFixed(2)}::numeric,
             ${c.id}::uuid, 'adjustment'::ledger_ref_type,
-            ${`Cheque bounced — ${c.cheque_number} from ${c.bank_name} — ${body.bounceReason}`},
+            ${`Cheque bounced: ${c.cheque_number} from ${c.bank_name} (${body.bounceReason})`},
             ${balanceAfter.toFixed(2)}::numeric, ${adminUserId(request)}::uuid,
             ${`CB-${c.cheque_number}`}, 'Adjustment',
             ${`Cheque ${c.cheque_number} returned: ${body.bounceReason}`},
@@ -419,7 +422,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
             ) VALUES (
               ${c.dealer_id}::uuid, 'debit', ${body.bankCharges.toFixed(2)}::numeric,
               ${c.id}::uuid, 'adjustment'::ledger_ref_type,
-              ${`Cheque return charges — ${c.cheque_number}`},
+              ${`Cheque return charges: ${c.cheque_number}`},
               ${after.toFixed(2)}::numeric, ${adminUserId(request)}::uuid,
               ${`CC-${c.cheque_number}`}, 'Adjustment',
               ${`Bank charges for returned cheque ${c.cheque_number}`},
@@ -477,11 +480,11 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           ) VALUES (
             ${c.dealer_id}::uuid, 'debit', ${amount.toFixed(2)}::numeric,
             ${c.id}::uuid, 'adjustment'::ledger_ref_type,
-            ${`Cheque cancelled — ${c.cheque_number} — ${body.reason}`},
+            ${`Cheque cancelled: ${c.cheque_number} (${body.reason})`},
             ${balanceAfter.toFixed(2)}::numeric, ${adminUserId(request)}::uuid,
             ${`CX-${c.cheque_number}`}, 'Adjustment',
             ${`Cheque ${c.cheque_number} cancelled: ${body.reason}`},
-            ${new Date().toISOString().slice(0, 10)}::date
+            ${istToday()}::date
           )
           RETURNING id
         `;

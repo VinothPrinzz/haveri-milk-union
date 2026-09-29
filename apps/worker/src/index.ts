@@ -22,6 +22,7 @@ import { processDispatchPregenerate } from "./jobs/dispatch-pregenerate.js";
 import { processMaterializeDrafts } from "./jobs/materialize-drafts.js";
 import { processAutoConfirmDrafts } from "./jobs/auto-confirm-drafts.js";
 import { processReconcilePayments } from "./jobs/reconcile-payments.js";
+import { processSweepUnpaidGatePasses } from "./jobs/sweep-unpaid-gate-passes.js";
 
 console.log("═══════════════════════════════════════");
 console.log("  🐄 Haveri Milk Union — Worker");
@@ -186,6 +187,14 @@ const crons: Cron[] = [
   // checkouts are never touched.
   schedule("*/10 * * * *", "ReconcilePayments", processReconcilePayments),
 
+  // Clear counter QR gate passes left unpaid — 10:00 PM IST, after the
+  // counter has closed. The job verifies each one at Razorpay before
+  // cancelling (and applies it instead if it turns out to have been paid —
+  // this rail is excluded from reconcile-payments), and leaves anything
+  // issued in the last 6 hours alone, so an evening pass is caught by the
+  // next night's run rather than pulled out from under a customer.
+  schedule("0 22 * * *", "SweepGatePasses", processSweepUnpaidGatePasses),
+
   // Purge failed outbox rows older than 7 days — 3:30 AM IST
   schedule("30 3 * * *", "OutboxCleanup", async () => {
     const purged = await sql`
@@ -230,5 +239,6 @@ console.log("   • window reminders     (5:55 AM / 7:45 AM IST)");
 console.log("   • materialize-drafts   (daily, 4:00 AM IST)");
 console.log("   • auto-confirm-drafts  (every 5 min)");
 console.log("   • reconcile-payments   (every 10 min)");
+console.log("   • sweep-gate-passes    (daily, 10:00 PM IST)");
 console.log("");
 console.log("Waiting for jobs...");

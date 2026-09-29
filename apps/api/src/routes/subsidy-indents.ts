@@ -33,10 +33,12 @@ import { checkDealerCredit } from "../lib/credit-check.js";
 import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
+import { refreshInvoiceSettlement } from "../lib/invoice-settlement.js";
 
 // The subsidy SKU seeded by migration 0056 (half-price HTM 1000ML).
 const SUBSIDY_PRODUCT_CODE = "PD0191S";
 
+/** Amounts settle in paise, so they carry two decimals - rates too. */
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
 
@@ -86,6 +88,85 @@ async function currentBalance(tx: typeof pgClient, dealerId: string): Promise<nu
   return parseFloat(bal!.bal);
 }
 
+/** Identifies the receipt THIS route wrote, so a revision only touches its own. */
+function subsidyReceiptNote(orderId: string): string {
+  return `Counter receipt for subsidy indent ${orderId}`;
+}
+
+/**
+ * Record counter money for a subsidy indent as a real receipt.
+ *
+ * A cash subsidy indent used to post nothing at all. The line was billed and
+ * the invoice reissued at the new total, but invoice-settlement.ts derives
+ * paid_amount purely from evidence — a gateway reference, a ledger debit, or a
+ * receipt keyed to the invoice — and cash left none of the three. Two live
+ * indents settled that way, A4's 446.60 on 2026-08-01 and M61's 44.66 on
+ * 2026-08-05, so both aged in AR Aging as debt the customer did not owe while
+ * their dealer_ledger balance stayed high by the very same amount. This is the
+ * indent twin of recordCounterCashReceipt() on the gate-pass rail.
+ *
+ * SET, not add, mirroring how the subsidy LINE itself is written: our rows for
+ * this order are cleared and one receipt for the line total replaces them, so a
+ * revised quantity can never strand a stale part-receipt.
+ *
+ * `reference` carries a SUB- marker rather than a gateway id on purpose. That
+ * is what keeps it clear of resolveOrderSettlement's rail-1 match on
+ * payments.reference = a pay_* id, so one receipt can never be counted twice.
+ *
+ * invoice_id resolves to NULL on a fresh order, whose invoice is only minted
+ * after this transaction commits; linkSubsidyReceipts() below attaches it once
+ * the invoice exists.
+ */
+async function setSubsidyCounterReceipt(
+  tx: typeof pgClient,
+  args: {
+    dealerId: string;
+    orderId: string;
+    /** The subsidy line total now standing on the order, not the delta. */
+    amount: number;
+    mode: "cash" | "upi";
+    receivedDate: string;
+    performedBy: string;
+  },
+): Promise<void> {
+  await tx`
+    DELETE FROM payments
+     WHERE dealer_id = ${args.dealerId}::uuid
+       AND notes = ${subsidyReceiptNote(args.orderId)}
+  `;
+  if (args.amount <= 0.001) return;
+  await tx`
+    INSERT INTO payments
+      (dealer_id, received_date, amount, mode, reference, invoice_id, received_by, notes)
+    VALUES
+      (${args.dealerId}::uuid, ${args.receivedDate}::date,
+       ${args.amount.toFixed(2)}::numeric, ${args.mode},
+       ${"SUB-" + args.orderId.slice(0, 8).toUpperCase()},
+       (SELECT i.id FROM invoices i WHERE i.order_id = ${args.orderId}::uuid LIMIT 1),
+       ${args.performedBy}::uuid,
+       ${subsidyReceiptNote(args.orderId)})
+  `;
+}
+
+/**
+ * Attach this order's invoice to any receipt written before it existed.
+ *
+ * Runs after the invoice is minted and is a no-op once linked, so a retry
+ * cannot duplicate anything. Without it a fresh cash indent would hold a
+ * receipt that rail 3 (payments joined to invoices) cannot see, which is the
+ * same blind spot the receipt was added to close.
+ */
+async function linkSubsidyReceipts(orderId: string): Promise<void> {
+  await pgClient`
+    UPDATE payments p
+       SET invoice_id = i.id, updated_at = now()
+      FROM invoices i
+     WHERE i.order_id = ${orderId}::uuid
+       AND p.invoice_id IS NULL
+       AND p.notes = ${subsidyReceiptNote(orderId)}
+  `;
+}
+
 export async function subsidyIndentsRoutes(app: FastifyInstance) {
   // ┌───────────────────────────────────────────────────────────────────┐
   // │  GET /api/v1/orders/subsidy-product                                │
@@ -99,7 +180,7 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
       if (!p) {
         return reply.status(404).send({
           error: "Subsidy product not configured",
-          message: "HTM 1000ML (sub) is missing — run migration 0056.",
+          message: "HTM 1000ML (sub) is missing. Run migration 0056.",
         });
       }
       return reply.send({
@@ -342,12 +423,18 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
           `;
         }
 
-        // ── Credit ledger movement for the delta (subsidy portion only) ──
-        // UPI and cash subsidy indents are paid at the counter (UPI captures
-        // a reference; cash needs none) and post no ledger row. Only credit
-        // indents debit/credit the dealer's line by the delta — and only
-        // when the target order is already placed (see targetPlaced above:
-        // a draft's confirm debits the full total later, delta now = twice).
+        // ── Money for the delta (subsidy portion only) ──
+        // Every mode has to leave settlement evidence behind, because
+        // invoice-settlement.ts reads evidence and never the payment mode: a
+        // gateway reference on the order, a ledger debit against it, or a
+        // receipt keyed to its invoice. Credit posts the ledger movement
+        // below; cash posts a receipt (it used to post nothing at all, which
+        // is what left A4 and M61 ageing in AR Aging for money they had
+        // already handed over); UPI already carries its gateway reference.
+        //
+        // Only when the target order is already placed — see targetPlaced
+        // above: a draft's confirm debits the full total later, so posting
+        // the delta now would charge the subsidy twice.
         if (body.paymentMode === "credit" && targetPlaced && chargeDelta !== 0) {
           const bal = await currentBalance(tx, body.customerId);
           if (chargeDelta > 0) {
@@ -373,6 +460,65 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
                  ${"Subsidy indent revised " + id}, ${(bal + refund).toFixed(2)}::numeric,
                  ${adminUserId(request)})
             `;
+          }
+        }
+
+        // Cash taken at the counter, recorded as a receipt so the Day Book's
+        // cash position and the invoice's paid_amount can both see it. Written
+        // for the LINE TOTAL rather than the delta because the helper replaces
+        // our previous row, which keeps a revised quantity exact.
+        if (body.paymentMode === "cash" && targetPlaced) {
+          await setSubsidyCounterReceipt(tx, {
+            dealerId: body.customerId,
+            orderId: id,
+            amount: lineTotal,
+            mode: "cash",
+            receivedDate: deliveryDate,
+            performedBy: adminUserId(request),
+          });
+        }
+
+        // UPI onto an order that ALREADY carries a different gateway reference.
+        // A fresh order stamps ours on the order itself, so rail 1 matches it
+        // and nothing is needed here; an append cannot, because overwriting the
+        // reference would strand the payment covering the rest of the order.
+        // Attaching the delta's own receipt to the invoice settles it through
+        // rail 3 instead, and the existence check is what stops a gateway row
+        // the capture flow already wrote from being counted a second time.
+        if (
+          body.paymentMode === "upi" &&
+          targetPlaced &&
+          existing &&
+          body.paymentReference?.trim()
+        ) {
+          const ref = body.paymentReference.trim();
+          const [captured] = await tx`
+            SELECT id FROM payments
+             WHERE reference = ${ref} AND invoice_id IS NULL
+             LIMIT 1
+          `;
+          if (captured) {
+            await tx`
+              UPDATE payments
+                 SET invoice_id = (SELECT i.id FROM invoices i
+                                    WHERE i.order_id = ${id}::uuid LIMIT 1),
+                     updated_at = now()
+               WHERE id = ${captured.id}
+            `;
+          } else {
+            const [any] = await tx`
+              SELECT 1 AS ok FROM payments WHERE reference = ${ref} LIMIT 1
+            `;
+            if (!any) {
+              await setSubsidyCounterReceipt(tx, {
+                dealerId: body.customerId,
+                orderId: id,
+                amount: lineTotal,
+                mode: "upi",
+                receivedDate: deliveryDate,
+                performedBy: adminUserId(request),
+              });
+            }
           }
         }
 
@@ -420,13 +566,26 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
         } catch (err) {
           console.error("[subsidy] Invoice generation failed:", err);
         }
+
+        // A counter receipt written above for a FRESH order had no invoice to
+        // point at yet, since the mint only just ran. Link it, then re-derive
+        // paid_amount so the indent does not spend even a moment reading as an
+        // unpaid receivable. Both steps are idempotent and neither may fail the
+        // request: the money is already committed, and an unlinked receipt is
+        // recoverable where a failed response is not.
+        try {
+          await linkSubsidyReceipts(orderId);
+          await refreshInvoiceSettlement(orderId);
+        } catch (err) {
+          console.warn("[subsidy] Receipt link / settlement refresh failed:", err);
+        }
       }
 
       return reply.status(201).send({
         message: existing
           ? targetPlaced
             ? "Subsidy indent added to the customer's indent for this date"
-            : "Subsidy line set on the customer's draft — it is charged when the draft is placed"
+            : "Subsidy line set on the customer's draft. It is charged when the draft is placed"
           : "Subsidy indent placed successfully",
         orderId,
         // Honest status: an append onto a draft/payment_required order does

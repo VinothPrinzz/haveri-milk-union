@@ -49,6 +49,9 @@ const num = (v: number | string | null | undefined): number => {
   return Number.isFinite(n) ? (n as number) : NaN;
 };
 
+/** Prices are rupees and paise — mirrors apps/api/src/lib/rate-price.ts. */
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
 export interface PricedProduct {
   basePrice: number | string;
   mrp?: number | string | null;
@@ -64,7 +67,7 @@ export function resolveUnitPrice(
   rateCategory: string | null | undefined
 ): number {
   const basePrice = num(product.basePrice);
-  const safeBase = Number.isFinite(basePrice) ? basePrice : 0;
+  const safeBase = round2(Number.isFinite(basePrice) ? basePrice : 0);
 
   if (!isCreditInstMrp(rateCategory)) return safeBase;
   if (!isMilkCategory(product.categoryName)) return safeBase;
@@ -74,7 +77,7 @@ export function resolveUnitPrice(
   if (!Number.isFinite(gross) || gross <= 0) return safeBase;
 
   const gstPct = num(product.gstPercent);
-  const net = gross / (1 + (Number.isFinite(gstPct) ? gstPct : 0) / 100);
+  const net = round2(gross / (1 + (Number.isFinite(gstPct) ? gstPct : 0) / 100));
 
   // Never bill an institution below the dealer rate.
   return net > safeBase ? net : safeBase;

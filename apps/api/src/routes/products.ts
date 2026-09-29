@@ -6,19 +6,21 @@ import { db, pgClient } from "../lib/db.js";
 import { categories } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
-
-// Helper to derive base_price ("Basic Price", excluding GST) from the
-// Dealer-Price (gross, inclusive of GST).
-function deriveBasePriceFromDealerPrice(dealerPrice: number, gstPercent: number): number {
-  const safeGst = Math.max(0, gstPercent || 0);
-  return Math.round((dealerPrice / (1 + safeGst / 100)) * 100) / 100;
-}
+import { deriveBasePriceFromDealerPrice, recordPriceRevision } from "../lib/price-revisions.js";
 
 // Constants — single source of truth referenced by both API and web.
 export const REPORT_ALIAS_MAX: Record<"Across" | "Down", number> = {
   Across: 14,
   Down:   22,
 };
+
+/**
+ * A money field: coerced to a number and rounded to paise on the way in.
+ * Whatever a form or an import sends, the master stores rupees and paise —
+ * that is the only precision anything downstream can bill or print.
+ */
+const paise = z.coerce.number().nonnegative()
+  .transform(n => Math.round(n * 100) / 100);
 
 // Schema for writing products — three-tier pricing.
 //   dealerPrice → Dealer-Price (gross, client-entered)
@@ -27,8 +29,8 @@ export const REPORT_ALIAS_MAX: Record<"Across" | "Down", number> = {
 const productBaseSchema = z.object({
   code: z.string().min(1).optional(),
   name: z.string().min(1),
-  dealerPrice: z.coerce.number().nonnegative(),
-  mrp: z.coerce.number().nonnegative().optional(),
+  dealerPrice: paise,
+  mrp: paise.optional(),
   gstPercent: z.coerce.number().min(0).max(50).default(0),
   categoryId: z.string().uuid(),
   icon: z.string().optional(),
@@ -41,10 +43,10 @@ const productBaseSchema = z.object({
   packetsCrate: z.number().int().min(0).optional(),
   abstractPosition: z.coerce.number().int().min(0).optional(),
   reportAlias: z.string().max(22).optional(),
-  retailDealerPrice: z.union([z.string(), z.number()]).optional(),
-  creditInstMrpPrice: z.union([z.string(), z.number()]).optional(),
-  creditInstDealerPrice: z.union([z.string(), z.number()]).optional(),
-  parlourDealerPrice: z.union([z.string(), z.number()]).optional(),
+  retailDealerPrice: paise.optional(),
+  creditInstMrpPrice: paise.optional(),
+  creditInstDealerPrice: paise.optional(),
+  parlourDealerPrice: paise.optional(),
   imageUrl: z.string().url().nullable().optional(),
 });
 
@@ -94,54 +96,19 @@ export async function productRoutes(app: FastifyInstance) {
     // counter, which carries indefinitely and drifts for any SKU whose stock
     // was set outside the morning Stock Entry flow (that drift is why a
     // product with a zero opening for today could still show hundreds "in
-    // stock"). Availability for today =
-    //   opening (carried from the most recent prior day's closing when today
-    //            has no Stock Entry yet, else 0)
+    // stock"). It is today's CLOSING straight out of fgs_day (migration 0063):
+    //   opening (carried from the previous entry's closing — nobody types it)
     //   + received − wastage
-    //   − reservations already claimed by live orders for today's delivery.
-    // Floored at 0.
+    //   − stock committed to live orders for today's delivery.
+    // Floored at 0. The Stock Entry sheet and the order stock gate read the
+    // same function, so the three numbers cannot drift apart.
     const productsList = await pgClient`
-      WITH today AS (
-        SELECT (now() AT TIME ZONE 'Asia/Kolkata')::date AS d
-      ),
-      reserved AS (
-        -- Stock already committed by live orders for today's delivery. An
-        -- order holds its reservation exactly while stock_deducted = true (set
-        -- at confirm, cleared on cancel/restore), so every committed order —
-        -- confirmed, dispatched or delivered — is counted once and cancelled
-        -- ones drop out. Keyed by the stock-owning product: a variant SKU
-        -- draws from its base via stock_source_product_id (migration 0059), so
-        -- a subsidy-line order reduces the base SKU's availability.
-        SELECT COALESCE(pp.stock_source_product_id, pp.id) AS stock_product_id,
-               SUM(oi.quantity)::int AS qty
-        FROM orders o
-        JOIN order_items oi ON oi.order_id = o.id
-        JOIN products pp    ON pp.id = oi.product_id
-        WHERE o.delivery_date = (SELECT d FROM today)
-          AND o.stock_deducted = true
-        GROUP BY COALESCE(pp.stock_source_product_id, pp.id)
-      )
       SELECT p.id, p.name, p.icon, p.unit,
              p.base_price   AS "basePrice",     -- Basic Price (pre-GST)
              p.dealer_price AS "dealerPrice",   -- Dealer-Price (gross)
              p.mrp,                             -- MRP
              p.gst_percent AS "gstPercent",
-             GREATEST(
-               COALESCE(
-                 fsl.opening,
-                 (SELECT prev.closing
-                    FROM fgs_stock_log prev
-                   WHERE prev.product_id = p.id
-                     AND prev.date < (SELECT d FROM today)
-                   ORDER BY prev.date DESC
-                   LIMIT 1),
-                 0
-               )
-               + COALESCE(fsl.received, 0)
-               - COALESCE(fsl.wastage, 0)
-               - COALESCE(r.qty, 0),
-               0
-             )::int AS stock,
+             GREATEST(COALESCE(fd.closing, 0), 0)::int AS stock,
              p.available,
              p.category_id AS "categoryId", c.name AS "categoryName",
              p.sort_order AS "sortOrder",
@@ -156,9 +123,8 @@ export async function productRoutes(app: FastifyInstance) {
              COALESCE(p.parlour_dealer_price, p.base_price) AS "parlourDealerPrice"
       FROM products p
       JOIN categories c ON c.id = p.category_id
-      LEFT JOIN fgs_stock_log fsl
-             ON fsl.product_id = p.id AND fsl.date = (SELECT d FROM today)
-      LEFT JOIN reserved r ON r.stock_product_id = p.id
+      LEFT JOIN fgs_day((now() AT TIME ZONE 'Asia/Kolkata')::date) fd
+             ON fd.product_id = p.id
       WHERE p.deleted_at IS NULL AND p.available = true
         -- The subsidy SKU (migration 0056) is placed ONLY via the Subsidy
         -- Indents page — never surfaced in the dealer app or any ordering
@@ -285,53 +251,84 @@ export async function productRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const body = productUpdateSchema.parse(request.body);
 
-      // Fetch current values to recompute base_price when dealer_price / gst change.
-      const [current] = await pgClient`
-        SELECT dealer_price, mrp, gst_percent
-        FROM products WHERE id = ${id} AND deleted_at IS NULL
-      `;
-      if (!current) return reply.status(404).send({ error: "Product not found" });
+      // One transaction: the products UPDATE and its price_revisions entry
+      // commit together, and the row lock stops a concurrent price change
+      // from being logged against the wrong "before" values.
+      const updated = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
 
-      const newDealerPrice =
-        body.dealerPrice !== undefined ? body.dealerPrice : Number(current.dealer_price);
-      const newMrp =
-        body.mrp !== undefined ? body.mrp : Number(current.mrp);
-      const newGst =
-        body.gstPercent !== undefined ? body.gstPercent : Number(current.gst_percent);
+        // Current values: to recompute base_price when dealer_price / gst
+        // change, and as the "before" side of the price revision log.
+        const [current] = await tx`
+          SELECT base_price, dealer_price, mrp, gst_percent
+          FROM products WHERE id = ${id} AND deleted_at IS NULL
+          FOR UPDATE
+        `;
+        if (!current) return null;
 
-      // Basic Price is always derived from the (gross) Dealer-Price.
-      const basePrice = deriveBasePriceFromDealerPrice(newDealerPrice, newGst);
+        const newDealerPrice =
+          body.dealerPrice !== undefined ? body.dealerPrice : Number(current.dealer_price);
+        const newMrp =
+          body.mrp !== undefined ? body.mrp : Number(current.mrp);
+        const newGst =
+          body.gstPercent !== undefined ? body.gstPercent : Number(current.gst_percent);
 
-      const [updated] = await pgClient`
-        UPDATE products SET
-          name = COALESCE(${body.name ?? null}, name),
-          category_id = COALESCE(${body.categoryId ?? null}::uuid, category_id),
-          icon = CASE WHEN ${body.icon !== undefined} THEN ${body.icon ?? null} ELSE icon END,
-          image_url = CASE WHEN ${body.imageUrl !== undefined}
-                          THEN ${body.imageUrl ?? null}
-                          ELSE image_url END,
-          unit = COALESCE(${body.unit ?? null}, unit),
-          base_price = ${basePrice}::numeric,
-          dealer_price = ${newDealerPrice}::numeric,
-          mrp = ${newMrp}::numeric,
-          gst_percent = ${newGst}::numeric,
-          stock = COALESCE(${body.stock ?? null}::int, stock),
-          available = COALESCE(${body.available ?? null}::boolean, available),
-          code = COALESCE(${body.code ?? null}, code),
-          hsn_no = CASE WHEN ${body.hsnNo !== undefined} THEN ${body.hsnNo ?? null} ELSE hsn_no END,
-          pack_size = COALESCE(${body.packSize ?? null}::numeric, pack_size),
-          print_direction = COALESCE(${body.printDirection ?? null}, print_direction),
-          packets_crate = COALESCE(${body.packetsCrate ?? null}::int, packets_crate),
-          abstract_position = COALESCE(${body.abstractPosition ?? null}::int, abstract_position),
-          report_alias = COALESCE(${body.reportAlias ?? null}, report_alias),
-          retail_dealer_price = COALESCE(${body.retailDealerPrice ?? null}::numeric, retail_dealer_price),
-          credit_inst_mrp_price = COALESCE(${body.creditInstMrpPrice ?? null}::numeric, credit_inst_mrp_price),
-          credit_inst_dealer_price = COALESCE(${body.creditInstDealerPrice ?? null}::numeric, credit_inst_dealer_price),
-          parlour_dealer_price = COALESCE(${body.parlourDealerPrice ?? null}::numeric, parlour_dealer_price),
-          updated_at = now()
-        WHERE id = ${id} AND deleted_at IS NULL
-        RETURNING *
-      `;
+        // Basic Price is always derived from the (gross) Dealer-Price.
+        const basePrice = deriveBasePriceFromDealerPrice(newDealerPrice, newGst);
+
+        const [row] = await tx`
+          UPDATE products SET
+            name = COALESCE(${body.name ?? null}, name),
+            category_id = COALESCE(${body.categoryId ?? null}::uuid, category_id),
+            icon = CASE WHEN ${body.icon !== undefined} THEN ${body.icon ?? null} ELSE icon END,
+            image_url = CASE WHEN ${body.imageUrl !== undefined}
+                            THEN ${body.imageUrl ?? null}
+                            ELSE image_url END,
+            unit = COALESCE(${body.unit ?? null}, unit),
+            base_price = ${basePrice}::numeric,
+            dealer_price = ${newDealerPrice}::numeric,
+            mrp = ${newMrp}::numeric,
+            gst_percent = ${newGst}::numeric,
+            stock = COALESCE(${body.stock ?? null}::int, stock),
+            available = COALESCE(${body.available ?? null}::boolean, available),
+            code = COALESCE(${body.code ?? null}, code),
+            hsn_no = CASE WHEN ${body.hsnNo !== undefined} THEN ${body.hsnNo ?? null} ELSE hsn_no END,
+            pack_size = COALESCE(${body.packSize ?? null}::numeric, pack_size),
+            print_direction = COALESCE(${body.printDirection ?? null}, print_direction),
+            packets_crate = COALESCE(${body.packetsCrate ?? null}::int, packets_crate),
+            abstract_position = COALESCE(${body.abstractPosition ?? null}::int, abstract_position),
+            report_alias = COALESCE(${body.reportAlias ?? null}, report_alias),
+            retail_dealer_price = COALESCE(${body.retailDealerPrice ?? null}::numeric, retail_dealer_price),
+            credit_inst_mrp_price = COALESCE(${body.creditInstMrpPrice ?? null}::numeric, credit_inst_mrp_price),
+            credit_inst_dealer_price = COALESCE(${body.creditInstDealerPrice ?? null}::numeric, credit_inst_dealer_price),
+            parlour_dealer_price = COALESCE(${body.parlourDealerPrice ?? null}::numeric, parlour_dealer_price),
+            updated_at = now()
+          WHERE id = ${id} AND deleted_at IS NULL
+          RETURNING *
+        `;
+
+        // A price edited here shows up in Masters > Price Revisions too.
+        await recordPriceRevision(tx, {
+          productId: id,
+          before: {
+            basePrice:   current.base_price,
+            dealerPrice: current.dealer_price,
+            mrp:         current.mrp,
+            gstPercent:  current.gst_percent,
+          },
+          after: {
+            basePrice:   row!.base_price,
+            dealerPrice: row!.dealer_price,
+            mrp:         row!.mrp,
+            gstPercent:  row!.gst_percent,
+          },
+          changedBy: request.admin!.userId,
+          source: "product_edit",
+        });
+
+        return row;
+      });
+      if (!updated) return reply.status(404).send({ error: "Product not found" });
 
       return reply.status(200).send({ product: updated });
     }

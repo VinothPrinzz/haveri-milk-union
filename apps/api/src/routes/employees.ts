@@ -193,7 +193,18 @@ export async function employeesRoutes(app: FastifyInstance) {
       const rows = await pgClient`
         SELECT r.id, r.product_id, r.subsidy_price, r.subsidy_percent, r.active,
                p.name AS product_name, p.code AS product_code,
-               p.base_price, p.gst_percent, p.unit
+               p.base_price, p.gst_percent, p.unit,
+               -- Day-aware availability, the same figure GET /products serves
+               -- and the subsidy sale is gated on, so the counter screen can
+               -- show what is actually on the floor before a line is typed.
+               -- Variant SKUs read their base's row (migration 0059).
+               GREATEST(
+                 fgs_available(
+                   COALESCE(p.stock_source_product_id, p.id),
+                   (now() AT TIME ZONE 'Asia/Kolkata')::date
+                 ),
+                 0
+               )::int AS stock
         FROM employee_subsidy_rules r
         JOIN products p ON p.id = r.product_id
         WHERE r.active = true AND p.deleted_at IS NULL
@@ -211,7 +222,8 @@ export async function employeesRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const body = z.object({
         productId:    z.string().uuid(),
-        subsidyPrice: z.number().nonnegative(),
+        subsidyPrice: z.number().nonnegative()
+          .transform(n => Math.round(n * 100) / 100),  // rupees and paise
       }).parse(request.body);
 
       const [product] = await pgClient`
@@ -252,7 +264,9 @@ export async function employeesRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = z.object({
-        subsidyPrice: z.number().nonnegative().optional(),
+        subsidyPrice: z.number().nonnegative()
+          .transform(n => Math.round(n * 100) / 100)   // rupees and paise
+          .optional(),
         active:       z.boolean().optional(),
       }).parse(request.body);
 

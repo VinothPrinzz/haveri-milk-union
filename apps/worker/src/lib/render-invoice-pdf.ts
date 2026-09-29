@@ -49,6 +49,14 @@ export interface InvoiceRenderParams {
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
+/**
+ * A RATE, not an amount — but still rupees and paise. The printed invoice
+ * is a two-decimal document, so the rate a dealer reads is the rate paid.
+ */
+function fmtRate(n: number): string {
+  return n.toFixed(2);
+}
+
 function fmt(n: number): string {
   return n.toFixed(2);
 }
@@ -280,7 +288,7 @@ export async function renderInvoicePdf(p: InvoiceRenderParams): Promise<Uint8Arr
       item.hsnNo   || "-",
       item.packSize || "-",
       String(item.quantity),
-      fmt(item.unitPrice),
+      fmtRate(item.unitPrice),
       fmt(item.basic),
       fmt(item.cgstAmount),
       fmt(item.sgstAmount),

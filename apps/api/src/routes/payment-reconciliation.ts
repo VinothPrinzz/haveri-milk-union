@@ -36,7 +36,11 @@ import {
   fetchRazorpayOrderPayments,
   captureRazorpayPayment,
 } from "../lib/razorpay-client.js";
-import { applyPaidPayment, AUTO_DISCARD_REASON } from "./dealer-payments.js";
+import {
+  applyPaidPayment,
+  ABANDONED_PAYMENT_REASON,
+  AUTO_DISCARD_REASON,
+} from "./dealer-payments.js";
 
 interface ReconcileItem {
   rzpRowId: string;
@@ -115,6 +119,11 @@ export async function reconcileStuckRazorpayPayments(opts?: {
            status::text       AS status
       FROM razorpay_payments
      WHERE status IN ('created', 'attempted', 'failed')
+       -- Gate-pass QR rows (migration 0068) have no razorpay_order_id, so
+       -- the fetchRazorpayOrderPayments() call below has nothing to ask
+       -- about. Their unpaid state is normal too: an unscanned counter QR
+       -- just expires at close_by.
+       AND kind <> 'gate_pass'
        AND created_at < now() - make_interval(mins => ${olderThanMinutes})
        AND created_at > now() - make_interval(hours => ${maxAgeHours})
      ORDER BY created_at ASC
@@ -244,6 +253,12 @@ export async function reconcileStuckRazorpayPayments(opts?: {
       FROM razorpay_payments rp
      WHERE rp.status = 'paid'
        AND rp.razorpay_payment_id IS NOT NULL
+       -- Gate-pass QR rows are IN scope. They were skipped while the rail
+       -- was believed never to book a payments row; it does now, at capture,
+       -- and applyPaidPayment dispatches gate_pass rows to
+       -- applyPaidGatePassPayment, which is idempotent on the gateway id.
+       -- Skipping them left a stranded capture with no receipt, invisible to
+       -- the Day Book and to Payments Overview, with nothing to heal it.
        AND rp.created_at > now() - make_interval(hours => ${maxAgeHours})
        AND NOT EXISTS (
          SELECT 1 FROM payments p
@@ -284,12 +299,14 @@ export async function reconcileStuckRazorpayPayments(opts?: {
 
   // Third pass — the gateway row is 'paid' AND the internal receipt exists,
   // but the ORDER never advanced: still draft/payment_required, or worse,
-  // auto-discarded at window close as "unpaid". This is the HMU-2A9B failure
-  // mode, and BOTH passes above are blind to it (the row isn't stuck and the
-  // receipt exists). applyPaidPayment now re-runs the order confirm on its
-  // already-applied path — and revives an order cancelled with the worker's
-  // auto-discard reason — without ever double-booking money, so routing
-  // these through it is safe and idempotent.
+  // system-cancelled as "unpaid" — either the worker's window-close discard
+  // or the app cancelling the indent when its payment attempt ended without
+  // success. This is the HMU-2A9B failure mode, and BOTH passes above are
+  // blind to it (the row isn't stuck and the receipt exists).
+  // applyPaidPayment now re-runs the order confirm on its already-applied
+  // path — and revives an order cancelled for either system reason —
+  // without ever double-booking money, so routing these through it is safe
+  // and idempotent.
   const stuckOrders = await pgClient`
     SELECT rp.id::text            AS id,
            rp.razorpay_order_id   AS "rzpOrderId",
@@ -302,7 +319,9 @@ export async function reconcileStuckRazorpayPayments(opts?: {
        AND rp.created_at > now() - make_interval(hours => ${maxAgeHours})
        AND (o.status IN ('draft', 'payment_required')
             OR (o.status = 'cancelled'
-                AND o.cancellation_reason = ${AUTO_DISCARD_REASON}))
+                AND o.cancellation_reason IN (
+                      ${AUTO_DISCARD_REASON}, ${ABANDONED_PAYMENT_REASON}
+                    )))
      LIMIT ${limit}
   `;
 
