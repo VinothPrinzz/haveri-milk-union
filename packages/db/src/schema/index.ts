@@ -103,8 +103,12 @@ export {
   stockReceiptsRelations,
 } from "./inventory.js";
 
-// ── Suppliers (stock vendors master) ──
-export { suppliers } from "./suppliers.js";
+// ── Suppliers (stock vendors master) + their product-wise purchase rates ──
+export {
+  suppliers,
+  supplierProductCosts,
+  supplierProductCostsRelations,
+} from "./suppliers.js";
 
 // ── Distribution: Routes, Vehicles, Route Assignments ──
 export {

@@ -26,7 +26,7 @@ export const routes = pgTable("routes", {
   contractorId: uuid("contractor_id"), // Phase 2: FK to contractors (no inline ref to avoid circular import)
   // Per-route contractor pay (0052): each route has its own rate & daily km,
   // because a contractor on 2+ routes is paid differently per route.
-  ratePerTrip: numeric("rate_per_trip", { precision: 10, scale: 2 }),
+  ratePerTrip: numeric("rate_per_trip", { precision: 11, scale: 3 }),
   totalKmPerDay: numeric("total_km_per_day", { precision: 10, scale: 2 }),
   primaryBatchId: uuid("primary_batch_id"),
   dispatchTime: time("dispatch_time"),  

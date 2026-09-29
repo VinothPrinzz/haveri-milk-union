@@ -5,6 +5,7 @@ import {
   integer,
   numeric,
   date,
+  boolean,
   index,
   unique,
 } from "drizzle-orm/pg-core";
@@ -28,6 +29,11 @@ export const fgsStockLog = pgTable("fgs_stock_log", {
   dispatched: integer("dispatched").notNull().default(0), // sent out on routes
   wastage: integer("wastage").notNull().default(0), // spoiled / damaged
   closing: integer("closing").notNull().default(0), // opening + received - dispatched - wastage
+  // True only for rows whose opening was set outside the daily carry-forward:
+  // the 2026-08-02 cutover baseline, or a later physical re-count applied by
+  // SQL. Every other row's opening is DERIVED as the previous entry's closing
+  // (migration 0063) — the operator enters Received, never Opening.
+  openingManual: boolean("opening_manual").notNull().default(false),
   enteredBy: uuid("entered_by").notNull(), // admin user (dispatch officer)
   batchId: uuid("batch_id"), // Phase 2: FK to batches (no inline ref to avoid circular import)
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -62,7 +68,7 @@ export const stockReceipts = pgTable("stock_receipts", {
   supplierId: uuid("supplier_id").references(() => suppliers.id, { onDelete: "set null" }),
   date: date("date").notNull(),
   quantity: integer("quantity").notNull().default(0),
-  unitCost: numeric("unit_cost", { precision: 10, scale: 2 }),
+  unitCost: numeric("unit_cost", { precision: 11, scale: 3 }),
   totalCost: numeric("total_cost", { precision: 12, scale: 2 }),
   enteredBy: uuid("entered_by").notNull(), // admin user (FGS operator)
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -21,9 +21,9 @@ export const products = pgTable("products", {
     .references(() => categories.id, { onDelete: "restrict" }),
   icon: text("icon"), // emoji for product display
   unit: text("unit").notNull(), // e.g. "500ml Pouch", "200g Block", "400ml", "100g Cup"
-  basePrice: numeric("base_price", { precision: 10, scale: 2 }).notNull(), // Basic Price (pre-GST)
-  dealerPrice: numeric("dealer_price", { precision: 10, scale: 2 }),       // Dealer-Price (gross, client-entered)
-  mrp:         numeric("mrp",          { precision: 10, scale: 2 }),       // MRP (client-entered)
+  basePrice: numeric("base_price", { precision: 11, scale: 3 }).notNull(), // Basic Price (pre-GST)
+  dealerPrice: numeric("dealer_price", { precision: 11, scale: 3 }),       // Dealer-Price (gross, client-entered)
+  mrp:         numeric("mrp",          { precision: 11, scale: 3 }),       // MRP (client-entered)
   gstPercent: numeric("gst_percent", { precision: 5, scale: 2 }).notNull(),
   stock: integer("stock").notNull().default(0), // current FGS count
   lowStockThreshold: integer("low_stock_threshold").notNull().default(50),
@@ -43,10 +43,10 @@ export const products = pgTable("products", {
   printDirection:          text("print_direction").default("Across"),
   packetsCrate:            integer("packets_crate").default(0),
   reportAlias:             text("report_alias"),
-  retailDealerPrice:       numeric("retail_dealer_price",      { precision: 10, scale: 2 }),
-  creditInstMrpPrice:      numeric("credit_inst_mrp_price",    { precision: 10, scale: 2 }),
-  creditInstDealerPrice:   numeric("credit_inst_dealer_price", { precision: 10, scale: 2 }),
-  parlourDealerPrice:      numeric("parlour_dealer_price",     { precision: 10, scale: 2 }),
+  retailDealerPrice:       numeric("retail_dealer_price",      { precision: 11, scale: 3 }),
+  creditInstMrpPrice:      numeric("credit_inst_mrp_price",    { precision: 11, scale: 3 }),
+  creditInstDealerPrice:   numeric("credit_inst_dealer_price", { precision: 11, scale: 3 }),
+  parlourDealerPrice:      numeric("parlour_dealer_price",     { precision: 11, scale: 3 }),
   imageUrl:           text("image_url"),
   makeZeroInIndents:  boolean("make_zero_in_indents").notNull().default(false),
 
@@ -60,13 +60,21 @@ export const products = pgTable("products", {
 
 // ── Price Revisions ──
 // Audit trail for price changes. Every price change is logged with effective date.
+// old/new_price is base_price (NET); dealer_price and mrp are what staff
+// actually revise (migration 0075). Written only via lib/price-revisions.ts.
 export const priceRevisions = pgTable("price_revisions", {
   id: uuid("id").defaultRandom().primaryKey(),
   productId: uuid("product_id")
     .notNull()
     .references(() => products.id, { onDelete: "restrict" }),
-  oldPrice: numeric("old_price", { precision: 10, scale: 2 }).notNull(),
-  newPrice: numeric("new_price", { precision: 10, scale: 2 }).notNull(),
+  oldPrice: numeric("old_price", { precision: 11, scale: 3 }).notNull(),
+  newPrice: numeric("new_price", { precision: 11, scale: 3 }).notNull(),
+  oldDealerPrice: numeric("old_dealer_price", { precision: 11, scale: 3 }),
+  newDealerPrice: numeric("new_dealer_price", { precision: 11, scale: 3 }),
+  oldMrp: numeric("old_mrp", { precision: 11, scale: 3 }),
+  newMrp: numeric("new_mrp", { precision: 11, scale: 3 }),
+  // 'price_revision' (Price Revisions page) | 'product_edit' (All Products)
+  source: text("source").notNull().default("price_revision"),
   oldGstPercent: numeric("old_gst_percent", { precision: 5, scale: 2 }).notNull(),
   newGstPercent: numeric("new_gst_percent", { precision: 5, scale: 2 }).notNull(),
   effectiveFrom: date("effective_from").notNull(), // date when new price takes effect
