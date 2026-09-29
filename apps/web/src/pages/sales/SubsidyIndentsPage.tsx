@@ -152,7 +152,7 @@ export default function SubsidyIndentsPage() {
     <div className="flex flex-col h-full" ref={formRef}>
       <PageHeader
         title="Subsidy Indents"
-        subtitle="Record HTM 1000ML (sub) indents — customer pays 50%. Ctrl+S to submit."
+        subtitle="Record HTM 1000ML (sub) indents; customer pays 50%. Ctrl+S to submit."
       />
       <div className="flex-1 overflow-auto p-3 space-y-3 pb-24">
         <FormSection title="Customer" cols={4}>
@@ -198,7 +198,7 @@ export default function SubsidyIndentsPage() {
           <Field label="Available Balance">
             <Input
               className={`erp-input bg-muted num ${creditAvailable != null && creditAvailable < total ? "border-destructive text-destructive" : ""}`}
-              value={creditAvailable != null ? `₹ ${creditAvailable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "—"}
+              value={creditAvailable != null ? `₹ ${creditAvailable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : ""}
               readOnly
             />
           </Field>
@@ -218,7 +218,7 @@ export default function SubsidyIndentsPage() {
             />
           </Field>
           <Field label="Rate (subsidised)">
-            <Input className="erp-input bg-muted num" value={unit ? `₹ ${unit.toFixed(2)}` : "—"} readOnly />
+            <Input className="erp-input bg-muted num" value={unit ? `₹ ${unit.toFixed(2)}` : ""} readOnly />
           </Field>
           <Field label="GST %">
             <Input className="erp-input bg-muted num" value={`${gstPct.toFixed(2)}`} readOnly />

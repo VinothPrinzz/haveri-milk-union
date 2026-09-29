@@ -114,7 +114,7 @@ function RouteFormBody({
               onChange={v => form.setValue("contractorId", v ?? "")}
               options={contractorOptions}
               allowAll
-              allLabel="— Unassigned —"
+              allLabel="Unassigned"
             />
           </Field>
           <Field label="Batch" hint="F9" required>
@@ -254,15 +254,15 @@ export default function RoutesPage({ tab = "list" }: Props) {
                   <tr key={r.id} className={i % 2 === 1 ? "zebra" : ""}>
                     <td className="font-mono text-[12px]">{r.code}</td>
                     <td className="font-medium">{r.name}</td>
-                    <td>{r.contractorName || contractors.find((c: any) => c.id === r.contractorId)?.name || "—"}</td>
+                    <td>{r.contractorName || contractors.find((c: any) => c.id === r.contractorId)?.name || ""}</td>
                     <td>
                       {r.primaryBatchId ? (
                         <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">
                           {batchLabelById.get(r.primaryBatchId) ?? "?"}
                         </span>
-                      ) : <span className="text-muted-foreground">—</span>}
+                      ) : null}
                     </td>
-                    <td>{r.dispatchTime || "—"}</td>
+                    <td>{r.dispatchTime || ""}</td>
                     <td style={{ textAlign: "center" }}>
                       <div className="flex items-center justify-center gap-1.5">
                         <Button
@@ -305,7 +305,7 @@ export default function RoutesPage({ tab = "list" }: Props) {
       <Dialog open={!!editing} onOpenChange={open => !open && setEditing(null)}>
         <DialogContent className="max-w-3xl rounded-sm">
           <DialogHeader>
-            <DialogTitle className="text-[15px] font-semibold">Edit Route — <span className="font-mono">{editing?.code}</span></DialogTitle>
+            <DialogTitle className="text-[15px] font-semibold">Edit Route: <span className="font-mono">{editing?.code}</span></DialogTitle>
           </DialogHeader>
           {editing && (
             <RouteFormBody
@@ -326,7 +326,7 @@ export default function RoutesPage({ tab = "list" }: Props) {
       <Dialog open={!!viewing} onOpenChange={o => !o && setViewing(null)}>
         <DialogContent className="max-w-3xl max-h-[85vh] overflow-auto">
           <DialogHeader>
-            <DialogTitle>{viewing?.code} — {viewing?.name}</DialogTitle>
+            <DialogTitle>{viewing?.code}: {viewing?.name}</DialogTitle>
           </DialogHeader>
           {viewing && (() => {
             const onRoute = customers.filter((c: any) =>
@@ -335,7 +335,7 @@ export default function RoutesPage({ tab = "list" }: Props) {
             const Row = ({ label, value }: { label: string; value: any }) => (
               <div className="flex items-baseline gap-2 py-1 border-b border-border/60 last:border-0">
                 <span className="text-[11px] uppercase tracking-wide text-muted-foreground w-32 shrink-0">{label}</span>
-                <span className="text-[13px] font-medium">{value || <span className="text-muted-foreground">—</span>}</span>
+                <span className="text-[13px] font-medium">{value}</span>
               </div>
             );
             return (

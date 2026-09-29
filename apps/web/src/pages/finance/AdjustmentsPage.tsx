@@ -17,6 +17,7 @@ import {
   fetchAdjustments, fetchAdjustmentsSummary, createAdjustment, reverseAdjustment,
   fetchCustomers, type AdjustmentRow, type AdjustmentVoucherType,
 } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 const TYPE_OPTIONS: F9Option[] = [
   { value: "Credit Note", label: "Credit Note" },
@@ -47,7 +48,7 @@ const TYPE_TONE: Record<AdjustmentVoucherType, string> = {
   "Debit Note": "bg-warning/15 text-warning",
   "Write-off": "bg-destructive/15 text-destructive",
 };
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => todayIST();
 
 function NewAdjustmentDialog({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
@@ -75,7 +76,7 @@ function NewAdjustmentDialog({ onClose }: { onClose: () => void }) {
       amount: Number(amount), voucherDate,
     }),
     onSuccess: (r) => {
-      toast.success(`${voucherType} posted — ${r.voucherNo}`);
+      toast.success(`${voucherType} posted: ${r.voucherNo}`);
       qc.invalidateQueries({ queryKey: ["adjustments"] });
       qc.invalidateQueries({ queryKey: ["adjustments-summary"] });
       onClose();
@@ -132,7 +133,7 @@ function ReverseDialog({ row, onClose }: { row: AdjustmentRow; onClose: () => vo
   const mut = useMutation({
     mutationFn: () => reverseAdjustment(row.id, { reasonText }),
     onSuccess: (r) => {
-      toast.success(`Reversed — ${r.voucherNo}`);
+      toast.success(`Reversed: ${r.voucherNo}`);
       qc.invalidateQueries({ queryKey: ["adjustments"] });
       qc.invalidateQueries({ queryKey: ["adjustments-summary"] });
       onClose();
@@ -234,13 +235,13 @@ export default function AdjustmentsPage() {
               <tbody>
                 {rows.map((a) => (
                   <tr key={a.id}>
-                    <td className="font-mono text-[11px]">{a.voucherNo ?? "—"}</td>
+                    <td className="font-mono text-[11px]">{a.voucherNo ?? ""}</td>
                     <td>{fmtDate(a.voucherDate)}</td>
                     <td><span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${TYPE_TONE[a.voucherType]}`}>{a.voucherType}</span></td>
                     <td className="font-medium">{a.dealerName} <span className="text-muted-foreground font-mono text-[11px]">{a.dealerCode}</span></td>
                     <td className="num" style={{ textAlign: "right" }}>{fmtINR(a.amount)} <span className="text-[10px] text-muted-foreground">{a.ledgerType === "credit" ? "Cr" : "Dr"}</span></td>
                     <td className="text-[12px]">{a.reasonText}</td>
-                    <td className="text-[12px]">{a.initiatedByName ?? "—"}</td>
+                    <td className="text-[12px]">{a.initiatedByName ?? ""}</td>
                     <td className="text-[11px]">
                       {a.isReversal ? <span className="text-muted-foreground">reversal</span>
                         : a.isReversed ? <span className="text-warning">reversed</span>

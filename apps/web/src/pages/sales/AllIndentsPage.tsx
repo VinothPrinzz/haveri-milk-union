@@ -18,6 +18,7 @@ import {
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { Printer, X, Ban } from "lucide-react";
 import { fetchIndentsPage, fetchRoutes, cancelIndent, resolveIndentInvoice, type CancelIndentResult } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 const STATUS_OPTS: F9Option[] = [
   { value: "draft",            label: "Draft" },
@@ -28,20 +29,20 @@ const STATUS_OPTS: F9Option[] = [
   { value: "cancelled",        label: "Cancelled" },
 ];
 
-// Payment column label. "Credit" is reserved for credit institutions
-// (customer_type 'Credit Inst-*'), who buy on a monthly account. Every other
-// dealer settles from their prepaid available balance → "Wallet". A genuinely
-// online-paid order (payment_mode 'upi') is shown as "UPI" rather than folded
-// into either bucket.
+// Payment column label. A genuinely online-paid order (payment_mode 'upi')
+// is shown as "UPI" whoever placed it. Otherwise "Credit" is reserved for
+// credit institutions (customer_type 'Credit Inst-*'), who buy on a monthly
+// account, and every other dealer settles from their prepaid available
+// balance → "Wallet".
 const isCreditInstitution = (t?: string) => !!t && t.startsWith("Credit Inst");
 const paymentLabel = (i: any): string => {
-  if (isCreditInstitution(i.customerType)) return "Credit";
   const mode = String(i.paymentMode ?? "").toLowerCase();
   if (mode === "upi") return "UPI";
+  if (isCreditInstitution(i.customerType)) return "Credit";
   return "Wallet";
 };
 
-const formatIndentId = (id: string) => id ? `#HMU-${String(id).slice(-4).toUpperCase()}` : "—";
+const formatIndentId = (id: string) => id ? `#HMU-${String(id).slice(-4).toUpperCase()}` : "";
 
 // One-line description of what the refund did, for the success toast.
 function refundLine(r: CancelIndentResult): string {
@@ -50,14 +51,14 @@ function refundLine(r: CancelIndentResult): string {
     case "wallet":   return `Refunded ${amt} to the dealer's wallet.`;
     case "credit":   return `Credited ${amt} to the dealer's available balance.`;
     case "razorpay": return `Razorpay bank refund of ${amt} initiated (${r.refund.status ?? "pending"}).`;
-    default:         return `No refund applied for a ${r.paymentMode || "—"} order.`;
+    default:         return r.refund.note ? r.refund.note : `No refund applied for a ${r.paymentMode || ""} order.`;
   }
 }
 
 export default function AllIndentsPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
 
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
@@ -91,8 +92,13 @@ export default function AllIndentsPage() {
   const [cancelReason, setCancelReason] = useState("");
   const [refundMethod, setRefundMethod] = useState<"balance" | "razorpay">("balance");
 
+  // An indent modified down to zero was already refunded in full at that
+  // edit, so cancelling it only restores stock; there is nothing to route.
+  const cancelTotal = parseFloat(String(cancelFor?.grand_total ?? cancelFor?.total ?? 0)) || 0;
+  const zeroIndent = !!cancelFor && cancelTotal <= 0;
+
   // Bank (Razorpay) refunds only apply to orders paid online.
-  const bankPossible = cancelFor?.paymentMode === "upi";
+  const bankPossible = cancelFor?.paymentMode === "upi" && !zeroIndent;
 
   // Open the cancel dialog with a sensible default refund target.
   const openCancel = (i: any) => {
@@ -232,7 +238,7 @@ export default function AllIndentsPage() {
                             {resolvingId === i.id ? "Opening…" : formatIndentId(i.id)}
                           </button>
                         ) : (
-                          <span className="text-muted-foreground" title="No invoice — indent not confirmed">
+                          <span className="text-muted-foreground" title="No invoice; indent not confirmed">
                             {formatIndentId(i.id)}
                           </span>
                         )}
@@ -246,10 +252,10 @@ export default function AllIndentsPage() {
                           </span>
                         )}
                       </td>
-                      <td>{i.route_code ?? i.route_name ?? i.routeName ?? i.routeId ?? "—"}</td>
+                      <td>{i.route_code ?? i.route_name ?? i.routeName ?? i.routeId ?? ""}</td>
                       <td>
                         {(i.items ?? i.lines ?? []).length === 0 ? (
-                          <span className="text-muted-foreground">—</span>
+                          null
                         ) : (
                           <div className="flex flex-col gap-0.5">
                             {(i.items ?? i.lines ?? []).map((it: any, k: number) => (
@@ -333,16 +339,18 @@ export default function AllIndentsPage() {
                   <span className="font-mono">{formatIndentId(cancelFor.id)}</span>
                   {" · "}
                   <span className="font-medium text-foreground">
-                    {cancelFor.dealer_name ?? cancelFor.customerName ?? "—"}
+                    {cancelFor.dealer_name ?? cancelFor.customerName ?? ""}
                   </span>
                 </div>
                 <div>
                   Total <span className="num font-medium text-foreground">{fmtINR(parseFloat(String(cancelFor.grand_total ?? cancelFor.total ?? 0)) || 0)}</span>
                   {" · "}
-                  Payment mode <span className="font-medium text-foreground uppercase">{cancelFor.paymentMode || "—"}</span>
+                  Payment mode <span className="font-medium text-foreground uppercase">{cancelFor.paymentMode || ""}</span>
                 </div>
                 <div className="text-[11.5px]">
-                  Cancelling restores stock and refunds the dealer to the destination you choose below.
+                  {zeroIndent
+                    ? "This indent already stands at zero, so its payment was refunded when it was updated. Cancelling restores stock and will not refund anything again."
+                    : "Cancelling restores stock and refunds the dealer to the destination you choose below."}
                 </div>
               </div>
 
@@ -354,8 +362,9 @@ export default function AllIndentsPage() {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
+                    disabled={zeroIndent}
                     onClick={() => setRefundMethod("balance")}
-                    className={`rounded-sm border px-3 py-2 text-left text-[12.5px] transition ${
+                    className={`rounded-sm border px-3 py-2 text-left text-[12.5px] transition disabled:opacity-50 disabled:cursor-not-allowed ${
                       refundMethod === "balance"
                         ? "border-primary bg-primary/10 font-medium"
                         : "border-border hover:bg-muted/50"
@@ -382,7 +391,11 @@ export default function AllIndentsPage() {
                     </span>
                   </button>
                 </div>
-                {!bankPossible && (
+                {zeroIndent ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Nothing is left to refund on this indent.
+                  </p>
+                ) : bankPossible ? null : (
                   <p className="mt-1 text-[11px] text-muted-foreground">
                     Bank refunds are only available for orders paid online.
                   </p>

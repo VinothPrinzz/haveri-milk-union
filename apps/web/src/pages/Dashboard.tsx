@@ -43,7 +43,7 @@ export default function Dashboard() {
   (data?.stockAlerts?.outOfStock ?? 0);
 
   const chartData = (data?.zoneBreakdown ?? []).map(z => {
-    const label = (z.name ?? z.zone_name ?? "—").toString();
+    const label = (z.name ?? z.zone_name ?? "").toString();
     const rev = typeof z.revenue === "number" ? z.revenue : parseFloat(String(z.revenue ?? 0)) || 0;
     return {
       zone: label.replace(/ ?Zone$/i, ""),
@@ -105,7 +105,7 @@ export default function Dashboard() {
             </div>
             {isLoading ? <Skeleton className="h-52" /> : (
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={chartData.length ? chartData : [{ zone: "—", revenue: 0 }]}>
+                <BarChart data={chartData.length ? chartData : [{ zone: "", revenue: 0 }]}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="zone" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />

@@ -31,11 +31,13 @@ import {
   fetchDealerDraft,
   patchDealerDraft,
   confirmDealerDraft,
+  fetchMinQtyStatus,
 } from "@/services/api";
 import { findCategoryMinShortfalls, categoryMinMessage } from "@/lib/minOrderQty";
 import { isCreditInstMrp } from "@/lib/ratePrice";
+import { todayIST } from "@/lib/istDate";
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayIST();
 
 // ── Quantity field (no steppers — manual entry only) ────────────────────
 function QtyStepper({
@@ -57,7 +59,7 @@ function QtyStepper({
         onChange(e.target.value === "" ? undefined : Math.max(0, parseInt(e.target.value) || 0))
       }
       className="erp-input num h-6 w-16 text-center px-1"
-      placeholder="—"
+      placeholder=""
     />
   );
 }
@@ -199,9 +201,10 @@ export default function DealerIndentsPage() {
       toast.success(
         res?.forced
           ? "Draft confirmed (available balance overridden)"
-          : "Draft confirmed — order placed & ledger posted"
+          : "Draft confirmed: order placed & ledger posted"
       );
       qc.invalidateQueries({ queryKey: ["admin-dealer-draft", dealerId, date] });
+      qc.invalidateQueries({ queryKey: ["min-qty-status"] });
     },
     onError: (e: any) => {
       // 402 → insufficient available balance; offer an override.
@@ -219,45 +222,58 @@ export default function DealerIndentsPage() {
   const credit = draft?.credit;
   const editable = draft?.editable ?? false;
 
-  // ── Milk order-minimum guards (≥12 L milk; curd has no minimum) ──
+  // ── Order-minimum guards (≥12 L/kg milk + curd) ──
   // 'Credit Inst-MRP' customers are government institutions — supply is
   // compulsory however small the indent, so the minimum never applies to
   // them. Mirrors MIN_QTY_EXEMPT_RATE_CATEGORIES on the server.
   const minQtyExempt = isCreditInstMrp(customer?.rateCategory);
 
   // Template: only ACTIVE lines auto-place, so the aggregate is over those.
+  // A template places every day, so it is always held to the minimum.
   const templateShortfalls = useMemo(
     () =>
-      minQtyExempt
-        ? []
-        : findCategoryMinShortfalls(
-            (templateQuery.data?.items ?? [])
-              .filter((it: any) => template[it.productId]?.active)
-              .map((it: any) => ({
-                categoryName: it.categoryName,
-                unit: it.unit,
-                quantity: template[it.productId]?.qty ?? 0,
-                exempt: it.isSubsidy,
-              }))
-          ),
+      findCategoryMinShortfalls(
+        (templateQuery.data?.items ?? [])
+          .filter((it: any) => template[it.productId]?.active)
+          .map((it: any) => ({
+            categoryName: it.categoryName,
+            unit: it.unit,
+            quantity: template[it.productId]?.qty ?? 0,
+            code: it.code,
+            name: it.productName,
+            exempt: it.isSubsidy,
+          })),
+        { exempt: minQtyExempt },
+      ),
     [templateQuery.data, template, minQtyExempt]
   );
   const templateHasMinQtyViolation = templateShortfalls.length > 0;
-  // Draft: a draft can be saved with any qty, but it can't be CONFIRMED while
-  // its Milk total is below 12 L (curd has no minimum).
+
+  // Draft: only the first indent on the route that day carries the
+  // minimum; the server says whether one is already there.
+  const minQtyStatus = useQuery({
+    queryKey: ["min-qty-status", dealerId, routeId, date],
+    queryFn: () => fetchMinQtyStatus({ dealerId: dealerId!, routeId, date }),
+    enabled: !!dealerId,
+    staleTime: 30_000,
+  });
+  const draftMinQtyWaived = minQtyExempt || (minQtyStatus.data ? !minQtyStatus.data.applies : false);
+  // A draft can be saved with any qty, but it can't be CONFIRMED while its
+  // milk + curd total is below the minimum.
   const draftShortfalls = useMemo(
     () =>
-      minQtyExempt
-        ? []
-        : findCategoryMinShortfalls(
-            (draft?.items ?? []).map((it: any) => ({
-              categoryName: it.categoryName,
-              unit: it.unit,
-              quantity: draftQty[it.productId] ?? 0,
-              exempt: it.isSubsidy,
-            }))
-          ),
-    [draft, draftQty, minQtyExempt]
+      findCategoryMinShortfalls(
+        (draft?.items ?? []).map((it: any) => ({
+          categoryName: it.categoryName,
+          unit: it.unit,
+          quantity: draftQty[it.productId] ?? 0,
+          code: it.code,
+          name: it.productName,
+          exempt: it.isSubsidy,
+        })),
+        { exempt: draftMinQtyWaived },
+      ),
+    [draft, draftQty, draftMinQtyWaived]
   );
   const draftHasMinQtyViolation = draftShortfalls.length > 0;
 
@@ -278,7 +294,7 @@ export default function DealerIndentsPage() {
     <div className="flex flex-col h-full">
       <PageHeader
         title="Dealer Indents"
-        subtitle="Standing-indent templates & daily drafts — view and edit for any dealer"
+        subtitle="Standing-indent templates & daily drafts: view and edit for any dealer"
       />
 
       <FilterBar>
@@ -362,7 +378,7 @@ export default function DealerIndentsPage() {
                 <div>
                   <h3 className="font-semibold text-[14px]">Standing Indent Template</h3>
                   <p className="text-[12px] text-muted-foreground">
-                    Per route — set quantities for the <strong>Route</strong> selected above; each
+                    Per route: set quantities for the <strong>Route</strong> selected above; each
                     route materialises into its own daily order. Auto-placed at that route's warning
                     time. Includes subsidy milk.
                   </p>

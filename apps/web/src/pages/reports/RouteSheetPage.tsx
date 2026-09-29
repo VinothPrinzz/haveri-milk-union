@@ -51,6 +51,7 @@ import {
   usablePageMm,
   type PaperId,
 } from "@/lib/print-paper";
+import { todayIST } from "@/lib/istDate";
 
 // ── Display order for the across-product columns ──────────────────
 // Driven by products.abstract_position, set per-product from the admin panel
@@ -186,7 +187,7 @@ function paginateRows(
 }
 
 export default function RouteSheetPage() {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayIST();
   const [batch, setBatch] = useState<string>("");
   const [date, setDate] = useState<string>(today);
   const [routeId, setRouteId]   = useState<string | null>(null);
@@ -264,7 +265,7 @@ export default function RouteSheetPage() {
       );
       pageLabels.push(
         chunks.length > 1
-          ? `${route.name} — Sheet ${idx + 1}/${chunks.length}`
+          ? `${route.name}: Sheet ${idx + 1}/${chunks.length}`
           : `${route.name}`
       );
     });
@@ -275,7 +276,7 @@ export default function RouteSheetPage() {
         route={route}
       />
     );
-    pageLabels.push(`${route.name} — Abstract`);
+    pageLabels.push(`${route.name}: Abstract`);
     pages.push(
       <SecurityPage
         key={`${route.id}-security`}
@@ -283,7 +284,7 @@ export default function RouteSheetPage() {
         route={route}
       />
     );
-    pageLabels.push(`${route.name} — Security`);
+    pageLabels.push(`${route.name}: Security`);
   });
 
   // ── CSV export (one combined file, one row per customer + Route col) ──
@@ -323,7 +324,7 @@ export default function RouteSheetPage() {
   return (
     <ReportShell
       title="Route Sheet"
-      subtitle={`Per-route loading sheets — abstract + security checklist appended · ${PAPERS[paper].short} landscape`}
+      subtitle={`Per-route loading sheets; abstract + security checklist appended · ${PAPERS[paper].short} landscape`}
       printOrientation="landscape"
       filters={
         <>
@@ -386,7 +387,7 @@ export default function RouteSheetPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="a4">A4 — 210 × 297 mm</SelectItem>
+                <SelectItem value="a4">A4 (210 × 297 mm)</SelectItem>
                 <SelectItem value="cont15x12">15" × 12" continuous</SelectItem>
               </SelectContent>
             </Select>
@@ -465,10 +466,10 @@ function RouteRowsPage({
                 <span className="font-mono">{c.code}</span>
                 <span className="dealer-sep"> - </span>
                 {c.name}
-                {c.isEmployee && (
+                {(c.tag || c.isEmployee) && (
                   <span className="ml-1 text-[9px] font-semibold uppercase tracking-wide
                                   px-1 py-[1px] border border-current rounded-[2px]
-                                  align-middle">EMP</span>
+                                  align-middle">{c.tag ?? "EMP"}</span>
                 )}
               </td>
               {acrossProducts.map(p => (
@@ -608,8 +609,8 @@ function AbstractPage({
                 <td className="num">{fmtNum(i.packets)}</td>
                 <td className="num">{kgLtrCorrect.toFixed(2)}</td>
                 <td className="num">{fmtINR(i.amount)}</td>
-                <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : "—"}</td>
-                <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : "—"}</td>
+                <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : ""}</td>
+                <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : ""}</td>
               </tr>
             );
           })}
@@ -619,8 +620,8 @@ function AbstractPage({
             <td className="num">{fmtNum(t.packets)}</td>
             <td className="num">{totalKgLtr.toFixed(2)}</td>
             <td className="num">{fmtINR(t.amount)}</td>
-            <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : "—"}</td>
-            <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : "—"}</td>
+            <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : ""}</td>
+            <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : ""}</td>
           </tr>
         </tbody>
       </table>
@@ -660,10 +661,10 @@ function SecurityPage({
 
       <table className="report-ledger compact rs-ledger rs-security-table">
         <colgroup>
-          <col style={{ width: "40%" }} />
-          <col style={{ width: "18%" }} />
-          <col style={{ width: "22%" }} />
-          <col style={{ width: "20%" }} />
+          <col style={{ width: "48mm" }} />
+          <col style={{ width: "16mm" }} />
+          <col style={{ width: "24mm" }} />
+          <col style={{ width: "25mm" }} />
         </colgroup>
         <thead>
           <tr>
@@ -772,13 +773,18 @@ function RouteLetterhead({
         )}
       </div>
       <div className="rs-lh-details">
-        <span><strong>Route:</strong> {route.name} ({route.code})</span>
+        <span><strong>Route:</strong> {route.name}{route.code ? ` (${route.code})` : ""}</span>
         <span><strong>Date:</strong> {fmtDate(data.date)}</span>
-        <span><strong>Batch:</strong> {data.batch?.name ?? route.batchName ?? "—"}</span>
-        <span><strong>Contractor:</strong> {route.contractor.name ?? "—"}</span>
-        <span><strong>Dispatch:</strong> {route.dispatchTime ?? "—"}</span>
-        <span><strong>Commencing:</strong> ____</span>
-        <span><strong>Completion:</strong> ____</span>
+        <span><strong>Batch:</strong> {data.batch?.name ?? route.batchName ?? ""}</span>
+        {/* The ADHOC bucket has no vehicle, contractor or timings. */}
+        {!route.isAdhoc && (
+          <>
+            <span><strong>Contractor:</strong> {route.contractor.name ?? ""}</span>
+            <span><strong>Dispatch:</strong> {route.dispatchTime ?? ""}</span>
+            <span><strong>Commencing:</strong> ____</span>
+            <span><strong>Completion:</strong> ____</span>
+          </>
+        )}
       </div>
     </div>
   );

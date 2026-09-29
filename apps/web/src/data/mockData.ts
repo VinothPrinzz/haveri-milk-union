@@ -16,6 +16,7 @@ export interface Customer {
   officerName?: string;
   phone: string;
   email?: string;            // Marketing v1.4
+  gstNumber?: string;
   accountNo?: string;        // Marketing v1.4
   creditLimit?: number;      // Marketing v1.4
   addressType?: "Office" | "Residence" | "";  // Marketing v1.4
@@ -30,7 +31,8 @@ export interface Customer {
   bank?: string;
   creditBalance?: number;    // wallet balance (kept as-is)
   lastIndentAt?: string | null;  // Marketing v1.4
-  status: "Active" | "Inactive";
+  deletedAt?: string | null;
+  status: "Active" | "Inactive" | "Deleted";
 }
 
 // Extend Contractor

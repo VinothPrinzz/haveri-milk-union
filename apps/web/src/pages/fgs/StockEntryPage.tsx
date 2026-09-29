@@ -13,10 +13,11 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Save } from "lucide-react";
 import { fetchStockEntries, updateStockEntries } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 export default function StockEntryPage() {
   const qc = useQueryClient();
-  const [filterDate, setFilterDate] = useState(new Date().toISOString().split("T")[0]);
+  const [filterDate, setFilterDate] = useState(todayIST());
   const [edits, setEdits] = useState<Record<string, Record<string, number>>>({});
 
   const { data: stockEntries = [], isLoading } = useQuery({
@@ -137,7 +138,7 @@ export default function StockEntryPage() {
                       return (
                         <tr key={s.productId}>
                           <td className="font-medium">{s.productName}</td>
-                          <td className="text-muted-foreground">{s.category ?? "—"}</td>
+                          <td className="text-muted-foreground">{s.category ?? ""}</td>
                           <td style={{ textAlign: "right" }}>
                             <StockInput
                               value={edits[s.productId]?.opening ?? s.opening ?? 0}

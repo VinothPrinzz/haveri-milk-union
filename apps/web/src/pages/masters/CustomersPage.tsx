@@ -24,11 +24,26 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { toCsv } from "@/lib/exporters";
 import { patch } from "@/lib/apiClient";
+import { todayIST } from "@/lib/istDate";
  
 interface Props { tab?: "list" | "new" | "assign-route"; }
  
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+// Every dealer sits in Haveri district, so the city is fixed rather than
+// picked (migration 0073 retired the other districts).
+const FIXED_CITY = "Haveri";
 const TYPE_OPTIONS = ["All Types", "Retail-Dealer", "Credit Inst-MRP", "Credit Inst-Dealer", "Parlour-Dealer"];
+
+type StatusFilter = "all" | "true" | "false" | "deleted";
+
+// Status filter → list params. "deleted" lists soft-deleted customers only.
+const statusParams = (f: StatusFilter) => ({
+  activeFilter: f === "true" || f === "false" ? f : undefined,
+  deleted: f === "deleted" ? true : undefined,
+});
+
+const statusPill = (status: Customer["status"]) =>
+  status === "Active" ? "active" : status === "Deleted" ? "deleted" : "draft";
  
 export default function CustomersPage({ tab = "list" }: Props) {
   const qc = useQueryClient();
@@ -57,23 +72,25 @@ export default function CustomersPage({ tab = "list" }: Props) {
   const [debouncedSearch, setDebSearch] = useState("");
   const [typeFilter, setTypeFilter]   = useState("All Types");
   const [routeFilter, setRouteFilter] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<"all" | "true" | "false">("all");
+  const [zoneFilter, setZoneFilter]   = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
  
   useEffect(() => {
     const t = setTimeout(() => { setDebSearch(search); setPage(1); }, 300);
     return () => clearTimeout(t);
   }, [search]);
  
-  useEffect(() => { setPage(1); }, [typeFilter, routeFilter, statusFilter, pageSize]);
+  useEffect(() => { setPage(1); }, [typeFilter, routeFilter, zoneFilter, statusFilter, pageSize]);
  
   const pageQuery = useQuery({
-    queryKey: ["customers-page", { page, pageSize, debouncedSearch, typeFilter, routeFilter, statusFilter }],
+    queryKey: ["customers-page", { page, pageSize, debouncedSearch, typeFilter, routeFilter, zoneFilter, statusFilter }],
     queryFn: () => fetchCustomersPage({
       page, limit: pageSize,
       search:        debouncedSearch || undefined,
       customerType:  typeFilter !== "All Types" ? typeFilter : undefined,
       routeId:       routeFilter ?? undefined,
-      activeFilter: statusFilter !== "all" ? statusFilter as "true" | "false" : undefined,
+      zoneId:        zoneFilter ?? undefined,
+      ...statusParams(statusFilter),
     }),
     placeholderData: keepPreviousData,
   });
@@ -161,6 +178,10 @@ export default function CustomersPage({ tab = "list" }: Props) {
   const routeOpts: F9Option[] = useMemo(
     () => routes.map((r: any) => ({ value: r.id, label: r.name, sublabel: r.code })),
     [routes],
+  );
+  const zoneOpts: F9Option[] = useMemo(
+    () => zones.map((z: any) => ({ value: z.id, label: z.name, sublabel: z.slug })),
+    [zones],
   );
  
   // Code auto-generation — based on full dealer dataset (so codes stay unique)
@@ -270,7 +291,8 @@ export default function CustomersPage({ tab = "list" }: Props) {
         search:       debouncedSearch || undefined,
         customerType: typeFilter !== "All Types" ? typeFilter : undefined,
         routeId:      routeFilter ?? undefined,
-        activeFilter: statusFilter !== "all" ? (statusFilter as "true" | "false") : undefined,
+        zoneId:       zoneFilter ?? undefined,
+        ...statusParams(statusFilter),
       };
 
       const first = await fetchCustomersPage({ ...baseParams, page: 1 });
@@ -283,18 +305,18 @@ export default function CustomersPage({ tab = "list" }: Props) {
         rest.forEach((r) => allRows.push(...r.rows));
       }
 
-      const header = ["Code", "Name", "Type", "Routes", "Phone", "Pay Mode", "City", "Status"];
+      const header = ["Code", "Name", "Type", "Routes", "Phone", "Pay Mode", "Taluka", "Status"];
       const data = allRows.map((c: any) => [
         c.code, c.name, c.type,
         (c.routes ?? []).map((r: any) => r.routeCode).join(" | "),
-        c.phone, c.payMode, c.city,
-        c.active === false ? "Inactive" : "Active",
+        c.phone, c.payMode, c.zoneName,
+        c.status,
       ]);
       const csv = toCsv([header, ...data]);
       const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      const ts = new Date().toISOString().slice(0, 10);
+      const ts = todayIST();
       a.href = url; a.download = `customers_${ts}.csv`;
       a.click();
       URL.revokeObjectURL(url);
@@ -345,7 +367,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
           <div className="p-4 space-y-3">
             <div className="erp-panel">
               <div className="px-3 py-2 erp-section-title !mb-0 !border-b !pb-2 flex items-center justify-between">
-                <span>Customers on Route — {routes.find((r: any) => r.id === selectedRoute)?.code}</span>
+                <span>Customers on Route: {routes.find((r: any) => r.id === selectedRoute)?.code}</span>
                 <span className="text-[11px] normal-case font-normal text-muted-foreground num">
                   {routeCustomers.length} on route
                 </span>
@@ -419,7 +441,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>
-                Add Customer to Route — {routes.find((r: any) => r.id === selectedRoute)?.code}
+                Add Customer to Route: {routes.find((r: any) => r.id === selectedRoute)?.code}
               </DialogTitle>
             </DialogHeader>
             <Input
@@ -543,7 +565,7 @@ export default function CustomersPage({ tab = "list" }: Props) {
     <div>
       <PageHeader
         title="All Customers"
-        subtitle={`${totalCount} customer(s) registered`}
+        subtitle={statusFilter === "deleted" ? `${totalCount} deleted customer(s)` : `${totalCount} customer(s) registered`}
         actions={
           <>
             <Button variant="outline" size="sm" className="h-8" onClick={exportCsv} disabled={exporting}>
@@ -579,13 +601,23 @@ export default function CustomersPage({ tab = "list" }: Props) {
            className="w-56"
          />
        </Field>
+       <Field label="Taluka" hint="F9">
+         <F9SearchSelect
+           value={zoneFilter}
+           onChange={setZoneFilter}
+           options={zoneOpts}
+           allowAll
+           className="w-56"
+         />
+       </Field>
        <Field label="Status">
-       <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as "all" | "true" | "false")}>
+       <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
         <SelectTrigger className="erp-input w-32"><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All</SelectItem>
           <SelectItem value="true">Active</SelectItem>
           <SelectItem value="false">Inactive</SelectItem>
+          <SelectItem value="deleted">Deleted</SelectItem>
         </SelectContent>
        </Select>
        </Field>
@@ -633,24 +665,27 @@ export default function CustomersPage({ tab = "list" }: Props) {
                         <div className="flex flex-col gap-0.5">
                           {c.routes.map((r: any) => (
                             <span key={r.routeId} className="text-[12px]">
-                              <span className="font-mono">{r.routeCode}</span> — {r.routeName}
+                              <span className="font-mono">{r.routeCode}</span>: {r.routeName}
                               {r.isPrimary && c.routes!.length > 1 && (
                                 <span className="ml-1 text-muted-foreground text-[11px]">(primary)</span>
                               )}
                             </span>
                           ))}
                         </div>
-                      ) : <span className="text-muted-foreground">—</span>}
+                      ) : null}
                     </td>
                     <td>{c.phone}</td>
                     <td>{c.payMode}</td>
-                     <td><StatusPill status={c.status === "Active" ? "active" : "draft"} /></td>
+                     <td><StatusPill status={statusPill(c.status)} /></td>
                      <td style={{ textAlign: "right" }}>
                       <div className="flex items-center justify-end gap-1.5">
                         <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]"
                                 onClick={() => setViewing(c)}>View</Button>
-                        <Button size="sm" className="h-7 px-2.5 text-[12px]"
-                                onClick={() => setEditing(c)}>Update</Button>
+                        {/* A deleted customer is read-only: its history stays visible. */}
+                        {c.status !== "Deleted" && (
+                          <Button size="sm" className="h-7 px-2.5 text-[12px]"
+                                  onClick={() => setEditing(c)}>Update</Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -718,18 +753,23 @@ function CustomerViewDialog({
   const Row = ({ label, value }: { label: string; value: any }) => (
     <div className="flex items-baseline gap-2 py-1 border-b border-border/60 last:border-0">
       <span className="text-[11px] uppercase tracking-wide text-muted-foreground w-32 shrink-0">{label}</span>
-      <span className="text-[13px] font-medium">{value || <span className="text-muted-foreground">—</span>}</span>
+      <span className="text-[13px] font-medium">{value}</span>
     </div>
   );
   return (
     <Dialog open onOpenChange={open => !open && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="text-[15px]">{customer.code} — {customer.name}</DialogTitle>
+          <DialogTitle className="text-[15px]">{customer.code}: {customer.name}</DialogTitle>
         </DialogHeader>
         <div className="grid grid-cols-2 gap-x-6 gap-y-0">
           <Row label="Code" value={<span className="font-mono">{customer.code}</span>} />
-          <Row label="Status" value={<StatusPill status={customer.status === "Active" ? "active" : "draft"} />} />
+          <Row label="Status" value={<StatusPill status={statusPill(customer.status)} />} />
+          {customer.deletedAt && (
+            <Row label="Deleted On" value={new Date(customer.deletedAt).toLocaleString("en-IN", {
+              timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short",
+            })} />
+          )}
           <Row label="Name" value={customer.name} />
           <Row label="Phone" value={customer.phone} />
           <Row label="Email" value={(customer as any).email} />
@@ -741,11 +781,11 @@ function CustomerViewDialog({
           <Row label="Bank" value={(customer as any).bank} />
           <Row label="Account No." value={(customer as any).accountNo} />
           <Row label="Outstanding"      value={(customer as any).outstanding != null
-            ? `₹${Number((customer as any).outstanding).toLocaleString("en-IN")}` : "—"} />
+            ? `₹${Number((customer as any).outstanding).toLocaleString("en-IN")}` : ""} />
           <Row label="Available Balance" value={(customer as any).creditAvailable != null
-            ? `₹${Number((customer as any).creditAvailable).toLocaleString("en-IN")}` : "—"} />
+            ? `₹${Number((customer as any).creditAvailable).toLocaleString("en-IN")}` : ""} />
           <Row label="Wallet / Credit Bal." value={(customer as any).creditBalance != null
-            ? `₹${Number((customer as any).creditBalance).toLocaleString("en-IN")}` : "—"} />
+            ? `₹${Number((customer as any).creditBalance).toLocaleString("en-IN")}` : ""} />
           <Row label="Address Type" value={(customer as any).addressType} />
           <Row label="State" value={(customer as any).state} />
           <Row label="Taluka" value={(customer as any).zoneName} />
@@ -758,7 +798,7 @@ function CustomerViewDialog({
           <Row label="Routes" value={
             customer.routes?.length
               ? customer.routes.map((r: any) => `${r.routeCode}${r.isPrimary ? " ★" : ""}`).join(", ")
-              : "—"
+              : ""
           } />
         </div>
         <DialogFooter>
@@ -780,7 +820,7 @@ function CustomerEditDialog({
   return (
     <Dialog open onOpenChange={open => !open && onClose()}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-auto">
-        <DialogHeader><DialogTitle>Edit Customer — {customer.code}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>Edit Customer: {customer.code}</DialogTitle></DialogHeader>
         <CustomerFormBody
           mode="edit"
           initial={customer as any}
@@ -827,7 +867,7 @@ function CustomerFormBody({
       addressType: initial?.addressType ?? "",
       state: initial?.state ?? "Karnataka",
       zoneId: initial?.zoneId ?? "",
-      city: initial?.city ?? "",
+      city: FIXED_CITY,
       area: initial?.area ?? "",
       houseNo: initial?.houseNo ?? "",
       street: initial?.street ?? "",
@@ -891,13 +931,11 @@ function CustomerFormBody({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedZoneId, zones]);
 
-  // Distinct cities derived from existing dealers — populated lazily.
-  const { data: existingCustomers = [] } = useQuery({ queryKey: ["customers"], queryFn: fetchCustomers });
-  const cityOpts: F9Option[] = useMemo(() => {
-    const set = new Set<string>();
-    existingCustomers.forEach((c: any) => { if (c.city) set.add(c.city); });
-    return Array.from(set).sort().map(c => ({ value: c, label: c }));
-  }, [existingCustomers]);
+  // District is fixed; normalise any older record to it on edit.
+  useEffect(() => {
+    if (form.getValues("city") !== FIXED_CITY) form.setValue("city", FIXED_CITY);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = form.handleSubmit(d => save.mutate(d));
   useSaveShortcut(() => submit(), !save.isPending);
@@ -1000,13 +1038,8 @@ function CustomerFormBody({
             className="w-full"
           />
         </Field>
-        <Field label="District" hint="F9">
-          <F9SearchSelect
-            value={form.watch("city") || null}
-            onChange={v => form.setValue("city", v ?? "")}
-            options={cityOpts}
-            className="w-full"
-          />
+        <Field label="District" hint="fixed">
+          <Input className="erp-input bg-muted" value={FIXED_CITY} readOnly />
         </Field>
         <Field label="Area">
           <Input className="erp-input" {...form.register("area")} />
@@ -1071,7 +1104,7 @@ function CustomerFormBody({
           <div className="space-y-2 text-[13px]">
             <p>
               You are about to delete{" "}
-              <span className="font-semibold">{initial?.code}{initial?.name ? ` — ${initial.name}` : ""}</span>.
+              <span className="font-semibold">{initial?.code}{initial?.name ? `: ${initial.name}` : ""}</span>.
             </p>
             <p className="text-muted-foreground">
               The customer will be removed from all lists and can no longer place indents or log in

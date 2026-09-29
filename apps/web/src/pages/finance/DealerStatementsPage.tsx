@@ -22,7 +22,7 @@ import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import { toCsv } from "@/lib/exporters";
 import {
-  fetchCustomers, fetchDealerStatement,
+  fetchStatementDealers, fetchDealerStatement,
   type StatementResponse, type StatementRow, type StatementKind,
 } from "@/services/api";
 
@@ -39,6 +39,9 @@ const shortDate = (iso: string) => {
   const [y, m, d] = iso.split("-");
   return `${d}-${m}-${y}`;
 };
+
+/** "CODE: Name" — a deleted dealer's code is cleared, so just the name. */
+const dealerName = (d: { code: string | null; name: string }) => (d.code ? `${d.code}: ${d.name}` : d.name);
 
 const KIND_LABEL: Record<StatementKind, string> = {
   invoice: "Invoice",
@@ -86,14 +89,19 @@ export default function DealerStatementsPage() {
   const [to, setTo] = useState(todayStr());
   const [generated, setGenerated] = useState(false);
 
-  const { data: customers = [] } = useQuery({
-    queryKey: ["customers"], queryFn: fetchCustomers,
+  // Live dealers plus deleted ones that still carry history — /dealers
+  // hides every deleted dealer, which left a closed account's statement
+  // unreachable.
+  const { data: dealers = [] } = useQuery({
+    queryKey: ["statement-dealers"], queryFn: fetchStatementDealers,
   });
   const dealerOptions: F9Option[] = useMemo(
-    () => (customers as any[]).map((c) => ({
-      value: String(c.id), label: String(c.name), sublabel: String(c.code ?? ""),
-    })),
-    [customers]
+    () => dealers.map((d) =>
+      d.deletedOn
+        ? { value: d.id, label: `${d.name} (deleted)`, sublabel: `Deleted on ${shortDate(d.deletedOn)}` }
+        : { value: d.id, label: d.name, sublabel: d.code ?? "" }
+    ),
+    [dealers]
   );
 
   const { data, isLoading, refetch } = useQuery<StatementResponse>({
@@ -129,7 +137,7 @@ export default function DealerStatementsPage() {
   }, [generated, data, lines, from, to]);
 
   const dealerLabel = data
-    ? `${data.dealer.code} — ${data.dealer.name}`
+    ? dealerName(data.dealer) + (data.dealer.deletedOn ? " (deleted)" : "")
     : dealerOptions.find((o) => o.value === dealerId)?.label ?? "";
 
   // ── CSV export ───────────────────────────────────────────────────
@@ -139,7 +147,7 @@ export default function DealerStatementsPage() {
     mimeType: "text/csv",
     build: () => {
       const out: (string | number)[][] = [];
-      out.push([`Statement of Account — ${dealerLabel}`]);
+      out.push([`Statement of Account: ${dealerLabel}`]);
       out.push([`Period`, from, `to`, to]);
       out.push([]);
       out.push(["Date", "Type", "Voucher No", "Particulars", "Debit", "Credit", "Balance"]);
@@ -174,7 +182,7 @@ export default function DealerStatementsPage() {
   return (
     <ReportShell
       title="Dealer Statement of Account"
-      subtitle="Invoices on debit, receipts on credit — day-wise, for any period"
+      subtitle="Invoices on debit, receipts on credit; day-wise, for any period"
       printOrientation="portrait"
       filters={
         <>
@@ -213,8 +221,8 @@ export default function DealerStatementsPage() {
         <ReportPrintMeta
           title="Statement of Account"
           rows={[
-            { label: "Dealer", value: dealerLabel || "—" },
-            { label: "Route", value: data?.dealer.routeName ?? "—" },
+            { label: "Dealer", value: dealerLabel || "" },
+            { label: "Route", value: data?.dealer.routeName ?? "" },
             { label: "Period", value: `${shortDate(from)} to ${shortDate(to)}` },
           ]}
         />
@@ -253,8 +261,9 @@ function StatementPage({
       <div className="text-center mb-2">
         <p className="text-[12px] font-bold">Statement of Account</p>
         <p className="text-[11px] text-muted-foreground mt-0.5">
-          <span className="font-medium">{d.code} — {d.name}</span>
-          {"  ·  "}Route: {d.routeName ?? "—"}
+          <span className="font-medium">{dealerName(d)}</span>
+          {d.deletedOn && <>{"  ·  "}Account deleted on {shortDate(d.deletedOn)}</>}
+          {"  ·  "}Route: {d.routeName ?? ""}
           {"  ·  "}From {shortDate(from)} to {shortDate(to)}
         </p>
       </div>
@@ -304,8 +313,8 @@ function StatementPage({
               <tr key={r.id}>
                 <td className="border border-border py-1 px-2">{shortDate(r.voucherDate)}</td>
                 <td className="border border-border py-1 px-2">{KIND_LABEL[r.kind]}</td>
-                <td className="border border-border py-1 px-2 font-mono">{r.voucherNo ?? "—"}</td>
-                <td className="border border-border py-1 px-2">{r.particulars ?? "—"}</td>
+                <td className="border border-border py-1 px-2 font-mono">{r.voucherNo ?? ""}</td>
+                <td className="border border-border py-1 px-2">{r.particulars ?? ""}</td>
                 <td className="border border-border py-1 px-2 text-right num">
                   {r.type === "debit" ? fmtINR(r.amount) : ""}
                 </td>

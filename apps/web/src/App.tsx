@@ -35,6 +35,7 @@ import DispatchSheetOthersPage   from "@/pages/fgs/DispatchSheetOthersPage";
 import CreateDispatchPage from "@/pages/fgs/CreateDispatchPage";
 import RouteSheetPage from "@/pages/reports/RouteSheetPage";
 import GatePassReportPage from "@/pages/reports/GatePassReportPage";
+import IndentStatusPage from "@/pages/reports/IndentStatusPage";
 import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
 import InvoicesListPage from "@/pages/sales/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
@@ -56,11 +57,13 @@ import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
   TalukaAgentSales, AdhocSalesReport, GSTStatement, VipSalesReport,
-  TalukaWiseReport,
+  TalukaWiseReport, AgentSalesReport,
 } from "@/pages/sales-reports/SalesReports";
 import EmployeeSubsidyReportPage from "@/pages/sales-reports/EmployeeSubsidyReport";
 import DailySalesReport from "@/pages/sales-reports/DailySalesReport";
+import DailyMdReport from "@/pages/sales-reports/DailyMdReport";
 import MonthlySalesReport from "@/pages/sales-reports/MonthlySalesReport";
+import ProductTalukaReport from "@/pages/sales-reports/ProductTalukaReport";
 import {
   TimeWindowsPage, NotificationsPage, DealerNotificationsPage,
   BannerManagementPage, RolesPage, UserManagementPage,
@@ -204,9 +207,11 @@ function AppInner() {
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />
+          <Route path="/reports/indent-status" element={<IndentStatusPage />} />
           {/* Sales Reports */}
           <Route path="/sales-reports/daily-sales-report" element={<DailySalesReport />} />
           <Route path="/sales-reports/monthly-sales-report" element={<MonthlySalesReport />} />
+          <Route path="/sales-reports/daily-md" element={<DailyMdReport />} />
           <Route path="/sales-reports/daily-statement" element={<DailySalesStatement />} />
           <Route path="/sales-reports/day-route-cash" element={<DayRouteCashSales />} />
           <Route path="/sales-reports/officer-wise" element={<OfficerWiseSales />} />
@@ -215,6 +220,8 @@ function AppInner() {
           <Route path="/sales-reports/register" element={<SalesRegister />} />
           <Route path="/sales-reports/taluka-agent" element={<TalukaAgentSales />} />
           <Route path="/sales-reports/taluka-wise" element={<TalukaWiseReport />} />
+          <Route path="/sales-reports/product-taluka" element={<ProductTalukaReport />} />
+          <Route path="/sales-reports/agent-sales" element={<AgentSalesReport />} />
           <Route path="/sales-reports/adhoc" element={<AdhocSalesReport />} />
           <Route path="/sales-reports/gst" element={<GSTStatement />} />
           <Route path="/sales-reports/employee-subsidy" element={<EmployeeSubsidyReportPage />} />

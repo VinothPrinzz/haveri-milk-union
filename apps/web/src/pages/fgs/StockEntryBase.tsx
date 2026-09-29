@@ -33,13 +33,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { Save, Plus, Trash2, Pencil } from "lucide-react";
-import { fetchStockEntries, updateStockEntries, fetchSuppliers } from "@/services/api";
+import { fetchStockEntries, updateStockEntries, fetchSuppliers, fetchSupplierCostMap } from "@/services/api";
 import {
   type StockBucket,
   BUCKET_LABELS,
   BUCKET_SUBTITLES,
   filterByBucket,
 } from "@/lib/stock-buckets";
+import { todayIST } from "@/lib/istDate";
 
 interface Props {
   bucket: StockBucket;
@@ -51,12 +52,14 @@ interface ReceiptLine {
   supplierId: string | null;
   quantity: number;
   unitCost: number | null;
+  /** unitCost was filled from the supplier's rate card (not typed). */
+  costAuto?: boolean;
 }
 
 export default function StockEntryBase({ bucket }: Props) {
   const qc = useQueryClient();
-  const [filterDate, setFilterDate] = useState(new Date().toISOString().split("T")[0]);
-  // dispatched / wastage edits keyed by productId (received now comes from receipts)
+  const [filterDate, setFilterDate] = useState(todayIST());
+  // wastage edits keyed by productId (received now comes from receipts)
   const [edits, setEdits] = useState<Record<string, Record<string, number>>>({});
   // receipt-line edits keyed by productId; presence means "replace this day's
   // receipts for the product on save" and drives the derived received total.
@@ -73,6 +76,8 @@ export default function StockEntryBase({ bucket }: Props) {
   });
 
   const { data: suppliers = [] } = useQuery({ queryKey: ["suppliers"], queryFn: fetchSuppliers });
+  // supplierId → productId → rate, from each supplier's purchase rate card.
+  const { data: costMap = {} } = useQuery({ queryKey: ["supplier-cost-map"], queryFn: fetchSupplierCostMap });
   const supplierOptions: F9Option[] = useMemo(
     () =>
       suppliers
@@ -104,7 +109,7 @@ export default function StockEntryBase({ bucket }: Props) {
   const saveMutation = useMutation({
     mutationFn: () => {
       const rowById = new Map((visibleEntries as any[]).map(s => [s.productId, s]));
-      // A product is "edited" if its dispatched/wastage OR its receipts changed.
+      // A product is "edited" if its wastage OR its receipts changed.
       const editedIds = new Set<string>([
         ...Object.keys(edits),
         ...Object.keys(receiptEdits),
@@ -113,14 +118,12 @@ export default function StockEntryBase({ bucket }: Props) {
         const s = rowById.get(productId) ?? {};
         const e = edits[productId] ?? {};
         const re = receiptEdits[productId];
-        // Opening defaults to the previous day's closing but is editable
-        // (single-route testing) — persist the typed value when present.
+        // Opening is never sent: it carries forward from the previous
+        // entry's closing (migration 0063), and dispatched is derived
+        // server-side from the day's live orders.
         const entry: any = {
           productId,
-          opening:    Number(e.opening ?? s.opening ?? 0),
           received:   re ? re.reduce((sum, l) => sum + (l.quantity || 0), 0) : Number(s.received ?? 0),
-          // Dispatched is auto-derived server-side; sent for shape only, ignored.
-          dispatched: Number(s.dispatched ?? 0),
           wastage:    Number(e.wastage    ?? s.wastage    ?? 0),
         };
         // Only send receipts when they were edited, so untouched rows keep
@@ -154,8 +157,8 @@ export default function StockEntryBase({ bucket }: Props) {
 
   const computeClosing = (s: any) => {
     const e = edits[s.productId] ?? {};
-    // Opening is editable; default to the row value (previous day's closing).
-    const opening    = e.opening    ?? s.opening    ?? 0;
+    // Opening is the carried-forward closing; read-only.
+    const opening    = s.opening    ?? 0;
     const received   = computeReceived(s);
     // Dispatched is auto (server-derived), never a local edit.
     const dispatched = s.dispatched ?? 0;
@@ -181,7 +184,7 @@ export default function StockEntryBase({ bucket }: Props) {
   return (
     <div className="flex flex-col h-full">
       <PageHeader
-        title={`Stock Entry — ${BUCKET_LABELS[bucket]}`}
+        title={`Stock Entry: ${BUCKET_LABELS[bucket]}`}
         subtitle={BUCKET_SUBTITLES[bucket]}
         actions={
           <Button
@@ -210,6 +213,9 @@ export default function StockEntryBase({ bucket }: Props) {
             onChange={e => setFilterDate(e.target.value)}
             className="erp-input w-44"
           />
+        </div>
+        <div className="self-end pb-1 text-[12px] text-muted-foreground">
+          Opening carries forward from the previous entry's closing. Record new stock under <span className="font-medium text-foreground">Received</span>.
         </div>
         {editsCount > 0 && (
           <div className="ml-auto self-end pb-1 text-[12px]">
@@ -242,9 +248,21 @@ export default function StockEntryBase({ bucket }: Props) {
                     <tr>
                       <th>Product</th>
                       <th>Category</th>
-                      <th className="num" style={{ textAlign: "right", width: 110 }}>Opening</th>
+                      <th
+                        className="num"
+                        style={{ textAlign: "right", width: 110 }}
+                        title="Carried forward from the previous entry's closing. Enter new stock under Received"
+                      >
+                        Opening
+                      </th>
                       <th className="num" style={{ textAlign: "right", width: 140 }}>Received</th>
-                      <th className="num" style={{ textAlign: "right", width: 110 }} title="Auto-updated from dispatched routes">Dispatched</th>
+                      <th
+                        className="num"
+                        style={{ textAlign: "right", width: 110 }}
+                        title="Auto-derived: stock committed to this date's live orders"
+                      >
+                        Dispatched
+                      </th>
                       <th className="num" style={{ textAlign: "right", width: 110 }}>Wastage</th>
                       <th className="num" style={{ textAlign: "right", width: 100 }}>Closing</th>
                     </tr>
@@ -258,12 +276,13 @@ export default function StockEntryBase({ bucket }: Props) {
                       return (
                         <tr key={s.productId}>
                           <td className="font-medium">{s.productName}</td>
-                          <td className="text-muted-foreground uppercase">{s.category ?? "—"}</td>
-                          <td style={{ textAlign: "right" }}>
-                            <StockInput
-                              value={edits[s.productId]?.opening ?? s.opening ?? 0}
-                              onChange={v => setEdit(s.productId, "opening", v)}
-                            />
+                          <td className="text-muted-foreground uppercase">{s.category ?? ""}</td>
+                          <td
+                            className="num text-muted-foreground"
+                            style={{ textAlign: "right" }}
+                            title="Carried forward from the previous entry's closing"
+                          >
+                            {fmtNum(s.opening ?? 0)}
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <ReceivedButton
@@ -275,7 +294,7 @@ export default function StockEntryBase({ bucket }: Props) {
                           <td
                             className="num text-muted-foreground"
                             style={{ textAlign: "right" }}
-                            title="Auto-updated from dispatched routes"
+                            title="Auto-derived: stock committed to this date's live orders"
                           >
                             {fmtNum(s.dispatched ?? 0)}
                           </td>
@@ -305,6 +324,9 @@ export default function StockEntryBase({ bucket }: Props) {
         <ReceiptDialog
           row={dialogProduct}
           supplierOptions={supplierOptions}
+          rateFor={supplierId =>
+            supplierId ? (costMap[supplierId]?.[dialogProduct.productId] ?? null) : null
+          }
           initialLines={initialLinesFor(dialogProduct)}
           onClose={() => setDialogProduct(null)}
           onSave={lines => {
@@ -352,20 +374,38 @@ function ReceivedButton({
 // received stock to a supplier with a unit cost; the received total is the
 // sum of line quantities.
 function ReceiptDialog({
-  row, supplierOptions, initialLines, onClose, onSave,
+  row, supplierOptions, rateFor, initialLines, onClose, onSave,
 }: {
   row: any;
   supplierOptions: F9Option[];
+  /** The supplier's rate-card cost for this product, or null if none. */
+  rateFor: (supplierId: string | null) => number | null;
   initialLines: ReceiptLine[];
   onClose: () => void;
   onSave: (lines: ReceiptLine[]) => void;
 }) {
-  const [lines, setLines] = useState<ReceiptLine[]>(
-    initialLines.length ? initialLines : [{ supplierId: null, quantity: 0, unitCost: null }]
+  // A line with a supplier but no cost yet picks up the rate card on open.
+  const [lines, setLines] = useState<ReceiptLine[]>(() =>
+    (initialLines.length ? initialLines : [{ supplierId: null, quantity: 0, unitCost: null }]).map(l =>
+      l.unitCost == null && l.supplierId
+        ? { ...l, unitCost: rateFor(l.supplierId), costAuto: rateFor(l.supplierId) != null }
+        : l
+    )
   );
 
   const update = (i: number, patch: Partial<ReceiptLine>) =>
     setLines(prev => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  // Picking a supplier fills its rate — unless the operator already typed a
+  // cost on this line, which is kept.
+  const pickSupplier = (i: number, supplierId: string | null) =>
+    setLines(prev =>
+      prev.map((l, idx) => {
+        if (idx !== i) return l;
+        if (l.unitCost != null && !l.costAuto) return { ...l, supplierId };
+        const rate = rateFor(supplierId);
+        return { ...l, supplierId, unitCost: rate, costAuto: rate != null };
+      })
+    );
   const addLine = () => setLines(prev => [...prev, { supplierId: null, quantity: 0, unitCost: null }]);
   const removeLine = (i: number) => setLines(prev => prev.filter((_, idx) => idx !== i));
 
@@ -376,10 +416,11 @@ function ReceiptDialog({
     <Dialog open onOpenChange={o => !o && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Received — {row.productName}</DialogTitle>
+          <DialogTitle>Received: {row.productName}</DialogTitle>
         </DialogHeader>
         <p className="text-[12px] text-muted-foreground -mt-2">
-          Record who each batch was purchased from and its unit cost. Leave the
+          Record who each batch was purchased from and its unit cost. Picking a supplier fills in
+          their rate for this product automatically, and you can type over it. Leave the
           supplier/cost blank for own-plant production. Received = sum of quantities.
         </p>
 
@@ -400,7 +441,7 @@ function ReceiptDialog({
                   <td>
                     <F9SearchSelect
                       value={l.supplierId}
-                      onChange={v => update(i, { supplierId: v })}
+                      onChange={v => pickSupplier(i, v)}
                       options={supplierOptions}
                       allowClear
                       placeholder="Own plant / select supplier"
@@ -417,19 +458,39 @@ function ReceiptDialog({
                     />
                   </td>
                   <td style={{ textAlign: "right" }}>
-                    <Input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={l.unitCost ?? ""}
-                      onChange={e =>
-                        update(i, { unitCost: e.target.value === "" ? null : parseFloat(e.target.value) })
-                      }
-                      className="erp-input h-8 w-24 text-right inline-block num"
-                    />
+                    <div className="flex flex-col items-end gap-0.5">
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.001"
+                        value={l.unitCost ?? ""}
+                        onChange={e =>
+                          update(i, {
+                            unitCost: e.target.value === "" ? null : parseFloat(e.target.value),
+                            costAuto: false,
+                          })
+                        }
+                        className="erp-input h-8 w-24 text-right inline-block num"
+                      />
+                      {l.costAuto ? (
+                        <span
+                          className="text-[10px] uppercase tracking-wide text-muted-foreground"
+                          title="Filled from this supplier's rate card. Type to override"
+                        >
+                          from rate card
+                        </span>
+                      ) : l.supplierId && rateFor(l.supplierId) != null && l.unitCost !== rateFor(l.supplierId) ? (
+                        <span
+                          className="text-[10px] uppercase tracking-wide text-warning"
+                          title="Differs from this supplier's rate card"
+                        >
+                          rate ₹{rateFor(l.supplierId)}
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="num text-muted-foreground" style={{ textAlign: "right" }}>
-                    {l.unitCost != null ? `₹${fmtNum((l.quantity || 0) * (l.unitCost || 0))}` : "—"}
+                    {l.unitCost != null ? `₹${fmtNum((l.quantity || 0) * (l.unitCost || 0))}` : ""}
                   </td>
                   <td style={{ textAlign: "right" }}>
                     <Button

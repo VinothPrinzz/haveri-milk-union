@@ -16,7 +16,7 @@ import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Trash2, Plus, Send } from "lucide-react";
 import {
-  fetchCustomers, fetchProducts, fetchRoutes, createIndent,
+  fetchCustomers, fetchProducts, fetchRoutes, createIndent, fetchMinQtyStatus,
 } from "@/services/api";
 import {
   findCategoryMinShortfalls, categoryMinMessage, MIN_ORDER_RULE_TEXT,
@@ -159,29 +159,39 @@ export default function RecordIndentsPage() {
     [products]
   );
 
-  // Milk order-minimum shortfalls (total milk < 12 L; curd has no minimum).
-  // 'Credit Inst-MRP' customers are government institutions — supply is
-  // compulsory however small the indent, so the minimum never applies to
-  // them. Mirrors MIN_QTY_EXEMPT_RATE_CATEGORIES on the server.
+  // Does the 12 L/kg milk + curd minimum apply? Only the first indent on a
+  // route each day carries it, and the server knows whether one exists.
+  const minQtyStatus = useQuery({
+    queryKey: ["min-qty-status", customerId, routeId],
+    queryFn: () => fetchMinQtyStatus({ dealerId: customerId!, routeId }),
+    enabled: !!customerId,
+    staleTime: 30_000,
+  });
+  const minQtyWaived = minQtyStatus.data ? !minQtyStatus.data.applies : false;
+
+  // Milk + curd shortfall against the minimum. 'Credit Inst-MRP' customers
+  // are government institutions — supply is compulsory however small the
+  // indent, so the minimum never applies to them. Mirrors
+  // MIN_QTY_EXEMPT_RATE_CATEGORIES on the server.
   const minQtyViolations = useMemo(
     () =>
-      isCreditInstMrp(customer?.rateCategory as string | undefined)
-        ? []
-        : findCategoryMinShortfalls(
-            lines
-              .filter((l) => l.productId && (l.qty ?? 0) > 0)
-              .map((l) => {
-                const p: any = productById.get(l.productId);
-                return {
-                  name: p?.name ?? "Item",
-                  categoryName: p?.category,
-                  unit: p?.unit,
-                  packSize: p?.packSize,
-                  quantity: l.qty ?? 0,
-                };
-              })
-          ),
-    [lines, productById, customer]
+      findCategoryMinShortfalls(
+        lines
+          .filter((l) => l.productId && (l.qty ?? 0) > 0)
+          .map((l) => {
+            const p: any = productById.get(l.productId);
+            return {
+              name: p?.name ?? "Item",
+              code: p?.code,
+              categoryName: p?.category,
+              unit: p?.unit,
+              packSize: p?.packSize,
+              quantity: l.qty ?? 0,
+            };
+          }),
+        { exempt: minQtyWaived || isCreditInstMrp(customer?.rateCategory as string | undefined) },
+      ),
+    [lines, productById, customer, minQtyWaived]
   );
 
   const addLine = () => setLines(ls => [...ls, { id: rid(), productId: "", qty: undefined }]);
@@ -239,6 +249,7 @@ export default function RecordIndentsPage() {
       toast.success("Indent submitted");
       qc.invalidateQueries({ queryKey: ["indents"] });
       qc.invalidateQueries({ queryKey: ["customers"] });
+      qc.invalidateQueries({ queryKey: ["min-qty-status"] });
       navigate("/sales/all-indents");
     },
     onError: (e: any) => toast.error(e?.message || "Submit failed"),
@@ -321,7 +332,7 @@ export default function RecordIndentsPage() {
               value={
                 customer?.outstanding != null
                   ? `₹ ${Number((customer as any).outstanding).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`
-                  : "—"
+                  : ""
               }
               readOnly
             />
@@ -329,7 +340,7 @@ export default function RecordIndentsPage() {
           <Field label="Available Balance">
             <Input
               className={`erp-input bg-muted num ${creditAvailable != null && creditAvailable < totals.total ? "border-destructive text-destructive" : ""}`}
-              value={creditAvailable != null ? `₹ ${creditAvailable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "—"}
+              value={creditAvailable != null ? `₹ ${creditAvailable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : ""}
               readOnly
             />
           </Field>
@@ -380,11 +391,11 @@ export default function RecordIndentsPage() {
                             undefined : Math.max(0, parseInt(e.target.value) || 0))}
                         />
                       </td>
-                      <td className="num">{c.unit ? c.unit.toFixed(2) : "—"}</td>
-                      <td className="num">{c.sub ? fmtINR(c.sub) : "—"}</td>
-                      <td className="num">{c.gstPct ? c.gstPct.toFixed(2) : "—"}</td>
-                      <td className="num">{c.gst ? fmtINR(c.gst) : "—"}</td>
-                      <td className="num font-semibold">{c.total ? fmtINR(c.total) : "—"}</td>
+                      <td className="num">{c.unit ? c.unit.toFixed(2) : ""}</td>
+                      <td className="num">{c.sub ? fmtINR(c.sub) : ""}</td>
+                      <td className="num">{c.gstPct ? c.gstPct.toFixed(2) : ""}</td>
+                      <td className="num">{c.gst ? fmtINR(c.gst) : ""}</td>
+                      <td className="num font-semibold">{c.total ? fmtINR(c.total) : ""}</td>
                       <td>
                         <Button
                           variant="ghost" size="icon" className="h-7 w-7 text-destructive"
@@ -433,7 +444,11 @@ export default function RecordIndentsPage() {
           </span>
         ) : (
           <span className="text-[11px] text-muted-foreground mr-auto">
-            {MIN_ORDER_RULE_TEXT}
+            {minQtyWaived
+              ? minQtyStatus.data?.reason === "route_already_served"
+                ? "No minimum: this customer already has an indent on this route today."
+                : "No minimum applies to this customer."
+              : MIN_ORDER_RULE_TEXT}
           </span>
         )}
         <Button variant="outline" size="sm" className="h-8" onClick={() => navigate(-1)}>Cancel</Button>

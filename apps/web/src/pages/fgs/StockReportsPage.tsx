@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChevronLeft, ChevronRight, Printer, FileBarChart2 } from "lucide-react";
 import { fetchStockEntries } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 function ReportHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
@@ -22,7 +23,7 @@ function ReportHeader({ title, subtitle }: { title: string; subtitle?: string })
 }
 
 export default function StockReportsPage() {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayIST();
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
   const [generated, setGenerated] = useState(false);

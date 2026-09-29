@@ -59,13 +59,13 @@ export default function ContractorsPage({ tab = "list" }: Props) {
     { key: "code", header: "Code", cell: c => <span className="font-mono text-[12px]">{c.code}</span>, width: "90px" },
     { key: "name", header: "Name", cell: c => <span className="font-medium">{c.name}</span> },
     { key: "phone", header: "Phone", cell: c => c.phone, width: "120px" },
-    { key: "vehicle", header: "Vehicle", cell: c => c.vehicleNumber ?? "—", width: "110px" },
+    { key: "vehicle", header: "Vehicle", cell: c => c.vehicleNumber ?? "", width: "110px" },
     {
       key: "routes",
       header: "Routes",
       cell: c => {
         const ids: string[] = (c as any).routeIds ?? [];
-        if (ids.length === 0) return <span className="text-muted-foreground">—</span>;
+        if (ids.length === 0) return null;
         return (
           <div className="flex flex-col gap-0.5">
             {ids.map(id => {
@@ -277,7 +277,7 @@ function ContractorListTab({
                     <td className="font-mono">{c.code}</td>
                     <td className="font-medium">{c.name}</td>
                     <td className="font-mono text-[12.5px]">{c.phone}</td>
-                    <td className="font-mono text-[12.5px]">{c.vehicleNumber || "—"}</td>
+                    <td className="font-mono text-[12.5px]">{c.vehicleNumber || ""}</td>
                     <td>
                       {(c.routeIds ?? []).length > 0 ? (
                         <div className="flex flex-col gap-0.5">
@@ -287,7 +287,7 @@ function ContractorListTab({
                             return (
                               <span key={rid} className="text-[12px]">
                                 <span className="font-mono">{r?.code ?? "?"}</span>
-                                {r?.name ? ` — ${r.name}` : ""}
+                                {r?.name ? `: ${r.name}` : ""}
                                 {rr && (rr.ratePerTrip > 0 || rr.totalKmPerDay > 0) && (
                                   <span className="text-muted-foreground">
                                     {" "}· ₹{rr.ratePerTrip}/trip · {rr.totalKmPerDay} km
@@ -297,7 +297,7 @@ function ContractorListTab({
                             );
                           })}
                         </div>
-                      ) : <span className="text-muted-foreground">—</span>}
+                      ) : null}
                     </td>
                     <td className="text-[12.5px]">{fmtDate(c.periodFrom)}</td>
                     <td className="text-[12.5px]">{fmtDate(c.periodTo)}</td>
@@ -337,7 +337,7 @@ function ContractorListTab({
         <Dialog open onOpenChange={o => !o && setEditing(null)}>
           <DialogContent className="max-w-3xl max-h-[90vh] overflow-auto">
             <DialogHeader>
-              <DialogTitle>Edit Contractor — {editing.code}</DialogTitle>
+              <DialogTitle>Edit Contractor: {editing.code}</DialogTitle>
             </DialogHeader>
             <ContractorForm
               initialData={editing as any}
@@ -354,12 +354,12 @@ function ContractorListTab({
       {/* View Dialog */}
       <Dialog open={!!viewing} onOpenChange={o => !o && setViewing(null)}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>{viewing?.code} — {viewing?.name}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{viewing?.code}: {viewing?.name}</DialogTitle></DialogHeader>
           {viewing && (() => {
             const Row = ({ label, value }: { label: string; value: any }) => (
               <div className="flex items-baseline gap-2 py-1 border-b border-border/60 last:border-0">
                 <span className="text-[11px] uppercase tracking-wide text-muted-foreground w-32 shrink-0">{label}</span>
-                <span className="text-[13px] font-medium">{value || <span className="text-muted-foreground">—</span>}</span>
+                <span className="text-[13px] font-medium">{value}</span>
               </div>
             );
             return (
@@ -371,7 +371,7 @@ function ContractorListTab({
                 <Row label="Email" value={(viewing as any).email} />
                 <Row label="Vehicle" value={viewing.vehicleNumber} />
                 <Row label="License" value={(viewing as any).licenseNo} />
-                <Row label="Period" value={`${(viewing as any).periodFrom ?? "—"} → ${(viewing as any).periodTo ?? "—"}`} />
+                <Row label="Period" value={`${(viewing as any).periodFrom ?? ""} → ${(viewing as any).periodTo ?? ""}`} />
                 <Row label="Bank" value={(viewing as any).bank?.name ?? (viewing as any).bankName} />
                 <Row label="Account" value={(viewing as any).bank?.account ?? (viewing as any).accountNo} />
                 <Row label="Address" value={(viewing as any).address} />
@@ -394,7 +394,7 @@ function ContractorListTab({
                           })}
                         </div>
                       )
-                    : "—"
+                    : ""
                 } />
               </div>
             );

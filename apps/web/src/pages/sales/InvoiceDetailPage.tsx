@@ -40,6 +40,13 @@ const fmt2 = (n: number | string | null | undefined): string => {
   return v.toFixed(2);
 };
 
+// Unit rate. Rates are stored at 2dp (migration 0070), same as amounts.
+const fmtRate = (n: number | string | null | undefined): string => {
+  const v = typeof n === "string" ? parseFloat(n) : (n ?? 0);
+  if (!Number.isFinite(v)) return "0.00";
+  return v.toFixed(2);
+};
+
 // ── Indian-system number to words, returns UPPERCASE without suffix ─
 function numToWordsIndian(num: number): string {
   const n = Math.round(num);
@@ -90,9 +97,10 @@ const fmtQty = (q: number): string =>
 const MODE_LABELS: Record<string, string> = {
   cash: "Cash", upi: "UPI", cheque: "Cheque", neft: "NEFT",
   rtgs: "RTGS", credit: "Credit", wallet: "Wallet",
+  complimentary: "Complimentary",
 };
 const modeLabel = (m: string | null | undefined): string => {
-  if (!m) return "—";
+  if (!m) return "";
   return MODE_LABELS[m.toLowerCase()] ?? m;
 };
 
@@ -154,18 +162,18 @@ export default function InvoiceDetailPage() {
     : `${numToWordsIndian(rupeesPart)} RUPEES`;
 
   // ── Receiver fields ────────────────────────────────────────────────
-  const dealerName    = inv?.dealerName ?? inv?.currentDealerName ?? "—";
-  const dealerAddress = inv?.dealerAddressSnapshot ?? inv?.dealerAddress ?? "—";
-  const dealerCity    = inv?.dealerCity ?? "—";
+  const dealerName    = inv?.dealerName ?? inv?.currentDealerName ?? "";
+  const dealerAddress = inv?.dealerAddressSnapshot ?? inv?.dealerAddress ?? "";
+  const dealerCity    = inv?.dealerCity ?? "";
   const dealerState   = inv?.dealerState ?? COMPANY.stateName;
-  const dealerPhone   = inv?.dealerPhone ?? "—";
-  const dealerGst     = inv?.dealerGstNumber ?? inv?.dealerCurrentGst ?? "—";
-  const dealerCode    = inv?.dealerCode ?? "—";
+  const dealerPhone   = inv?.dealerPhone ?? "";
+  const dealerGst     = inv?.dealerGstNumber ?? inv?.dealerCurrentGst ?? "";
+  const dealerCode    = inv?.dealerCode ?? "";
   const dealerEmail   = inv?.dealerEmail ?? "";
-  const poNumber      = inv?.poNumber ?? inv?.orderId ?? "—";
+  const poNumber      = inv?.poNumber ?? inv?.orderId ?? "";
   const routeDisplay  = inv?.routeName
     ? `${inv.routeName}${inv.routeCode ? `[${inv.routeCode}]` : ""}`
-    : "—";
+    : "";
   // const vehicleNo     = inv?.vehicleNumber ?? inv?.contractor?.vehicleNumber ?? "—";
 
   // ── Payment fields ─────────────────────────────────────────────────
@@ -227,6 +235,17 @@ export default function InvoiceDetailPage() {
               so print and screen render identically. */}
           <style>{`
             @media print {
+              /* An invoice is always A4 portrait, whatever paper and
+                 orientation were last used elsewhere.
+                 PrintButton persists its choice in localStorage and mounts a
+                 style tag (id erp-print-orient) in the document head that
+                 outlives the route change, so printing a Route Sheet
+                 (landscape, and possibly on the 15x12 continuous stationery)
+                 left every invoice printed afterwards on that same sheet.
+                 This rule lives in the body, so it is later in document order
+                 than the injected head tag and wins over it. */
+              @page { size: A4 portrait; margin: 14mm 12mm 16mm 12mm; }
+
               .print-document.inv-doc table,
               .print-document.inv-doc table th,
               .print-document.inv-doc table td {
@@ -406,9 +425,9 @@ export default function InvoiceDetailPage() {
                       {/* Product name only — the numeric pack_size (e.g. "0.50")
                           was previously appended and is intentionally dropped. */}
                       <td>{l.productName}</td>
-                      <td className="font-mono">{l.hsnNo ?? "—"}</td>
+                      <td className="font-mono">{l.hsnNo ?? ""}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtQty(qty)}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{fmt2(rate)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtRate(rate)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmt2(basicV)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{gstPct === 0 ? "0" : fmt2(gstPct)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmt2(cgstAmt)}</td>
@@ -466,7 +485,7 @@ export default function InvoiceDetailPage() {
                 ) : (
                   <p className="text-[11px] text-muted-foreground italic">
                     {paymentStatus === "paid"
-                      ? "Settled — no separate receipt recorded."
+                      ? "Settled. No separate receipt recorded."
                       : "No payment recorded against this invoice yet."}
                   </p>
                 )}

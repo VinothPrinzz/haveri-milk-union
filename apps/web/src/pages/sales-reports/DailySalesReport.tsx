@@ -25,9 +25,10 @@ import {
   buildMilkCurdXlsx,
   fmtDDMM,
 } from "./milkCurdSalesShared";
+import { todayIST } from "@/lib/istDate";
 
 export default function DailySalesReport() {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayIST();
   const [date, setDate] = useState(today);
   const [generated, setGenerated] = useState(false);
 
@@ -52,7 +53,7 @@ export default function DailySalesReport() {
   const exporters: Exporter[] = useMemo(() => {
     if (!data) return [];
     const csvOpts = {
-      title: `Milk & Curd Sales Report — ${fmtDDMM(data.date)}`,
+      title: `Milk & Curd Sales Report: ${fmtDDMM(data.date)}`,
       prevHeader: fmtDDMM(data.prevDate),
       curHeader: fmtDDMM(data.date),
     };
@@ -70,7 +71,7 @@ export default function DailySalesReport() {
         build: () =>
           buildMilkCurdXlsx(data, {
             sheetName: "Daily Sales Report",
-            title: `HAVERI DISTRICT CO-OP MILK PRODUCERS UNION LTD., HAVERI  —  MILK & CURD SALES REPORT  ${fmtDDMM(data.date)}`,
+            title: `HAVERI DISTRICT CO-OP MILK PRODUCERS UNION LTD., HAVERI  ·  MILK & CURD SALES REPORT  ${fmtDDMM(data.date)}`,
             prevHeader: fmtDDMM(data.prevDate),
             curHeader: fmtDDMM(data.date),
           }),
@@ -81,7 +82,7 @@ export default function DailySalesReport() {
   return (
     <ReportShell
       title="Daily Sales Report"
-      subtitle="Milk & Curd Sales Report — Night / Afternoon by route"
+      subtitle="Milk & Curd Sales Report: Night / Afternoon by route"
       printOrientation="landscape"
       filters={
         <div>

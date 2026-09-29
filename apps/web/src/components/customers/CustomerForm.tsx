@@ -508,7 +508,7 @@ export function CustomerForm({
                         onChange={v => field.onChange(v ?? "")}
                         options={routeOptions}
                         allowAll
-                        allLabel="— Unassigned —"
+                        allLabel="Unassigned"
                       />
                     </FormControl>
                   </FormItem>

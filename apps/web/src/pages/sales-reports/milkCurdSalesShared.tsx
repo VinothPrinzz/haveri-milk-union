@@ -44,6 +44,7 @@ export type Slot = {
 
 export const SLOTS: Slot[] = [
   { header: "HTM 1000ml",           group: "HTM MILK", col: "htm1000" },
+  { header: "HTM 1000ml (Sub)",     group: "HTM MILK", col: "htm1000sub" },
   { header: "HTM 500ML",            group: "HTM MILK", col: "htm500" },
   { header: "HCM 160ML",            group: "HCM MILK", col: "hcm160" },
   { header: "HCM 500ML",            group: "HCM MILK", col: "hcm500" },
@@ -60,7 +61,7 @@ export const SLOTS: Slot[] = [
   { header: "TOTAL CURD (IN KGS)",  group: "", total: true, get: r => r.totalCurd },
   { header: "SL 200 ML",            group: "", col: "sl200" },
   { header: "MASAL MAJJIGE 200ML",  group: "", col: "majjige" },
-  { header: "TOTAL G/L",            group: "", total: true, get: r => r.totalGL },
+  { header: "TOTAL G/L (IN LTRS)",  group: "", total: true, get: r => r.totalGL },
 ];
 
 // Build a column-key → Ltr/Kg-per-packet map from the API column metadata.

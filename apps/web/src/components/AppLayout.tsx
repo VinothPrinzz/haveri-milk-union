@@ -154,16 +154,18 @@ const COMMAND_ITEMS: { label: string; path: string }[] = [
   { label: "All Indents", path: "/sales/all-indents" },
   { label: "Invoices", path: "/sales/invoices" },
   { label: "Stock Overview", path: "/fgs/dashboard" },
-  { label: "Stock Entry — Milk & Curd",     path: "/fgs/stock-entry/milk-curd" },
-  { label: "Stock Entry — Other Products",  path: "/fgs/stock-entry/others"    },
-  { label: "Dispatch Sheet — Milk & Curd",     path: "/fgs/dispatch-sheet/milk-curd" },
-  { label: "Dispatch Sheet — Other Products",  path: "/fgs/dispatch-sheet/others"    },
+  { label: "Stock Entry: Milk & Curd",     path: "/fgs/stock-entry/milk-curd" },
+  { label: "Stock Entry: Other Products",  path: "/fgs/stock-entry/others"    },
+  { label: "Dispatch Sheet: Milk & Curd",     path: "/fgs/dispatch-sheet/milk-curd" },
+  { label: "Dispatch Sheet: Other Products",  path: "/fgs/dispatch-sheet/others"    },
   { label: "Create Dispatch", path: "/fgs/dispatch/create" },
   { label: "Payments", path: "/finance/payments" },
   { label: "Online Payments",  path: "/finance/online-payments" },
   { label: "Reconciliation",   path: "/finance/reconciliation"  },
   { label: "Route Sheet", path: "/reports/route-sheet" },
   { label: "Gate Pass Report", path: "/reports/gate-pass" },
+  { label: "Route Indent Status", path: "/reports/indent-status" },
+  { label: "Daily Sales Report MD", path: "/sales-reports/daily-md" },
   { label: "Daily Sales Statement", path: "/sales-reports/daily-statement" },
   { label: "Employee Subsidy Report", path: "/sales-reports/employee-subsidy" },
   { label: "User Management", path: "/system/users" },
@@ -206,7 +208,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
     return (
       <div className="erp-clean-shell h-screen w-screen bg-background overflow-hidden flex flex-col">
         <div className="erp-clean-bar h-9 px-3 flex items-center text-[12px] text-muted-foreground border-b border-border bg-panel no-print">
-          <span className="font-medium">Havemul ERP — Clean View</span>
+          <span className="font-medium">Havemul ERP (Clean View)</span>
           <span className="mx-2">·</span>
           <span>Ctrl+P to print · ← / → to navigate</span>
           <button

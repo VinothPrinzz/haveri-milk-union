@@ -319,7 +319,7 @@ export function StatusPill({ status, className }: { status?: string | null; clas
       ? "status-confirmed"
       : s === "dispatched"
       ? "status-dispatched"
-      : s === "cancelled" || s === "rejected" || s === "fail" || s === "unpaid" || s === "out_of_stock"
+      : s === "cancelled" || s === "rejected" || s === "fail" || s === "unpaid" || s === "out_of_stock" || s === "deleted"
       ? "status-cancelled"
       : s === "low" || s === "critical"
       ? "status-pending"
@@ -348,6 +348,18 @@ export function fmtINR(n: number | string | null | undefined, withDecimals = tru
   });
 }
 
+/** Unit price (base / dealer / MRP): always two decimals. */
+export function fmtPrice(n: number | string | null | undefined) {
+  const num = typeof n === "string" ? parseFloat(n) : (n ?? 0);
+  if (isNaN(num)) return "₹0";
+  return num.toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export function fmtNum(n: number | string | null | undefined, decimals = 0) {
   const num = typeof n === "string" ? parseFloat(n) : (n ?? 0);
   if (isNaN(num)) return "0";
@@ -358,9 +370,9 @@ export function fmtNum(n: number | string | null | undefined, decimals = 0) {
 }
 
 export function fmtDate(d: string | Date | null | undefined) {
-  if (!d) return "—";
+  if (!d) return "";
   const date = typeof d === "string" ? new Date(d) : d;
-  if (isNaN(date.getTime())) return "—";
+  if (isNaN(date.getTime())) return "";
   return date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 

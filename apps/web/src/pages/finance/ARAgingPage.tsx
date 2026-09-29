@@ -51,7 +51,7 @@ function DealerInvoices({ id }: { id: string }) {
             <td className="num" style={{ textAlign: "right" }}>{fmtINR(i.paidAmount)}</td>
             <td className="num text-destructive" style={{ textAlign: "right" }}>{fmtINR(i.outstanding)}</td>
             <td className="num" style={{ textAlign: "right" }}>{i.daysOverdue}d</td>
-            <td className="text-[12px]">{i.lastReceiptDate ? fmtDate(i.lastReceiptDate) : "—"}</td>
+            <td className="text-[12px]">{i.lastReceiptDate ? fmtDate(i.lastReceiptDate) : ""}</td>
           </tr>
         ))}
       </tbody>
@@ -168,12 +168,12 @@ export default function ARAgingPage() {
                       <td>{expanded === d.id ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}</td>
                       <td className="font-mono text-[11px]">{d.code}</td>
                       <td className="font-medium">{d.name}</td>
-                      <td className="text-[12px]">{d.routeName ?? "—"}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{d.currentAmount > 0 ? fmtINR(d.currentAmount) : "—"}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{d.b1_30 > 0 ? fmtINR(d.b1_30) : "—"}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{d.b31_60 > 0 ? fmtINR(d.b31_60) : "—"}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{d.b61_90 > 0 ? fmtINR(d.b61_90) : "—"}</td>
-                      <td className="num text-destructive" style={{ textAlign: "right" }}>{d.b90Plus > 0 ? fmtINR(d.b90Plus) : "—"}</td>
+                      <td className="text-[12px]">{d.routeName ?? ""}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{d.currentAmount > 0 ? fmtINR(d.currentAmount) : ""}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{d.b1_30 > 0 ? fmtINR(d.b1_30) : ""}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{d.b31_60 > 0 ? fmtINR(d.b31_60) : ""}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{d.b61_90 > 0 ? fmtINR(d.b61_90) : ""}</td>
+                      <td className="num text-destructive" style={{ textAlign: "right" }}>{d.b90Plus > 0 ? fmtINR(d.b90Plus) : ""}</td>
                       <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtINR(d.totalOutstanding)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{d.invoiceCount}</td>
                       <td><span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${WORST_TONE[d.worstBucket]}`}>{WORST_LABEL[d.worstBucket]}</span></td>

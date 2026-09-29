@@ -335,7 +335,7 @@ export function DealerNotificationsPage() {
                 {filtered.map((r: any) => (
                   <tr key={r.id}>
                     <td className="font-medium">{r.dealerName}</td>
-                    <td>{r.title ?? "—"}</td>
+                    <td>{r.title ?? ""}</td>
                     <td className="uppercase font-mono text-[12px]">{r.channel}</td>
                     <td>
                       <StatusPill status={r.status === "delivered" ? "delivered" : r.status === "failed" ? "failed" : "pending"} />
@@ -446,7 +446,7 @@ function SendNotificationDialog({ open, onOpenChange }: { open: boolean; onOpenC
                 <SelectTrigger className="erp-input"><SelectValue placeholder="Select dealer" /></SelectTrigger>
                 <SelectContent>
                   {(dealers as any[]).map((d: any) => (
-                    <SelectItem key={d.id} value={d.id}>{d.code} — {d.name}</SelectItem>
+                    <SelectItem key={d.id} value={d.id}>{d.code}: {d.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -542,7 +542,7 @@ export function BannerManagementPage() {
               {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)}
             </div>
           ) : (banners as any[]).length === 0 ? (
-            <EmptyState title="No banners — click Add Banner to create one" />
+            <EmptyState title="No banners. Click Add Banner to create one" />
           ) : (
             <table className="erp-table">
               <thead>
@@ -740,7 +740,7 @@ export function UserManagementPage() {
               {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}
             </div>
           ) : (users as any[]).length === 0 ? (
-            <EmptyState title="No users — click Add User" />
+            <EmptyState title="No users. Click Add User" />
           ) : (
             <table className="erp-table">
               <thead>

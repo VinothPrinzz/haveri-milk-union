@@ -92,7 +92,7 @@ export function ColumnPagedTable<TRow, TProd extends ProductCol>({
   const prodHeadCls = fixedLayout ? "prod-col" : "num";
   const prodCellCls = fixedLayout ? "prod-col" : "num";
   return (
-    <div className="rs-page">
+    <div className="rs-page cp-page">
       {(title || pageInfo) && (
         <div className="col-paged-strip">
           <span>{title}</span>
@@ -161,8 +161,10 @@ export function ColumnPagedTable<TRow, TProd extends ProductCol>({
               {productCols.map(p => (
                 <td key={p.id} className={prodCellCls}>{totalRow.productCell(p)}</td>
               ))}
+              {/* Each total cell takes its column's class, so a trailing
+                  product column totals like the product columns do. */}
               {totalRow.trailingCells?.map((cell, i) => (
-                <td key={`t-${i}`} className="num">{cell}</td>
+                <td key={`t-${i}`} className={trailingHead?.[i]?.num ? "num" : trailingHead?.[i]?.className}>{cell}</td>
               ))}
             </tr>
           )}

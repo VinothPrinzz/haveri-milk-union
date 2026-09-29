@@ -33,6 +33,7 @@ import {
 } from "@/services/report";
 import { toCsv } from "@/lib/exporters";
 import { computeKgLtr } from "@/lib/kgLtr";
+import { todayIST } from "@/lib/istDate";
 
 // ── Fixed display order for the across-product columns ────────────
 // Products matched by `code` (case-insensitive). Anything not listed
@@ -74,7 +75,7 @@ function fmtCratePkts(crates: number, pktPlus: number, pktMinus: number): string
 const ROWS_PER_PAGE = 13;
 
 export default function GatePassReportPage() {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayIST();
   const [batch, setBatch] = useState<string>("");
   const [date, setDate] = useState<string>(today);
   const [routeId, setRouteId] = useState<string | null>(null);
@@ -147,7 +148,7 @@ export default function GatePassReportPage() {
       );
       pageLabels.push(
         chunks.length > 1
-          ? `${route.name} — Sheet ${idx + 1}/${chunks.length}`
+          ? `${route.name}: Sheet ${idx + 1}/${chunks.length}`
           : `${route.name}`
       );
     });
@@ -158,7 +159,7 @@ export default function GatePassReportPage() {
         route={route}
       />
     );
-    pageLabels.push(`${route.name} — Abstract`);
+    pageLabels.push(`${route.name}: Abstract`);
     pages.push(
       <SecurityPage
         key={`${route.id}-security`}
@@ -166,7 +167,7 @@ export default function GatePassReportPage() {
         route={route}
       />
     );
-    pageLabels.push(`${route.name} — Security`);
+    pageLabels.push(`${route.name}: Security`);
   });
 
   // ── CSV export (one combined file, one row per agent + Route col) ──
@@ -178,7 +179,7 @@ export default function GatePassReportPage() {
       const header = [
         "Route Code", "Route", "Sl", "Agent Code", "Agent",
         ...acrossProducts.map(p => p.reportAlias),
-        "Others", "Crates", "Net Amount",
+        "Others", "Crates", "Net Amount", "Credit Amount",
       ];
       const rows: (string | number)[][] = [header];
       for (const r of routesWithData) {
@@ -188,7 +189,7 @@ export default function GatePassReportPage() {
             ...acrossProducts.map(p => c.acrossQty[p.id] ?? 0),
             c.othersText,
             fmtCratePkts(c.crates, c.cratePktPlus ?? 0, c.cratePktMinus ?? 0) || String(c.crates),
-            c.netAmount,
+            c.isCredit ? `${c.netAmount} (credit)` : c.netAmount,
           ]);
         }
         rows.push([
@@ -197,6 +198,7 @@ export default function GatePassReportPage() {
           r.totals.othersQty,
           fmtCratePkts(r.totals.crates, r.totals.cratePktPlus ?? 0, r.totals.cratePktMinus ?? 0) || String(r.totals.crates),
           r.totals.netAmount,
+          r.totals.creditAmount ?? 0,
         ]);
       }
       return toCsv(rows);
@@ -206,7 +208,7 @@ export default function GatePassReportPage() {
   return (
     <ReportShell
       title="Gate Pass Report"
-      subtitle="Per-route gate-pass loading sheets — abstract + security checklist appended"
+      subtitle="Per-route gate-pass loading sheets; abstract + security checklist appended"
       printOrientation="landscape"
       filters={
         <>
@@ -355,7 +357,10 @@ function GatePassRowsPage({
                   })}
               </td>
               <td className="num">{fmtCratePkts(c.crates, c.cratePktPlus ?? 0, c.cratePktMinus ?? 0) || fmtNum(c.crates)}</td>
-              <td className="num">{fmtINR(c.netAmount)}</td>
+              <td className="num">
+                {fmtINR(c.netAmount)}
+                {c.isCredit && <span className="rs-credit-tag"> (credit)</span>}
+              </td>
             </tr>
           ))}
 
@@ -454,10 +459,10 @@ function AbstractPage({
                 <td>{i.alias}</td>
                 <td className="num">{fmtNum(i.crates)}</td>
                 <td className="num">{fmtNum(i.packets)}</td>
-                <td className="num">{kgLtrCorrect.toFixed(3)}</td>
+                <td className="num">{kgLtrCorrect.toFixed(2)}</td>
                 <td className="num">{fmtINR(i.amount)}</td>
-                <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : "—"}</td>
-                <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : "—"}</td>
+                <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : ""}</td>
+                <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : ""}</td>
               </tr>
             );
           })}
@@ -465,10 +470,10 @@ function AbstractPage({
             <td className="num">Total Milk \ Amount</td>
             <td className="num">{fmtNum(t.crates)}</td>
             <td className="num">{fmtNum(t.packets)}</td>
-            <td className="num">{totalKgLtr.toFixed(3)}</td>
+            <td className="num">{totalKgLtr.toFixed(2)}</td>
             <td className="num">{fmtINR(t.amount)}</td>
-            <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : "—"}</td>
-            <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : "—"}</td>
+            <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : ""}</td>
+            <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : ""}</td>
           </tr>
         </tbody>
       </table>
@@ -477,9 +482,9 @@ function AbstractPage({
       <div className="rs-abstract-money">
         <span><strong>Total Free Milk:</strong> 0 Ltr</span>
         <span><strong>Total:</strong> 0 Crates</span>
-        <span><strong>Cash:</strong> {fmtINR(t.amount)}</span>
+        <span><strong>Cash:</strong> {fmtINR(route.totals.netAmount)}</span>
         <span><strong>Bank:</strong> {fmtINR(0)}</span>
-        <span><strong>Credit:</strong> {fmtINR(0)}</span>
+        <span><strong>Credit:</strong> {fmtINR(route.totals.creditAmount ?? 0)}</span>
       </div>
     </div>
   );
@@ -501,15 +506,15 @@ function SecurityPage({
     <div className="rs-page rs-security-page">
       <RouteLetterhead
         data={data} route={route}
-        pageHeading="Gate Pass — Despatch Summary For Security"
+        pageHeading="Gate Pass: Despatch Summary For Security"
       />
 
       <table className="report-ledger compact rs-ledger rs-security-table">
         <colgroup>
-          <col style={{ width: "40%" }} />
-          <col style={{ width: "18%" }} />
-          <col style={{ width: "22%" }} />
-          <col style={{ width: "20%" }} />
+          <col style={{ width: "48mm" }} />
+          <col style={{ width: "16mm" }} />
+          <col style={{ width: "24mm" }} />
+          <col style={{ width: "25mm" }} />
         </colgroup>
         <thead>
           <tr>
@@ -551,9 +556,9 @@ function SecurityPage({
       <div className="rs-abstract-money">
         <span><strong>Total Free Milk:</strong> 0 Ltr</span>
         <span><strong>Total:</strong> 0 Crates</span>
-        <span><strong>Cash:</strong> {fmtINR(t.amount)}</span>
+        <span><strong>Cash:</strong> {fmtINR(route.totals.netAmount)}</span>
         <span><strong>Bank:</strong> {fmtINR(0)}</span>
-        <span><strong>Credit:</strong> {fmtINR(0)}</span>
+        <span><strong>Credit:</strong> {fmtINR(route.totals.creditAmount ?? 0)}</span>
       </div>
 
       {/* Return Particulars block */}
@@ -617,13 +622,18 @@ function RouteLetterhead({
         )}
       </div>
       <div className="rs-lh-details">
-        <span><strong>Route:</strong> {route.name} ({route.code})</span>
+        <span><strong>Route:</strong> {route.name}{route.code ? ` (${route.code})` : ""}</span>
         <span><strong>Date:</strong> {fmtDate(data.date)}</span>
-        <span><strong>Batch:</strong> {data.batch?.name ?? route.batchName ?? "—"}</span>
-        <span><strong>Contractor:</strong> {route.contractor.name ?? "—"}</span>
-        <span><strong>Dispatch:</strong> {route.dispatchTime ?? "—"}</span>
-        <span><strong>Commencing:</strong> ____</span>
-        <span><strong>Completion:</strong> ____</span>
+        <span><strong>Batch:</strong> {data.batch?.name ?? route.batchName ?? ""}</span>
+        {/* The ADHOC bucket has no vehicle, contractor or timings. */}
+        {!route.isAdhoc && (
+          <>
+            <span><strong>Contractor:</strong> {route.contractor.name ?? ""}</span>
+            <span><strong>Dispatch:</strong> {route.dispatchTime ?? ""}</span>
+            <span><strong>Commencing:</strong> ____</span>
+            <span><strong>Completion:</strong> ____</span>
+          </>
+        )}
       </div>
     </div>
   );

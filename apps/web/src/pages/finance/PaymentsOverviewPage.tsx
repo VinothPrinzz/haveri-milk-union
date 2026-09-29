@@ -25,6 +25,7 @@ import {
   type PaymentRow,
   type PaymentStatus,
 } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 const MODE_LABELS: Record<PaymentMode, string> = {
   cash:   "Cash",
@@ -178,12 +179,12 @@ export default function PaymentsOverviewPage() {
                   return (
                     <tr key={p.id} className={reversed ? "bg-destructive/5" : ""}>
                       <td>{fmtDate(p.receivedAt ?? p.received_date ?? p.createdAt)}</td>
-                      <td className="font-medium">{p.customerName ?? p.dealerName ?? "—"}</td>
+                      <td className="font-medium">{p.customerName ?? p.dealerName ?? ""}</td>
                       <td>{MODE_LABELS[p.mode as PaymentMode] ?? p.mode}</td>
                       <td><PaymentStatusBadge status={p.status} /></td>
-                      <td className="font-mono text-[12px] text-muted-foreground">{p.reference ?? "—"}</td>
+                      <td className="font-mono text-[12px] text-muted-foreground">{p.reference ?? ""}</td>
                       <td className={`num font-semibold ${reversed ? "text-muted-foreground line-through" : ""}`} style={{ textAlign: "right" }}>{fmtINR(p.amount)}</td>
-                      <td className="font-mono text-[12px]">{p.invoiceNumber ?? "—"}</td>
+                      <td className="font-mono text-[12px]">{p.invoiceNumber ?? ""}</td>
                     </tr>
                   );
                 })}
@@ -215,23 +216,36 @@ function RecordPaymentDialog({
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [amount, setAmount]         = useState("");
   const [pMode, setPMode]           = useState<string | null>(null);
-  const [receivedAt, setReceivedAt] = useState(new Date().toISOString().slice(0, 10));
+  const [receivedAt, setReceivedAt] = useState(todayIST());
   const [invoiceId, setInvoiceId]   = useState<string | null>(null);
   const [reference, setReference]   = useState("");
   const [notes, setNotes]           = useState("");
 
-  const { data: invoices = [] } = useQuery({
+  const { data: invoices = [], isLoading: invoicesLoading } = useQuery({
     queryKey: ["invoices-for-customer", customerId],
     queryFn: () => fetchInvoicesForCustomer(customerId!),
-    enabled: !!customerId,
+    enabled: !!customerId && open,
   });
-  const invoiceOptions: F9Option[] = (invoices as any[])
-    .filter((i: any) => i.balance > 0)
-    .map((i: any) => ({ value: i.id, label: i.number ?? i.code, sublabel: fmtINR(i.balance) }));
+  // Only invoices with something still due can take a payment.
+  const invoiceOptions: F9Option[] = invoices
+    .filter(i => i.balance > 0)
+    .map(i => ({
+      value: i.id,
+      label: i.invoiceNumber,
+      sublabel: `${fmtDate(i.invoiceDate)} · ${fmtINR(i.balance)} due`,
+      searchText: `${i.invoiceNumber} ${fmtDate(i.invoiceDate)}`,
+    }));
+  const invoicePlaceholder = customerId
+    ? invoicesLoading
+      ? "Loading invoices…"
+      : invoiceOptions.length === 0
+      ? "No open invoices"
+      : "Select invoice"
+    : "Pick a customer first";
 
   const reset = () => {
     setCustomerId(null); setAmount(""); setPMode(null);
-    setReceivedAt(new Date().toISOString().slice(0, 10));
+    setReceivedAt(todayIST());
     setInvoiceId(null); setReference(""); setNotes("");
   };
 
@@ -264,7 +278,12 @@ function RecordPaymentDialog({
         <DialogHeader><DialogTitle>Record Payment</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Customer" required hint="F9">
-            <F9SearchSelect value={customerId} onChange={setCustomerId} options={customerOptions} placeholder="Search customer" />
+            <F9SearchSelect
+              value={customerId}
+              onChange={v => { setCustomerId(v); setInvoiceId(null); }}
+              options={customerOptions}
+              placeholder="Search customer"
+            />
           </Field>
           <Field label="Mode" required>
             <F9SearchSelect value={pMode} onChange={setPMode} options={MODE_OPTIONS} placeholder="Select mode" />
@@ -276,7 +295,7 @@ function RecordPaymentDialog({
             <Input type="date" value={receivedAt} onChange={e => setReceivedAt(e.target.value)} className="erp-input" />
           </Field>
           <Field label="Invoice (optional)" hint="F9">
-            <F9SearchSelect value={invoiceId} onChange={setInvoiceId} options={invoiceOptions} placeholder={customerId ? "Select unpaid invoice" : "Pick a customer first"} />
+            <F9SearchSelect value={invoiceId} onChange={setInvoiceId} options={invoiceOptions} placeholder={invoicePlaceholder} />
           </Field>
           <Field label="Reference">
             <Input value={reference} onChange={e => setReference(e.target.value)} className="erp-input" placeholder="UPI txn id, cheque no, etc." />

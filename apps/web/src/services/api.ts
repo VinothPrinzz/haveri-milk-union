@@ -21,6 +21,7 @@ export type {
   SystemUser,
 } from "@/data/mockData";
 import type { StockBucket } from "@/lib/stock-buckets";
+import { todayIST } from "@/lib/istDate";
 
 // ── Normalizers: map snake_case API → camelCase UI ──
 function normalizeCustomer(d: Record<string, unknown>) {
@@ -48,6 +49,7 @@ function normalizeCustomer(d: Record<string, unknown>) {
 
     // ── Marketing v1.4 additions ──
     email:       (d.email ?? "") as string,
+    gstNumber:   (d.gst_number ?? d.gstNumber ?? "") as string,
     accountNo:   (d.account_no ?? d.accountNo ?? "") as string,
     creditLimit: parseFloat(String(d.credit_limit ?? d.creditLimit ?? 0)) || 0,
     addressType: (d.address_type ?? d.addressType ?? "") as "Office" | "Residence" | "",
@@ -71,8 +73,13 @@ function normalizeCustomer(d: Record<string, unknown>) {
     // Back-compat alias so any old call site still rendering
     // `creditBalance` keeps working — it now means "current balance".
     creditBalance:   parseFloat(String(d.current_balance  ?? d.currentBalance  ?? 0)) || 0,
+    // Soft-deleted customers are only returned when the list asks for them
+    // (status filter "Deleted"); they keep their history but can't trade.
+    deletedAt: (d.deleted_at ?? d.deletedAt ?? null) as string | null,
     status:
-      d.active !== false && d.active !== null
+      d.deleted_at
+        ? ("Deleted" as const)
+        : d.active !== false && d.active !== null
         ? ("Active" as const)
         : ("Inactive" as const),
   };
@@ -370,6 +377,12 @@ function normalizeDirectSale(d: Record<string, unknown>) {
     items,
     total: parseFloat(String(d.grand_total ?? d.total ?? 0)),
     payMode: (d.payment_mode === "credit" ? "Credit" : "Cash") as "Cash" | "Credit",
+    paymentMode: String(d.payment_mode ?? ""),
+    status: String(d.status ?? "confirmed"),
+    cancelledAt: (d.cancelled_at ?? d.cancelledAt ?? null) as string | null,
+    cancellationReason: (d.cancellation_reason ?? d.cancellationReason ?? null) as string | null,
+    /** What the system has actually taken for this sale (QR, cash, balance). */
+    collected: parseFloat(String(d.collected ?? 0)) || 0,
   };
 }
 
@@ -421,6 +434,8 @@ export type DealerListParams = {
   routeId?: string;
   zoneId?: string;
   activeFilter?: "true" | "false";
+  /** List soft-deleted customers instead of live ones (admin only). */
+  deleted?: boolean;
 };
  
 export const fetchCustomersPage = async (params: DealerListParams = {}) => {
@@ -440,6 +455,7 @@ export const fetchCustomersPage = async (params: DealerListParams = {}) => {
     ...(params.routeId      ? { routeId: params.routeId }           : {}),
     ...(params.zoneId       ? { zoneId: params.zoneId }             : {}),
     ...(params.activeFilter  ? { activeFilter: params.activeFilter } : {}),
+    ...(params.deleted       ? { deleted: "true" }                   : {}),
   });
   return {
     rows: (data.data ?? []).map(normalizeCustomer),
@@ -458,6 +474,7 @@ export const createCustomer = async (body: Record<string, unknown>) => {
     name: body.name,
     phone: body.phone,
     email: body.email || undefined,
+    gstNumber: body.gstNumber || undefined,
     customerType: body.type,
     rateCategory: body.rateCategory,
     payMode: body.payMode,
@@ -493,7 +510,8 @@ export const updateCustomer = async (id: string, body: Record<string, unknown>) 
     houseNo: body.houseNo || undefined, street: body.street || undefined,
     pinCode: body.pinCode || undefined,
     address: body.address || undefined,
-    gstNumber: body.gstNumber || undefined,
+    // Always sent (blank clears it) so removing a GST no. actually saves.
+    gstNumber: body.gstNumber ?? "",
     active: body.active !== false,
     ...(body.zoneId ? { zoneId: body.zoneId } : {}),
     ...(body.routeId ? { routeId: body.routeId } : {}),
@@ -644,6 +662,55 @@ export const updateSupplier = async (id: string, body: Record<string, unknown>) 
 
 export const deleteSupplier = async (id: string) => {
   await del(`/suppliers/${id}`);
+};
+
+// ── Supplier rate card (purchase cost per product) ──
+// One current rate per (supplier, product). Stock Entry pre-fills a received
+// line's unit cost from it; revising a rate never touches past receipts.
+export interface SupplierCostRow {
+  productId: string;
+  productCode: string;
+  productName: string;
+  unit: string;
+  categoryName: string;
+  unitCost: number | null;   // null = no rate on file
+  updatedAt: string | null;
+}
+
+// Every sellable product, with this supplier's rate where one is set.
+export const fetchSupplierCosts = async (supplierId: string): Promise<SupplierCostRow[]> => {
+  const data = await get<{ costs: Record<string, unknown>[] }>(`/suppliers/${supplierId}/costs`);
+  return (data.costs ?? []).map((c) => ({
+    productId: (c.productId ?? c.product_id) as string,
+    productCode: (c.productCode ?? c.product_code ?? "") as string,
+    productName: (c.productName ?? c.product_name ?? "") as string,
+    unit: (c.unit ?? "") as string,
+    categoryName: (c.categoryName ?? c.category_name ?? "") as string,
+    unitCost: c.unitCost != null ? parseFloat(String(c.unitCost)) : null,
+    updatedAt: (c.updatedAt ?? c.updated_at ?? null) as string | null,
+  }));
+};
+
+// Send only the changed lines. A number upserts the rate; null clears it.
+export const saveSupplierCosts = async (
+  supplierId: string,
+  costs: { productId: string; unitCost: number | null }[],
+) => await put(`/suppliers/${supplierId}/costs`, { costs });
+
+// Flat lookup for Stock Entry: supplierId → productId → unit cost.
+export type SupplierCostMap = Record<string, Record<string, number>>;
+
+export const fetchSupplierCostMap = async (): Promise<SupplierCostMap> => {
+  const data = await get<{ costs: Record<string, unknown>[] }>("/supplier-costs");
+  const map: SupplierCostMap = {};
+  for (const c of data.costs ?? []) {
+    const supplierId = (c.supplierId ?? c.supplier_id) as string;
+    const productId = (c.productId ?? c.product_id) as string;
+    const cost = parseFloat(String(c.unitCost ?? c.unit_cost));
+    if (!supplierId || !productId || !Number.isFinite(cost)) continue;
+    (map[supplierId] ??= {})[productId] = cost;
+  }
+  return map;
 };
 
 // ══════════════════════════════════════
@@ -996,6 +1063,23 @@ export interface SubsidyProduct {
   available: boolean;
 }
 
+// Does the 12 L/kg first-indent minimum apply to this dealer's next indent on
+// this route and date? The server skips it when the route already has a
+// qualifying indent that day, or when the dealer's rate category is exempt.
+export interface MinQtyStatus {
+  applies: boolean;
+  min: number;
+  unit: string;
+  reason: "required" | "exempt_rate_category" | "route_already_served";
+}
+
+export const fetchMinQtyStatus = async (p: { dealerId: string; routeId?: string | null; date?: string }) => {
+  const qs = new URLSearchParams({ dealerId: p.dealerId });
+  if (p.routeId) qs.set("routeId", p.routeId);
+  if (p.date) qs.set("date", p.date);
+  return get<MinQtyStatus>(`/orders/min-qty-status?${qs.toString()}`);
+};
+
 export const fetchSubsidyProduct = async () => {
   const { product } = await get<{ product: SubsidyProduct }>("/orders/subsidy-product");
   return product;
@@ -1028,6 +1112,8 @@ export interface CancelIndentResult {
     amount: number;
     razorpayRefundId?: string;
     status?: string;
+    /** Why nothing was refunded (e.g. a zero-value indent). */
+    note?: string;
   };
 }
 
@@ -1100,6 +1186,7 @@ export const createGatePassSale = async (body: {
   batchId?: string;
   saleDate?: string;
   paymentMode?: "wallet" | "upi" | "credit" | "cash";
+  paymentRef?: string;
   notes?: string;
   items: Array<{ productId: string; quantity: number }>;
 }) => {
@@ -1109,6 +1196,68 @@ export const createGatePassSale = async (body: {
   );
   return normalizeDirectSale(data.sale);
 };
+
+// ── Gate-pass counter QR ──
+// The pass is issued first, then a UPI QR pinned to the amount still owed is
+// shown at the counter; the Razorpay webhook stamps the payment reference.
+export interface GatePassQr {
+  qrId: string;
+  imageUrl: string;
+  amount: number;
+  saleTotal?: number;
+  isBalance?: boolean;
+  closeBy?: number;
+  expiresInSeconds?: number;
+  reused: boolean;
+}
+
+export type GatePassPaymentStatus =
+  | { state: "none" }
+  | { state: "expired"; qrId: string }
+  | { state: "pending"; qrId: string; imageUrl: string; amount: number; collected: number; outstanding: number }
+  | {
+      state: "paid" | "partial";
+      paymentRef: string;
+      amount: number;
+      paidAt: string | null;
+      collected: number;
+      outstanding: number;
+      viaPolling?: boolean;
+    };
+
+export const createGatePassQr = (saleId: string) =>
+  post<GatePassQr>(`/direct-sales/${saleId}/qr`);
+
+export const fetchGatePassPaymentStatus = (saleId: string) =>
+  get<GatePassPaymentStatus>(`/direct-sales/${saleId}/payment-status`);
+
+export const closeGatePassQr = (saleId: string) =>
+  post<{ ok: boolean; qrId?: string; nothingToClose?: boolean }>(`/direct-sales/${saleId}/qr/close`);
+
+// ── Direct-sale cancellation (parity with cancelIndent) ──
+// Stock goes back, any live QR is closed, and whatever was collected is
+// returned: to the bank ("razorpay") or the agent's balance ("balance").
+export interface CancelDirectSaleResult {
+  message: string;
+  saleId: string;
+  paymentMode: string;
+  refund: {
+    method: "razorpay" | "credit" | "none";
+    amount: number;
+    razorpayRefundIds?: string[];
+    handBack?: number;
+    note?: string;
+  };
+  ledgerReversed?: number;
+  cashReceiptReversed?: number;
+}
+
+export const cancelDirectSale = (saleId: string, reason: string, refundMethod?: RefundMethod) =>
+  post<CancelDirectSaleResult>(`/direct-sales/${saleId}/cancel`, { reason, refundMethod });
+
+// Resolve a sale to its tax invoice, generating it on demand.
+export const resolveDirectSaleInvoice = (saleId: string) =>
+  get<{ invoiceId: string; invoiceNumber: string | null }>(`/direct-sales/${saleId}/invoice`);
 
 export const createCashSale = async (body: {
   customerId: string; // cash_customers.id
@@ -1196,6 +1345,7 @@ export const fetchEmployeeSubsidyRules = async () => {
     subsidy_percent: string | null; active: boolean;
     product_name: string; product_code: string;
     base_price: string; gst_percent: string; unit: string;
+    stock?: number | string;
   }> }>("/employee-subsidy-rules");
   return (data.data ?? []).map(r => ({
     id:             r.id,
@@ -1208,6 +1358,9 @@ export const fetchEmployeeSubsidyRules = async () => {
     basePrice:      parseFloat(r.base_price),
     gstPercent:     parseFloat(r.gst_percent),
     unit:           r.unit,
+    // Packets available today (the FGS day's closing), for the sale screen's
+    // over-stock guard.
+    stock:          Number(r.stock ?? 0),
     active:         r.active,
   }));
 };
@@ -1246,7 +1399,9 @@ export const createVipSampleSale = async (body: {
 // routeId is required — the dispatch sheet is keyed by route.
 export const createEmployeeSubsidySale = async (body: {
   customerId: string;          // employees.id
-  routeId: string;
+  // Optional: the subsidy is collected at the plant counter, so a route-less
+  // indent is normal (Dispatch Sheet / Gate Pass Report list it under ADHOC).
+  routeId?: string;
   saleDate?: string;
   paymentMode: "cash" | "upi" | "credit";
   paymentRef?: string;
@@ -1300,7 +1455,7 @@ export const updateStockEntry = async (
   body: Record<string, unknown>,
 ) => {
   return updateStockEntries(
-    (body.date as string) || new Date().toISOString().split("T")[0],
+    (body.date as string) || todayIST(),
     [
       {
         productId,
@@ -1369,7 +1524,7 @@ export const fetchDispatchAssignments = async (date?: string) => {
           const h12 = h % 12 || 12;
           return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
         })()
-      : "—";
+      : "";
 
     return {
       id: a.id as string,
@@ -1585,7 +1740,7 @@ export const fetchSystemUsers = async () => {
             dateStyle: "medium",
             timeStyle: "short",
           })
-        : "—",
+        : "",
   }));
 };
 
@@ -1664,11 +1819,11 @@ export const fetchRoles = async () => [
     permissions: ["dashboard", "fgs", "sales.dispatch"],
   },
   {
-    role: "FGS — Milk & Curd",
+    role: "FGS: Milk & Curd",
     permissions: ["dashboard", "fgs.stock.milk-curd"],
   },
   {
-    role: "FGS — Other Products",
+    role: "FGS: Other Products",
     permissions: ["dashboard", "fgs.stock.others"],
   },
   { role: "Accountant", permissions: ["dashboard", "reports", "sales.view"] },
@@ -1727,6 +1882,12 @@ export interface DispatchSheetRoute {
   routeId:        string;
   routeCode:      string;
   routeName:      string;
+  /** The ADHOC bucket: sales that named no route. Not a real route. */
+  isAdhoc?:       boolean;
+  /** Route deleted from the masters after this date's load went out. */
+  retired?:       boolean;
+  /** Counter sales / gate passes riding this route, by source. */
+  adhoc?:         Array<{ source: string; label: string; sales: number; packets: number }>;
   contractorName: string | null;
   vehicleNumber:  string | null;
   driverName:     string | null;
@@ -1806,12 +1967,20 @@ export interface PriceRevisionRow {
   productCode:    string;
   productName:    string;
   unit:           string;
-  oldPrice:       string;       // keep as string — numeric(10,2)
+  oldPrice:       string;       // basic (net) price — keep as string, numeric(10,2)
   newPrice:       string;
+  // Dealer Price (GST inclusive) and MRP, as revised (migration 0075).
+  // Null on rows logged before those columns existed.
+  oldDealerPrice: string | null;
+  newDealerPrice: string | null;
+  oldMrp:         string | null;
+  newMrp:         string | null;
   oldGst:         string;
   newGst:         string;
   effectiveFrom:  string;       // "YYYY-MM-DD"
   reason:         string | null;
+  /** "revision" (this page) or "product_edit" (edited in All Products). */
+  source?:        string | null;
   changedBy:      string | null;
   changedByName:  string | null;
   createdAt:      string;
@@ -1861,18 +2030,21 @@ export const fetchProductsWithPricing = async () => {
   return data.data ?? [];
 };
  
+// A revision sets a product's Dealer Price (GST inclusive) and/or MRP, and
+// always takes effect today: the server re-derives the basic price from the
+// Dealer Price, exactly as an edit on All Products does.
 export const createPriceRevisions = async (body: {
   revisions: Array<{
-    productId:     string;
-    newPrice:      number | string;
-    newGstPercent?: number | string;
-    effectiveFrom?: string;       // "YYYY-MM-DD"
+    productId:       string;
+    newDealerPrice?: number;
+    newMrp?:         number;
   }>;
   reason?: string;
 }) => {
   return await post<{
     message: string;
-    results: Array<{ productId: string; oldPrice: string; newPrice: string }>;
+    results: Array<{ productId: string }>;
+    unchanged: number;
   }>("/price-revisions", body);
 };
  
@@ -2102,6 +2274,8 @@ export interface OnlinePaymentRow {
   razorpayPaymentId: string | null;
   amount:            number;
   amountRefunded:    number;
+  /** What a bank refund can still return (detail view only). */
+  refundableAmount?: number;
   currency:          string;
   kind:              RazorpayKind;
   status:            RazorpayStatus;
@@ -2535,9 +2709,33 @@ export const fetchInvoice = async (id: string) => {
   return await get<Record<string, unknown>>(`/invoices/${id}`);
 };
 
-export const fetchInvoicesForCustomer = async (customerId: string) => {
-  const data = await get<{ data: Record<string, unknown>[] }>("/invoices", { dealer: customerId, limit: 100 });
-  return data.data ?? [];
+export interface CustomerInvoice {
+  id: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  totalAmount: number;
+  paidAmount: number;
+  balance: number;
+  paymentStatus: string;
+}
+
+// The API filters on `dealerId` (a `dealer` param was silently ignored, which
+// listed every dealer's invoices), and amounts arrive as strings.
+export const fetchInvoicesForCustomer = async (customerId: string): Promise<CustomerInvoice[]> => {
+  const data = await get<{ data: Record<string, unknown>[] }>("/invoices", { dealerId: customerId, limit: 100 });
+  return (data.data ?? []).map((r) => {
+    const total = parseFloat(String(r.totalAmount ?? 0)) || 0;
+    const paid = parseFloat(String(r.paidAmount ?? 0)) || 0;
+    return {
+      id: r.id as string,
+      invoiceNumber: r.invoiceNumber as string,
+      invoiceDate: r.invoiceDate as string,
+      totalAmount: total,
+      paidAmount: paid,
+      balance: parseFloat(String(r.balanceAmount ?? total - paid)) || 0,
+      paymentStatus: r.paymentStatus as string,
+    };
+  });
 };
 
 export const sendBroadcast = async (body: {
@@ -2638,15 +2836,20 @@ export interface CreditControlSummary {
   totalPrepaid: number; totalExposure: number;
   fundedCount: number; emptyCount: number; negativeCount: number; dormantWithDuesCount: number;
 }
+// `asOf` (YYYY-MM-DD, IST) reads every balance as at the end of that day;
+// omitted, the server uses today.
 export const fetchCreditControl = (f?: {
   routeId?: string; payMode?: "Cash" | "Credit"; statusBucket?: BalanceBucket;
-  search?: string; page?: number; limit?: number;
+  search?: string; page?: number; limit?: number; asOf?: string;
 }) => get<Paginated<CreditControlRow>>("/finance/credit-control", {
   page: f?.page ?? 1, limit: f?.limit ?? 50,
   routeId: f?.routeId, payMode: f?.payMode, statusBucket: f?.statusBucket, search: f?.search,
+  asOf: f?.asOf,
 });
-export const fetchCreditControlSummary = async () =>
-  (await get<{ summary: CreditControlSummary }>("/finance/credit-control/summary")).summary;
+export const fetchCreditControlSummary = async (f?: { routeId?: string; asOf?: string }) =>
+  (await get<{ summary: CreditControlSummary }>("/finance/credit-control/summary", {
+    routeId: f?.routeId, asOf: f?.asOf,
+  })).summary;
 
 // ── Employee Credit Control (finance) ──
 export interface EmployeeCreditRow {
@@ -2760,9 +2963,10 @@ export interface StatementDay {
   totalDr: number; totalCr: number; closing: number; count: number;
 }
 export interface StatementResponse {
-  dealer: { id: string; code: string; name: string; payMode: string; customerType: string | null;
+  dealer: { id: string; code: string | null; name: string; payMode: string; customerType: string | null;
             gstNumber: string | null; address: string | null; city: string | null; state: string | null;
-            phone: string | null; creditLimit: number; routeName: string | null };
+            phone: string | null; creditLimit: number; routeName: string | null;
+            deletedOn?: string | null };
   period: { from: string; to: string };
   wallet: { balance: number; lastTopupAt: string | null; lastTopupAmount: number | null };
   openingBalance: number;
@@ -2778,6 +2982,11 @@ export const fetchDealerStatementIndex = (f?: { routeId?: string; search?: strin
   get<Paginated<StatementIndexRow>>("/finance/dealer-statements", {
     page: f?.page ?? 1, limit: f?.limit ?? 50, routeId: f?.routeId, search: f?.search,
   });
+// Statement picker: every live dealer plus the deleted ones that still carry
+// history. A delete nulls the code, so those carry their deletion day instead.
+export interface StatementDealer { id: string; code: string | null; name: string; deletedOn: string | null }
+export const fetchStatementDealers = async () =>
+  (await get<{ data: StatementDealer[] }>("/finance/dealer-statements/dealers")).data;
 export const fetchDealerStatement = (id: string, from?: string, to?: string) =>
   get<StatementResponse>(`/finance/dealer-statements/${id}`, { from, to });
 export const printDealerStatement = (
@@ -2880,6 +3089,7 @@ export interface DayBookLine {
   // and only gateway refunds to a bank account are 'out'.
   cashImpact: "in" | "out" | "none";
   // topup | topup_ledger | order_payment | invoice_payment | on_account |
+  // counter_collection | counter_cash |
   // order_sale | counter_sale | refund | modify_refund | modify_debit |
   // cancel_refund | adjustment_credit | adjustment_debit
   type: string;

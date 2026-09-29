@@ -17,15 +17,17 @@ const TYPE_LABEL: Record<string, string> = {
   order_payment: "Order Payment",
   invoice_payment: "Invoice Payment",
   on_account: "On-account",
-  order_sale: "Sale — Order",
-  counter_sale: "Sale — Counter",
+  counter_collection: "Counter QR Collection",
+  counter_cash: "Counter Cash",
+  order_sale: "Sale: Order",
+  counter_sale: "Sale: Counter",
   refund: "Refund (Bank)",
-  modify_refund: "Modify — Refund to Balance",
-  modify_debit: "Modify — Debit from Balance",
-  cancel_refund: "Cancel — Refund to Balance",
-  cheque_bounce: "Cheque Bounced — Reversal",
+  modify_refund: "Modify: Refund to Balance",
+  modify_debit: "Modify: Debit from Balance",
+  cancel_refund: "Cancel: Refund to Balance",
+  cheque_bounce: "Cheque Bounced: Reversal",
   cheque_charges: "Cheque Return Charges",
-  cheque_cancel: "Cheque Cancelled — Reversal",
+  cheque_cancel: "Cheque Cancelled: Reversal",
   adjustment_credit: "Adjustment (Cr)",
   adjustment_debit: "Adjustment (Dr)",
 };
@@ -35,6 +37,8 @@ const TYPE_TONE: Record<string, string> = {
   order_payment: "bg-success/15 text-success",
   invoice_payment: "bg-success/15 text-success",
   on_account: "bg-success/10 text-success",
+  counter_collection: "bg-success/15 text-success",
+  counter_cash: "bg-success/15 text-success",
   order_sale: "bg-info/15 text-info",
   counter_sale: "bg-info/10 text-info",
   refund: "bg-destructive/15 text-destructive",
@@ -85,7 +89,7 @@ export default function DayBookPage() {
   const routeOptions: F9Option[] = useMemo(
     () => [
       ...(routes as any[]).map((r) => ({ value: String(r.id), label: r.name, sublabel: r.code })),
-      { value: "unassigned", label: "— Unassigned —" },
+      { value: "unassigned", label: "Unassigned" },
     ],
     [routes]
   );
@@ -130,7 +134,7 @@ export default function DayBookPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader title="Day Book" subtitle="Daily cash book — receipts, sales, refunds & adjustments; close the day & tally physical cash"
+      <PageHeader title="Day Book" subtitle="Daily cash book: receipts, sales, refunds & adjustments; close the day & tally physical cash"
         actions={<PrintButton label="Print Day Book" />} />
 
       <div className="flex items-end gap-3 px-4 py-2.5 bg-panel border-b border-border no-print">
@@ -156,7 +160,7 @@ export default function DayBookPage() {
             <StatCard label="UPI" value={fmtINR(s.byMode["upi"] ?? 0)} />
             <StatCard label="Refunds Out (bank)" tone="warning" value={fmtINR(s.refundsOut)}
               hint={s.orderChanges.refundsToBalance > 0
-                ? `+ ${fmtINR(s.orderChanges.refundsToBalance)} credited back to dealer balances — no cash out`
+                ? `+ ${fmtINR(s.orderChanges.refundsToBalance)} credited back to dealer balances (no cash out)`
                 : undefined} />
             <StatCard label="Net Receipts" value={fmtINR(s.net)} />
           </div>
@@ -170,10 +174,12 @@ export default function DayBookPage() {
                 <span className="text-muted-foreground">Order payments</span><span className="num text-right">{fmtINR(s.byType["order_payment"] ?? 0)}</span>
                 <span className="text-muted-foreground">Invoice payments</span><span className="num text-right">{fmtINR(s.byType["invoice_payment"] ?? 0)}</span>
                 <span className="text-muted-foreground">On-account</span><span className="num text-right">{fmtINR(s.byType["on_account"] ?? 0)}</span>
+                <span className="text-muted-foreground">Counter QR</span><span className="num text-right">{fmtINR(s.byType["counter_collection"] ?? 0)}</span>
+                <span className="text-muted-foreground">Counter cash</span><span className="num text-right">{fmtINR(s.byType["counter_cash"] ?? 0)}</span>
               </div>
               {s.ledgerTopups.count > 0 && (
                 <div className="mt-2 text-[11px] rounded bg-warning/10 text-warning px-2 py-1">
-                  {s.ledgerTopups.count} wallet credit{s.ledgerTopups.count > 1 ? "s" : ""} of {fmtINR(s.ledgerTopups.total)} recorded without a receipt — not counted in Total Receipts.
+                  {s.ledgerTopups.count} wallet credit{s.ledgerTopups.count > 1 ? "s" : ""} of {fmtINR(s.ledgerTopups.total)} recorded without a receipt. Not counted in Total Receipts.
                 </div>
               )}
             </div>
@@ -187,34 +193,34 @@ export default function DayBookPage() {
                   .sort((a, b) => b[1] - a[1])
                   .map(([k, v]) => (
                     <Fragment key={k}>
-                      <span className="text-muted-foreground pl-3">· paid online — {onlineMethodLabel(k)}</span><span className="num text-right">{fmtINR(v)}</span>
+                      <span className="text-muted-foreground pl-3">· paid online: {onlineMethodLabel(k)}</span><span className="num text-right">{fmtINR(v)}</span>
                     </Fragment>
                   ))}
                 <span className="text-muted-foreground pl-3">· on credit</span><span className="num text-right">{fmtINR(s.sales.byMode[CREDIT_BUCKET] ?? 0)}</span>
                 <span className="text-muted-foreground">Counter sales ({s.sales.counterCount})</span><span className="num text-right">{fmtINR(s.sales.counterTotal)}</span>
               </div>
               <div className="mt-2 text-[11px] text-muted-foreground">
-                Wallet covers orders settled from available balance or top-ups; pay-now orders show under their online method (UPI/card). Receipts and sales differ when a top-up is bigger than the order — the balance stays in the dealer&apos;s wallet — or when orders go on credit.
+                Wallet covers orders settled from available balance or top-ups; pay-now orders show under their online method (UPI/card). Receipts and sales differ when a top-up is bigger than the order (the balance stays in the dealer&apos;s wallet) or when orders go on credit.
               </div>
             </div>
             <div className="erp-panel p-3">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Refunds &amp; order changes</div>
               <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[12px]">
-                <span className="text-muted-foreground">Bank refunds ({s.refundsCount}) — cash out</span><span className="num text-right text-destructive">{fmtINR(s.refundsOut)}</span>
-                <span className="text-muted-foreground pt-1 col-span-2 text-[11px] uppercase tracking-wide">Dealer balance — no cash movement</span>
+                <span className="text-muted-foreground">Bank refunds ({s.refundsCount}): cash out</span><span className="num text-right text-destructive">{fmtINR(s.refundsOut)}</span>
+                <span className="text-muted-foreground pt-1 col-span-2 text-[11px] uppercase tracking-wide">Dealer balance: no cash movement</span>
                 <span className="text-muted-foreground pl-3">· refunds to balance ({s.orderChanges.refundsCount})</span><span className="num text-right">{fmtINR(s.orderChanges.refundsToBalance)}</span>
-                <span className="text-muted-foreground pl-3">· extra debits — modify ({s.orderChanges.debitsCount})</span><span className="num text-right">{fmtINR(s.orderChanges.extraDebits)}</span>
+                <span className="text-muted-foreground pl-3">· extra debits: modify ({s.orderChanges.debitsCount})</span><span className="num text-right">{fmtINR(s.orderChanges.extraDebits)}</span>
                 <span className="text-muted-foreground pl-3">· net to dealer balances</span><span className="num text-right">{fmtINR(s.orderChanges.netToWallet)}</span>
               </div>
               <div className="mt-2 text-[11px] text-muted-foreground">
-                Only bank refunds take money out of the union. Indent modifications and cancellations just move the dealer&apos;s own balance — his wallet is money the union already holds, so crediting it back is not an outflow, and the sale above is already shown net of the change. Counting it twice would understate the day.
+                Only bank refunds take money out of the union. Indent modifications and cancellations just move the dealer&apos;s own balance. His wallet is money the union already holds, so crediting it back is not an outflow, and the sale above is already shown net of the change. Counting it twice would understate the day.
               </div>
             </div>
           </div>
 
           {/* Cash card */}
           <div className="erp-panel p-4">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Cash position (informational — deposit tracking not persisted in v1)</div>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Cash position (informational; deposit tracking not persisted in v1)</div>
             <div className="flex items-end gap-6 flex-wrap">
               <div>
                 <div className="text-[11px] text-muted-foreground">Cash collected today</div>
@@ -249,7 +255,7 @@ export default function DayBookPage() {
                 <tbody>
                   {data.routeWise.map((r, i) => (
                     <tr key={i}>
-                      <td>{r.name ?? "— Unassigned —"}</td>
+                      <td>{r.name ?? "Unassigned"}</td>
                       <td className="num" style={{ textAlign: "right" }}>{r.receipts}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(r.collected)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(r.cash)}</td>
@@ -265,7 +271,7 @@ export default function DayBookPage() {
           {/* Day-book lines */}
           <div className="erp-panel overflow-hidden">
             <div className="px-4 py-2 flex items-center justify-between border-b border-border">
-              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Transactions — {fmtDate(date)}</span>
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Transactions: {fmtDate(date)}</span>
               <div className="flex gap-1 no-print">
                 {KIND_TABS.map(t => (
                   <button key={t.key} onClick={() => setKind(t.key)}
@@ -295,12 +301,12 @@ export default function DayBookPage() {
                       <tr key={`${l.kind}-${l.id}`}>
                         <td className="text-[12px] num">{fmtTime(l.at)}</td>
                         <td><span className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-medium ${TYPE_TONE[l.type] ?? "bg-muted text-muted-foreground"}`}>{TYPE_LABEL[l.type] ?? l.type}</span></td>
-                        <td className="font-medium">{l.dealerName ?? "—"} {l.dealerCode && <span className="text-muted-foreground font-mono text-[11px]">{l.dealerCode}</span>}</td>
-                        <td className="text-[12px]">{l.routeName ?? "—"}</td>
-                        <td className="capitalize text-[12px]">{l.mode ?? "—"}</td>
-                        <td className="text-[12px] font-mono max-w-[220px] truncate" title={l.reference ?? undefined}>{l.reference ?? "—"}</td>
-                        <td className="text-[12px] font-mono">{l.docNo ?? "—"}</td>
-                        <td className="text-[12px]">{l.byName ?? "—"}</td>
+                        <td className="font-medium">{l.dealerName ?? ""} {l.dealerCode && <span className="text-muted-foreground font-mono text-[11px]">{l.dealerCode}</span>}</td>
+                        <td className="text-[12px]">{l.routeName ?? ""}</td>
+                        <td className="capitalize text-[12px]">{l.mode ?? ""}</td>
+                        <td className="text-[12px] font-mono max-w-[220px] truncate" title={l.reference ?? undefined}>{l.reference ?? ""}</td>
+                        <td className="text-[12px] font-mono">{l.docNo ?? ""}</td>
+                        <td className="text-[12px]">{l.byName ?? ""}</td>
                         <td className={`num font-medium ${out ? "text-destructive" : balanceMove ? "text-muted-foreground" : l.kind === "sale" ? "text-info" : "text-success"}`} style={{ textAlign: "right" }}>
                           {out ? "−" : ""}{fmtINR(l.amount)}
                         </td>
@@ -311,7 +317,7 @@ export default function DayBookPage() {
                 <tfoot>
                   <tr className="font-medium border-t border-border">
                     <td colSpan={8} className="text-[12px] text-muted-foreground">
-                      Totals (shown rows) — Receipts in: <span className="text-success num">{fmtINR(visibleTotals.in)}</span>
+                      Totals (shown rows). Receipts in: <span className="text-success num">{fmtINR(visibleTotals.in)}</span>
                       {" · "}Sales: <span className="text-info num">{fmtINR(visibleTotals.sales)}</span>
                       {" · "}Cash out: <span className="text-destructive num">{fmtINR(visibleTotals.out)}</span>
                       {(visibleTotals.toBalance > 0 || visibleTotals.fromBalance > 0) && (<>

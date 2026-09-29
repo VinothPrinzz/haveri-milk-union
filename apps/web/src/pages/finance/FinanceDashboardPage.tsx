@@ -87,7 +87,7 @@ export default function FinanceDashboardPage() {
             <div className="lg:col-span-2 erp-panel p-4">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2 flex items-center gap-1.5"><AlertCircle className="h-3.5 w-3.5" /> Attention</div>
               {data.attention.length === 0 ? (
-                <div className="text-[13px] text-success py-4">All clear — nothing needs attention.</div>
+                <div className="text-[13px] text-success py-4">All clear. Nothing needs attention.</div>
               ) : (
                 <div className="divide-y divide-border/60">
                   {data.attention.map((a, i) => (
@@ -121,7 +121,7 @@ export default function FinanceDashboardPage() {
                   <tr key={i}>
                     <td>{fmtDate(x.date)}</td>
                     <td>{x.dealerName}</td>
-                    <td className="text-[12px]">{x.voucherType ?? "—"} <span className="font-mono text-[10px] text-muted-foreground">{x.voucherNo ?? ""}</span></td>
+                    <td className="text-[12px]">{x.voucherType ?? ""} <span className="font-mono text-[10px] text-muted-foreground">{x.voucherNo ?? ""}</span></td>
                     <td className={x.type === "credit" ? "text-success" : "text-destructive"}>{x.type}</td>
                     <td className="num" style={{ textAlign: "right" }}>{fmtINR(x.amount)}</td>
                   </tr>
