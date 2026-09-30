@@ -24,8 +24,8 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
       },
-      "package": "coop.haverimunion.dealer",
-      "versionCode": 2,
+      "package": "com.havemul.haverimilkunion",
+      "versionCode": 7,
       "blockedPermissions": [
         "android.permission.SYSTEM_ALERT_WINDOW"
       ]
@@ -36,7 +36,17 @@
     "plugins": [
       "expo-secure-store",
       "expo-font",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "extraProguardRules": "# Razorpay: react-native-razorpay ships no consumer rules and the SDK\n# resolves the payment callbacks reflectively, so keep them by hand.\n-keep class com.razorpay.** { *; }\n-dontwarn com.razorpay.**\n-keepattributes *Annotation*\n-keepattributes JavascriptInterface\n-keepclassmembers class * {\n    @android.webkit.JavascriptInterface <methods>;\n}\n-keepclasseswithmembers class * {\n    public void onPayment*(...);\n}"
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {

@@ -48,6 +48,11 @@ export const qk = {
               ["dealer-draft", date] as const,
   },
 
+  // Whether the 12 L/kg order minimum applies to the dealer's indent for a
+  // delivery date (it only applies to the first indent on a route that day).
+  minQtyStatus: (date: string | null | undefined) =>
+    ["min-qty-status", date ?? "today"] as const,
+
   // Razorpay payment history (Profile screen).
   payments: ["razorpay-payments"] as const,
 

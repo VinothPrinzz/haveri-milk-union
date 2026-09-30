@@ -11,7 +11,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, fonts, shadows } from "../lib/theme";
 import { useCartStore } from "../store/cart";
-import { usePlaceOrder } from "../hooks/useOrders";
+import { useCancelUnpaidOrder, useMinQtyStatus, usePlaceOrder } from "../hooks/useOrders";
 import { useOrderPayment } from "../hooks/useOrderPayment";
 import { PaymentPending, RazorpayCancelled, RazorpayFailed } from "../lib/razorpay";
 import { uiPaymentToBackend, type UiPaymentMethod } from "../lib/types";
@@ -108,6 +108,9 @@ export default function IndentCart({
   const clearCart   = useCartStore((s) => s.clearCart);
 
   const placeOrder = usePlaceOrder();
+  // Whether the order minimum applies today: only the first indent on the
+  // dealer's route each day carries it (server decides).
+  const minQtyStatus = useMinQtyStatus();
   const [selectedPay, setSelectedPay] = useState<UiPaymentMethod>("upi");
 
   // Idempotency key for POST /orders. Held in a ref so it survives across the
@@ -121,6 +124,9 @@ export default function IndentCart({
   // Razorpay pay-now plumbing for online payments.
   const [payOrderId, setPayOrderId] = useState<string | null>(null);
   const orderPayment = useOrderPayment(payOrderId ?? "");
+  // An online payment that doesn't complete leaves the order unpaid: cancel
+  // it so the dealer isn't left with a half-placed indent.
+  const cancelUnpaid = useCancelUnpaidOrder();
 
   // ── Derived totals ────────────────────────────────────────────────
   const totalAfterSavings = grandTotal - savingsAmount;
@@ -136,27 +142,32 @@ export default function IndentCart({
   const handleSubmit = async () => {
     if (isEmpty || submitting) return;
 
-    // Milk order minimum (≥12 L milk; curd has no minimum) — block before the API.
-    // The union subsidy line is exempt (the server exempts it via
-    // MIN_QTY_EXEMPT_CODES) — it must neither count toward nor trigger the rule.
+    // Order minimum (≥12 L/kg of milk + curd on the first indent for the
+    // route today) — block before the API. The union subsidy line is exempt
+    // (the server exempts it via MIN_QTY_EXEMPT_CODES) — it must neither
+    // count toward nor trigger the rule.
     //
-    // 'Credit Inst-MRP' dealers are government institutions: supply is
-    // compulsory however small the indent, so the minimum never applies to
-    // them. This local check runs BEFORE the API call, so without this the
-    // server-side exemption alone could never let their small order through.
-    // Mirrors MIN_QTY_EXEMPT_RATE_CATEGORIES on the server.
-    const minShortfalls = isCreditInstMrp(dealer?.rateCategory)
-      ? []
-      : findCategoryMinShortfalls(
-          items
-            .filter((i) => !i.isSubsidy)
-            .map((i) => ({
-              name: i.name,
-              categoryName: i.categoryName,
-              unit: i.unit,
-              quantity: i.quantity,
-            }))
-        );
+    // Exempt when:
+    //  • the dealer is 'Credit Inst-MRP' (government institutions: supply is
+    //    compulsory however small the indent; mirrors
+    //    MIN_QTY_EXEMPT_RATE_CATEGORIES on the server), or
+    //  • the server says the minimum doesn't apply (the route already has
+    //    an indent today).
+    const minShortfalls = findCategoryMinShortfalls(
+      items
+        .filter((i) => !i.isSubsidy)
+        .map((i) => ({
+          name: i.name,
+          categoryName: i.categoryName,
+          unit: i.unit,
+          quantity: i.quantity,
+        })),
+      {
+        exempt:
+          isCreditInstMrp(dealer?.rateCategory) ||
+          (minQtyStatus.data ? !minQtyStatus.data.applies : false),
+      }
+    );
     if (minShortfalls.length > 0) {
       Alert.alert("Minimum order quantity", categoryMinMessage(minShortfalls));
       return;
@@ -212,14 +223,8 @@ export default function IndentCart({
         onOrderPlaced(placedId);
       } catch (err) {
         if (cancelled) return;
+        const failedId = payOrderId;
         setPayOrderId(null);
-        if (err instanceof RazorpayCancelled) {
-          Alert.alert(
-            "Payment cancelled",
-            "Your indent is saved but not paid. You can pay it from the Orders tab."
-          );
-          return;
-        }
         // Money likely taken but the server couldn't confirm in time — the
         // backend confirms it automatically. NOT a failure: never tell the
         // dealer "failed" here or they may pay twice. Cart is kept; the
@@ -228,13 +233,24 @@ export default function IndentCart({
           Alert.alert("Confirming your payment", err.message);
           return;
         }
+        // Not paid: the indent was never placed. Cancel the unpaid order so
+        // the dealer can simply pay again from the cart.
+        cancelUnpaid.mutate(failedId);
+        if (err instanceof RazorpayCancelled) {
+          Alert.alert(
+            "Payment cancelled",
+            "Your indent was not placed. Your items are still in the cart, so you can try paying again."
+          );
+          return;
+        }
         Alert.alert(
           "Payment failed",
-          err instanceof RazorpayFailed
+          (err instanceof RazorpayFailed
             ? err.description || "Please try again."
             : err instanceof Error
               ? err.message
-              : "Please try again."
+              : "Please try again.") +
+            "\n\nYour indent was not placed. Your items are still in the cart."
         );
       }
     })();

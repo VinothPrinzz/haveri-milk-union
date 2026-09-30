@@ -1,39 +1,37 @@
 // src/lib/minOrderQty.ts
 //
-// Order-level minimum for the restricted category (Milk).
+// Order-level minimum for milk + curd.
 //
-// Business rule (replaces the old per-line "≥6 units" rule): within a single
-// order the TOTAL milk must be at least 12 litres, applying only when milk is
-// in the order ("at least 12" is inclusive). Curd has NO minimum.
+// Business rule: the FIRST indent a dealer places for a route each day must
+// carry at least 12 L/kg of milk and curd combined (litres of milk plus
+// kilograms of curd; "at least 12" is inclusive). Later indents on the same
+// route and date have no minimum. Whether this indent is the first is the
+// server's call (GET /dealer/orders/min-qty-status), passed in as `exempt`.
 //
 // Measure-matched: the Milk category also holds gram-measured items (milk
-// chocolates, paneer). Only volume-measured milk counts toward the litre
-// minimum (ml→L).
+// chocolates, paneer), so each line counts by its physical size (ml→L,
+// g→kg). The subsidy SKU never counts.
 //
 // Mirrors apps/api/src/lib/min-order-qty.ts (the server source of truth); this
 // is the matching client guard so the dealer never builds an order the backend
 // will reject.
 
-/** Per-category order minimums, in base units (litres for milk). */
-export const CATEGORY_MIN = {
-  milk: { min: 12, unit: "L" },
-} as const;
+/** The order minimum, in litres + kilograms of milk and curd combined. */
+export const ORDER_MIN = { min: 12, unit: "L/kg" } as const;
 
-export type RestrictedCategory = keyof typeof CATEGORY_MIN;
+const RESTRICTED = new Set<string>(["milk", "curd"]);
 
-const RESTRICTED = new Set<string>(["milk"]);
-
-/** True when a product's category is subject to the order minimum (milk). */
+/** True when a product's category counts toward the order minimum. */
 export function isMinQtyCategory(categoryName?: string | null): boolean {
   return !!categoryName && RESTRICTED.has(categoryName.trim().toLowerCase());
 }
 
 // ── Per-line helpers ──────────────────────────────────────────────────
-// There is no longer a per-LINE minimum (the rule is now an order-level total),
-// so these are neutral: minQtyFor is always 1 and snapQtyToMin only clamps to a
+// There is no per-LINE minimum (the rule is an order-level total), so these
+// are neutral: minQtyFor is always 1 and snapQtyToMin only clamps to a
 // non-negative integer. Kept so quantity steppers keep a single call site.
 
-/** Per-line minimum quantity — always 1 now (no per-line restriction). */
+/** Per-line minimum quantity — always 1 (no per-line restriction). */
 export function minQtyFor(_categoryName?: string | null): number {
   return 1;
 }
@@ -86,47 +84,68 @@ export interface MinLine {
   unit?: string | null;
   packSize?: number | string | null;
   name?: string | null;
+  code?: string | null;
+  /** Exempt from the minimum. Never counts. */
+  exempt?: boolean;
 }
 
 export interface CategoryShortfall {
-  category: RestrictedCategory;
   total: number;
   min: number;
   unit: string;
 }
 
-const round3 = (n: number) => Math.round(n * 1000) / 1000;
+/** The subsidy HTM 1000ML SKU (migration 0056) never counts toward the minimum. */
+export const MIN_QTY_EXEMPT_CODES = ["PD0191S"];
 
-/** Restricted categories present in the lines whose L total is below the minimum. */
-export function findCategoryMinShortfalls(lines: MinLine[]): CategoryShortfall[] {
-  let milkLitres = 0;
-  for (const l of lines) {
-    if (!(l.quantity > 0)) continue;
-    const cat = (l.categoryName ?? "").trim().toLowerCase();
-    const m = unitMeasure(l.unit, l.packSize, l.name);
-    if (cat === "milk") milkLitres += l.quantity * m.litres;
-  }
-  const out: CategoryShortfall[] = [];
-  const milk = round3(milkLitres);
-  if (milk > 0 && milk < CATEGORY_MIN.milk.min) {
-    out.push({ category: "milk", total: milk, min: CATEGORY_MIN.milk.min, unit: CATEGORY_MIN.milk.unit });
-  }
-  return out;
+/** True for the employee-subsidy product (by code, or "subsid" in its name). */
+export function isSubsidyProduct(p?: { code?: string | null; name?: string | null }): boolean {
+  const code = String(p?.code ?? "").trim();
+  if (MIN_QTY_EXEMPT_CODES.includes(code)) return true;
+  return /subsid/i.test(String(p?.name ?? ""));
 }
 
-/** Friendly, list-y message naming each category that is below its minimum. */
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Milk + curd in the lines, as litres + kilograms. */
+export function combinedMinQtyTotal(lines: MinLine[]): number {
+  let total = 0;
+  for (const l of lines) {
+    if (!(l.quantity > 0)) continue;
+    if (l.exempt || isSubsidyProduct(l)) continue;
+    if (!isMinQtyCategory(l.categoryName)) continue;
+    const m = unitMeasure(l.unit, l.packSize, l.name);
+    total += l.quantity * (m.litres + m.kg);
+  }
+  return round3(total);
+}
+
+/**
+ * The shortfall, if the order carries milk/curd below the minimum. Pass
+ * `exempt` when the minimum does not apply to this indent (the route already
+ * has one today).
+ */
+export function findCategoryMinShortfalls(
+  lines: MinLine[],
+  opts?: { exempt?: boolean },
+): CategoryShortfall[] {
+  if (opts?.exempt) return [];
+  const total = combinedMinQtyTotal(lines);
+  if (!(total > 0 && total < ORDER_MIN.min)) return [];
+  return [{ total, min: ORDER_MIN.min, unit: ORDER_MIN.unit }];
+}
+
+/** Friendly message for the shortfall. */
 export function categoryMinMessage(shortfalls: CategoryShortfall[]): string {
-  return (
-    shortfalls
-      .map(
-        (s) =>
-          `Milk order must total at least ${s.min} ${s.unit} ` +
-          `(currently ${s.total.toFixed(2)} ${s.unit})`,
-      )
-      .join("; ") + "."
-  );
+  return shortfalls
+    .map(
+      (s) =>
+        `Milk and curd must total at least ${s.min} ${s.unit} ` +
+        `(currently ${s.total.toFixed(2)} ${s.unit}).`,
+    )
+    .join(" ");
 }
 
 /** Short reminder of the rule, for helper text. */
 export const MIN_ORDER_RULE_TEXT =
-  "Milk orders must total at least 12 L.";
+  "Your first indent of the day for a route must total at least 12 L/kg of milk and curd.";

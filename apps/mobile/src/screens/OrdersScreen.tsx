@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -24,7 +24,6 @@ import AppHeader from "../components/AppHeader";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { useMyOrders, useReorder } from "../hooks/useOrders";
-import { useOrderPayment, PaymentPending, RazorpayCancelled, RazorpayFailed } from "../hooks/useOrderPayment";
 import { useProducts } from "../hooks/useProducts";
 import { useMyInvoices, useInvoiceByOrder } from "../hooks/useInvoices";
 import type { Order, OrderStatus } from "../lib/types";
@@ -112,10 +111,6 @@ export default function OrdersScreen({
   const reorder = useReorder();
   const invoiceByOrder = useInvoiceByOrder();
 
-  // ── Razorpay pay-now for payment_required orders ──────────────────
-  const [payOrderId, setPayOrderId] = useState<string | null>(null);
-  const orderPayment = useOrderPayment(payOrderId ?? "");
-
   const {
     fetchNextPage,
     hasNextPage,
@@ -198,54 +193,6 @@ export default function OrdersScreen({
       Alert.alert("Error", msg);
     }
   };
-
-  const handlePayNow = (orderId: string) => {
-    setPayOrderId(orderId);
-  };
-
-  // Opens Razorpay once a payment_required orderId is set, then clears it.
-  useEffect(() => {
-    if (!payOrderId) return;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await orderPayment.mutateAsync();
-        if (cancelled) return;
-        setPayOrderId(null);
-        Alert.alert("Payment Successful", "Your order has been confirmed.");
-      } catch (err) {
-        if (cancelled) return;
-        setPayOrderId(null);
-        if (err instanceof RazorpayCancelled) {
-          Alert.alert(
-            "Payment Cancelled",
-            "You can try paying again from this screen."
-          );
-          return;
-        }
-        // Money likely taken but the server couldn't confirm in time — the
-        // backend confirms it automatically. NOT a failure: never show
-        // "failed" here or the dealer may pay twice.
-        if (err instanceof PaymentPending) {
-          Alert.alert("Confirming Your Payment", err.message);
-          return;
-        }
-        Alert.alert(
-          "Payment Failed",
-          err instanceof RazorpayFailed
-            ? err.description || "Please try again."
-            : err instanceof Error
-              ? err.message
-              : "Please try again."
-        );
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [payOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Render ───────────────────────────────────────────────────────
   if (ordersQuery.isLoading && !ordersQuery.data) {
@@ -350,10 +297,8 @@ export default function OrdersScreen({
             key={order.id}
             order={order}
             productEmojis={emojiMapForOrder(order, products)}
-            paying={payOrderId === order.id}
             onReorder={() => handleReorder(order.id)}
             onInvoice={() => handleViewInvoice(order.id)}
-            onPayNow={() => handlePayNow(order.id)}
           />
         )}
         onEndReached={() => {
@@ -423,26 +368,17 @@ function ActiveOrderCard({ order, onInvoice }: ActiveOrderCardProps) {
 interface OrderCardProps {
   order: Order;
   productEmojis: Map<string, string>;
-  paying?: boolean;
   onReorder: () => void;
   onInvoice: () => void;
-  onPayNow?: () => void;
 }
 
 function OrderCard({
   order,
   productEmojis,
-  paying = false,
   onReorder,
   onInvoice,
-  onPayNow,
 }: OrderCardProps) {
   const chip = chipForStatus(order);
-  // Unconfirmed orders (draft / payment_required) are actionable only until
-  // their delivery-day window closes; after that "Pay Now" is pointless.
-  const awaitingOpen = order.awaitingPaymentOpen ?? true;
-  const showPayNow = order.status === "payment_required" && awaitingOpen;
-
   // An invoice exists ONLY for placed orders. Draft / payment_required /
   // cancelled orders are not a tax document, so never offer the Invoice
   // action (the backend also refuses to mint one for them).
@@ -509,21 +445,6 @@ function OrderCard({
               <Text style={[cardStyles.actionText, cardStyles.actionTextInvoice]}>📄 Invoice</Text>
             </TouchableOpacity>
           )}
-
-          {showPayNow && (
-            <TouchableOpacity
-              onPress={onPayNow}
-              disabled={paying}
-              activeOpacity={0.75}
-              style={[cardStyles.action, cardStyles.actionPayNow]}
-            >
-              {paying ? (
-                <ActivityIndicator color={colors.warning} size="small" />
-              ) : (
-                <Text style={[cardStyles.actionText, cardStyles.actionTextPayNow]}>💳 Pay Now</Text>
-              )}
-            </TouchableOpacity>
-          )}
         </View>
       </View>
     </View>
@@ -570,23 +491,15 @@ function chipForStatus(order: Order) {   // ← Updated: now takes full Order
       textStyle: cardStyles.chipTextCancelled,
     };
   }
-  // Unconfirmed: draft or payment_required. While the window is still open the
-  // dealer can still get it placed (pay now / auto-confirm) → "Awaiting
-  // Payment". Once the window has closed its fate is sealed — it was never
-  // placed, so don't dress it up as Paid or offer an invoice.
+  // Unconfirmed: draft or payment_required. It was never placed (an unpaid
+  // indent is cancelled, not paid later), so don't dress it up as Paid or
+  // offer an invoice.
   if (order.status === "draft" || order.status === "payment_required") {
-    const open = order.awaitingPaymentOpen ?? true;
-    return open
-      ? {
-          label: "💳 Awaiting Payment",
-          style: cardStyles.chipPending,
-          textStyle: cardStyles.chipTextPending,
-        }
-      : {
-          label: "○ Not placed",
-          style: cardStyles.chipNotPlaced,
-          textStyle: cardStyles.chipTextNotPlaced,
-        };
+    return {
+      label: "○ Not placed",
+      style: cardStyles.chipNotPlaced,
+      textStyle: cardStyles.chipTextNotPlaced,
+    };
   }
   // confirmed, dispatched, delivered all show as Paid
   return {
@@ -863,11 +776,9 @@ const cardStyles = StyleSheet.create({
     fontFamily: fonts.extrabold,
   },
   chipPaid:           { backgroundColor: colors.successLight },
-  chipPending:        { backgroundColor: colors.warningLight },
   chipCancelled:      { backgroundColor: colors.destructiveLight },
   chipNotPlaced:      { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
   chipTextPaid:       { color: colors.success },
-  chipTextPending:    { color: colors.warning },
   chipTextCancelled:  { color: colors.destructive },
   chipTextNotPlaced:  { color: colors.mutedForeground },
 
@@ -927,9 +838,7 @@ const cardStyles = StyleSheet.create({
   },
   actionReorder:    { backgroundColor: colors.primaryLight },
   actionInvoice:    { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
-  actionPayNow:     { backgroundColor: colors.warningLight, borderWidth: 1, borderColor: colors.warningBorder },
   actionText:       { fontSize: 9, fontFamily: fonts.bold },
   actionTextReorder:{ color: colors.primary },
   actionTextInvoice:{ color: colors.mutedForeground },
-  actionTextPayNow: { color: colors.warning },
 });

@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import type {
@@ -30,7 +30,6 @@ interface RawOrder {
   created_at: string;           // ← always string from backend
   confirmed_at?: string | null;
   delivery_date?: string | null;
-  awaiting_payment_open?: boolean;
   items?: RawOrderItem[];
 }
 
@@ -61,9 +60,6 @@ function normalizeOrder(o: RawOrder): Order {
     createdAt:   toIsoString(o.created_at),
     confirmedAt: o.confirmed_at ? toIsoString(o.confirmed_at) : null,
     deliveryDate: o.delivery_date ?? null,
-    // Preserve undefined when the API predates the field so the UI can treat
-    // "missing" as still-open rather than forcing "Not placed".
-    awaitingPaymentOpen: o.awaiting_payment_open,
     items: (o.items ?? []).map((i) => ({
       productId:  i.product_id,
       productName: i.product_name,
@@ -156,6 +152,9 @@ export function usePlaceOrder() {
       // (cancelSupersededSiblings). Refresh the draft cache so the home
       // screen sees the now-placed status and won't re-seed the cleared cart.
       qc.invalidateQueries({ queryKey: qk.draft.all });
+      // The route now has an indent for the day: the order minimum no
+      // longer applies to the next one.
+      qc.invalidateQueries({ queryKey: ["min-qty-status"] });
     },
   });
 }
@@ -179,5 +178,57 @@ interface ReorderResponse {
 export function useReorder() {
   return useMutation<ReorderResponse, Error, string>({
     mutationFn: (orderId) => api.post<ReorderResponse>(`/api/v1/orders/reorder/${orderId}`),
+  });
+}
+
+// ── POST /dealer/orders/:id/cancel-unpaid — drop a never-paid indent ───
+
+/**
+ * Cancels an indent whose online payment never completed
+ * (status payment_required). It was never placed, so this puts the dealer
+ * back to an editable draft with the items still there. Safe to retry: the
+ * server no-ops on an order that is no longer unpaid.
+ */
+export function useCancelUnpaidOrder() {
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, string>({
+    mutationFn: (orderId) =>
+      api(`/api/v1/dealer/orders/${orderId}/cancel-unpaid`, {
+        method: "POST",
+        body: {},
+        networkRetries: 2,
+      }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: qk.draft.all });
+      qc.invalidateQueries({ queryKey: qk.orders.all });
+      qc.invalidateQueries({ queryKey: qk.products });
+    },
+  });
+}
+
+// ── GET /dealer/orders/min-qty-status — does the order minimum apply? ──
+
+export interface MinQtyStatus {
+  /** False when the route already has an indent that day, or the dealer is exempt. */
+  applies: boolean;
+  min: number;
+  unit: string;
+  reason: "required" | "exempt_rate_category" | "route_already_served";
+}
+
+/**
+ * Whether the 12 L/kg milk + curd minimum applies to the dealer's indent
+ * for `date` (defaults to today on the server). Only the first indent on a
+ * route each day carries the minimum.
+ */
+export function useMinQtyStatus(date?: string | null) {
+  return useQuery<MinQtyStatus>({
+    queryKey: qk.minQtyStatus(date),
+    queryFn: () =>
+      api.get<MinQtyStatus>(
+        `/api/v1/dealer/orders/min-qty-status${date ? `?date=${date}` : ""}`
+      ),
+    staleTime: 30_000,
+    refetchOnMount: true,
   });
 }

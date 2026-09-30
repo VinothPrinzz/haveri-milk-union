@@ -237,10 +237,11 @@ export default function HomeScreen({
         // Inst-MRP dealer would be shown MRP for it.
         unitPrice: subsidy.unitPrice,
         // Billed gross (base + GST) — mirrors what the catalog's
-        // dealerPrice shows for regular products.
+        // dealerPrice shows for regular products. Kept to 3 decimals so the
+        // cart's own rounding of the line total matches the server's.
         dealerPrice:
-          Math.round(subsidy.unitPrice * (1 + subsidy.gstPercent / 100) * 100) /
-          100,
+          Math.round(subsidy.unitPrice * (1 + subsidy.gstPercent / 100) * 1000) /
+          1000,
         mrp: subsidy.unitPrice,
         gstPercent: subsidy.gstPercent,
         categoryName: subsidy.categoryName ?? undefined,

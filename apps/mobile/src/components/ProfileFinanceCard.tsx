@@ -45,7 +45,7 @@ export default function ProfileFinanceCard() {
         </View>
 
         <Text style={styles.bigAmount}>
-          ₹{available.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+          ₹{available.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           <Text style={styles.bigAmountSuffix}> in wallet</Text>
         </Text>
 
@@ -53,7 +53,7 @@ export default function ProfileFinanceCard() {
           <View style={[styles.row, { marginTop: 10 }]}>
             <Text style={styles.rowLabel}>Outstanding</Text>
             <Text style={styles.rowValue}>
-              ₹{outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              ₹{outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </Text>
           </View>
         )}

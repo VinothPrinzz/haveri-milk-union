@@ -43,6 +43,10 @@ const num = (v: number | string | null | undefined): number => {
   return Number.isFinite(n) ? (n as number) : NaN;
 };
 
+// Prices are rupees and paise: round every result to 2 decimals so the app
+// shows exactly what the server bills (no 44.64999… from the GST division).
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
 export interface PricedProduct {
   basePrice: number | string;
   /** GROSS, GST-inclusive. */
@@ -64,7 +68,7 @@ export function resolveUnitPrice(
   rateCategory: string | null | undefined
 ): number {
   const basePrice = num(product.basePrice);
-  const safeBase = Number.isFinite(basePrice) ? basePrice : 0;
+  const safeBase = round2(Number.isFinite(basePrice) ? basePrice : 0);
 
   if (!isCreditInstMrp(rateCategory)) return safeBase;
   if (!isMilkCategory(product.categoryName)) return safeBase;
@@ -74,7 +78,7 @@ export function resolveUnitPrice(
   if (!Number.isFinite(gross) || gross <= 0) return safeBase;
 
   const gstPct = num(product.gstPercent);
-  const net = gross / (1 + (Number.isFinite(gstPct) ? gstPct : 0) / 100);
+  const net = round2(gross / (1 + (Number.isFinite(gstPct) ? gstPct : 0) / 100));
 
   // Never bill an institution below the dealer rate.
   return net > safeBase ? net : safeBase;
@@ -93,12 +97,12 @@ export function resolveDisplayPrice(
   if (isCreditInstMrp(rateCategory) && isMilkCategory(product.categoryName)) {
     const net = resolveUnitPrice(product, rateCategory);
     const gstPct = num(product.gstPercent);
-    return net * (1 + (Number.isFinite(gstPct) ? gstPct : 0) / 100);
+    return round2(net * (1 + (Number.isFinite(gstPct) ? gstPct : 0) / 100));
   }
   const dealer = num(product.dealerPrice);
-  if (Number.isFinite(dealer) && dealer > 0) return dealer;
+  if (Number.isFinite(dealer) && dealer > 0) return round2(dealer);
   const mrp = num(product.mrp);
-  if (Number.isFinite(mrp) && mrp > 0) return mrp;
+  if (Number.isFinite(mrp) && mrp > 0) return round2(mrp);
   const base = num(product.basePrice);
-  return Number.isFinite(base) ? base : 0;
+  return round2(Number.isFinite(base) ? base : 0);
 }

@@ -222,6 +222,9 @@ export function useConfirmDraft(date: string) {
       // ["orders","my",...] key useMyOrders registers under, which is
       // exactly why the Orders tab didn't refresh after a confirm.
       qc.invalidateQueries({ queryKey: qk.orders.all });
+      // The route now has an indent for the day, so the order minimum no
+      // longer applies to the next one.
+      qc.invalidateQueries({ queryKey: ["min-qty-status"] });
       // Credit / outstanding changed — refresh the Zustand profile so
       // the Profile tab's credit limit updates without a manual reload.
       useAuthStore.getState().refreshProfile();
