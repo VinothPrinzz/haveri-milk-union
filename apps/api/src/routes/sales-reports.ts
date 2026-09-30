@@ -958,10 +958,10 @@ export async function salesReportRoutes(app: FastifyInstance) {
           const kgLtr = products.map((p, i) => round3(toKgLtr(pkts[i] ?? 0, p.packSize, p.unit)));
           const amount = products.map(p =>
             round2(Array.from(p.dailyAmount.values()).reduce((s, v) => s + v, 0)));
-          // Two decimals, like every other figure on the bill. The tax is
-          // split by giving CGST the rounded half and SGST the remainder, so
-          // BASIC + CGST + SGST still equals Amount to the paisa even when
-          // the half lands on a half-paisa (12.75 → 6.38 + 6.37).
+          // Two decimals, like every other figure on the bill. CGST and SGST
+          // are always equal; when the tax comes to an odd paisa, BASIC
+          // absorbs it, so BASIC + CGST + SGST still equals Amount to the
+          // paisa (see splitGstFromGross).
           const splits = products.map((p, i) => splitGstFromGross(amount[i] ?? 0, p.gstPct));
           const basic = splits.map(sp => sp.basic);
           const cgstPctArr = products.map(p => round2(p.gstPct / 2));
@@ -3535,16 +3535,31 @@ function priceVariantSuffixes(
  * order was placed. Fixing a wrong rate in the product master therefore
  * fixes the whole history at once (it used to need a repair script).
  *
- * basic + cgst + sgst == amount to the paisa; the odd half-paisa goes to
- * CGST, exactly as the paper bill splits it.
+ * CGST and SGST are levied at the same rate on the same taxable value, so
+ * they are always EQUAL: each is the gross's half-rate share rounded to the
+ * paisa, and basic takes whatever is left, so basic + cgst + sgst == amount
+ * to the paisa. It used to round the TOTAL tax and hand the odd paisa to
+ * CGST (129.46 / 129.45), and float error on x.xx5 halves sometimes handed
+ * it to SGST instead (273.21 / 273.22); the statement's CGST and SGST
+ * columns then footed to different totals. The odd paisa now sits in basic,
+ * where basic x half-rate still rounds back to the CGST/SGST printed.
+ *
+ * All arithmetic is in integer paise, so no half-paisa is lost to float.
  */
 function splitGstFromGross(amount: number, gstPct: number) {
-  const gross = round2(amount);
-  const basic = round2(gross / (1 + (Number(gstPct) || 0) / 100));
-  const tax   = round2(gross - basic);
-  const cgst  = round2(tax / 2);
-  const sgst  = round2(tax - cgst);
-  return { basic, cgst, sgst, tax };
+  const grossP = Math.round((Number(amount) || 0) * 100);
+  const sign   = grossP < 0 ? -1 : 1;
+  const absP   = Math.abs(grossP);
+  // Rate in hundredths of a percent (5% → 500), so 2.5% etc. stay exact.
+  const rateH  = Math.round((Number(gstPct) || 0) * 100);
+  // Each half: gross × (rate/2) / (1 + rate), rounded half-up to the paisa.
+  const num    = absP * rateH;
+  const den    = 2 * (10000 + rateH);
+  const halfP  = Math.floor((2 * num + den) / (2 * den));
+  const cgst   = (sign * halfP) / 100;
+  const tax    = (sign * 2 * halfP) / 100;
+  const basic  = (sign * (absP - 2 * halfP)) / 100;
+  return { basic, cgst, sgst: cgst, tax };
 }
 
 function round2(n: number): number {
