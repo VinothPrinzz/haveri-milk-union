@@ -620,6 +620,9 @@ const UNION_FSSAI = "11223999000033";
 const nAmt  = (n: number) => (Number(n) || 0).toFixed(2);                       // 3540.00
 const nRaw  = (n: number) => String(Math.round((Number(n) || 0) * 100) / 100); // 1454.11
 const nRate = (n: number) => String(Math.round((Number(n) || 0) * 100) / 100);
+// CGST / SGST are each exactly half the tax, so an odd paisa of tax shows
+// as a half-paisa on both: three decimals (129.455), never rounded apart.
+const nTax  = (n: number) => (Number(n) || 0).toFixed(3);
 const nPk   = (n: number) => (n ? String(Math.round(n)) : "");
 const nKg   = (n: number) => {
   const v = Number(n) || 0;
@@ -722,13 +725,13 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
           </tr>
           <tr>
             <td className={tdLabel}>CGST</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nRaw(b.totals.cgst[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nRaw(b.totals.cgstGrand)}</td>
+            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.cgst[i] ?? 0)}</td>)}
+            <td className={`${tdTotal} text-right`}>{nTax(b.totals.cgstGrand)}</td>
           </tr>
           <tr>
             <td className={tdLabel}>SGST</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nRaw(b.totals.sgst[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nRaw(b.totals.sgstGrand)}</td>
+            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.sgst[i] ?? 0)}</td>)}
+            <td className={`${tdTotal} text-right`}>{nTax(b.totals.sgstGrand)}</td>
           </tr>
           <tr className="font-semibold">
             <td className={tdLabel}>Amount</td>
@@ -1338,6 +1341,16 @@ export const AdhocSalesReport = () => (
 );
 
 // ─── B9. GST Sales Statement ────────────────────────────────────
+// CGST / SGST are each exactly half the tax, so they carry three decimals
+// (₹129.455) where every other amount carries two.
+const fmtGst = (n: number) =>
+  (Number(n) || 0).toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+  });
+
 // One row per product and billed rate, for the chosen sales type.
 export const GSTStatement = () => (
   <SalesReportShell<GstStatementResponse>
@@ -1375,8 +1388,8 @@ export const GSTStatement = () => (
                   <td className="border border-border py-0.5 px-1.5 text-right num">{fmtINR(r.rate)}</td>
                   <td className="border border-border py-0.5 px-1.5 text-right num">{r.gstPct}%</td>
                   <td className="border border-border py-0.5 px-1.5 text-right num">{fmtINR(r.taxableValue)}</td>
-                  <td className="border border-border py-0.5 px-1.5 text-right num">{fmtINR(r.cgst)}</td>
-                  <td className="border border-border py-0.5 px-1.5 text-right num">{fmtINR(r.sgst)}</td>
+                  <td className="border border-border py-0.5 px-1.5 text-right num">{fmtGst(r.cgst)}</td>
+                  <td className="border border-border py-0.5 px-1.5 text-right num">{fmtGst(r.sgst)}</td>
                   <td className="border border-border py-0.5 px-1.5 text-right num">{fmtINR(r.invoiceValue)}</td>
                 </tr>
               ))}
@@ -1386,8 +1399,8 @@ export const GSTStatement = () => (
                 <td className="border border-border py-1 px-1.5"></td>
                 <td className="border border-border py-1 px-1.5"></td>
                 <td className="border border-border py-1 px-1.5 text-right num">{fmtINR(apiData.totals.taxableValue)}</td>
-                <td className="border border-border py-1 px-1.5 text-right num">{fmtINR(apiData.totals.cgst)}</td>
-                <td className="border border-border py-1 px-1.5 text-right num">{fmtINR(apiData.totals.sgst)}</td>
+                <td className="border border-border py-1 px-1.5 text-right num">{fmtGst(apiData.totals.cgst)}</td>
+                <td className="border border-border py-1 px-1.5 text-right num">{fmtGst(apiData.totals.sgst)}</td>
                 <td className="border border-border py-1 px-1.5 text-right num">{fmtINR(apiData.totals.invoiceValue)}</td>
               </tr>
             </tbody>
