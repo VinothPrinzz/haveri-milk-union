@@ -11,7 +11,7 @@ import {
   fetchTalukaWise, fetchAgentSales,
   type DailyStatementResponse, type DayRouteCashResponse,
   type OfficerWiseResponse, type SalesGridResponse,
-  type CreditSalesResponse, type CreditBillCustomer, type TalukaAgentResponse,
+  type CreditSalesResponse, type CreditBillCustomer, type CreditBillProduct, type TalukaAgentResponse,
   type AdhocResponse, type GstStatementResponse, type VipSalesResponse,
   type TalukaWiseResponse, type TalukaWiseRow, type AgentSalesResponse,
   type ProductLite, type SaleType,
@@ -630,9 +630,47 @@ const nKg   = (n: number) => {
   return Number.isInteger(v) ? v.toFixed(1) : String(Math.round(v * 100) / 100);
 };
 
-function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
+// Product columns are split across sheets so a customer with many products
+// doesn't run past the printed page width. Cells don't wrap (except the
+// product name, at spaces), so a column's print width follows its longest
+// value: ~10px per monospace char at 12.5pt + padding, min 98px. Budget is
+// A4 portrait (the default) minus the row-label column; Total Amount only
+// prints on the customer's last sheet.
+const CB_PAGE_PX = 700 - 74;
+const cbPx = (texts: string[], minPx: number) =>
+  Math.max(minPx, Math.max(0, ...texts.map(t => t.length)) * 10 + 15);
+
+function creditBillColumnPages(b: CreditBillCustomer): number[][] {
+  const activeRows = b.dailyRows.filter(row => row.qty.some(q => q > 0));
+  const colPx = (p: CreditBillProduct, i: number) => cbPx([
+    ...p.reportAlias.split(/\s+/), p.session, p.hsn, nRate(p.rate), "Qty",
+    ...activeRows.map(r => nPk(r.qty[i] ?? 0)),
+    nPk(b.totals.pkts[i] ?? 0), nKg(b.totals.kgLtr[i] ?? 0), nRaw(b.totals.basic[i] ?? 0),
+    nTax(b.totals.cgst[i] ?? 0), nTax(b.totals.sgst[i] ?? 0), nAmt(b.totals.amount[i] ?? 0),
+  ], 98);
+  const totalPx = cbPx([
+    "Total Amount", ...activeRows.map(r => nAmt(r.dayTotal)),
+    nAmt(b.totals.basicGrand), nTax(b.totals.cgstGrand), nTax(b.totals.sgstGrand), nAmt(b.totals.amountGrand),
+  ], 112);
+
+  const pages: number[][] = [[]];
+  let used = 0;
+  b.products.forEach((p, i) => {
+    const w = colPx(p, i);
+    if (pages[pages.length - 1].length && used + w > CB_PAGE_PX) { pages.push([]); used = 0; }
+    pages[pages.length - 1].push(i);
+    used += w;
+  });
+  // No room for Total Amount on the last sheet → move its last column over.
+  const last = pages[pages.length - 1];
+  if (last.length > 1 && used + totalPx > CB_PAGE_PX) pages.push([last.pop()!]);
+  return pages;
+}
+
+function renderCreditBillPage(b: CreditBillCustomer, pageNo: number, cols: number[], isLast: boolean) {
   // Only days that carry at least one sale appear on the paper bill.
   const activeRows = b.dailyRows.filter(row => row.qty.some(q => q > 0));
+  const prods = cols.map(i => ({ p: b.products[i], i }));
   // Cell classes: product columns, the row-label column, the total column.
   const th = "cb-cell cb-prod align-bottom";
   const td = "cb-cell cb-prod";
@@ -674,75 +712,75 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
         <thead>
           <tr>
             <th className={thLabel}></th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-center`}>{p.session}</th>)}
-            <th className={thTotal}></th>
+            {prods.map(({ p }) => <th key={p.key} className={`${th} text-center`}>{p.session}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Pkt</th>
-            {b.products.map(p => <th key={p.key} className={`${th} cb-name text-center`}>{p.reportAlias}</th>)}
-            <th className={thTotal}></th>
+            {prods.map(({ p }) => <th key={p.key} className={`${th} cb-name text-center`}>{p.reportAlias}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>HSN</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>{p.hsn}</th>)}
-            <th className={thTotal}></th>
+            {prods.map(({ p }) => <th key={p.key} className={`${th} text-right`}>{p.hsn}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Rate</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>{nRate(p.rate)}</th>)}
-            <th className={thTotal}></th>
+            {prods.map(({ p }) => <th key={p.key} className={`${th} text-right`}>{nRate(p.rate)}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Date</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>Qty</th>)}
-            <th className={`${thTotal} text-right`}>Total Amount</th>
+            {prods.map(({ p }) => <th key={p.key} className={`${th} text-right`}>Qty</th>)}
+            {isLast && <th className={`${thTotal} text-right`}>Total Amount</th>}
           </tr>
         </thead>
         <tbody>
           {activeRows.map((row, ri) => (
             <tr key={ri}>
               <td className={tdLabel}>{row.day}</td>
-              {b.products.map((p, pi) => <td key={p.key} className={`${td} text-right`}>{nPk(row.qty[pi] ?? 0)}</td>)}
-              <td className={`${tdTotal} text-right`}>{row.dayTotal ? nAmt(row.dayTotal) : ""}</td>
+              {prods.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nPk(row.qty[i] ?? 0)}</td>)}
+              {isLast && <td className={`${tdTotal} text-right`}>{row.dayTotal ? nAmt(row.dayTotal) : ""}</td>}
             </tr>
           ))}
         </tbody>
         <tfoot>
           <tr className="font-semibold">
             <td className={tdLabel}>Pkts</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nPk(b.totals.pkts[i] ?? 0)}</td>)}
-            <td className={tdTotal}></td>
+            {prods.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nPk(b.totals.pkts[i] ?? 0)}</td>)}
+            {isLast && <td className={tdTotal}></td>}
           </tr>
           <tr>
             <td className={tdLabel}>Kg\ltr</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nKg(b.totals.kgLtr[i] ?? 0)}</td>)}
-            <td className={tdTotal}></td>
+            {prods.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nKg(b.totals.kgLtr[i] ?? 0)}</td>)}
+            {isLast && <td className={tdTotal}></td>}
           </tr>
           <tr>
             <td className={tdLabel}>BASIC</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nRaw(b.totals.basic[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nAmt(b.totals.basicGrand)}</td>
+            {prods.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nRaw(b.totals.basic[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nAmt(b.totals.basicGrand)}</td>}
           </tr>
           <tr>
             <td className={tdLabel}>CGST</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.cgst[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nTax(b.totals.cgstGrand)}</td>
+            {prods.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.cgst[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nTax(b.totals.cgstGrand)}</td>}
           </tr>
           <tr>
             <td className={tdLabel}>SGST</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.sgst[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nTax(b.totals.sgstGrand)}</td>
+            {prods.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.sgst[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nTax(b.totals.sgstGrand)}</td>}
           </tr>
           <tr className="font-semibold">
             <td className={tdLabel}>Amount</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nAmt(b.totals.amount[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nAmt(b.totals.amountGrand)}</td>
+            {prods.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nAmt(b.totals.amount[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nAmt(b.totals.amountGrand)}</td>}
           </tr>
         </tfoot>
       </table>
 
       {/* Notes + signature */}
-      <div className="cb-notes flex justify-between mt-2 text-[12px]">
+      {isLast && <div className="cb-notes flex justify-between mt-2 text-[12px]">
         <div>
           <div>NOTE: - Kindly acknowledge receipt of this bill immediately.</div>
           <div className="pl-10">- Variation in the above bill if any may be intimated within 15 days.</div>
@@ -750,7 +788,7 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
           <div className="pl-14">CO-OP MILK PRODUCERS SOCIETIES UNION LTD., HAVERI".</div>
         </div>
         <div className="self-end whitespace-nowrap">AUTHORISED SIGNATURE.</div>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -798,11 +836,17 @@ export const CreditSalesReport = () => (
     fetcher={(from, to) => fetchCreditSales({ from, to })}
     renderPages={(_from, _to, apiData) => {
       if (!apiData || apiData.customers.length === 0) return [];
-      const pages: ReactNode[] = apiData.customers.map((b, i) => (
-        <div key={b.id}>{renderCreditBillPage(b, i + 1)}</div>
-      ));
+      const pages: ReactNode[] = [];
+      apiData.customers.forEach(b => {
+        const colPages = creditBillColumnPages(b);
+        colPages.forEach((cols, ci) => pages.push(
+          <div key={`${b.id}-${ci}`}>
+            {renderCreditBillPage(b, pages.length + 1, cols, ci === colPages.length - 1)}
+          </div>
+        ));
+      });
       pages.push(
-        <div key="summary">{renderCreditSummaryPage(apiData, apiData.customers.length + 1)}</div>
+        <div key="summary">{renderCreditSummaryPage(apiData, pages.length + 1)}</div>
       );
       return pages;
     }}
