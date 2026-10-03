@@ -29,6 +29,7 @@ import {
   type DispatchSheetRoute,
 } from "@/services/api";
 import { type StockBucket, BUCKET_LABELS, filterByBucket } from "@/lib/stock-buckets";
+import { todayIST } from "@/lib/istDate";
 
 // Crates ± loose packets, mirroring the Route Sheet formula
 // (apps/api/src/routes/reports.ts): round to the NEAREST full crate, then the
@@ -54,7 +55,7 @@ interface Props {
 
 export default function DispatchSheetBase({ bucket }: Props) {
   const qc = useQueryClient();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
 
   const [selectedDate, setSelectedDate] = useState(today);
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
@@ -91,8 +92,8 @@ export default function DispatchSheetBase({ bucket }: Props) {
 
   const markDispatched = useMutation({
     mutationFn: (routeId: string) => markRouteDispatched({ date: selectedDate, routeId }),
-    onSuccess: () => {
-      toast.success("Route marked as dispatched");
+    onSuccess: (res) => {
+      toast.success(res?.message || "Marked as dispatched");
       qc.invalidateQueries({ queryKey: ["dispatch-sheet"] });
     },
     onError: (err: any) => toast.error(err?.message || "Failed to mark dispatched"),
@@ -132,9 +133,9 @@ export default function DispatchSheetBase({ bucket }: Props) {
   return (
     <div className="flex flex-col h-full">
       <PageHeader
-        title={`Dispatch Sheet — ${BUCKET_LABELS[bucket]}`}
+        title={`Dispatch Sheet: ${BUCKET_LABELS[bucket]}`}
         subtitle={data
-          ? `${fmtDate(data.date)} — ${BUCKET_LABELS[bucket]} loading checklist by route`
+          ? `${BUCKET_LABELS[bucket]} loading checklist by route for ${fmtDate(data.date)}`
           : `${BUCKET_LABELS[bucket]} daily loading checklist`}
         actions={
           <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
@@ -184,10 +185,11 @@ export default function DispatchSheetBase({ bucket }: Props) {
                       <div className="flex items-center gap-3">
                         <span className="font-mono text-[12.5px] text-muted-foreground">{r.routeCode}</span>
                         <span className="font-semibold text-[14px]">{r.routeName}</span>
+                        {r.retired && <span className="text-[11px] text-muted-foreground">(deleted route)</span>}
                         {r.contractorName && <span className="text-[12px] text-muted-foreground">· {r.contractorName}</span>}
                       </div>
                       <div className="flex items-center gap-4 text-[12px]">
-                        <span><span className="text-muted-foreground">Dealers</span> <span className="font-semibold num">{r.dealerCount}</span></span>
+                        <span><span className="text-muted-foreground">{r.isAdhoc ? "Sales" : "Dealers"}</span> <span className="font-semibold num">{r.dealerCount}</span></span>
                         <span><span className="text-muted-foreground">Packets</span> <span className="font-semibold num">{fmtNum(r.totals.packets)}</span></span>
                         <span><span className="text-muted-foreground">Crates</span> <span className="font-semibold num">{fmtNum(routeCrates(r))}</span></span>
                         <span className="font-medium num">{fmtINR(r.totalAmount)}</span>
@@ -222,12 +224,12 @@ export default function DispatchSheetBase({ bucket }: Props) {
                             <tr key={it.productId}>
                               <td className="font-medium">{it.productName}</td>
                               <td className="text-muted-foreground">{it.category}</td>
-                              <td className="text-muted-foreground">{it.packSize ?? "—"}{it.unit && ` ${it.unit}`}</td>
+                              <td className="text-muted-foreground">{it.packSize ?? ""}{it.unit && ` ${it.unit}`}</td>
                               <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(it.totalPackets)}</td>
                               <td className="num text-muted-foreground" style={{ textAlign: "right" }}>{fmtNum(it.packetsPerCrate)}</td>
                               <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(cp.crates)}</td>
-                              <td className="num font-semibold" style={{ textAlign: "right" }}>{cp.pktPlus > 0 ? fmtNum(cp.pktPlus) : "—"}</td>
-                              <td className="num font-semibold" style={{ textAlign: "right" }}>{cp.pktMinus > 0 ? fmtNum(cp.pktMinus) : "—"}</td>
+                              <td className="num font-semibold" style={{ textAlign: "right" }}>{cp.pktPlus > 0 ? fmtNum(cp.pktPlus) : ""}</td>
+                              <td className="num font-semibold" style={{ textAlign: "right" }}>{cp.pktMinus > 0 ? fmtNum(cp.pktMinus) : ""}</td>
                               <td style={{ textAlign: "center" }}>
                                 <Checkbox
                                   // A dispatched/delivered route is verified by
@@ -247,19 +249,32 @@ export default function DispatchSheetBase({ bucket }: Props) {
                       </tbody>
                     </table>
 
-                    <div className="flex justify-end gap-2 px-4 py-3 border-t border-border bg-panel">
-                      <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
-                        <Printer className="h-3.5 w-3.5 mr-1.5" /> Print Loading Slip
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="h-8"
-                        disabled={r.status === "dispatched" || r.status === "delivered" || markDispatched.isPending}
-                        onClick={() => markDispatched.mutate(r.routeId)}
-                      >
-                        <Send className="h-3.5 w-3.5 mr-1.5" />
-                        Mark Dispatched
-                      </Button>
+                    <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-border bg-panel">
+                      {/* Counter sales and gate passes riding this route. */}
+                      <div className="text-[11.5px] text-muted-foreground">
+                        {(r.adhoc ?? []).length > 0 && (
+                          <>
+                            <span className="uppercase tracking-wide">Adhoc</span>{": "}
+                            {(r.adhoc ?? [])
+                              .map(a => `${a.label} ${fmtNum(a.packets)} pkt (${a.sales})`)
+                              .join(" · ")}
+                          </>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" className="h-8" onClick={() => window.print()}>
+                          <Printer className="h-3.5 w-3.5 mr-1.5" /> Print Loading Slip
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="h-8"
+                          disabled={r.status === "dispatched" || r.status === "delivered" || markDispatched.isPending}
+                          onClick={() => markDispatched.mutate(r.routeId)}
+                        >
+                          <Send className="h-3.5 w-3.5 mr-1.5" />
+                          Mark Dispatched
+                        </Button>
+                      </div>
                     </div>
                   </AccordionContent>
                 </div>

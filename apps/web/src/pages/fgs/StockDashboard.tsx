@@ -16,8 +16,9 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Package, TrendingDown, AlertCircle, CheckCircle, Search } from "lucide-react";
 import { fetchStockEntries, fetchProducts } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
-const today = () => new Date().toISOString().split("T")[0];
+const today = () => todayIST();
 
 export default function StockDashboard() {
   const [filterDate, setFilterDate] = useState(today());
@@ -56,7 +57,7 @@ export default function StockDashboard() {
   return (
     <div className="flex flex-col h-full">
       <PageHeader
-        title="FGS — Stock Overview"
+        title="FGS: Stock Overview"
         subtitle="Current stock levels and alerts"
       />
 
@@ -139,11 +140,11 @@ export default function StockDashboard() {
                         }
                       >
                         <td className="font-medium">{s.productName}</td>
-                        <td className="text-muted-foreground uppercase">{s.category ?? "—"}</td>
-                        <td>{s.unit ?? "—"}</td>
+                        <td className="text-muted-foreground uppercase">{s.category ?? ""}</td>
+                        <td>{s.unit ?? ""}</td>
                         <td className="num font-semibold" style={{ textAlign: "right" }}>{fmtNum(s.closing ?? s.stock ?? 0)}</td>
-                        <td className="num text-muted-foreground" style={{ textAlign: "right" }}>{fmtNum(s.low_stock_threshold ?? "—")}</td>
-                        <td className="num text-muted-foreground" style={{ textAlign: "right" }}>{fmtNum(s.critical_stock_threshold ?? "—")}</td>
+                        <td className="num text-muted-foreground" style={{ textAlign: "right" }}>{fmtNum(s.low_stock_threshold ?? "")}</td>
+                        <td className="num text-muted-foreground" style={{ textAlign: "right" }}>{fmtNum(s.critical_stock_threshold ?? "")}</td>
                       </tr>
                     ))}
                   </tbody>

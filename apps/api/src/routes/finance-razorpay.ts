@@ -34,6 +34,10 @@ import {
   isRazorpayConfigured,
   createRazorpayRefund,
 } from "../lib/razorpay-client.js";
+import {
+  balanceRefundedForOrder,
+  refundableToBank,
+} from "../lib/refund-accounting.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -180,7 +184,8 @@ export async function financeRazorpayRoutes(app: FastifyInstance) {
           COALESCE(SUM(CASE WHEN status = 'paid' AND reconciled_at IS NULL
                        THEN amount - amount_refunded ELSE 0 END), 0)::float8  AS "unreconciledAmount",
           COALESCE(SUM(CASE WHEN status = 'paid'
-                            AND paid_at::date = (now() AT TIME ZONE 'Asia/Kolkata')::date
+                            AND (paid_at AT TIME ZONE 'Asia/Kolkata')::date
+                                  = (now() AT TIME ZONE 'Asia/Kolkata')::date
                        THEN amount - amount_refunded ELSE 0 END), 0)::float8  AS "collectedToday"
         FROM razorpay_payments
         WHERE (${dateFrom}::timestamptz IS NULL OR created_at >= ${dateFrom ?? '1970-01-01'}::timestamptz)
@@ -278,7 +283,27 @@ export async function financeRazorpayRoutes(app: FastifyInstance) {
         ORDER BY dl.created_at DESC
       `;
 
-      return reply.send({ payment, refunds, ledger });
+      // What the screen may actually offer to refund. The gateway counter
+      // alone overstates it for an order whose refund already went onto the
+      // dealer's balance (a downward modify, or a cancel to store credit):
+      // that money is with the dealer, but amount_refunded never moved. The
+      // drawer reads this instead of computing amount − amountRefunded, so
+      // it cannot invite a second refund of the same rupees.
+      const p = payment as any;
+      const gatewayRemaining = Math.max(0, p.amount - p.amountRefunded);
+      const refundableAmount =
+        p.kind === "order_payment" && p.orderId
+          ? refundableToBank(
+              gatewayRemaining,
+              await balanceRefundedForOrder(pgClient, String(p.orderId)),
+            )
+          : gatewayRemaining;
+
+      return reply.send({
+        payment: { ...p, refundableAmount },
+        refunds,
+        ledger,
+      });
     }
   );
 
@@ -309,7 +334,8 @@ export async function financeRazorpayRoutes(app: FastifyInstance) {
                status::text AS status,
                amount::numeric AS amount,
                amount_refunded::numeric AS "amountRefunded",
-               razorpay_payment_id AS "rzpPaymentId"
+               razorpay_payment_id AS "rzpPaymentId",
+               order_id::text AS "orderId"
         FROM razorpay_payments
         WHERE id = ${id}
         LIMIT 1
@@ -324,15 +350,34 @@ export async function financeRazorpayRoutes(app: FastifyInstance) {
       if (!rp.rzpPaymentId) {
         return reply.status(400).send({
           error: "Missing payment id",
-          message: "This payment has no Razorpay payment id — cannot refund.",
+          message: "This payment has no Razorpay payment id, so it cannot be refunded.",
         });
       }
 
       const total      = parseFloat(rp.amount);
       const refunded   = parseFloat(rp.amountRefunded);
-      const remaining  = total - refunded;
+      // Anything already handed back on the balance rail (a downward modify
+      // of the indent, or a cancel refunded to store credit) has to come off
+      // the ceiling: it never moved amount_refunded, so the gateway counter
+      // on its own would let the same rupees go out a second time. That is
+      // how order 75b8e03f (2026-08-29) was paid back twice. See
+      // lib/refund-accounting.ts.
+      const remaining  = rp.orderId
+        ? refundableToBank(
+            total - refunded,
+            await balanceRefundedForOrder(pgClient, String(rp.orderId)),
+          )
+        : total - refunded;
       const refundAmt  = body.amount ?? remaining;
 
+      if (remaining <= 0.001) {
+        return reply.status(400).send({
+          error: "Nothing left to refund",
+          message:
+            "This payment has already been refunded in full, either through the gateway " +
+            "or onto the dealer's available balance when the indent was changed.",
+        });
+      }
       if (refundAmt > remaining + 0.001) {
         return reply.status(400).send({
           error: "Amount too large",
@@ -391,7 +436,7 @@ export async function financeRazorpayRoutes(app: FastifyInstance) {
                WHERE d.id = ${rp.dealerId}::uuid
             `;
             const balanceAfter = parseFloat(bal!.bal) - refundAmt;
-            const desc = `Razorpay refund ${rzpRefund.id} for ${rp.rzpPaymentId} — ${body.reason}`;
+            const desc = `Razorpay refund ${rzpRefund.id} for ${rp.rzpPaymentId}: ${body.reason}`;
 
             const [led] = await tx`
               INSERT INTO dealer_ledger (
@@ -511,10 +556,27 @@ export async function financeRazorpayRoutes(app: FastifyInstance) {
   // │  Buckets every gateway txn so finance can act:                    │
   // │   • matched     — paid, posted to books, reconciled               │
   // │   • needs_review— paid, posted to books, NOT yet reconciled       │
-  // │   • not_posted  — paid in Razorpay, NO internal payments row       │
+  // │   • not_posted  — paid in Razorpay, NOT in the books at all        │
   // │                   (applyPaidPayment failed — money unaccounted)   │
   // │   • stale       — created/attempted >24h ago, never paid          │
+  // │                                                                   │
+  // │  "In the books" is ONE test for every kind: a `payments` row       │
+  // │  keyed on the gateway payment id. That was once kind-dependent —  │
+  // │  a gate-pass counter QR was held to never post a receipt, so it   │
+  // │  was passed as booked on the weaker evidence that the gateway row │
+  // │  was paid and its direct_sale existed. The rail books a real      │
+  // │  receipt at capture now (applyPaidGatePassPayment), so the weaker │
+  // │  test would call a stranded capture "matched" while no receipt    │
+  // │  existed anywhere — the exact money this report is here to find.  │
   // └─────────────────────────────────────────────────────────────────┘
+
+  // Is this gateway row represented in the internal books? Built fresh per
+  // use because the bucket CASE and the counts CTE each need their own copy
+  // of the fragment's bindings.
+  const postedToBooks = () => pgClient`
+    EXISTS (SELECT 1 FROM payments p
+             WHERE p.reference = rp.razorpay_payment_id AND p.mode = 'upi')
+  `;
   app.get(
     "/api/v1/finance/reconciliation",
     { preHandler: [adminAuth, requireRole("finance.view")] },
@@ -543,17 +605,19 @@ export async function financeRazorpayRoutes(app: FastifyInstance) {
             rp.created_at          AS "createdAt",
             d.name                 AS "dealerName",
             d.code                 AS "dealerCode",
+            -- The internal artifact this money landed on: its receipt, for
+            -- every kind including gate passes. Reporting a gate pass's SALE
+            -- id here made the UI's "Posted" read true whether or not the
+            -- receipt existed, which is the one thing this column is for.
             (SELECT p.id FROM payments p
               WHERE p.reference = rp.razorpay_payment_id AND p.mode = 'upi'
               LIMIT 1)             AS "internalPaymentId",
             CASE
               WHEN rp.status = 'paid' AND rp.reconciled_at IS NOT NULL
-                   AND EXISTS (SELECT 1 FROM payments p
-                               WHERE p.reference = rp.razorpay_payment_id AND p.mode = 'upi')
+                   AND ${postedToBooks()}
                 THEN 'matched'
               WHEN rp.status IN ('paid','refunded')
-                   AND EXISTS (SELECT 1 FROM payments p
-                               WHERE p.reference = rp.razorpay_payment_id AND p.mode = 'upi')
+                   AND ${postedToBooks()}
                 THEN 'needs_review'
               WHEN rp.status IN ('paid','refunded')
                 THEN 'not_posted'
@@ -587,12 +651,10 @@ export async function financeRazorpayRoutes(app: FastifyInstance) {
           SELECT
             CASE
               WHEN rp.status = 'paid' AND rp.reconciled_at IS NOT NULL
-                   AND EXISTS (SELECT 1 FROM payments p
-                               WHERE p.reference = rp.razorpay_payment_id AND p.mode = 'upi')
+                   AND ${postedToBooks()}
                 THEN 'matched'
               WHEN rp.status IN ('paid','refunded')
-                   AND EXISTS (SELECT 1 FROM payments p
-                               WHERE p.reference = rp.razorpay_payment_id AND p.mode = 'upi')
+                   AND ${postedToBooks()}
                 THEN 'needs_review'
               WHEN rp.status IN ('paid','refunded')
                 THEN 'not_posted'

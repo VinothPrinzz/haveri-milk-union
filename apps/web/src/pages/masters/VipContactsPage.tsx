@@ -114,10 +114,10 @@ export default function VipContactsPage() {
                 {(vips as Vip[]).map(v => (
                   <tr key={v.id}>
                     <td className="font-medium">{v.name}</td>
-                    <td>{v.phone || "—"}</td>
-                    <td>{v.designation || "—"}</td>
-                    <td className="text-muted-foreground">{v.notes || "—"}</td>
-                    <td>{v.created_at ? fmtDate(v.created_at) : "—"}</td>
+                    <td>{v.phone || ""}</td>
+                    <td>{v.designation || ""}</td>
+                    <td className="text-muted-foreground">{v.notes || ""}</td>
+                    <td>{v.created_at ? fmtDate(v.created_at) : ""}</td>
                     <td style={{ textAlign: "right" }}>
                       <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => setEditing(v)}>
                         <Pencil className="h-3.5 w-3.5" />

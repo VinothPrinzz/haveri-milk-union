@@ -10,7 +10,7 @@
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import PageHeader, { FilterBar, Field, EmptyState, fmtINR } from "@/components/PageHeader";
+import PageHeader, { FilterBar, Field, EmptyState, fmtINR, fmtPrice } from "@/components/PageHeader";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Printer, Search } from "lucide-react";
@@ -92,11 +92,11 @@ export default function PriceChartPage() {
                     <tr key={p.id}>
                       <td className="font-mono">{p.code}</td>
                       <td className="font-medium">{p.name}</td>
-                      <td className="text-[12.5px]">{p.packSize != null ? `${p.packSize}${p.unit ? ` ${p.unit}` : ""}` : "—"}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.basePrice ?? 0)}</td>
+                      <td className="text-[12.5px]">{p.packSize != null ? `${p.packSize}${p.unit ? ` ${p.unit}` : ""}` : ""}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtPrice(p.basePrice ?? 0)}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(gstAmount)}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.dealerPrice ?? 0)}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtPrice(p.dealerPrice ?? 0)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtPrice(p.mrp ?? 0)}</td>
                     </tr>
                   );
                 })}
@@ -106,7 +106,7 @@ export default function PriceChartPage() {
 
           {/* Footer for print */}
           <div className="print-only print-footer px-3 py-2 text-[9pt] text-muted-foreground border-t mt-2">
-            {filtered.length} product(s) · Havemul — System Generated
+            {filtered.length} product(s) · Havemul (System Generated)
           </div>
         </div>
       </div>

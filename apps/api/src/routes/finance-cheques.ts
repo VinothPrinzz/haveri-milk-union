@@ -20,6 +20,7 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { istToday } from "../lib/ist-date.js";
 
 function adminUserId(request: FastifyRequest): string {
   const a = (request as unknown as { admin?: { userId: string } }).admin;
@@ -50,6 +51,33 @@ async function dealerBalance(tx: typeof pgClient, dealerId: string): Promise<num
       FROM dealers d WHERE d.id = ${dealerId}::uuid
   `;
   return parseFloat((bal as any).bal);
+}
+
+// Undo what the receipt applied to invoices (payment_allocations, 0076) —
+// a cheque can settle several invoices, each rolled back by its own share.
+async function rollbackInvoiceAllocations(tx: typeof pgClient, paymentId: string) {
+  let allocs = await tx`
+    SELECT invoice_id, amount FROM payment_allocations WHERE payment_id = ${paymentId}::uuid
+  `;
+  // Receipt linked only via payments.invoice_id — roll back its full amount.
+  if (allocs.length === 0) {
+    allocs = await tx`
+      SELECT invoice_id, amount FROM payments
+       WHERE id = ${paymentId}::uuid AND invoice_id IS NOT NULL
+    `;
+  }
+  for (const a of allocs) {
+    await tx`
+      UPDATE invoices
+         SET paid_amount = GREATEST(0, paid_amount - ${a.amount}::numeric),
+             payment_status = CASE
+               WHEN GREATEST(0, paid_amount - ${a.amount}::numeric) = 0 THEN 'unpaid'
+               WHEN GREATEST(0, paid_amount - ${a.amount}::numeric) >= total_amount THEN 'paid'
+               ELSE 'partial'
+             END
+       WHERE id = ${a.invoice_id}::uuid
+    `;
+  }
 }
 
 export async function financeChequesRoutes(app: FastifyInstance) {
@@ -94,8 +122,8 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           c.bounce_reason     AS "bounceReason",
           c.bank_charges::float8 AS "bankCharges",
           CASE c.status
-            WHEN 'received'  THEN CURRENT_DATE - c.received_date
-            WHEN 'deposited' THEN CURRENT_DATE - c.deposited_date
+            WHEN 'received'  THEN (now() AT TIME ZONE 'Asia/Kolkata')::date - c.received_date
+            WHEN 'deposited' THEN (now() AT TIME ZONE 'Asia/Kolkata')::date - c.deposited_date
             ELSE 0
           END                 AS "ageingDays",
           d.id                AS "dealerId",
@@ -103,7 +131,9 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           d.name              AS "dealerName",
           p.id                AS "paymentId",
           p.invoice_id        AS "invoiceId",
-          i.invoice_number    AS "invoiceNumber"
+          COALESCE((SELECT string_agg(ai.invoice_number, ', ' ORDER BY ai.invoice_date)
+                      FROM payment_allocations pa JOIN invoices ai ON ai.id = pa.invoice_id
+                     WHERE pa.payment_id = p.id), i.invoice_number) AS "invoiceNumber"
         FROM cheques c
         JOIN dealers d  ON d.id = c.dealer_id
         JOIN payments p ON p.id = c.payment_id
@@ -174,7 +204,9 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           COALESCE(SUM(amount) FILTER (WHERE status = 'bounced'
                              AND bounced_date BETWEEN ${dateFrom}::date AND ${dateTo}::date), 0)::float8 AS "bouncedAmount",
           COUNT(*) FILTER (WHERE status = 'received'
-                             AND received_date < CURRENT_DATE - 3)::int        AS "stagnantInHandCount"
+                             AND received_date
+                                   < (now() AT TIME ZONE 'Asia/Kolkata')::date - 3)::int
+                                                                   AS "stagnantInHandCount"
         FROM cheques
       `;
       return reply.send({ summary: s });
@@ -204,7 +236,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
       const body = (rows as any[]).map((r, i) => `
         <tr>
           <td>${i + 1}</td>
-          <td>${esc(r.dealerCode)} — ${esc(r.dealerName)}</td>
+          <td>${esc(r.dealerCode)}: ${esc(r.dealerName)}</td>
           <td>${esc(r.bankName)}${r.branch ? " / " + esc(r.branch) : ""}</td>
           <td>${esc(r.chequeNumber)}</td>
           <td class="num">${inr(r.amount)}</td>
@@ -220,8 +252,8 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           tfoot td{font-weight:bold;background:#fafafa;}
           @media print{button{display:none;}}
         </style></head><body>
-        <h1>HAVERI MILK UNION — Cheque Deposit Slip</h1>
-        <div>Date: ${esc(new Date().toISOString().slice(0, 10))} · Cheques: ${rows.length}</div>
+        <h1>HAVERI MILK UNION: Cheque Deposit Slip</h1>
+        <div>Date: ${esc(istToday())} · Cheques: ${rows.length}</div>
         <table>
           <thead><tr><th>#</th><th>Dealer</th><th>Bank</th><th>Cheque No.</th><th class="num">Amount</th></tr></thead>
           <tbody>${body || `<tr><td colspan="5">No cheques in hand</td></tr>`}</tbody>
@@ -251,7 +283,10 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           c.bank_charges::float8 AS "bankCharges", c.notes,
           c.reversal_ledger_entry_id AS "reversalLedgerEntryId",
           d.id AS "dealerId", d.code AS "dealerCode", d.name AS "dealerName",
-          p.id AS "paymentId", p.invoice_id AS "invoiceId", i.invoice_number AS "invoiceNumber",
+          p.id AS "paymentId", p.invoice_id AS "invoiceId",
+          COALESCE((SELECT string_agg(ai.invoice_number, ', ' ORDER BY ai.invoice_date)
+                      FROM payment_allocations pa JOIN invoices ai ON ai.id = pa.invoice_id
+                     WHERE pa.payment_id = p.id), i.invoice_number) AS "invoiceNumber",
           ru.name AS "receivedByName", du.name AS "depositedByName",
           cu.name AS "markedClearedByName", bu.name AS "markedBouncedByName"
         FROM cheques c
@@ -347,7 +382,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
         const tx = _tx as unknown as typeof pgClient;
 
         const [c] = await tx`
-          SELECT c.*, p.invoice_id AS "invoiceId"
+          SELECT c.*
             FROM cheques c
             JOIN payments p ON p.id = c.payment_id
            WHERE c.id = ${id}::uuid
@@ -374,7 +409,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           ) VALUES (
             ${c.dealer_id}::uuid, 'debit', ${amount.toFixed(2)}::numeric,
             ${c.id}::uuid, 'adjustment'::ledger_ref_type,
-            ${`Cheque bounced — ${c.cheque_number} from ${c.bank_name} — ${body.bounceReason}`},
+            ${`Cheque bounced: ${c.cheque_number} from ${c.bank_name} (${body.bounceReason})`},
             ${balanceAfter.toFixed(2)}::numeric, ${adminUserId(request)}::uuid,
             ${`CB-${c.cheque_number}`}, 'Adjustment',
             ${`Cheque ${c.cheque_number} returned: ${body.bounceReason}`},
@@ -395,18 +430,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           WHERE id = ${id}::uuid
         `;
 
-        if (c.invoiceId) {
-          await tx`
-            UPDATE invoices
-               SET paid_amount = GREATEST(0, paid_amount - ${amount.toFixed(2)}::numeric),
-                   payment_status = CASE
-                     WHEN GREATEST(0, paid_amount - ${amount.toFixed(2)}::numeric) = 0 THEN 'unpaid'
-                     WHEN GREATEST(0, paid_amount - ${amount.toFixed(2)}::numeric) >= total_amount THEN 'paid'
-                     ELSE 'partial'
-                   END
-             WHERE id = ${c.invoiceId}::uuid
-          `;
-        }
+        await rollbackInvoiceAllocations(tx, c.payment_id);
 
         if (body.passChargesToDealer && body.bankCharges > 0) {
           const after = balanceAfter - body.bankCharges;
@@ -419,7 +443,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
             ) VALUES (
               ${c.dealer_id}::uuid, 'debit', ${body.bankCharges.toFixed(2)}::numeric,
               ${c.id}::uuid, 'adjustment'::ledger_ref_type,
-              ${`Cheque return charges — ${c.cheque_number}`},
+              ${`Cheque return charges: ${c.cheque_number}`},
               ${after.toFixed(2)}::numeric, ${adminUserId(request)}::uuid,
               ${`CC-${c.cheque_number}`}, 'Adjustment',
               ${`Bank charges for returned cheque ${c.cheque_number}`},
@@ -450,7 +474,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
       return await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
         const [c] = await tx`
-          SELECT c.*, p.invoice_id AS "invoiceId"
+          SELECT c.*
             FROM cheques c
             JOIN payments p ON p.id = c.payment_id
            WHERE c.id = ${id}::uuid
@@ -477,11 +501,11 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           ) VALUES (
             ${c.dealer_id}::uuid, 'debit', ${amount.toFixed(2)}::numeric,
             ${c.id}::uuid, 'adjustment'::ledger_ref_type,
-            ${`Cheque cancelled — ${c.cheque_number} — ${body.reason}`},
+            ${`Cheque cancelled: ${c.cheque_number} (${body.reason})`},
             ${balanceAfter.toFixed(2)}::numeric, ${adminUserId(request)}::uuid,
             ${`CX-${c.cheque_number}`}, 'Adjustment',
             ${`Cheque ${c.cheque_number} cancelled: ${body.reason}`},
-            ${new Date().toISOString().slice(0, 10)}::date
+            ${istToday()}::date
           )
           RETURNING id
         `;
@@ -495,18 +519,7 @@ export async function financeChequesRoutes(app: FastifyInstance) {
           WHERE id = ${id}::uuid
         `;
 
-        if (c.invoiceId) {
-          await tx`
-            UPDATE invoices
-               SET paid_amount = GREATEST(0, paid_amount - ${amount.toFixed(2)}::numeric),
-                   payment_status = CASE
-                     WHEN GREATEST(0, paid_amount - ${amount.toFixed(2)}::numeric) = 0 THEN 'unpaid'
-                     WHEN GREATEST(0, paid_amount - ${amount.toFixed(2)}::numeric) >= total_amount THEN 'paid'
-                     ELSE 'partial'
-                   END
-             WHERE id = ${c.invoiceId}::uuid
-          `;
-        }
+        await rollbackInvoiceAllocations(tx, c.payment_id);
 
         return reply.send({ message: "Cheque cancelled and ledger reversed", chequeId: id });
       });

@@ -444,7 +444,7 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
                           <tr key={rr.routeId}>
                             <td className="text-[12.5px]">
                               <span className="font-mono">{r?.code ?? rr.routeId.slice(0, 6)}</span>
-                              {r?.name ? ` — ${r.name}` : ""}
+                              {r?.name ? `: ${r.name}` : ""}
                             </td>
                             <td>
                               <Input
@@ -463,7 +463,7 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
                                 className="erp-input"
                                 type="number"
                                 min={0}
-                                step="0.01"
+                                step="0.001"
                                 value={rr.ratePerTrip}
                                 onChange={e =>
                                   updateRouteRate(rr.routeId, "ratePerTrip", parseFloat(e.target.value) || 0)

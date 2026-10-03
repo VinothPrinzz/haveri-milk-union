@@ -10,5 +10,16 @@
     "lib": ["ES2022"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  // The three db-* route files belong to the dual-DB feature whose
+  // db-manager.ts is not in the repo yet (see the commented-out exports in
+  // packages/db/src/index.ts and the commented-out registrations in
+  // server.ts). They only compiled against a stale local @hmu/db dist —
+  // exclude them until db-manager.ts lands.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/routes/db-status.ts",
+    "src/routes/db-reconciliation.ts",
+    "src/routes/db-polling-replication.ts"
+  ]
 }

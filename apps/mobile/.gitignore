@@ -8,5 +8,9 @@ dist/
 web-build/
 
 # Local env
+.env
 .env.local
 .env.*.local
+
+# Google Play service-account key for `eas submit` — NEVER commit this
+google-play-key.json

@@ -57,7 +57,7 @@ export default function RefundsPage() {
   const resync = useMutation({
     mutationFn: (id: string) => resyncRefund(id),
     onSuccess: (r) => {
-      toast.success(`Resynced — ${r.status}`);
+      toast.success(`Resynced: ${r.status}`);
       qc.invalidateQueries({ queryKey: ["refunds"] });
       qc.invalidateQueries({ queryKey: ["refunds-summary"] });
     },
@@ -69,7 +69,7 @@ export default function RefundsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader title="Refunds" subtitle="Razorpay refunds — status, ledger linkage & gateway resync" />
+      <PageHeader title="Refunds" subtitle="Razorpay refunds: status, ledger linkage & gateway resync" />
 
       <FilterBar>
         <div className="flex-1 min-w-[200px]">
@@ -119,12 +119,12 @@ export default function RefundsPage() {
                 {rows.map((r) => (
                   <tr key={r.id}>
                     <td>{fmtDate(r.createdAt)}</td>
-                    <td className="font-mono text-[11px]">{r.voucherNo ?? "—"}</td>
-                    <td className="font-mono text-[11px] text-muted-foreground">{r.razorpayRefundId ?? "—"}</td>
+                    <td className="font-mono text-[11px]">{r.voucherNo ?? ""}</td>
+                    <td className="font-mono text-[11px] text-muted-foreground">{r.razorpayRefundId ?? ""}</td>
                     <td className="font-medium">{r.dealerName} <span className="text-muted-foreground font-mono text-[11px]">{r.dealerCode}</span></td>
                     <td className="num" style={{ textAlign: "right" }}>{fmtINR(r.amount)}</td>
                     <td className="text-[12px]">{r.reason}</td>
-                    <td className="text-[12px]">{r.initiatedByName ?? "—"}</td>
+                    <td className="text-[12px]">{r.initiatedByName ?? ""}</td>
                     <td><StatusBadge status={r.status} /></td>
                     <td style={{ textAlign: "center" }}>
                       {r.ledgerEntryId ? <CheckCircle2 className="h-4 w-4 text-success inline" /> : <AlertTriangle className="h-4 w-4 text-warning inline" />}

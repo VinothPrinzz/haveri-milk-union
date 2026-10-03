@@ -1,8 +1,7 @@
-import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
-import { pushQueue as notifQueue } from "../lib/queues.js";
+import { enqueuePush } from "../lib/queues.js";
 
-export async function processPaymentReminders(job: Job) {
+export async function processPaymentReminders() {
   // Find dealers with overdue credit orders (pending > 3 days)
   const overdue = await sql`
     SELECT d.id, d.name, d.phone,
@@ -26,18 +25,16 @@ export async function processPaymentReminders(job: Job) {
 
   console.log(`[PaymentReminders] Found ${overdue.length} dealers with overdue payments`);
 
-  // Queue push notifications for each overdue dealer (shared queue)
+  // Queue push notifications for each overdue dealer
   for (const dealer of overdue) {
     const amount = parseFloat(dealer.overdue_amount);
-    await notifQueue.add("payment-reminder", {
+    await enqueuePush("payment-reminder", {
       event: "payment.reminder" as const,
       dealerId: dealer.id,
       title: "Payment Reminder 💰",
       body: `You have ₹${amount.toFixed(0)} outstanding across ${dealer.overdue_orders} orders. Please clear your dues.`,
     });
   }
-
-  // Shared queue — closed once on worker shutdown.
 
   console.log(`[PaymentReminders] Queued ${overdue.length} reminder notifications`);
   return { checked: overdue.length, reminders: overdue.length };

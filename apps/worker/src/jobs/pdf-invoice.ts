@@ -13,19 +13,20 @@
 // you instead copied the renderer into the worker, import it from
 // "../lib/render-invoice-pdf.js".
 // ════════════════════════════════════════════════════════════════════
-import { Job } from "bullmq";
+import type { JobLike } from "../lib/queues.js";
 import { sql } from "../lib/db.js";
 import { uploadPDF } from "../lib/r2.js";
 import {
   renderInvoicePdf,
   type InvoiceRenderLine,
 } from "../lib/render-invoice-pdf.js";
+import { resolveOrderSettlement, resolveTermDays } from "../lib/invoice-settlement.js";
 
 export interface PDFInvoiceJobData {
   orderId: string;
 }
 
-export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
+export async function processPDFInvoice(job: JobLike<PDFInvoiceJobData>) {
   const { orderId } = job.data;
 
   // ── Fetch order + dealer + route ───────────────────────────────────
@@ -33,6 +34,11 @@ export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
     SELECT
       o.id, o.subtotal, o.total_gst, o.grand_total, o.payment_mode,
       o.status, o.created_at,
+      -- Feed resolveOrderSettlement: the Razorpay pay_* id for a
+      -- pay-per-order UPI sale, and the account type that decides whether a
+      -- ledger debit is spent balance or a receivable.
+      o.payment_reference,
+      d.customer_type,
       COALESCE(o.delivery_date, (o.created_at AT TIME ZONE 'Asia/Kolkata')::date)
         AS order_date,
       d.id          AS dealer_id,
@@ -48,7 +54,7 @@ export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
       r.name        AS route_name
     FROM orders o
     JOIN dealers d      ON d.id = o.dealer_id
-    LEFT JOIN routes r  ON r.id = d.route_id
+    LEFT JOIN routes r  ON r.id = COALESCE(o.route_id, d.route_id)
     WHERE o.id = ${orderId}
     LIMIT 1
   `;
@@ -96,12 +102,29 @@ export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
   const cgst = totalGst / 2;
   const sgst = totalGst / 2;
   const grand = parseFloat(order.grand_total ?? "0");
-  const netAmount = Math.round(grand);
 
-  // ── Render via the shared layout ───────────────────────────────────
-  // A placed order is settled — by wallet/UPI/cash up front or on the
-  // dealer's credit ledger (incl. auto-confirm) — so its invoice is "PAID".
-  const paid = ["confirmed", "dispatched", "delivered"].includes(order.status);
+  // ── Settlement ─────────────────────────────────────────────────────
+  // What the dealer has actually paid against this order, from the money
+  // rails themselves. Both the PAID stamp on the PDF and the persisted
+  // paid_amount / payment_status come from this one verdict, so the
+  // document and the books can no longer disagree — previously the stamp
+  // said PAID for every placed order (including credit-institution
+  // receivables) while the row stayed 'unpaid' forever.
+  const settlement = await resolveOrderSettlement({
+    orderId,
+    paymentReference: order.payment_reference,
+    customerType: order.customer_type,
+    grandTotal: grand,
+  });
+  // A cancelled or draft order is never stamped PAID regardless of what the
+  // rails show; the stamp speaks for the document as issued.
+  const placed = ["confirmed", "dispatched", "delivered"].includes(order.status);
+  const paid = placed && settlement.paymentStatus === "paid";
+
+  // Credit terms for this party. Deliberately NOT refreshed on reissue below:
+  // due_date derives from the legal issue date, which the ON CONFLICT clause
+  // also leaves alone, so a reissue must not silently extend the term.
+  const termDays = resolveTermDays(order.customer_type);
 
   const pdfBytes = await renderInvoicePdf({
     invoiceNumber,
@@ -143,16 +166,25 @@ export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
   await sql`
     INSERT INTO invoices (
         order_id, dealer_id, invoice_number,
-        invoice_date, delivery_date,
+        invoice_date, due_date, delivery_date,
         taxable_amount, cgst, sgst, total_tax, total_amount,
+        payment_status, paid_amount,
         dealer_name, dealer_gst_number, dealer_address,
         pdf_url, pdf_generated_at
     ) VALUES (
         ${orderId}, ${order.dealer_id}, ${invoiceNumber},
-        now(), ${order.order_date}::date,
+        -- Terms run from the legal issue date, in IST. Computed here rather
+        -- than in JS so it can never drift a day across the timezone.
+        now(), ((now() AT TIME ZONE 'Asia/Kolkata')::date + ${termDays}::int),
+        ${order.order_date}::date,
         ${taxable.toFixed(2)}::numeric, ${cgst.toFixed(2)}::numeric,
         ${sgst.toFixed(2)}::numeric, ${totalGst.toFixed(2)}::numeric,
-        ${netAmount.toFixed(2)}::numeric,
+        -- The exact figure, NOT Math.round(grand) as this worker used to
+        -- write. The rounded header did not add up against its own tax
+        -- lines, and it left a fully settled invoice looking a few paise
+        -- short once paid_amount became real. Matches the API mint.
+        ${grand.toFixed(2)}::numeric,
+        ${settlement.paymentStatus}, ${settlement.paidAmount.toFixed(2)}::numeric,
         ${order.dealer_name}, ${order.dealer_gst || null}, ${addressSnapshot},
         ${pdfUrl}, now()
     )
@@ -164,6 +196,11 @@ export async function processPDFInvoice(job: Job<PDFInvoiceJobData>) {
             sgst             = EXCLUDED.sgst,
             total_tax        = EXCLUDED.total_tax,
             total_amount     = EXCLUDED.total_amount,
+            -- Recomputed from the money rails, not incremented, so a reissue
+            -- after a modify or a cancel-and-refund re-reads the truth
+            -- without dropping a receipt recorded against the invoice.
+            payment_status   = EXCLUDED.payment_status,
+            paid_amount      = EXCLUDED.paid_amount,
             pdf_generated_at = now()
   `;
 

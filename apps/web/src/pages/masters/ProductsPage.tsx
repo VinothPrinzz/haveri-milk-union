@@ -20,7 +20,7 @@ import PageHeader, {
   FormFooter,
   Field,
   EmptyState,
-  fmtINR,
+  fmtPrice,
 } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,6 +79,8 @@ function ProductListTab() {
     mutationFn: ({ id, data }: { id: string; data: ProductFormData }) => updateProduct(id, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["products"] });
+      // A price edited here is logged as a revision (source "product_edit").
+      qc.invalidateQueries({ queryKey: ["price-revisions"] });
       toast.success("Product updated");
       setEditing(null);
     },
@@ -161,11 +163,11 @@ function ProductListTab() {
                   <tr key={p.id}>
                     <td className="font-mono text-[12px]">{p.code}</td>
                     <td className="font-medium">{p.name}</td>
-                    <td>{p.category ?? "—"}</td>
-                    <td>{p.unit ?? "—"}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.basePrice ?? 0)}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.dealerPrice ?? 0)}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{fmtINR(p.mrp ?? 0)}</td>
+                    <td>{p.category ?? ""}</td>
+                    <td>{p.unit ?? ""}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{fmtPrice(p.basePrice ?? 0)}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{fmtPrice(p.dealerPrice ?? 0)}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{fmtPrice(p.mrp ?? 0)}</td>
                     <td className="num" style={{ textAlign: "right" }}>{Number(p.gstPercent ?? 0).toFixed(2)}</td>
                     <td className="num" style={{ textAlign: "right" }}>{p.stock ?? 0}</td>
                     <td style={{ textAlign: "right" }}>
@@ -203,7 +205,7 @@ function ProductListTab() {
         <DialogContent className="max-w-3xl rounded-sm flex flex-col max-h-[90vh] overflow-hidden p-0">
           <DialogHeader className="px-6 pt-5 pb-3 border-b border-border shrink-0">
             <DialogTitle className="text-[15px] font-semibold">
-              Edit Product — <span className="font-mono">{editing?.code}</span>
+              Edit Product: <span className="font-mono">{editing?.code}</span>
             </DialogTitle>
           </DialogHeader>
           {editing && (
@@ -806,7 +808,7 @@ function ProductRatesTab() {
             <SelectTrigger className="erp-input w-72"><SelectValue placeholder="Pick a product…" /></SelectTrigger>
             <SelectContent>
               {products.map((p: Product) => (
-                <SelectItem key={p.id} value={p.id}>{p.code} — {p.name}</SelectItem>
+                <SelectItem key={p.id} value={p.id}>{p.code}: {p.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -834,7 +836,7 @@ function ProductRatesTab() {
                   return (
                     <tr key={c.id}>
                       <td className="font-medium">{c.name}</td>
-                      <td className="num" style={{ textAlign: "right" }}>{fmtINR(product.basePrice ?? 0)}</td>
+                      <td className="num" style={{ textAlign: "right" }}>{fmtPrice(product.basePrice ?? 0)}</td>
                       <td style={{ textAlign: "right" }}>
                         <Input
                           type="number"

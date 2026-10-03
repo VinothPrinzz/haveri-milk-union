@@ -18,8 +18,8 @@ import PageHeader, {
   FilterBar,
   EmptyState,
   PrintButton,
-  setPrintOrientation,
 } from "@/components/PageHeader";
+import { applyPrintPageSetup, getPrintOrientation, usePrintPaper } from "@/lib/print-paper";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -81,6 +81,10 @@ export default function ReportShell({
   beforePrint,
 }: ReportShellProps) {
   const { generated, loading, pages, pageLabel, emptyMessage } = state;
+
+  // Shared with the Print menu (and, on the Route Sheet, with its own
+  // Paper picker) — the preview canvas mirrors whichever sheet is loaded.
+  const [paper] = usePrintPaper();
 
   const [currentPage, setCurrentPage] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
@@ -155,11 +159,7 @@ export default function ReportShell({
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
         if (beforePrint && beforePrint() === false) return;
         e.preventDefault();
-        const stored = window.localStorage.getItem("erp:printOrient") as
-          | "portrait"
-          | "landscape"
-          | null;
-        setPrintOrientation(stored ?? printOrientation);
+        applyPrintPageSetup(paper, getPrintOrientation() ?? printOrientation);
         setTimeout(() => window.print(), 30);
         return;
       }
@@ -187,7 +187,7 @@ export default function ReportShell({
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [generated, pages.length, currentPage, printOrientation, beforePrint]);
+  }, [generated, pages.length, currentPage, printOrientation, paper, beforePrint]);
 
   const openInNewTab = () => {
     const url = new URL(window.location.href);
@@ -312,7 +312,7 @@ export default function ReportShell({
 
             {/* The actual report paper */}
             <div className="report-canvas-wrap">
-              <div className="report-canvas" data-orient={printOrientation}>
+              <div className="report-canvas" data-orient={printOrientation} data-paper={paper}>
                 <div className="print-document">
                   {/* Screen view (single page) — letterhead inline at top */}
                   <div className="report-page-screen">
@@ -373,11 +373,7 @@ export default function ReportShell({
             className="report-fs-btn"
             onClick={() => {
               if (beforePrint && beforePrint() === false) return;
-              const stored = window.localStorage.getItem("erp:printOrient") as
-                | "portrait"
-                | "landscape"
-                | null;
-              setPrintOrientation(stored ?? printOrientation);
+              applyPrintPageSetup(paper, getPrintOrientation() ?? printOrientation);
               setTimeout(() => window.print(), 30);
             }}
             title="Print (Ctrl+P)"

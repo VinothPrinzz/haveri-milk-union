@@ -11,7 +11,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, fonts, shadows } from "../lib/theme";
 import { useCartStore } from "../store/cart";
-import { usePlaceOrder } from "../hooks/useOrders";
+import { useCancelUnpaidOrder, useMinQtyStatus, usePlaceOrder } from "../hooks/useOrders";
 import { useOrderPayment } from "../hooks/useOrderPayment";
 import { PaymentPending, RazorpayCancelled, RazorpayFailed } from "../lib/razorpay";
 import { uiPaymentToBackend, type UiPaymentMethod } from "../lib/types";
@@ -21,6 +21,8 @@ import {
   findCategoryMinShortfalls,
   categoryMinMessage,
 } from "../lib/minOrderQty";
+import { isCreditInstMrp } from "../lib/ratePrice";
+import { useAuthStore } from "../store/auth";
 
 /**
  * IndentCart - the full cart review screen (spec section 6.8).
@@ -92,6 +94,8 @@ export default function IndentCart({
   onOrderPlaced,
 }: IndentCartProps) {
   const insets = useSafeAreaInsets();
+  // Rate category drives the milk-minimum exemption below.
+  const dealer = useAuthStore((s) => s.dealer);
 
   // Cart state subscriptions - granular so we don't re-render the whole tree
   const items       = useCartStore((s) => s.getItems());
@@ -104,6 +108,9 @@ export default function IndentCart({
   const clearCart   = useCartStore((s) => s.clearCart);
 
   const placeOrder = usePlaceOrder();
+  // Whether the order minimum applies today: only the first indent on the
+  // dealer's route each day carries it (server decides).
+  const minQtyStatus = useMinQtyStatus();
   const [selectedPay, setSelectedPay] = useState<UiPaymentMethod>("upi");
 
   // Idempotency key for POST /orders. Held in a ref so it survives across the
@@ -117,6 +124,9 @@ export default function IndentCart({
   // Razorpay pay-now plumbing for online payments.
   const [payOrderId, setPayOrderId] = useState<string | null>(null);
   const orderPayment = useOrderPayment(payOrderId ?? "");
+  // An online payment that doesn't complete leaves the order unpaid: cancel
+  // it so the dealer isn't left with a half-placed indent.
+  const cancelUnpaid = useCancelUnpaidOrder();
 
   // ── Derived totals ────────────────────────────────────────────────
   const totalAfterSavings = grandTotal - savingsAmount;
@@ -132,14 +142,31 @@ export default function IndentCart({
   const handleSubmit = async () => {
     if (isEmpty || submitting) return;
 
-    // Milk order minimum (≥12 L milk; curd has no minimum) — block before the API.
+    // Order minimum (≥12 L/kg of milk + curd on the first indent for the
+    // route today) — block before the API. The union subsidy line is exempt
+    // (the server exempts it via MIN_QTY_EXEMPT_CODES) — it must neither
+    // count toward nor trigger the rule.
+    //
+    // Exempt when:
+    //  • the dealer is 'Credit Inst-MRP' (government institutions: supply is
+    //    compulsory however small the indent; mirrors
+    //    MIN_QTY_EXEMPT_RATE_CATEGORIES on the server), or
+    //  • the server says the minimum doesn't apply (the route already has
+    //    an indent today).
     const minShortfalls = findCategoryMinShortfalls(
-      items.map((i) => ({
-        name: i.name,
-        categoryName: i.categoryName,
-        unit: i.unit,
-        quantity: i.quantity,
-      }))
+      items
+        .filter((i) => !i.isSubsidy)
+        .map((i) => ({
+          name: i.name,
+          categoryName: i.categoryName,
+          unit: i.unit,
+          quantity: i.quantity,
+        })),
+      {
+        exempt:
+          isCreditInstMrp(dealer?.rateCategory) ||
+          (minQtyStatus.data ? !minQtyStatus.data.applies : false),
+      }
     );
     if (minShortfalls.length > 0) {
       Alert.alert("Minimum order quantity", categoryMinMessage(minShortfalls));
@@ -196,14 +223,8 @@ export default function IndentCart({
         onOrderPlaced(placedId);
       } catch (err) {
         if (cancelled) return;
+        const failedId = payOrderId;
         setPayOrderId(null);
-        if (err instanceof RazorpayCancelled) {
-          Alert.alert(
-            "Payment cancelled",
-            "Your indent is saved but not paid. You can pay it from the Orders tab."
-          );
-          return;
-        }
         // Money likely taken but the server couldn't confirm in time — the
         // backend confirms it automatically. NOT a failure: never tell the
         // dealer "failed" here or they may pay twice. Cart is kept; the
@@ -212,13 +233,24 @@ export default function IndentCart({
           Alert.alert("Confirming your payment", err.message);
           return;
         }
+        // Not paid: the indent was never placed. Cancel the unpaid order so
+        // the dealer can simply pay again from the cart.
+        cancelUnpaid.mutate(failedId);
+        if (err instanceof RazorpayCancelled) {
+          Alert.alert(
+            "Payment cancelled",
+            "Your indent was not placed. Your items are still in the cart, so you can try paying again."
+          );
+          return;
+        }
         Alert.alert(
           "Payment failed",
-          err instanceof RazorpayFailed
+          (err instanceof RazorpayFailed
             ? err.description || "Please try again."
             : err instanceof Error
               ? err.message
-              : "Please try again."
+              : "Please try again.") +
+            "\n\nYour indent was not placed. Your items are still in the cart."
         );
       }
     })();
@@ -300,9 +332,15 @@ export default function IndentCart({
 
       {/* Item rows */}
       {items.map((item) => {
+        // Dealers see the gross price they're billed at. Derive it from the
+        // line the cart actually computed so it always agrees with the
+        // total — including a Credit Inst-MRP dealer's MRP milk lines and
+        // the fixed-price subsidy line.
         const displayedUnitPrice = Math.round(
-          item.dealerPrice ?? item.mrp ?? item.basePrice ?? 0
-        ); // Dealers see the Dealer-Price (gross) they're billed at
+          item.quantity > 0
+            ? item.lineTotal / item.quantity
+            : item.dealerPrice ?? item.mrp ?? item.basePrice ?? 0
+        );
         return (
           <View key={item.id} style={styles.cartItem}>
             <View style={styles.ciEmo}>
@@ -314,6 +352,7 @@ export default function IndentCart({
               </Text>
               <Text style={styles.ciSize} numberOfLines={1}>
                 {item.unit}
+                {item.isSubsidy ? " · Union scheme (fixed)" : ""}
               </Text>
               <Text style={styles.ciPrice}>
                 ₹{displayedUnitPrice} × {item.quantity} ={" "}
@@ -323,25 +362,34 @@ export default function IndentCart({
               </Text>
             </View>
 
-            <View style={styles.ciCtrl}>
-              <TouchableOpacity
-                style={[styles.ciBtn, styles.ciBtnActive]}
-                activeOpacity={0.6}
-                onPress={() => removeItem(item.id)}
-                accessibilityLabel={`Decrease ${item.name}`}
-              >
-                <Text style={styles.ciBtnIconActive}>−</Text>
-              </TouchableOpacity>
-              <Text style={styles.ciQty}>{item.quantity}</Text>
-              <TouchableOpacity
-                style={[styles.ciBtn, styles.ciBtnActive]}
-                activeOpacity={0.6}
-                onPress={() => addItem(item)}
-                accessibilityLabel={`Increase ${item.name}`}
-              >
-                <Text style={styles.ciBtnIconActive}>+</Text>
-              </TouchableOpacity>
-            </View>
+            {item.isSubsidy ? (
+              // Union-assigned subsidy line — quantity is set by the dairy
+              // and pinned server-side; no steppers, can't be removed.
+              <View style={styles.ciLocked}>
+                <Text style={styles.ciLockedQty}>×{item.quantity}</Text>
+                <Text style={styles.ciLockedTag}>🔒 Fixed</Text>
+              </View>
+            ) : (
+              <View style={styles.ciCtrl}>
+                <TouchableOpacity
+                  style={[styles.ciBtn, styles.ciBtnActive]}
+                  activeOpacity={0.6}
+                  onPress={() => removeItem(item.id)}
+                  accessibilityLabel={`Decrease ${item.name}`}
+                >
+                  <Text style={styles.ciBtnIconActive}>−</Text>
+                </TouchableOpacity>
+                <Text style={styles.ciQty}>{item.quantity}</Text>
+                <TouchableOpacity
+                  style={[styles.ciBtn, styles.ciBtnActive]}
+                  activeOpacity={0.6}
+                  onPress={() => addItem(item)}
+                  accessibilityLabel={`Increase ${item.name}`}
+                >
+                  <Text style={styles.ciBtnIconActive}>+</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         );
       })}
@@ -724,6 +772,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: fonts.extrabold,
     color: colors.foreground,
+  },
+  // Locked (union subsidy) line — fixed quantity, no steppers
+  ciLocked: {
+    alignItems: "center",
+    gap: 2,
+    paddingHorizontal: 4,
+  },
+  ciLockedQty: {
+    fontSize: 13,
+    fontFamily: fonts.extrabold,
+    color: colors.foreground,
+  },
+  ciLockedTag: {
+    fontSize: 8,
+    fontFamily: fonts.bold,
+    color: colors.mutedForeground,
   },
 
   // Cancel note -----------------------------------------------------

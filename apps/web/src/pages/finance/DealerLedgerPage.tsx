@@ -50,7 +50,7 @@ const fmtMoneyPlain = (n: number | string) =>
   }).format(typeof n === "string" ? parseFloat(n) || 0 : n);
 
 const fmtDate = (iso: string | null) => {
-  if (!iso) return "—";
+  if (!iso) return "";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("en-IN", {
@@ -232,7 +232,7 @@ export default function DealerLedgerPage() {
                   ? summaryLoading
                     ? <Skeleton className="h-6 w-28" />
                     : fmtINR(openingBalance)
-                  : "—"}
+                  : ""}
               </div>
             </div>
 
@@ -319,13 +319,13 @@ export default function DealerLedgerPage() {
                       <tr key={row.id}>
                         <td>{fmtDate(row.voucherDate ?? row.createdAt)}</td>
                         <td>
-                          {row.voucherType ? VOUCHER_LABELS[row.voucherType] : "—"}
+                          {row.voucherType ? VOUCHER_LABELS[row.voucherType] : ""}
                         </td>
                         <td className="font-mono text-xs">
-                          {row.voucherNo ?? "—"}
+                          {row.voucherNo ?? ""}
                         </td>
                         <td className="max-w-[320px] truncate">
-                          {row.particulars ?? row.description ?? "—"}
+                          {row.particulars ?? row.description ?? ""}
                         </td>
                         <td className="num">
                           {row.type === "debit" ? fmtINR(row.amount) : ""}
@@ -593,7 +593,7 @@ function renderStatementPage({
     customer.zoneName,
   ]
     .filter(Boolean)
-    .join(", ") || "—";
+    .join(", ") || "";
 
   const periodLabel = dateFrom || dateTo
     ? `${dateFrom ? fmtDate(dateFrom) : "Earliest"} → ${dateTo ? fmtDate(dateTo) : "Today"}`
@@ -652,7 +652,7 @@ function renderStatementPage({
                 </div>
               )}
               <div className="text-[10px] mt-0.5">
-                <strong>Pay Mode:</strong> {customer.payMode ?? "—"}
+                <strong>Pay Mode:</strong> {customer.payMode ?? ""}
                 {" · "}
                 <strong>Available Balance:</strong> ₹{fmtMoneyPlain(s.availableCredit)}
               </div>
@@ -733,13 +733,13 @@ function renderStatementPage({
                     {fmtDate(row.voucherDate ?? row.createdAt)}
                   </td>
                   <td className="border border-black py-1 px-2">
-                    {row.voucherType ? VOUCHER_LABELS[row.voucherType] : "—"}
+                    {row.voucherType ? VOUCHER_LABELS[row.voucherType] : ""}
                   </td>
                   <td className="border border-black py-1 px-2 font-mono text-[9px]">
-                    {row.voucherNo ?? "—"}
+                    {row.voucherNo ?? ""}
                   </td>
                   <td className="border border-black py-1 px-2">
-                    {row.particulars ?? row.description ?? "—"}
+                    {row.particulars ?? row.description ?? ""}
                   </td>
                   <td className="border border-black py-1 px-2 text-right font-mono">
                     {row.type === "debit" ? fmtMoneyPlain(row.amount) : ""}

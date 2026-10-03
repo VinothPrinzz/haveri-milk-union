@@ -23,5 +23,5 @@ RUN pnpm install --frozen-lockfile
 # Build the worker (compiles apps/worker/src -> apps/worker/dist)
 RUN pnpm --filter @hmu/worker build
 
-# Background BullMQ worker — no HTTP port, no healthcheck.
+# Background worker (cron + Postgres outbox) — no HTTP port, no healthcheck.
 CMD ["node", "apps/worker/dist/index.js"]

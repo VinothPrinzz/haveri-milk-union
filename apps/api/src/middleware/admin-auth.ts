@@ -105,6 +105,14 @@ export async function adminAuth(
 // Permission map: which roles can access which modules.
 // A mistake here could let a Call Desk user access finance data.
 
+// Super-user roles: allowed on EVERY defined permission below, so they never
+// need to be listed individually. `super_admin` is the built-in admin;
+// `call_desk` (Indent Operators) is granted full parity per ops requirement —
+// they run the whole desk and need every module. Note this deliberately does
+// NOT cover the database failover / reconciliation endpoints, which check
+// `role === "super_admin"` directly (see db-status.ts / db-reconciliation.ts).
+const SUPER_ROLES: UserRole[] = ["super_admin", "call_desk"];
+
 // NOTE on the `viewer` role: it is a read-only role. It is added to EVERY
 // "*.view" / read-style permission below and to NONE of the "*.manage" /
 // create / update / cancel / wallet / users permissions. Result: a viewer can
@@ -136,12 +144,21 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "inventory.view":   ["super_admin", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
   "inventory.update": ["super_admin", "dispatch_officer", "fgs_milk_curd", "fgs_others"],
 
-  // Distribution / Routes (incl. Dispatch Sheet) — officers run dispatch sheets
+  // Route master list (GET /routes) — a plain lookup used by filter dropdowns
+  // across modules, so it is split out from distribution.view. Finance needs it
+  // for the route filter on AR Aging / Available Balances / Employee Credit /
+  // Day Book, but has no business reading dispatch runs or vehicles.
+  "routes.view": ["super_admin", "manager", "dispatch_officer", "accountant", "officer", "viewer", "fgs_milk_curd", "fgs_others"],
+
+  // Distribution / Dispatch (incl. Dispatch Sheet) — officers run dispatch sheets
   "distribution.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer", "fgs_milk_curd", "fgs_others"],
   "distribution.manage": ["super_admin", "manager", "dispatch_officer", "officer", "fgs_milk_curd", "fgs_others"],
 
-  // Dealers
-  "dealers.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
+  // Dealers. Finance (accountant) reads dealer master data throughout its own
+  // module — the dealer picker on Payments / Online Payments / Adjustments /
+  // Dealer Statements, and the `/dealers/:id/ledger` endpoints behind the
+  // Dealer Ledger page. Read only; dealers.manage / dealers.wallet stay denied.
+  "dealers.view":   ["super_admin", "manager", "accountant", "call_desk", "officer", "viewer"],
   "dealers.manage": ["super_admin", "manager"],
   "dealers.wallet": ["super_admin", "call_desk"],
 
@@ -149,8 +166,9 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "finance.view":   ["super_admin", "accountant", "viewer"],
   "finance.manage": ["super_admin", "accountant"],
 
-  // Reports
-  "reports.view": ["super_admin", "manager", "dispatch_officer", "accountant", "viewer", "fgs_milk_curd", "fgs_others"],
+  // Reports (Route Sheet + Gate Pass report pages). Route officers are scoped
+  // to reports-only in the admin UI, so they need read access here.
+  "reports.view": ["super_admin", "manager", "dispatch_officer", "accountant", "officer", "viewer", "fgs_milk_curd", "fgs_others"],
 
   // System — viewer gets read-only system.view, but NOT system.users
   // (that permission also gates create/edit of users) or system.manage.
@@ -170,8 +188,9 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "suppliers.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
   "suppliers.manage": ["super_admin", "manager"],
 
-  // Batches (Masters → Batches)
-  "batches.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  // Batches (Masters → Batches) — officers need read access for the batch
+  // filter dropdown on the Route Sheet report page.
+  "batches.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer", "fgs_milk_curd", "fgs_others"],
   "batches.manage": ["super_admin", "manager", "dispatch_officer", "fgs_milk_curd", "fgs_others"],
 
   // Direct Sales (Sales Operations → Gate Pass / Cash Customer)
@@ -198,8 +217,9 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "route_sheets.view":   ["super_admin", "manager", "dispatch_officer", "officer", "viewer", "fgs_milk_curd", "fgs_others"],
   "route_sheets.manage": ["super_admin", "manager", "dispatch_officer", "officer", "fgs_milk_curd", "fgs_others"],
 
-  // Sales Reports (9 report types)
-  "sales_reports.view": ["super_admin", "manager", "accountant", "viewer"],
+  // Sales Reports (9 report types) — route officers are limited to Route Sheets
+  // + Sales Reports in the admin UI, so they get read access here too.
+  "sales_reports.view": ["super_admin", "manager", "accountant", "officer", "viewer"],
 
   // Cash Customers (used by Direct Sales)
   "cash_customers.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
@@ -232,6 +252,11 @@ export function requireRole(permission: string) {
         message: "Access denied",
       });
     }
+
+    // Super-user roles clear every defined permission (mirrors super_admin
+    // being listed in each array). Checked after the unknown-permission guard
+    // so behaviour matches super_admin exactly.
+    if (SUPER_ROLES.includes(request.admin.role)) return;
 
     if (!allowedRoles.includes(request.admin.role)) {
       return reply.status(403).send({

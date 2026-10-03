@@ -1,7 +1,6 @@
-import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
 
-export async function processPartitionCreation(job: Job) {
+export async function processPartitionCreation() {
   // Calculate next month
   const now = new Date();
   const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -24,8 +23,16 @@ export async function processPartitionCreation(job: Job) {
       return { partition: partName, status: "already_exists" };
     }
 
-    // Create the partition using the helper function from migration 0001
-    await sql`SELECT create_orders_partition(${rangeStart}::date, ${rangeEnd}::date)`;
+    // Create the partition using the helper function from migration 0001.
+    // Its signature is (p_year integer, p_month integer) — it derives the
+    // range itself. This was called with two dates, which meant the job threw
+    // "function create_orders_partition(date, date) does not exist" the first
+    // time it actually had to create anything. It went unnoticed because the
+    // pg_class check above short-circuits whenever the partition already
+    // exists, and partitions were pre-created through 2026-12.
+    await sql`SELECT create_orders_partition(
+      ${nextMonth.getFullYear()}::int, ${nextMonth.getMonth() + 1}::int
+    )`;
 
     console.log(`[Partition] ✅ Created ${partName}`);
     return { partition: partName, status: "created", rangeStart, rangeEnd };

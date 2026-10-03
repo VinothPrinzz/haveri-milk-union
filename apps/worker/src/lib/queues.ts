@@ -1,22 +1,35 @@
 // ═══════════════════════════════════════════════════════════════════════
 // apps/worker/src/lib/queues.ts
 //
-// Shared producer Queue singletons, created ONCE at module load and
-// reused by every job handler.
+// Background-job enqueue helpers, writing rows to the background_jobs
+// outbox table (migration 0060). The poller in index.ts claims and runs
+// them within ~5s.
 //
-// WHY: jobs used to do `new Queue(...)` + `.close()` on every run. On a
-// per-request-billed Redis (Upstash) each create/close re-authenticates
-// and re-handshakes a connection — pure waste, multiplied by the
-// 5-minute auto-confirm cadence. Reusing one connection (the shared
-// `redis` instance) removes that churn entirely.
+// WHY: this used to hold shared BullMQ Queue singletons on Upstash
+// Redis. BullMQ's idle polling on per-command billing cost ~$50/month
+// with zero jobs flowing; the outbox on the existing Postgres costs $0.
 // ═══════════════════════════════════════════════════════════════════════
 
-import { Queue } from "bullmq";
-import { redis } from "./redis.js";
+import { sql } from "./db.js";
+import type { PushNotificationJobData } from "../jobs/push-notification.js";
 
-export const pushQueue = new Queue("push-notifications", { connection: redis });
-export const pdfQueue = new Queue("pdf-invoice", { connection: redis });
+/** Minimal shape handed to job processors (was BullMQ's Job). */
+export interface JobLike<T = unknown> {
+  data: T;
+}
 
-export async function closeSharedQueues(): Promise<void> {
-  await Promise.all([pushQueue.close(), pdfQueue.close()]);
+/** Enqueue a push notification (sent once — no retry, same as before). */
+export async function enqueuePush(name: string, data: PushNotificationJobData): Promise<void> {
+  await sql`
+    INSERT INTO background_jobs (queue, name, data)
+    VALUES ('push-notifications', ${name}, ${JSON.stringify(data)}::jsonb)
+  `;
+}
+
+/** Enqueue PDF invoice generation (retried up to 3 times with backoff). */
+export async function enqueuePdf(orderId: string): Promise<void> {
+  await sql`
+    INSERT INTO background_jobs (queue, name, data, max_attempts)
+    VALUES ('pdf-invoice', ${`invoice-${orderId.slice(0, 8)}`}, ${JSON.stringify({ orderId })}::jsonb, 3)
+  `;
 }

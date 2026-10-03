@@ -133,7 +133,7 @@ export default function OnlinePaymentsPage() {
     <div className="flex flex-col h-full">
       <PageHeader
         title="Online Payments"
-        subtitle="Razorpay transactions — credit top-ups & order payments (Axis Bank settlement)"
+        subtitle="Razorpay transactions: credit top-ups & order payments (Axis Bank settlement)"
       />
 
       <FilterBar>
@@ -195,7 +195,7 @@ export default function OnlinePaymentsPage() {
             icon={<AlertTriangle className="h-5 w-5" />} />
           <StatCard label="Success Rate"
             tone={(summary?.successRate ?? 100) >= 90 ? "success" : "warning"}
-            value={summary?.successRate != null ? `${summary.successRate}%` : "—"}
+            value={summary?.successRate != null ? `${summary.successRate}%` : ""}
             hint={`${summary?.failedCount ?? 0} failed`}
             icon={<CheckCircle2 className="h-5 w-5" />} />
         </div>
@@ -247,7 +247,7 @@ export default function OnlinePaymentsPage() {
                       {fmtINR(p.amount)}
                     </td>
                     <td className="num text-info" style={{ textAlign: "right" }}>
-                      {p.amountRefunded > 0 ? fmtINR(p.amountRefunded) : "—"}
+                      {p.amountRefunded > 0 ? fmtINR(p.amountRefunded) : ""}
                     </td>
                     <td><StatusBadge status={p.status} /></td>
                     <td style={{ textAlign: "center" }}>
@@ -256,7 +256,7 @@ export default function OnlinePaymentsPage() {
                           ? <CheckCircle2 className="h-4 w-4 text-success inline" />
                           : <XCircle className="h-4 w-4 text-destructive inline" />
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        null
                       )}
                     </td>
                     <td style={{ textAlign: "center" }}>
@@ -264,7 +264,7 @@ export default function OnlinePaymentsPage() {
                         ? <CheckCircle2 className="h-4 w-4 text-success inline" />
                         : (p.status === "paid" || p.status === "refunded")
                           ? <Clock className="h-4 w-4 text-warning inline" />
-                          : <span className="text-muted-foreground">—</span>}
+                          : null}
                     </td>
                   </tr>
                 ))}
@@ -340,8 +340,9 @@ function PaymentDetailDialog({ id, onClose }: { id: string; onClose: () => void 
   });
 
   const p = data?.payment;
-  const remaining = p ? p.amount - p.amountRefunded : 0;
-  const canRefund = p && p.status === "paid" && remaining > 0;
+  // The server's refundable figure also nets out refunds still in flight.
+  const remaining = p ? (p.refundableAmount ?? p.amount - p.amountRefunded) : 0;
+  const canRefund = p && p.status === "paid" && remaining > 0.001;
 
   return (
     <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -359,11 +360,11 @@ function PaymentDetailDialog({ id, onClose }: { id: string; onClose: () => void 
               <Row k="Dealer" v={`${p.dealerName}${p.dealerCode ? " · " + p.dealerCode : ""}`} />
               <Row k="Type" v={KIND_LABEL[p.kind] ?? p.kind} />
               <Row k="Amount" v={fmtINR(p.amount)} />
-              <Row k="Refunded" v={p.amountRefunded > 0 ? fmtINR(p.amountRefunded) : "—"} />
+              <Row k="Refunded" v={p.amountRefunded > 0 ? fmtINR(p.amountRefunded) : ""} />
               <Row k="Status" v={<StatusBadge status={p.status} />} />
-              <Row k="Paid at" v={p.paidAt ? fmtDate(p.paidAt) : "—"} />
+              <Row k="Paid at" v={p.paidAt ? fmtDate(p.paidAt) : ""} />
               <Row k="Order id" v={p.razorpayOrderId} mono />
-              <Row k="Payment id" v={p.razorpayPaymentId ?? "—"} mono />
+              <Row k="Payment id" v={p.razorpayPaymentId ?? ""} mono />
               <Row k="Webhook" v={p.webhookReceived ? "Received" : "Not received"} />
               <Row k="Posted to books" v={
                 p.postedToBooks
@@ -391,7 +392,7 @@ function PaymentDetailDialog({ id, onClose }: { id: string; onClose: () => void 
                         <td className="num">{fmtINR(r.amount)}</td>
                         <td className="capitalize">{r.status}</td>
                         <td className="text-[12px]">{r.reason}</td>
-                        <td className="text-[12px]">{r.initiatedByName ?? "—"}</td>
+                        <td className="text-[12px]">{r.initiatedByName ?? ""}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -408,12 +409,12 @@ function PaymentDetailDialog({ id, onClose }: { id: string; onClose: () => void 
                   <tbody>
                     {data!.ledger.map((l) => (
                       <tr key={l.id}>
-                        <td className="font-mono text-[11px]">{l.voucherNo ?? "—"}</td>
+                        <td className="font-mono text-[11px]">{l.voucherNo ?? ""}</td>
                         <td className={l.type === "credit" ? "text-success" : "text-destructive"}>
                           {l.type}
                         </td>
                         <td className="num">{fmtINR(l.amount)}</td>
-                        <td className="text-[12px]">{l.particulars ?? "—"}</td>
+                        <td className="text-[12px]">{l.particulars ?? ""}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -425,7 +426,7 @@ function PaymentDetailDialog({ id, onClose }: { id: string; onClose: () => void 
             {refundOpen && (
               <div className="rounded border border-border p-3 space-y-3 bg-muted/30">
                 <div className="text-[12px] font-medium">
-                  Refund — up to {fmtINR(remaining)} remaining
+                  Refund: up to {fmtINR(remaining)} remaining
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Amount (blank = full)">

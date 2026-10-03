@@ -5,7 +5,15 @@ export interface ProductLite {
   id: string;
   reportAlias: string;
   sortOrder: number;
+  /** Per-pack volume in the product's macro unit — present on reports that
+   *  render quantities as Ltr (milk) / Kg (curd) instead of packet counts. */
+  packSize?: number;
+  /** Product unit (L / kg / ml / g / …); drives the Ltr/Kg conversion. */
+  unit?: string;
 }
+
+/** Which rail a report reads: cash (the default), credit, or both. */
+export type SaleType = "cash" | "credit" | "all";
 
 export interface RouteLite {
   id: string;
@@ -43,6 +51,12 @@ export interface RouteSheetCustomer {
   code: string;
   name: string;
   isEmployee?: boolean;
+  /** Short badge printed after the name (e.g. "EMP", or the adhoc source
+   *  on the ADHOC route); falls back to "EMP" for employees. */
+  tag?: string | null;
+  /** Credit-institution customer (customer_type 'Credit Inst-*'): amount is
+   *  billed monthly, shown as "(credit)" and excluded from the cash total. */
+  isCredit?: boolean;
   acrossQty: Record<string, number>;
   othersText: string;
   othersQty: number;
@@ -86,6 +100,8 @@ export interface RouteSheetRoute {
   id: string;
   code: string;
   name: string;
+  /** The ADHOC bucket: sales that named no route (no contractor, no times). */
+  isAdhoc?: boolean;
   contractor: {
     id: string | null;
     name: string | null;
@@ -98,7 +114,10 @@ export interface RouteSheetRoute {
   totals: {
     acrossQty: Record<string, number>;
     othersQty: number;
+    /** Cash total — excludes credit-institution customers. */
     netAmount: number;
+    /** Sum of credit-institution customers' amounts (billed monthly). */
+    creditAmount: number;
     crates: number;
     cratePktPlus: number;
     cratePktMinus: number;
@@ -154,6 +173,53 @@ export const fetchGatePassReport = (params: {
   batchId?: string;
   routeId?: string;
 }) => get<RouteSheetResponse>("/reports/gate-pass", params);
+
+// ═══════════════════════════════════════════════════════════════
+// A3. Route Indent Status — who on each route has placed an indent today
+// ═══════════════════════════════════════════════════════════════
+export interface IndentStatusCounts {
+  assigned: number;
+  placed: number;
+  notPlaced: number;
+  indents: number;
+  qty: number;
+  amount: number;
+}
+
+export interface IndentStatusDealer {
+  dealerId: string;
+  code: string;
+  name: string;
+  phone: string;
+  /** On the route's roster (dealer_routes); false = placed here without it. */
+  assigned: boolean;
+  placed: boolean;
+  indents: number;
+  qty: number;
+  amount: number;
+  /** "YYYY-MM-DD HH:MM" IST of the first confirmed indent. */
+  firstPlacedAt: string | null;
+  /** Why a dealer is still Not placed: payment_required / draft / cancelled. */
+  openStatus: string | null;
+}
+
+export interface IndentStatusRoute {
+  id: string;
+  code: string;
+  name: string;
+  retired: boolean;
+  counts: IndentStatusCounts;
+  dealers: IndentStatusDealer[];
+}
+
+export interface IndentStatusResponse {
+  date: string;
+  routes: IndentStatusRoute[];
+  totals: IndentStatusCounts;
+}
+
+export const fetchIndentStatus = (params: { date: string; routeId?: string }) =>
+  get<IndentStatusResponse>("/reports/indent-status", params);
 
 // ═══════════════════════════════════════════════════════════════
 // B1. Daily Sales Statement
@@ -248,18 +314,22 @@ export interface SalesGridResponse {
 export const fetchCashSales = (params: { from: string; to: string }) =>
   get<SalesGridResponse>("/reports/sales-reports/cash-sales", params);
 
-export const fetchSalesRegister = (params: { from: string; to: string }) =>
+export const fetchSalesRegister = (params: { from: string; to: string; saleType?: SaleType }) =>
   get<SalesGridResponse>("/reports/sales-reports/register", params);
 
 // ═══════════════════════════════════════════════════════════════
 // B5. Credit Sales — legacy bill format
 // ═══════════════════════════════════════════════════════════════
 export interface CreditBillProduct {
+  /** productId|grossRate: one column per PRICE, so a revised rate prints as
+   *  its own column rather than being averaged into one. */
+  key: string;
   id: string;
   code: string;
   reportAlias: string;
   category: string;    // e.g. "MILK", "CURD" (uppercase)
   hsn: string;
+  session: string;     // delivery session label — "EVE" / "MOR" / "AFT"
   rate: number;
   packSize: number;    // e.g. 500 for "500ml"
   gstPct: number;      // combined GST %
@@ -320,6 +390,7 @@ export const fetchCreditSales = (params: { from: string; to: string }) =>
 // B7. Taluka / Agent Wise
 // ═══════════════════════════════════════════════════════════════
 export interface TalukaCustomerDetailed {
+  id: string;
   sl: number;
   code: string;
   name: string;
@@ -328,6 +399,7 @@ export interface TalukaCustomerDetailed {
 }
 
 export interface TalukaCustomerSummary {
+  id: string;
   sl: number;
   code: string;
   name: string;
@@ -389,12 +461,15 @@ export const fetchTalukaAgent = (params: { from: string; to: string }) =>
 // ═══════════════════════════════════════════════════════════════
 export interface TalukaWiseRow {
   taluka: string;
-  milkQty: Record<string, number>; // productId → litres
-  curdQty: Record<string, number>; // productId → kilograms
+  milkQty: Record<string, number>;  // productId → litres
+  curdQty: Record<string, number>;  // productId → kilograms
+  otherQty: Record<string, number>; // productId → volume (unit-aware)
   totalMilk: number; // Ltrs
   avgMilk: number;   // Ltrs / day
   totalCurd: number; // Kgs
   avgCurd: number;   // Kgs / day
+  totalOther: number; // mixed-unit volume
+  avgOther: number;   // per day
 }
 
 export interface TalukaWiseResponse {
@@ -403,14 +478,18 @@ export interface TalukaWiseResponse {
   numDays: number;
   milkProducts: ProductLite[];
   curdProducts: ProductLite[];
+  otherProducts: ProductLite[];
   rows: TalukaWiseRow[];
   totals: {
     milkQty: Record<string, number>;
     curdQty: Record<string, number>;
+    otherQty: Record<string, number>;
     totalMilk: number;
     avgMilk: number;
     totalCurd: number;
     avgCurd: number;
+    totalOther: number;
+    avgOther: number;
   };
 }
 
@@ -418,13 +497,108 @@ export const fetchTalukaWise = (params: { from: string; to: string }) =>
   get<TalukaWiseResponse>("/reports/sales-reports/taluka-wise", params);
 
 // ═══════════════════════════════════════════════════════════════
+// B7b-2. Product Wise Taluka Sales — products × talukas, filterable
+// ═══════════════════════════════════════════════════════════════
+/** Column id for sales to dealers with no taluka set. */
+export const UNASSIGNED_TALUKA_ID = "00000000-0000-0000-0000-000000000001";
+
+export interface ProductTalukaProduct {
+  id: string;
+  code: string;
+  reportAlias: string;
+  name: string;
+  categoryName: string;
+  packSize: number;
+  unit: string;
+}
+
+export interface ProductTalukaRow extends Omit<ProductTalukaProduct, "id"> {
+  productId: string;
+  qty: Record<string, number>;     // talukaId → packets
+  vol: Record<string, number>;     // talukaId → Ltr / Kg
+  amount: Record<string, number>;  // talukaId → ₹ (GST inclusive)
+  totalQty: number;
+  totalVol: number;
+  totalAmount: number;
+  avgQty: number;
+  avgVol: number;
+}
+
+export interface ProductTalukaResponse {
+  from: string;
+  to: string;
+  numDays: number;
+  filters: { categoryId: string | null; productId: string | null; zoneId: string | null };
+  talukas: Array<{ id: string; name: string }>;
+  products: ProductTalukaProduct[];
+  rows: ProductTalukaRow[];
+  totals: {
+    qty: Record<string, number>;
+    vol: Record<string, number>;
+    amount: Record<string, number>;
+    totalQty: number;
+    totalVol: number;
+    totalAmount: number;
+    avgQty: number;
+    avgVol: number;
+  };
+}
+
+export const fetchProductTaluka = (params: {
+  from: string; to: string; categoryId?: string; productId?: string; zoneId?: string;
+}) => get<ProductTalukaResponse>("/reports/sales-reports/product-taluka", params);
+
+// ═══════════════════════════════════════════════════════════════
+// B7c. Agent Sales — one block per agent (legacy per-customer statement)
+// ═══════════════════════════════════════════════════════════════
+export interface AgentSalesLine {
+  productId: string;
+  name: string;
+  bucket: "milk" | "curd" | "other";
+  rate: number;       // GST-inclusive packet rate
+  qtyNo: number;
+  qtyVol: number;
+  unit: string;
+  amount: number;
+}
+
+export interface AgentSalesVolumes {
+  milkLtr: number;
+  milkAmount: number;
+  curdKg: number;
+  curdAmount: number;
+  otherQty: number;
+  otherAmount: number;
+}
+
+export interface AgentSalesAgent extends AgentSalesVolumes {
+  id: string;
+  code: string;
+  name: string;
+  lines: AgentSalesLine[];
+  total: number;
+}
+
+export interface AgentSalesResponse {
+  from: string;
+  to: string;
+  agents: AgentSalesAgent[];
+  totals: AgentSalesVolumes & { total: number };
+}
+
+export const fetchAgentSales = (params: { from: string; to: string; dealerId?: string }) =>
+  get<AgentSalesResponse>("/reports/sales-reports/agent-sales", params);
+
+// ═══════════════════════════════════════════════════════════════
 // B8. Adhoc Sales Abstract
 // ═══════════════════════════════════════════════════════════════
 export interface AdhocRow {
-  sl: number;
-  indentDate: string;
-  gpNo: string;
-  customerName: string;
+  id: string;
+  date: string;          // YYYY-MM-DD
+  billNo: string;
+  customerName: string | null;
+  payMode: string;
+  itemsText: string;
   amount: number;
 }
 
@@ -446,9 +620,12 @@ export const fetchAdhocSales = (params: { from: string; to: string; page?: numbe
 export interface GstStatementRow {
   sl: number;
   productId: string;
+  /** Tagged → A / → B when the product sold at more than one rate. */
   productName: string;
   hsn: string;
   qty: number;
+  /** GST-inclusive packet rate the line was billed at. */
+  rate: number;
   gstPct: number;
   taxableValue: number;
   cgst: number;
@@ -471,7 +648,7 @@ export interface GstStatementResponse {
   };
 }
 
-export const fetchGstStatement = (params: { from: string; to: string }) =>
+export const fetchGstStatement = (params: { from: string; to: string; saleType?: SaleType }) =>
   get<GstStatementResponse>("/reports/sales-reports/gst-statement", params);
 
 // ═══════════════════════════════════════════════════════════════
@@ -588,6 +765,26 @@ export interface DailySalesReportResponse {
 
 export const fetchDailySalesReport = (params: { date: string }) =>
   get<DailySalesReportResponse>("/reports/sales-reports/daily-sales-report", params);
+
+// ═══════════════════════════════════════════════════════════════
+// Daily Sales Report MD — the union's fixed nine-line day summary
+// (milk, UHT, curd, paneer, butter, ghee, khova, Dharwad peda, white
+// peda). Every line is always sent, zero or not: it is a fixed form.
+// ═══════════════════════════════════════════════════════════════
+export interface DailyMdLine {
+  key: string;   // milk | uht | curd | paneer | butter | ghee | khova | dwd_peda | white_peda
+  label: string; // "TOTAL MILK" …
+  unit: string;  // "LTRS" | "KGS" (as the sheet prints it)
+  qty: number;
+}
+
+export interface DailyMdResponse {
+  date: string; // ISO YYYY-MM-DD
+  lines: DailyMdLine[];
+}
+
+export const fetchDailyMd = (params: { date: string }) =>
+  get<DailyMdResponse>("/reports/sales-reports/daily-md", params);
 
 // ═══════════════════════════════════════════════════════════════
 // Monthly Sales Report — "MILK & CURD SALES REPORT" (whole month)

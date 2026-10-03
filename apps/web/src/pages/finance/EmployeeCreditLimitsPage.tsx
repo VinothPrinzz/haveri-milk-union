@@ -22,7 +22,7 @@ import {
   type EmployeeCreditRow,
 } from "@/services/api";
 
-const CAN_EDIT = new Set(["accountant", "super_admin"]);
+const CAN_EDIT = new Set(["accountant", "super_admin", "call_desk"]);
 
 export default function EmployeeCreditLimitsPage() {
   const { user } = useAuth();
@@ -93,7 +93,7 @@ export default function EmployeeCreditLimitsPage() {
     <div className="flex flex-col h-full">
       <PageHeader
         title="Employee Credit"
-        subtitle="Set employee credit limits and release held indents — finance only."
+        subtitle="Set employee credit limits and release held indents. Finance only."
       />
 
       <FilterBar>
@@ -129,7 +129,7 @@ export default function EmployeeCreditLimitsPage() {
           <div className="erp-panel overflow-hidden">
             <div className="px-4 py-2.5 border-b border-border bg-warning/10 flex items-center gap-2">
               <Hourglass className="h-4 w-4 text-warning" />
-              <h3 className="font-semibold text-[14px]">Held Indents — over credit limit</h3>
+              <h3 className="font-semibold text-[14px]">Held Indents: over credit limit</h3>
             </div>
             <table className="erp-table">
               <thead>
@@ -143,7 +143,7 @@ export default function EmployeeCreditLimitsPage() {
               <tbody>
                 {held.map((o) => (
                   <tr key={o.id}>
-                    <td className="font-mono text-[11px]">{o.employeeCode ?? "—"}</td>
+                    <td className="font-mono text-[11px]">{o.employeeCode ?? ""}</td>
                     <td className="font-medium">{o.employeeName}</td>
                     <td className="text-[12px]">{o.deliveryDate}</td>
                     <td className="num" style={{ textAlign: "right" }}>{o.itemCount}</td>
@@ -188,10 +188,10 @@ export default function EmployeeCreditLimitsPage() {
                   const editing = editingId === d.id;
                   return (
                     <tr key={d.id}>
-                      <td className="font-mono text-[11px]">{d.code ?? "—"}</td>
+                      <td className="font-mono text-[11px]">{d.code ?? ""}</td>
                       <td className="font-medium">{d.name}</td>
-                      <td className="text-[12px]">{d.route_name ?? "—"}</td>
-                      <td className="num text-destructive" style={{ textAlign: "right" }}>{d.outstanding > 0 ? fmtINR(d.outstanding) : "—"}</td>
+                      <td className="text-[12px]">{d.route_name ?? ""}</td>
+                      <td className="num text-destructive" style={{ textAlign: "right" }}>{d.outstanding > 0 ? fmtINR(d.outstanding) : ""}</td>
                       <td className="num" style={{ textAlign: "right" }}>{fmtINR(d.availableCredit)}</td>
                       <td className="num" style={{ textAlign: "right" }}>
                         {editing ? (

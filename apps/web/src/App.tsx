@@ -1,11 +1,12 @@
+import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Navigate, useLocation } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/components/AuthProvider";
 import { useAuth } from "@/lib/auth";
-import AppLayout from "@/components/AppLayout";
+import AppLayout, { allowedModulesForRole, defaultModulePathForRole, moduleOfPath } from "@/components/AppLayout";
 import LoginPage from "@/pages/LoginPage";
 import Dashboard from "@/pages/Dashboard";
 import CustomersPage from "@/pages/masters/CustomersPage";
@@ -34,6 +35,7 @@ import DispatchSheetOthersPage   from "@/pages/fgs/DispatchSheetOthersPage";
 import CreateDispatchPage from "@/pages/fgs/CreateDispatchPage";
 import RouteSheetPage from "@/pages/reports/RouteSheetPage";
 import GatePassReportPage from "@/pages/reports/GatePassReportPage";
+import IndentStatusPage from "@/pages/reports/IndentStatusPage";
 import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
 import InvoicesListPage from "@/pages/sales/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/sales/InvoiceDetailPage";
@@ -55,11 +57,13 @@ import {
   DailySalesStatement, DayRouteCashSales, OfficerWiseSales,
   CashSalesReport, CreditSalesReport, SalesRegister,
   TalukaAgentSales, AdhocSalesReport, GSTStatement, VipSalesReport,
-  TalukaWiseReport,
+  TalukaWiseReport, AgentSalesReport,
 } from "@/pages/sales-reports/SalesReports";
 import EmployeeSubsidyReportPage from "@/pages/sales-reports/EmployeeSubsidyReport";
 import DailySalesReport from "@/pages/sales-reports/DailySalesReport";
+import DailyMdReport from "@/pages/sales-reports/DailyMdReport";
 import MonthlySalesReport from "@/pages/sales-reports/MonthlySalesReport";
+import ProductTalukaReport from "@/pages/sales-reports/ProductTalukaReport";
 import {
   TimeWindowsPage, NotificationsPage, DealerNotificationsPage,
   BannerManagementPage, RolesPage, UserManagementPage,
@@ -78,6 +82,20 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+// Redirects a restricted-role user (e.g. route officer) away from any module
+// their role can't see, landing them on their first allowed module. The API
+// still enforces access; this keeps the URL bar in sync with the hidden tabs.
+function RequireModuleAccess({
+  role, children,
+}: { role: string | null | undefined; children: ReactNode }) {
+  const { pathname } = useLocation();
+  const allowed = new Set(allowedModulesForRole(role));
+  if (!allowed.has(moduleOfPath(pathname))) {
+    return <Navigate to={defaultModulePathForRole(role)} replace />;
+  }
+  return <>{children}</>;
+}
 
 function AppInner() {
   const { user, loading, login } = useAuth();
@@ -104,6 +122,7 @@ function AppInner() {
   return (
     <BrowserRouter>
       <AppLayout>
+       <RequireModuleAccess role={user.role}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           {/* Masters */}
@@ -188,9 +207,11 @@ function AppInner() {
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />
+          <Route path="/reports/indent-status" element={<IndentStatusPage />} />
           {/* Sales Reports */}
           <Route path="/sales-reports/daily-sales-report" element={<DailySalesReport />} />
           <Route path="/sales-reports/monthly-sales-report" element={<MonthlySalesReport />} />
+          <Route path="/sales-reports/daily-md" element={<DailyMdReport />} />
           <Route path="/sales-reports/daily-statement" element={<DailySalesStatement />} />
           <Route path="/sales-reports/day-route-cash" element={<DayRouteCashSales />} />
           <Route path="/sales-reports/officer-wise" element={<OfficerWiseSales />} />
@@ -199,6 +220,8 @@ function AppInner() {
           <Route path="/sales-reports/register" element={<SalesRegister />} />
           <Route path="/sales-reports/taluka-agent" element={<TalukaAgentSales />} />
           <Route path="/sales-reports/taluka-wise" element={<TalukaWiseReport />} />
+          <Route path="/sales-reports/product-taluka" element={<ProductTalukaReport />} />
+          <Route path="/sales-reports/agent-sales" element={<AgentSalesReport />} />
           <Route path="/sales-reports/adhoc" element={<AdhocSalesReport />} />
           <Route path="/sales-reports/gst" element={<GSTStatement />} />
           <Route path="/sales-reports/employee-subsidy" element={<EmployeeSubsidyReportPage />} />
@@ -213,6 +236,7 @@ function AppInner() {
           {/* <Route path="/system/db-health" element={<DatabaseHealthPage />} /> */}
           <Route path="*" element={<NotFound />} />
         </Routes>
+       </RequireModuleAccess>
       </AppLayout>
     </BrowserRouter>
   );

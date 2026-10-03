@@ -17,6 +17,7 @@ import {
   fetchCheques, fetchChequesSummary, depositCheque, clearCheque, bounceCheque, cancelCheque,
   printDepositSlip, type ChequeRow, type ChequeStatus,
 } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 const STATUS_OPTIONS: F9Option[] = [
   { value: "received", label: "Received (in hand)" },
@@ -35,7 +36,7 @@ const STATUS_TONE: Record<ChequeStatus, string> = {
   cancelled: "bg-muted text-muted-foreground",
 };
 const BOUNCE_REASONS = ["Insufficient funds", "Stop payment", "Signature mismatch", "Account closed", "Other"];
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => todayIST();
 
 type ActionType = "deposit" | "clear" | "bounce" | "cancel";
 
@@ -54,6 +55,9 @@ function ActionDialog({ cheque, type, onClose }: { cheque: ChequeRow; type: Acti
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["cheques"] });
     qc.invalidateQueries({ queryKey: ["cheques-summary"] });
+    // Cancel/bounce rolls back the invoices the cheque settled.
+    for (const key of ["invoices", "invoice", "ar-aging", "ar-aging-summary", "ar-aging-dealer", "payments"])
+      qc.invalidateQueries({ queryKey: [key] });
   };
 
   const mut = useMutation({
@@ -203,10 +207,10 @@ export default function ChequesPage() {
                     <td className="text-[12px]">{c.bankName}</td>
                     <td className="num" style={{ textAlign: "right" }}>{fmtINR(c.amount)}</td>
                     <td><span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${STATUS_TONE[c.status]}`}>{c.status}</span></td>
-                    <td className="num" style={{ textAlign: "right" }}>{c.ageingDays > 0 ? `${c.ageingDays}d` : "—"}</td>
-                    <td className="text-[12px]">{c.depositedDate ? fmtDate(c.depositedDate) : "—"}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{c.ageingDays > 0 ? `${c.ageingDays}d` : ""}</td>
+                    <td className="text-[12px]">{c.depositedDate ? fmtDate(c.depositedDate) : ""}</td>
                     <td className="text-[12px]">
-                      {c.clearedDate ? fmtDate(c.clearedDate) : c.bouncedDate ? <span className="text-destructive">{fmtDate(c.bouncedDate)}{c.bounceReason ? ` · ${c.bounceReason}` : ""}</span> : "—"}
+                      {c.clearedDate ? fmtDate(c.clearedDate) : c.bouncedDate ? <span className="text-destructive">{fmtDate(c.bouncedDate)}{c.bounceReason ? ` · ${c.bounceReason}` : ""}</span> : ""}
                     </td>
                     <td>
                       <div className="flex gap-1">

@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Plus, Wallet, TrendingUp, Receipt, Search } from "lucide-react";
 import {
@@ -25,6 +26,7 @@ import {
   type PaymentRow,
   type PaymentStatus,
 } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 const MODE_LABELS: Record<PaymentMode, string> = {
   cash:   "Cash",
@@ -178,12 +180,12 @@ export default function PaymentsOverviewPage() {
                   return (
                     <tr key={p.id} className={reversed ? "bg-destructive/5" : ""}>
                       <td>{fmtDate(p.receivedAt ?? p.received_date ?? p.createdAt)}</td>
-                      <td className="font-medium">{p.customerName ?? p.dealerName ?? "—"}</td>
+                      <td className="font-medium">{p.customerName ?? p.dealerName ?? ""}</td>
                       <td>{MODE_LABELS[p.mode as PaymentMode] ?? p.mode}</td>
                       <td><PaymentStatusBadge status={p.status} /></td>
-                      <td className="font-mono text-[12px] text-muted-foreground">{p.reference ?? "—"}</td>
+                      <td className="font-mono text-[12px] text-muted-foreground">{p.reference ?? ""}</td>
                       <td className={`num font-semibold ${reversed ? "text-muted-foreground line-through" : ""}`} style={{ textAlign: "right" }}>{fmtINR(p.amount)}</td>
-                      <td className="font-mono text-[12px]">{p.invoiceNumber ?? "—"}</td>
+                      <td className="font-mono text-[12px]">{p.invoiceNumber ?? ""}</td>
                     </tr>
                   );
                 })}
@@ -208,31 +210,62 @@ export default function PaymentsOverviewPage() {
 }
 
 // ── Record Payment Dialog ────────────────────────────────────────
+// One receipt can settle several invoices. The amount is applied oldest-due
+// first across the ticked invoices (same order the API uses); anything left
+// over stays on the dealer's account.
 function RecordPaymentDialog({
   open, onOpenChange, customerOptions,
 }: { open: boolean; onOpenChange: (v: boolean) => void; customerOptions: F9Option[] }) {
   const qc = useQueryClient();
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [amount, setAmount]         = useState("");
+  const [amountTouched, setAmountTouched] = useState(false);
   const [pMode, setPMode]           = useState<string | null>(null);
-  const [receivedAt, setReceivedAt] = useState(new Date().toISOString().slice(0, 10));
-  const [invoiceId, setInvoiceId]   = useState<string | null>(null);
+  const [receivedAt, setReceivedAt] = useState(todayIST());
+  const [selected, setSelected]     = useState<Set<string>>(new Set());
   const [reference, setReference]   = useState("");
   const [notes, setNotes]           = useState("");
 
-  const { data: invoices = [] } = useQuery({
+  const { data: invoices = [], isLoading: invoicesLoading } = useQuery({
     queryKey: ["invoices-for-customer", customerId],
     queryFn: () => fetchInvoicesForCustomer(customerId!),
-    enabled: !!customerId,
+    enabled: !!customerId && open,
   });
-  const invoiceOptions: F9Option[] = (invoices as any[])
-    .filter((i: any) => i.balance > 0)
-    .map((i: any) => ({ value: i.id, label: i.number ?? i.code, sublabel: fmtINR(i.balance) }));
+
+  // New customer → old invoice selection no longer applies.
+  useEffect(() => { setSelected(new Set()); }, [customerId]);
+
+  const selectedInvoices = useMemo(() => invoices.filter(i => selected.has(i.id)), [invoices, selected]);
+  const selectedTotal = round2(selectedInvoices.reduce((s, i) => s + i.balance, 0));
+
+  // Until the user types an amount, it follows the ticked invoices' total.
+  useEffect(() => {
+    if (!amountTouched) setAmount(selectedTotal > 0 ? selectedTotal.toFixed(2) : "");
+  }, [selectedTotal, amountTouched]);
+
+  const applied = useMemo(() => {
+    let left = Math.round((Number(amount) || 0) * 100);
+    const map = new Map<string, number>();
+    for (const inv of selectedInvoices) {
+      const take = Math.min(left, Math.round(inv.balance * 100));
+      if (take > 0) { map.set(inv.id, take / 100); left -= take; }
+    }
+    return { map, onAccount: left / 100 };
+  }, [amount, selectedInvoices]);
+
+  const toggle = (id: string, on: boolean) =>
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (on) next.add(id); else next.delete(id);
+      return next;
+    });
+  const allSelected = invoices.length > 0 && selected.size === invoices.length;
+  const toggleAll = (on: boolean) => setSelected(on ? new Set(invoices.map(i => i.id)) : new Set());
 
   const reset = () => {
-    setCustomerId(null); setAmount(""); setPMode(null);
-    setReceivedAt(new Date().toISOString().slice(0, 10));
-    setInvoiceId(null); setReference(""); setNotes("");
+    setCustomerId(null); setAmount(""); setAmountTouched(false); setPMode(null);
+    setReceivedAt(todayIST());
+    setSelected(new Set()); setReference(""); setNotes("");
   };
 
   const save = useMutation({
@@ -241,15 +274,23 @@ function RecordPaymentDialog({
       amount: Number(amount),
       mode: pMode as PaymentMode,
       receivedDate: receivedAt,
-      invoiceId: invoiceId ?? undefined,
+      invoiceIds: selectedInvoices.map(i => i.id),
       reference: reference || undefined,
       notes: notes || undefined,
     }),
-    onSuccess: () => {
-      toast.success("Payment recorded");
-      qc.invalidateQueries({ queryKey: ["payments"] });
-      qc.invalidateQueries({ queryKey: ["invoices"] });
-      qc.invalidateQueries({ queryKey: ["dealer-ledger"] });
+    onSuccess: (res) => {
+      const n = res.allocations?.length ?? 0;
+      toast.success(
+        n > 0
+          ? `Payment recorded — settled ${n} invoice${n > 1 ? "s" : ""}` +
+            (res.unallocated > 0 ? `, ${fmtINR(res.unallocated)} on account` : "")
+          : "Payment recorded on account"
+      );
+      for (const key of [
+        "payments", "invoices", "invoice", "invoices-for-customer", "dealer-ledger",
+        "dealer-ledger-summary", "ar-aging", "ar-aging-summary", "ar-aging-dealer",
+        "credit-control", "credit-control-summary", "finance-dashboard", "cheques", "cheques-summary",
+      ]) qc.invalidateQueries({ queryKey: [key] });
       reset();
       onOpenChange(false);
     },
@@ -260,24 +301,99 @@ function RecordPaymentDialog({
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) reset(); onOpenChange(v); }}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-3xl">
         <DialogHeader><DialogTitle>Record Payment</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Customer" required hint="F9">
-            <F9SearchSelect value={customerId} onChange={setCustomerId} options={customerOptions} placeholder="Search customer" />
+            <F9SearchSelect
+              value={customerId}
+              onChange={setCustomerId}
+              options={customerOptions}
+              placeholder="Search customer"
+            />
           </Field>
           <Field label="Mode" required>
             <F9SearchSelect value={pMode} onChange={setPMode} options={MODE_OPTIONS} placeholder="Select mode" />
           </Field>
+
+          <div className="col-span-2">
+            <div className="text-[11.5px] font-medium text-muted-foreground mb-1 flex items-center justify-between uppercase tracking-wide">
+              <span>Invoices to settle (optional)</span>
+              {selected.size > 0 && (
+                <span className="normal-case tracking-normal">
+                  {selected.size} selected · {fmtINR(selectedTotal)} outstanding
+                </span>
+              )}
+            </div>
+            <div className="border border-border rounded max-h-56 overflow-auto">
+              {!customerId ? (
+                <div className="p-3 text-[12px] text-muted-foreground">Pick a customer to see their unpaid invoices.</div>
+              ) : invoicesLoading ? (
+                <div className="p-3 space-y-1.5">
+                  {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-6 w-full" />)}
+                </div>
+              ) : invoices.length === 0 ? (
+                <div className="p-3 text-[12px] text-muted-foreground">No unpaid invoices — the payment will be recorded on account.</div>
+              ) : (
+                <table className="erp-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 32 }}>
+                        <Checkbox checked={allSelected} onCheckedChange={v => toggleAll(v === true)} aria-label="Select all invoices" />
+                      </th>
+                      <th>Invoice</th>
+                      <th>Date</th>
+                      <th>Due</th>
+                      <th className="num" style={{ textAlign: "right" }}>Overdue</th>
+                      <th className="num" style={{ textAlign: "right" }}>Outstanding ₹</th>
+                      <th className="num" style={{ textAlign: "right" }}>Applying ₹</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoices.map(inv => {
+                      const on = selected.has(inv.id);
+                      const take = applied.map.get(inv.id) ?? 0;
+                      return (
+                        <tr key={inv.id} className={`cursor-pointer ${on ? "bg-primary/5" : ""}`} onClick={() => toggle(inv.id, !on)}>
+                          <td onClick={e => e.stopPropagation()}>
+                            <Checkbox checked={on} onCheckedChange={v => toggle(inv.id, v === true)} aria-label={`Select ${inv.invoiceNumber}`} />
+                          </td>
+                          <td className="font-mono text-[12px]">{inv.invoiceNumber}</td>
+                          <td>{fmtDate(inv.invoiceDate)}</td>
+                          <td>{inv.dueDate ? fmtDate(inv.dueDate) : "—"}</td>
+                          <td className={`num ${inv.overdueDays > 0 ? "text-destructive" : "text-muted-foreground"}`} style={{ textAlign: "right" }}>
+                            {inv.overdueDays > 0 ? `${inv.overdueDays}d` : "—"}
+                          </td>
+                          <td className="num" style={{ textAlign: "right" }}>{fmtINR(inv.balance)}</td>
+                          <td className="num font-semibold" style={{ textAlign: "right" }}>
+                            {on ? (take > 0 ? fmtINR(take) : <span className="text-muted-foreground font-normal">—</span>) : ""}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+
           <Field label="Amount" required>
-            <Input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} className="erp-input num" />
+            <Input
+              type="number" min="0" step="0.01" value={amount}
+              onChange={e => { setAmount(e.target.value); setAmountTouched(true); }}
+              className="erp-input num"
+            />
           </Field>
           <Field label="Received Date">
             <Input type="date" value={receivedAt} onChange={e => setReceivedAt(e.target.value)} className="erp-input" />
           </Field>
-          <Field label="Invoice (optional)" hint="F9">
-            <F9SearchSelect value={invoiceId} onChange={setInvoiceId} options={invoiceOptions} placeholder={customerId ? "Select unpaid invoice" : "Pick a customer first"} />
-          </Field>
+          {selected.size > 0 && Number(amount) > 0 && (
+            <div className="col-span-2 text-[12px] text-muted-foreground -mt-1">
+              {fmtINR(round2(Number(amount) - applied.onAccount))} applied to {applied.map.size} invoice{applied.map.size === 1 ? "" : "s"}
+              {applied.onAccount > 0 && <> · {fmtINR(applied.onAccount)} kept on account</>}
+              {Number(amount) < selectedTotal && <> · {fmtINR(round2(selectedTotal - Number(amount)))} will remain due</>}
+            </div>
+          )}
           <Field label="Reference">
             <Input value={reference} onChange={e => setReference(e.target.value)} className="erp-input" placeholder="UPI txn id, cheque no, etc." />
           </Field>
@@ -296,3 +412,4 @@ function RecordPaymentDialog({
   );
 }
 
+const round2 = (n: number) => Math.round(n * 100) / 100;

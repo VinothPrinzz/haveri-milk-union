@@ -1,9 +1,25 @@
-import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
-import { pushQueue as notifQueue } from "../lib/queues.js";
+import { enqueuePush } from "../lib/queues.js";
 
-export async function processDispatchPregenerate(job: Job) {
-  const today = new Date().toISOString().split("T")[0];
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+/**
+ * Today in IST.
+ *
+ * This job is scheduled at 05:00 AM IST, which is 23:30 UTC on the day
+ * BEFORE — so `new Date().toISOString()` handed it yesterday's date every
+ * single time it ran. It pre-generated the dispatch sheet for the wrong
+ * day, and counted confirmed orders against the wrong delivery_date: 360
+ * such rows were written between 2026-06-13 and 2026-07-22, all at 05:00
+ * IST, all stamped a day behind. Anything scheduled before 05:30 IST must
+ * add the offset.
+ */
+function istToday(): string {
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+export async function processDispatchPregenerate() {
+  const today = istToday();
 
   console.log(`[Dispatch] Pre-generating dispatch sheet for ${today}`);
 
@@ -39,7 +55,7 @@ export async function processDispatchPregenerate(job: Job) {
              COALESCE(SUM(item_count), 0)::int AS total_items
       FROM orders o
       JOIN dealers d ON d.id = o.dealer_id
-      WHERE d.route_id = ${route.id}
+      WHERE COALESCE(o.route_id, d.route_id) = ${route.id}
         AND o.delivery_date = ${today}::date
         AND o.status = 'confirmed'
     `;
@@ -67,8 +83,8 @@ export async function processDispatchPregenerate(job: Job) {
 
   console.log(`[Dispatch] ✅ Created ${created} route assignments for ${today}`);
 
-  // Queue window opening notification for all zones (shared queue — not closed here)
-  await notifQueue.add("window-opening-reminder", {
+  // Queue window opening notification for all zones
+  await enqueuePush("window-opening-reminder", {
     event: "window.opening" as const,
     title: "Window Opening Soon 🟢",
     body: "The ordering window opens in 5 minutes. Get ready to place your indent!",

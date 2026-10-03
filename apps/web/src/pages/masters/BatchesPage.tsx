@@ -141,7 +141,7 @@ export default function BatchesPage({ tab = "list" }: Props) {
                   <StatusPill status={batch.status === "Active" ? "active" : "draft"} />
                 </div>
                 <p className="text-[12.5px] text-muted-foreground mt-0.5">
-                  {batch.whichBatch} — {batch.timing}
+                  {batch.whichBatch}: {batch.timing}
                 </p>
               </div>
               <div className="flex items-center gap-1">
@@ -204,7 +204,7 @@ export default function BatchesPage({ tab = "list" }: Props) {
         <DialogContent className="max-w-2xl rounded-sm">
           <DialogHeader>
             <DialogTitle className="text-[15px] font-semibold">
-              Edit Batch — <span className="font-mono">{editing?.batchCode}</span>
+              Edit Batch: <span className="font-mono">{editing?.batchCode}</span>
             </DialogTitle>
           </DialogHeader>
           {editing && (

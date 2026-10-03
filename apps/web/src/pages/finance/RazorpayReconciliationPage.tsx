@@ -209,7 +209,6 @@ export default function RazorpayReconciliationPage() {
                           Mark reconciled
                         </Button>
                       )}
-                      {r.bucket === "matched"  && <span className="text-muted-foreground text-[12px]">—</span>}
                       {r.bucket === "stale"    && <span className="text-muted-foreground text-[12px]">No action</span>}
                       {r.bucket === "not_posted" && (
                         <span className="text-destructive text-[12px]">Investigate</span>
@@ -223,10 +222,7 @@ export default function RazorpayReconciliationPage() {
         </div>
 
         <p className="text-[11.5px] text-muted-foreground">
-          Showing up to 500 rows. Narrow the date window for a complete view.
-          Reconciliation here is at the payment level — settlement-batch
-          matching against the Axis Bank statement is the next layer
-          (settlements table, Phase 2).
+          Showing up to 500 rows. Narrow the date window for a complete view. Reconciliation here is at the payment level. Settlement-batch matching against the Axis Bank statement is the next layer (settlements table, Phase 2).
         </p>
       </div>
     </div>

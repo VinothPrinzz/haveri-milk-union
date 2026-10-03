@@ -27,15 +27,22 @@ import {
   type EmployeeSubsidyProductRow,
   type EmployeeSubsidyCombinedRow,
 } from "@/services/report";
+import { todayIST } from "@/lib/istDate";
 
 // Product shape, derived from the response so we don't depend on a
 // separately-exported type name.
 type SubsidyProduct = EmployeeSubsidyReportResponse["products"][number];
 
 const fmtQty = (n: number | string) => String(Number(n || 0));
+// dd-mm-yyyy — the on-paper date format.
+const fmtDMY = (iso: string) => {
+  const [y, m, d] = (iso ?? "").split("-");
+  return y && m && d ? `${d}-${m}-${y}` : (iso ?? "");
+};
+const fmtPeriod = (from: string, to: string) => `${fmtDMY(from)} to ${fmtDMY(to)}`;
 
 export default function EmployeeSubsidyReportPage() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
   const monthStart = today.substring(0, 8) + "01";
 
   const [from, setFrom] = useState(monthStart);
@@ -78,8 +85,6 @@ export default function EmployeeSubsidyReportPage() {
             rows={pd.rows}
             totalQty={pd.totalQty}
             totalAmount={pd.totalAmount}
-            from={from}
-            to={to}
           />
         )),
         <CombinedPage
@@ -92,8 +97,6 @@ export default function EmployeeSubsidyReportPage() {
             totalAmount: pd.totalAmount,
           }))}
           grandTotal={grandTotal}
-          from={from}
-          to={to}
         />,
       ]
     : [];
@@ -111,7 +114,7 @@ export default function EmployeeSubsidyReportPage() {
 
       // One sheet per product.
       for (const pd of perProductData) {
-        out.push([`Employee Subsidy — ${pd.product.label} — ${from} to ${to}`]);
+        out.push([`Employee Subsidy: ${pd.product.label} (${fmtPeriod(from, to)})`]);
         out.push(["Sl", "PF NO", "Employee Name", "Qty", "Total Amount"]);
         pd.rows.forEach((r, i) => out.push([
           i + 1, r.employeeCode ?? "", r.employeeName, r.qty, r.totalAmount,
@@ -121,7 +124,7 @@ export default function EmployeeSubsidyReportPage() {
       }
 
       // Combined sheet — dynamic columns.
-      out.push([`Employee Subsidy — Combined — ${from} to ${to}`]);
+      out.push([`Employee Subsidy: Combined (${fmtPeriod(from, to)})`]);
       const header: (string | number)[] = ["Sl", "PF NO", "Employee Name"];
       for (const p of products) header.push(`${p.label} Qty`, `${p.label} ₹`);
       header.push("Total ₹");
@@ -148,7 +151,7 @@ export default function EmployeeSubsidyReportPage() {
   return (
     <ReportShell
       title="Employee Subsidy Statement"
-      subtitle="Subsidised goods supplied to employees — one page per product, plus a combined view"
+      subtitle="Subsidised goods supplied to employees: one page per product, plus a combined view"
       printOrientation="portrait"
       filters={
         <>
@@ -176,7 +179,12 @@ export default function EmployeeSubsidyReportPage() {
       }
       onGenerate={handleGenerate}
       exporters={exporters}
-      printMeta={<ReportPrintMeta />}
+      printMeta={
+        <ReportPrintMeta
+          title="Employee Subsidy Sales Statement"
+          rows={[{ label: "Period", value: fmtPeriod(from, to) }]}
+        />
+      }
       state={{
         generated,
         loading: isLoading,
@@ -184,7 +192,7 @@ export default function EmployeeSubsidyReportPage() {
         pageLabel,
         emptyMessage:
           generated && data && products.length === 0
-            ? "No subsidy products configured — add rows to employee_subsidy_rules first"
+            ? "No subsidy products configured. Add rows to employee_subsidy_rules first"
             : "No employee subsidy sales in this date range",
       }}
     />
@@ -195,14 +203,12 @@ export default function EmployeeSubsidyReportPage() {
 // Per-product page
 // ─────────────────────────────────────────────────────────────────────
 function ProductPage({
-  product, rows, totalQty, totalAmount, from, to,
+  product, rows, totalQty, totalAmount,
 }: {
   product: SubsidyProduct;
   rows: EmployeeSubsidyProductRow[];
   totalQty: number;
   totalAmount: number;
-  from: string;
-  to: string;
 }) {
   return (
     <div>
@@ -213,8 +219,6 @@ function ProductPage({
         </p>
         <p className="text-[11px] text-muted-foreground mt-0.5">
           Product: <span className="font-medium">{product.label}</span>
-          {"  ·  "}
-          From {from} to {to}
         </p>
       </div>
 
@@ -238,7 +242,7 @@ function ProductPage({
           ) : rows.map((r, i) => (
             <tr key={r.employeeId}>
               <td className="border border-border py-1 px-2 text-right num">{i + 1}</td>
-              <td className="border border-border py-1 px-2 font-mono">{r.employeeCode ?? "—"}</td>
+              <td className="border border-border py-1 px-2 font-mono">{r.employeeCode ?? ""}</td>
               <td className="border border-border py-1 px-2">{r.employeeName}</td>
               <td className="border border-border py-1 px-2 text-right num">{fmtQty(r.qty)}</td>
               <td className="border border-border py-1 px-2 text-right num">{fmtINR(r.totalAmount)}</td>
@@ -261,14 +265,12 @@ function ProductPage({
 // Combined page — per-employee row, every product side-by-side
 // ─────────────────────────────────────────────────────────────────────
 function CombinedPage({
-  products, rows, perProductTotals, grandTotal, from, to,
+  products, rows, perProductTotals, grandTotal,
 }: {
   products: SubsidyProduct[];
   rows: EmployeeSubsidyCombinedRow[];
   perProductTotals: Array<{ id: string; totalQty: number; totalAmount: number }>;
   grandTotal: number;
-  from: string;
-  to: string;
 }) {
   // Sl + PF NO + Name + (Qty,Amount per product) + Total
   const colCount = 3 + products.length * 2 + 1;
@@ -278,9 +280,6 @@ function CombinedPage({
       <div className="text-center mb-2">
         <p className="text-[12px] font-bold">
           Statement of Subsidised Goods Supplied to Employees (Combined)
-        </p>
-        <p className="text-[11px] text-muted-foreground mt-0.5">
-          From {from} to {to}
         </p>
       </div>
 
@@ -314,7 +313,7 @@ function CombinedPage({
           ) : rows.map((r, i) => (
             <tr key={r.employeeId}>
               <td className="border border-border py-1 px-2 text-right num">{i + 1}</td>
-              <td className="border border-border py-1 px-2 font-mono">{r.employeeCode ?? "—"}</td>
+              <td className="border border-border py-1 px-2 font-mono">{r.employeeCode ?? ""}</td>
               <td className="border border-border py-1 px-2">{r.employeeName}</td>
               {products.map(p => (
                 <FragmentCells

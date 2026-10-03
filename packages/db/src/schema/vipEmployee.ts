@@ -54,7 +54,7 @@ index("idx_employees_active").on(table.active),
 export const employeeSubsidyRules = pgTable("employee_subsidy_rules", {
 id:             uuid("id").defaultRandom().primaryKey(),
 productId:      uuid("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
-subsidyPrice:   numeric("subsidy_price", { precision: 12, scale: 2 }).notNull(),
+subsidyPrice:   numeric("subsidy_price", { precision: 13, scale: 3 }).notNull(),
 subsidyPercent: numeric("subsidy_percent", { precision: 5, scale: 2 }),
 active:         boolean("active").notNull().default(true),
 createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

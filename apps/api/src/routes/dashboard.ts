@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
+import { istToday } from "../lib/ist-date.js";
 
 export async function dashboardRoutes(app: FastifyInstance) {
   // GET /api/v1/dashboard/summary — aggregate stats for the Dashboard
@@ -10,7 +11,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
     "/api/v1/dashboard/summary",
     { preHandler: [adminAuth, requireRole("dashboard")] },
     async (request, reply) => {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = istToday();
 
       // Run all queries in parallel for speed
       const [
@@ -30,7 +31,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
                  COALESCE(sum(grand_total), 0)::numeric AS revenue,
                  COALESCE(sum(item_count), 0)::int AS items_sold
           FROM orders
-          WHERE created_at::date = ${today}::date
+          WHERE (created_at AT TIME ZONE 'Asia/Kolkata')::date = ${today}::date
             AND status != 'cancelled'
         `.then(r => r[0]),
 
@@ -61,6 +62,11 @@ export async function dashboardRoutes(app: FastifyInstance) {
                  d.name AS dealer_name, z.name AS zone_name
           FROM orders o
           JOIN dealers d ON d.id = o.dealer_id
+          -- Play Store demo route: a reviewer's test activity is not the union's
+          -- trade and must never reach this report. Mirrors routes/sales-reports.ts.
+          AND NOT EXISTS (SELECT 1 FROM routes demo_rt
+                           WHERE demo_rt.code = 'DEMO'
+                             AND demo_rt.id = COALESCE(o.route_id, d.route_id))
           JOIN zones z ON z.id = o.zone_id
           ORDER BY o.created_at DESC
           LIMIT 5
@@ -89,7 +95,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
           SELECT z.name, z.slug, z.color, count(o.id)::int AS order_count,
                  COALESCE(sum(o.grand_total), 0)::numeric AS revenue
           FROM zones z
-          LEFT JOIN orders o ON o.zone_id = z.id AND o.created_at::date = ${today}::date AND o.status != 'cancelled'
+          LEFT JOIN orders o
+            ON o.zone_id = z.id
+           AND (o.created_at AT TIME ZONE 'Asia/Kolkata')::date = ${today}::date
+           AND o.status != 'cancelled'
           WHERE z.active = true
           GROUP BY z.id
           ORDER BY z.name
@@ -106,6 +115,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
                  COALESCE(sum(grand_total), 0)::numeric AS revenue
           FROM direct_sales
           WHERE sale_date = ${today}::date
+            AND status = 'confirmed'
         `.then(r => r[0]),
       ]);
 

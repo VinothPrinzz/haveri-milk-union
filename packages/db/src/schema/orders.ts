@@ -77,7 +77,7 @@ export const orderItems = pgTable("order_items", {
     .references(() => products.id, { onDelete: "restrict" }),
   productName: text("product_name").notNull(), // snapshot: product name at order time
   quantity: integer("quantity").notNull(),
-  unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
+  unitPrice: numeric("unit_price", { precision: 11, scale: 3 }).notNull(),
   gstPercent: numeric("gst_percent", { precision: 5, scale: 2 }).notNull(),
   gstAmount: numeric("gst_amount", { precision: 10, scale: 2 }).notNull(),
   lineTotal: numeric("line_total", { precision: 10, scale: 2 }).notNull(),

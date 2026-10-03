@@ -63,6 +63,11 @@ export async function cancelSupersededSiblings(
      WHERE w.id = ${winnerOrderId}::uuid
        AND o.dealer_id = w.dealer_id
        AND o.delivery_date = w.delivery_date
+       -- Per-route indent: a placed order only supersedes siblings on the
+       -- SAME route, so a two-route dealer's route-A order never cancels
+       -- their route-B order for the same day. (NOT DISTINCT so legacy
+       -- NULL-route rows still supersede each other.)
+       AND o.route_id IS NOT DISTINCT FROM w.route_id
        AND o.id <> w.id
        AND o.status IN ('draft', 'payment_required')
        AND NOT EXISTS (

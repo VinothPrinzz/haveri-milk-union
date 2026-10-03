@@ -15,6 +15,7 @@ import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { Printer, X, RefreshCw } from "lucide-react";
 import { fetchInvoicesList as fetchInvoices } from "@/services/api";
 import { post } from "@/lib/apiClient";
+import { todayIST } from "@/lib/istDate";
 
 const STATUS_OPTS: F9Option[] = [
   { value: "draft", label: "Draft" },
@@ -25,7 +26,7 @@ const STATUS_OPTS: F9Option[] = [
 ];
 
 export default function InvoicesListPage() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
   const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
   const [from, setFrom] = useState(monthAgo);
@@ -129,8 +130,8 @@ export default function InvoicesListPage() {
                       </Link>
                     </td>
                     <td className="text-[12.5px]">{fmtDate(i.invoiceDate ?? i.date ?? i.issuedAt)}</td>
-                    <td className="font-medium">{i.dealerName ?? i.customerName ?? "—"}</td>
-                    <td className="font-mono text-[12px]">{i.dealerGstNumber ?? i.gstin ?? "—"}</td>
+                    <td className="font-medium">{i.dealerName ?? i.customerName ?? ""}</td>
+                    <td className="font-mono text-[12px]">{i.dealerGstNumber ?? i.gstin ?? ""}</td>
                     <td className="num" style={{ textAlign: "right" }}>
                       {fmtINR(parseFloat(String(i.taxableAmount ?? i.subtotal ?? 0)) || 0)}
                     </td>

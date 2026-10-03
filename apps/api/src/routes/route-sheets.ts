@@ -66,7 +66,8 @@ export async function routeSheetRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const [sheet] = await pgClient`
         SELECT rs.*,
-               r.code AS route_code, r.name AS route_name, r.zone_id,
+               -- No r.zone_id: zones hang off dealers, not routes.
+               r.code AS route_code, r.name AS route_name,
                b.name AS batch_name, b.batch_number,
                ct.name AS contractor_name, ct.vehicle_number AS contractor_vehicle,
                u.name AS generated_by_name
@@ -85,7 +86,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
                d.name AS dealer_name, d.phone AS dealer_phone
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
-        WHERE d.route_id = ${sheet.route_id}::uuid
+        WHERE COALESCE(o.route_id, d.route_id) = ${sheet.route_id}::uuid
           AND o.delivery_date = ${sheet.date}::date
           AND o.status IN ('confirmed', 'dispatched', 'delivered')
         ORDER BY d.name
@@ -113,7 +114,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
         SELECT id FROM route_sheets
         WHERE route_id = ${body.routeId}
           AND date = ${body.date}::date
-          AND (${body.batchId ?? null}::uuid IS NULL OR rs.batch_id = ${body.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (${body.batchId ?? null}::uuid IS NULL OR batch_id = ${body.batchId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
         LIMIT 1
       `;
       if (existing.length > 0) {
@@ -138,7 +139,7 @@ export async function routeSheetRoutes(app: FastifyInstance) {
               COALESCE(sum(o.item_count), 0)::int AS total_items
         FROM orders o
         JOIN dealers d ON d.id = o.dealer_id
-        WHERE d.route_id = ${body.routeId}
+        WHERE COALESCE(o.route_id, d.route_id) = ${body.routeId}
           AND o.delivery_date = ${body.date}::date
           AND o.status = 'confirmed'
       `;

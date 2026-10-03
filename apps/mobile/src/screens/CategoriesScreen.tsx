@@ -21,6 +21,7 @@ import { useProducts, useCategories } from "../hooks/useProducts";
 import { useWindowStatus } from "../hooks/useWindow";
 import { useNotifications } from "../hooks/useNotifications";
 import type { Category, Product } from "../lib/types";
+import { resolveUnitPrice } from "../lib/ratePrice";
 
 /**
  * CategoriesScreen — directory + master-detail product browse.
@@ -110,9 +111,16 @@ export default function CategoriesScreen({
     icon: p.icon ?? "📦",
     unit: p.unit,
     basePrice: p.basePrice,
+    // NET price this dealer is billed — a 'Credit Inst-MRP' dealer pays MRP
+    // on milk. Mirrors what the server charges.
+    unitPrice: resolveUnitPrice(p, dealer?.rateCategory),
     dealerPrice: p.dealerPrice,
     mrp: p.mrp,
     gstPercent: p.gstPercent,
+    // Needed by BOTH the milk price rule and the Milk minimum-qty check —
+    // this screen used to drop it, so items added from Categories reached
+    // the cart without a category.
+    categoryName: p.categoryName,
   });
 
   // Absolute-quantity setter for the ProductCard stepper's editable input.

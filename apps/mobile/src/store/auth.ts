@@ -111,6 +111,7 @@ function parseDealer(d: Record<string, unknown>): Dealer {
     creditAvailable,
     ledgerBalance,
     customerType:          get<string>("customer_type", "customerType"),
+    rateCategory:          get<string>("rate_category", "rateCategory"),
     locationLabel:         get<string>("location_label", "locationLabel"),
     gstNumber:             get<string>("gst_number", "gstNumber"),
     address:               get<string>("address"),

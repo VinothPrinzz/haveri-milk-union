@@ -131,13 +131,13 @@ export default function EmployeesPage() {
               <tbody>
                 {(emps as Emp[]).map(e => (
                   <tr key={e.id}>
-                    <td className="font-mono text-[12px]">{e.employee_code || "—"}</td>
+                    <td className="font-mono text-[12px]">{e.employee_code || ""}</td>
                     <td className="font-medium">{e.name}</td>
-                    <td>{e.phone || "—"}</td>
-                    <td>{e.department || "—"}</td>
-                    <td>{e.designation || "—"}</td>
+                    <td>{e.phone || ""}</td>
+                    <td>{e.department || ""}</td>
+                    <td>{e.designation || ""}</td>
                     <td><StatusPill status={e.active ? "Active" : "Inactive"} /></td>
-                    <td>{e.created_at ? fmtDate(e.created_at) : "—"}</td>
+                    <td>{e.created_at ? fmtDate(e.created_at) : ""}</td>
                     <td style={{ textAlign: "right" }}>
                       <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => setEditing(e)}>
                         <Pencil className="h-3.5 w-3.5" />
@@ -314,7 +314,7 @@ function SubsidyRulesPanel() {
               return (
                 <tr key={r.id}>
                   <td className="font-medium">{r.productName}</td>
-                  <td>{r.unit || "—"}</td>
+                  <td>{r.unit || ""}</td>
                   <td className="text-right num">₹{r.basePrice.toFixed(2)}</td>
                   <td className="text-right num">{r.gstPercent}%</td>
                   <td style={{ textAlign: "right" }}>

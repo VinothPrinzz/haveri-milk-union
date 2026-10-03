@@ -1,0 +1,22 @@
+-- ════════════════════════════════════════════════════════════════════
+-- 0067 — razorpay_payment_kind gains 'gate_pass'
+--
+-- Split from 0068 for one reason only: PostgreSQL refuses to USE a new
+-- enum value in the same transaction that ADDed it ("unsafe use of new
+-- value of enum type"). migrate.ts wraps each file in a single
+-- transaction (see sql.begin in packages/db/src/migrate.ts), so the
+-- CHECK constraint in 0068 that references 'gate_pass' can only be
+-- created once this file has COMMITTED.
+--
+-- Keep this file to the ALTER TYPE alone. Do not add anything that
+-- reads or writes the new value.
+--
+-- Why a third kind at all, rather than inferring one from
+-- direct_sale_id IS NOT NULL: `kind` is the column every finance screen
+-- filters and groups on (Finance > Online Payments, the reconciliation
+-- report), and the reconciliation sweeps must be able to exclude
+-- gate-pass rows cheaply. An explicit value keeps those call sites
+-- honest instead of spreading a NULL-check convention.
+-- ════════════════════════════════════════════════════════════════════
+
+ALTER TYPE razorpay_payment_kind ADD VALUE IF NOT EXISTS 'gate_pass';

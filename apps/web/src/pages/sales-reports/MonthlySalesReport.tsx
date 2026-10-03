@@ -70,7 +70,7 @@ export default function MonthlySalesReport() {
         mimeType: "text/csv",
         build: () =>
           buildMilkCurdCsv(data, {
-            title: `Milk & Curd Sales Report — ${curHeader}`,
+            title: `Milk & Curd Sales Report: ${curHeader}`,
             prevHeader,
             curHeader,
           }),
@@ -82,7 +82,7 @@ export default function MonthlySalesReport() {
         build: () =>
           buildMilkCurdXlsx(data, {
             sheetName: "Monthly Sales Report",
-            title: `HAVERI DISTRICT CO-OP MILK PRODUCERS UNION LTD., HAVERI  —  MILK & CURD SALES REPORT  ${curHeader}`,
+            title: `HAVERI DISTRICT CO-OP MILK PRODUCERS UNION LTD., HAVERI  ·  MILK & CURD SALES REPORT  ${curHeader}`,
             prevHeader,
             curHeader,
           }),
@@ -93,7 +93,7 @@ export default function MonthlySalesReport() {
   return (
     <ReportShell
       title="Monthly Sales Report"
-      subtitle="Milk & Curd Sales Report — Night / Afternoon by route (whole month)"
+      subtitle="Milk & Curd Sales Report: Night / Afternoon by route (whole month)"
       printOrientation="landscape"
       filters={
         <div>

@@ -25,6 +25,25 @@ if (!keyId || !keySecret) {
   );
 }
 
+// ── Money boundary: rupees (3dp) → paise (2dp) ──────────────────────
+// Migration 0069 moved every stored money column to THREE decimals, but
+// Razorpay settles in integer paise and always will — there is no way to
+// collect or refund a fraction of a paisa. So this is the one place the
+// third decimal is deliberately dropped.
+//
+// A ₹850.375 order is charged ₹850.38 — up to half a paisa more (or
+// less) than the order total. That residual is real and unavoidable;
+// it is the price of quoting in mils and collecting in paise.
+//
+// It does NOT break reconciliation. razorpay_payments.amount stores the
+// exact 3dp rupee figure handed to the gateway, and
+// payment-reconciliation.ts re-derives paise with this same rounding
+// before its exact match (see its expectedPaise), so both sides always
+// agree on the same integer.
+function toPaise(amountInRupees: number): number {
+  return Math.round(amountInRupees * 100);
+}
+
 // ── Lazy SDK loader ─────────────────────────────────────────────────
 // `: string` annotation widens the type away from the literal
 // "razorpay", so TS will not attempt to resolve the module.
@@ -123,7 +142,7 @@ export async function createRazorpayOrder(
   params: CreateOrderParams
 ): Promise<RazorpayOrder> {
   const client = await getClient();
-  const amountPaise = Math.round(params.amountInRupees * 100);
+  const amountPaise = toPaise(params.amountInRupees);
   const order: any = await withTimeout(
     "orders.create",
     client.orders.create({
@@ -182,7 +201,7 @@ export async function createRazorpayRefund(
   params: CreateRefundParams
 ): Promise<RazorpayRefund> {
   const client = await getClient();
-  const amountPaise = Math.round(params.amountInRupees * 100);
+  const amountPaise = toPaise(params.amountInRupees);
   const refund: any = await withTimeout(
     "payments.refund",
     client.payments.refund(params.paymentId, {
@@ -298,6 +317,155 @@ export async function captureRazorpayPayment(
     client.payments.capture(paymentId, amountPaise, currency)
   );
   return { status: p.status };
+}
+
+// ── QR codes (gate-pass counter payments) ───────────────────────────
+//
+// A per-sale QR, not the standing counter standee. fixed_amount pins the
+// figure so the customer cannot key in the wrong one, single_use closes
+// the QR the moment it is paid, and the notes carry the sale id back to
+// us on the qr_code.credited webhook — that is the whole reason these are
+// minted per sale rather than printed once and stuck to the wall.
+//
+// Verified working on the live Axis-onboarded account (create + close),
+// so the partner-bank API surface is not a restriction here.
+
+/**
+ * How long a counter QR stays payable. Razorpay requires close_by to sit
+ * a little way in the future, and an unpaid QR simply expires — no money
+ * moves — so this is a UX knob, not a financial one: long enough that a
+ * customer fumbling with their app does not get timed out, short enough
+ * that a forgotten QR cannot be paid hours later against a stale sale.
+ */
+export const QR_CLOSE_AFTER_SECONDS = (() => {
+  const n = parseInt(process.env.RAZORPAY_QR_CLOSE_AFTER_SECONDS ?? "", 10);
+  return Number.isFinite(n) && n >= 900 ? n : 1800;
+})();
+
+export interface CreateQrCodeParams {
+  amountInRupees: number;
+  /** Shown in the Razorpay dashboard listing. Keep it short. */
+  name: string;
+  description: string;
+  /** Unix seconds. Defaults to now + QR_CLOSE_AFTER_SECONDS. */
+  closeBy?: number;
+  notes: Record<string, string>;
+}
+
+export interface RazorpayQrCode {
+  id: string;              // qr_xxxxxxxx
+  imageUrl: string;        // https://rzp.io/rzp/xxxxx
+  status: string;          // 'active' | 'closed'
+  paymentAmount: number;   // paise
+  closeBy: number | null;  // unix seconds
+}
+
+export async function createRazorpayQrCode(
+  params: CreateQrCodeParams
+): Promise<RazorpayQrCode> {
+  const client = await getClient();
+  const amountPaise = toPaise(params.amountInRupees);
+  const closeBy =
+    params.closeBy ?? Math.floor(Date.now() / 1000) + QR_CLOSE_AFTER_SECONDS;
+
+  const qr: any = await withTimeout(
+    "qrCode.create",
+    client.qrCode.create({
+      type: "upi_qr",
+      name: params.name,
+      usage: "single_use",
+      fixed_amount: true,
+      payment_amount: amountPaise,
+      description: params.description,
+      close_by: closeBy,
+      notes: params.notes,
+    })
+  );
+
+  return {
+    id: qr.id,
+    imageUrl: qr.image_url,
+    status: qr.status,
+    paymentAmount:
+      typeof qr.payment_amount === "string"
+        ? parseInt(qr.payment_amount, 10)
+        : qr.payment_amount,
+    closeBy: qr.close_by ?? null,
+  };
+}
+
+/**
+ * Close a QR early — the operator abandoned the sale, or is re-issuing.
+ * Closing is what makes a QR unpayable; without it an abandoned code stays
+ * scannable until close_by. Safe to call on an already-closed QR.
+ */
+export async function closeRazorpayQrCode(
+  qrCodeId: string
+): Promise<{ id: string; status: string }> {
+  const client = await getClient();
+  const qr: any = await withTimeout(
+    "qrCode.close",
+    client.qrCode.close(qrCodeId)
+  );
+  return { id: qr.id, status: qr.status };
+}
+
+/**
+ * Live state of a QR. The webhook is the primary signal that a counter QR
+ * was paid; this is the backstop the polling endpoint uses when the
+ * webhook is late or was missed entirely (which has happened before — see
+ * the Jul 2026 webhook outage).
+ */
+export async function fetchRazorpayQrCode(qrCodeId: string): Promise<{
+  id: string;
+  status: string;
+  /** NOT derivable from the id — the short code is unrelated. */
+  imageUrl: string;
+  paymentsAmountReceived: number; // paise
+  paymentsCountReceived: number;
+  closeBy: number | null;
+}> {
+  const client = await getClient();
+  const qr: any = await withTimeout(
+    "qrCode.fetch",
+    client.qrCode.fetch(qrCodeId)
+  );
+  return {
+    id: qr.id,
+    status: qr.status,
+    imageUrl: qr.image_url,
+    paymentsAmountReceived:
+      typeof qr.payments_amount_received === "string"
+        ? parseInt(qr.payments_amount_received, 10)
+        : (qr.payments_amount_received ?? 0),
+    paymentsCountReceived: qr.payments_count_received ?? 0,
+    closeBy: qr.close_by ?? null,
+  };
+}
+
+/**
+ * Every payment made against a QR. Used by the polling endpoint to
+ * recover the pay_xxx id when the webhook has not landed yet.
+ */
+export async function fetchRazorpayQrCodePayments(qrCodeId: string): Promise<
+  Array<{ id: string; status: string; amount: number }>
+> {
+  const client = await getClient();
+  const res = await withTimeout(
+    "qrCode.fetchAllPayments",
+    client.qrCode.fetchAllPayments(qrCodeId)
+  );
+  const items = ((res as { items?: unknown[] })?.items ?? []) as Array<
+    Record<string, unknown>
+  >;
+  return items.map((p) => ({
+    id: p.id as string,
+    status: p.status as string,
+    amount:
+      typeof p.amount === "string"
+        ? parseInt(p.amount as string, 10)
+        : (p.amount as number),
+  }));
 }
 
 export interface CreateRefundParams {

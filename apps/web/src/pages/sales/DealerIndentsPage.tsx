@@ -31,10 +31,13 @@ import {
   fetchDealerDraft,
   patchDealerDraft,
   confirmDealerDraft,
+  fetchMinQtyStatus,
 } from "@/services/api";
 import { findCategoryMinShortfalls, categoryMinMessage } from "@/lib/minOrderQty";
+import { isCreditInstMrp } from "@/lib/ratePrice";
+import { todayIST } from "@/lib/istDate";
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayIST();
 
 // ── Quantity field (no steppers — manual entry only) ────────────────────
 function QtyStepper({
@@ -56,7 +59,7 @@ function QtyStepper({
         onChange(e.target.value === "" ? undefined : Math.max(0, parseInt(e.target.value) || 0))
       }
       className="erp-input num h-6 w-16 text-center px-1"
-      placeholder="—"
+      placeholder=""
     />
   );
 }
@@ -66,6 +69,9 @@ export default function DealerIndentsPage() {
 
   const [dealerId, setDealerId] = useState<string | null>(null);
   const [date, setDate] = useState<string>(todayIso());
+  // Delivery route this indent is placed for — picked from the dealer's
+  // assigned routes, defaulting to their primary. Snapshotted onto the order.
+  const [routeId, setRouteId] = useState<string | null>(null);
 
   // Local edit buffers — initialised from server data, flushed on Save.
   const [template, setTemplate] = useState<Record<string, { qty: number; active: boolean }>>({});
@@ -86,18 +92,56 @@ export default function DealerIndentsPage() {
     [customers]
   );
 
-  // ── Standing-indent template ──
+  // ── Selected dealer + their assigned routes ──
+  const customer = useMemo(
+    () => (customers as any[]).find((c) => String(c.customerId ?? c.id) === dealerId),
+    [customers, dealerId]
+  );
+
+  const routeOpts: F9Option[] = useMemo(() => {
+    if (!customer) return [];
+    const assigned = (customer.routes ?? []) as Array<{
+      routeId: string; routeCode: string; routeName: string; isPrimary: boolean;
+    }>;
+    // Fallback to the legacy single primary route if routes[] is empty.
+    if (assigned.length === 0 && customer.routeId) {
+      return [{
+        value: customer.routeId,
+        label: customer.routeName || customer.routeCode || "Primary route",
+        sublabel: customer.routeCode || "",
+      }];
+    }
+    return assigned.map((r) => ({
+      value: r.routeId,
+      label: `${r.routeName ?? ""}${r.isPrimary ? " ★" : ""}`.trim(),
+      sublabel: r.routeCode,
+    }));
+  }, [customer]);
+
+  // Default the route to the dealer's primary whenever the dealer changes;
+  // keep the current pick if it's still one of the dealer's routes.
+  useEffect(() => {
+    if (!customer) { setRouteId(null); return; }
+    const primary =
+      customer.routes?.find((r: any) => r.isPrimary)?.routeId ?? customer.routeId ?? null;
+    const valid = new Set(
+      [...(customer.routes ?? []).map((r: any) => r.routeId), customer.routeId].filter(Boolean)
+    );
+    setRouteId((prev) => (prev && valid.has(prev)) ? prev : primary);
+  }, [customer]);
+
+  // ── Standing-indent template (per route) ──
   const templateQuery = useQuery({
-    queryKey: ["admin-standing-indents", dealerId],
+    queryKey: ["admin-standing-indents", dealerId, routeId],
     enabled: !!dealerId,
-    queryFn: () => fetchDealerStandingIndents(dealerId!),
+    queryFn: () => fetchDealerStandingIndents(dealerId!, routeId),
   });
 
-  // ── Draft for the selected date ──
+  // ── Draft for the selected date (per route) ──
   const draftQuery = useQuery({
-    queryKey: ["admin-dealer-draft", dealerId, date],
+    queryKey: ["admin-dealer-draft", dealerId, date, routeId],
     enabled: !!dealerId && !!date,
-    queryFn: () => fetchDealerDraft(dealerId!, date),
+    queryFn: () => fetchDealerDraft(dealerId!, date, routeId),
   });
 
   // Seed local buffers whenever fresh server data arrives.
@@ -121,6 +165,7 @@ export default function DealerIndentsPage() {
   const saveTemplate = useMutation({
     mutationFn: () =>
       saveDealerStandingIndents(dealerId!, {
+        routeId,
         items: (templateQuery.data?.items ?? []).map((it: any) => ({
           productId: it.productId,
           defaultQty: template[it.productId]?.qty ?? 0,
@@ -138,6 +183,7 @@ export default function DealerIndentsPage() {
   const saveDraft = useMutation({
     mutationFn: () =>
       patchDealerDraft(dealerId!, date, {
+        routeId,
         items: Object.entries(draftQty)
           .filter(([, q]) => q > 0)
           .map(([productId, quantity]) => ({ productId, quantity })),
@@ -150,14 +196,15 @@ export default function DealerIndentsPage() {
   });
 
   const confirmDraft = useMutation({
-    mutationFn: (force: boolean) => confirmDealerDraft(dealerId!, date, { force }),
+    mutationFn: (force: boolean) => confirmDealerDraft(dealerId!, date, { force, routeId }),
     onSuccess: (res: any) => {
       toast.success(
         res?.forced
           ? "Draft confirmed (available balance overridden)"
-          : "Draft confirmed — order placed & ledger posted"
+          : "Draft confirmed: order placed & ledger posted"
       );
       qc.invalidateQueries({ queryKey: ["admin-dealer-draft", dealerId, date] });
+      qc.invalidateQueries({ queryKey: ["min-qty-status"] });
     },
     onError: (e: any) => {
       // 402 → insufficient available balance; offer an override.
@@ -175,8 +222,14 @@ export default function DealerIndentsPage() {
   const credit = draft?.credit;
   const editable = draft?.editable ?? false;
 
-  // ── Milk order-minimum guards (≥12 L milk; curd has no minimum) ──
+  // ── Order-minimum guards (≥12 L/kg milk + curd) ──
+  // 'Credit Inst-MRP' customers are government institutions — supply is
+  // compulsory however small the indent, so the minimum never applies to
+  // them. Mirrors MIN_QTY_EXEMPT_RATE_CATEGORIES on the server.
+  const minQtyExempt = isCreditInstMrp(customer?.rateCategory);
+
   // Template: only ACTIVE lines auto-place, so the aggregate is over those.
+  // A template places every day, so it is always held to the minimum.
   const templateShortfalls = useMemo(
     () =>
       findCategoryMinShortfalls(
@@ -186,14 +239,27 @@ export default function DealerIndentsPage() {
             categoryName: it.categoryName,
             unit: it.unit,
             quantity: template[it.productId]?.qty ?? 0,
+            code: it.code,
+            name: it.productName,
             exempt: it.isSubsidy,
-          }))
+          })),
+        { exempt: minQtyExempt },
       ),
-    [templateQuery.data, template]
+    [templateQuery.data, template, minQtyExempt]
   );
   const templateHasMinQtyViolation = templateShortfalls.length > 0;
-  // Draft: a draft can be saved with any qty, but it can't be CONFIRMED while
-  // its Milk total is below 12 L (curd has no minimum).
+
+  // Draft: only the first indent on the route that day carries the
+  // minimum; the server says whether one is already there.
+  const minQtyStatus = useQuery({
+    queryKey: ["min-qty-status", dealerId, routeId, date],
+    queryFn: () => fetchMinQtyStatus({ dealerId: dealerId!, routeId, date }),
+    enabled: !!dealerId,
+    staleTime: 30_000,
+  });
+  const draftMinQtyWaived = minQtyExempt || (minQtyStatus.data ? !minQtyStatus.data.applies : false);
+  // A draft can be saved with any qty, but it can't be CONFIRMED while its
+  // milk + curd total is below the minimum.
   const draftShortfalls = useMemo(
     () =>
       findCategoryMinShortfalls(
@@ -201,10 +267,13 @@ export default function DealerIndentsPage() {
           categoryName: it.categoryName,
           unit: it.unit,
           quantity: draftQty[it.productId] ?? 0,
+          code: it.code,
+          name: it.productName,
           exempt: it.isSubsidy,
-        }))
+        })),
+        { exempt: draftMinQtyWaived },
       ),
-    [draft, draftQty]
+    [draft, draftQty, draftMinQtyWaived]
   );
   const draftHasMinQtyViolation = draftShortfalls.length > 0;
 
@@ -225,7 +294,7 @@ export default function DealerIndentsPage() {
     <div className="flex flex-col h-full">
       <PageHeader
         title="Dealer Indents"
-        subtitle="Standing-indent templates & daily drafts — view and edit for any dealer"
+        subtitle="Standing-indent templates & daily drafts: view and edit for any dealer"
       />
 
       <FilterBar>
@@ -253,6 +322,20 @@ export default function DealerIndentsPage() {
             className="erp-input w-44"
           />
         </div>
+        {dealerId && (
+          <div className="min-w-[220px]">
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
+              Route
+            </label>
+            <F9SearchSelect
+              value={routeId}
+              onChange={setRouteId}
+              options={routeOpts}
+              placeholder="Dealer's primary route"
+              modalTitle="Select Route"
+            />
+          </div>
+        )}
       </FilterBar>
 
       <div className="flex-1 overflow-auto p-4 space-y-4">
@@ -295,8 +378,9 @@ export default function DealerIndentsPage() {
                 <div>
                   <h3 className="font-semibold text-[14px]">Standing Indent Template</h3>
                   <p className="text-[12px] text-muted-foreground">
-                    Default daily quantities — auto-placed &amp; confirmed at each route's warning time.
-                    Includes subsidy milk.
+                    Per route: set quantities for the <strong>Route</strong> selected above; each
+                    route materialises into its own daily order. Auto-placed at that route's warning
+                    time. Includes subsidy milk.
                   </p>
                 </div>
                 <Button

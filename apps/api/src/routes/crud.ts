@@ -5,6 +5,10 @@ import { db, pgClient } from "../lib/db.js";
 import { categories, products, priceRevisions, routes, routeAssignments } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
+import { istToday } from "../lib/ist-date.js";
+import {
+  applyPriceRevision, PriceRevisionError, type AppliedPriceRevision,
+} from "../lib/price-revisions.js";
 
 export async function crudRoutes(app: FastifyInstance) {
   // ═══ CATEGORIES CRUD ═══
@@ -62,10 +66,15 @@ export async function crudRoutes(app: FastifyInstance) {
           p.unit AS "unit",
           pr.old_price AS "oldPrice",
           pr.new_price AS "newPrice",
+          pr.old_dealer_price AS "oldDealerPrice",
+          pr.new_dealer_price AS "newDealerPrice",
+          pr.old_mrp AS "oldMrp",
+          pr.new_mrp AS "newMrp",
           pr.old_gst_percent AS "oldGst",
           pr.new_gst_percent AS "newGst",
-          pr.effective_from AS "effectiveFrom",
+          pr.effective_from::text AS "effectiveFrom",
           pr.reason AS "reason",
+          pr.source AS "source",
           pr.changed_by AS "changedBy",
           u.name AS "changedByName",
           pr.created_at AS "createdAt"
@@ -135,88 +144,81 @@ export async function crudRoutes(app: FastifyInstance) {
     }
   );
 
-  // POST /api/v1/price-revisions — batch price update (fixed)
+  // POST /api/v1/price-revisions
+  // A batch of price changes, applied now and logged. Each line sets a
+  // product's Dealer Price (GST inclusive) and/or MRP. base_price is
+  // re-derived from the Dealer Price exactly as an edit on All Products does
+  // (lib/price-revisions.ts), so the Price Chart, the dealer app and billing
+  // all move together.
+  //
+  // Always effective today. Order lines snapshot their price when placed, so
+  // a past date cannot rebill anything, and nothing applies a future-dated
+  // revision later: this endpoint used to accept one and apply it on the
+  // spot, days early. A client that still sends another date gets a 400.
   app.post(
     "/api/v1/price-revisions",
     { preHandler: [adminAuth, requireRole("products.manage")] },
     async (request, reply) => {
+      const price = z.coerce.number().positive().transform(n => Math.round(n * 100) / 100);
       const schema = z.object({
         revisions: z.array(z.object({
           productId: z.string().uuid(),
-          newPrice: z.union([z.string(), z.number()]),
-          newGstPercent: z.union([z.string(), z.number()]).optional(),
-          effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        })).min(1),
-        reason: z.string().optional(), // applied to all revisions in this batch
+          newDealerPrice: price.optional(),
+          newMrp: price.optional(),
+        })).min(1).max(500),
+        effectiveFrom: z.string().optional(),
+        reason: z.string().trim().max(500).optional(), // applied to every line
       });
       const body = schema.parse(request.body);
-      const today = new Date().toISOString().slice(0, 10);
-      // Whole batch in one transaction — either all revisions commit or
-      // none do. If the audit-log insert fails mid-loop, the products
-      // update is rolled back.
-      const results = await pgClient.begin(async (_tx) => {
-        const tx = _tx as unknown as typeof pgClient;
-        const applied: Array<{ productId: string; oldPrice: string; newPrice: string }> = [];
-        for (const rev of body.revisions) {
-          // Fetch current values for the audit log + change detection.
-          const [product] = await tx`
-            SELECT base_price, gst_percent
-            FROM products
-            WHERE id = ${rev.productId} AND deleted_at IS NULL
-            FOR UPDATE
-          `;
-          if (!product) continue;
-          const oldPrice = product.base_price as string;
-          const oldGst = product.gst_percent as string;
-          // Normalize new values to strings for DB, but compare
-          // numerically so "30" vs "30.00" doesn't log a phantom
-          // revision.
-          const newPriceStr = typeof rev.newPrice === "number"
-            ? rev.newPrice.toFixed(2)
-            : rev.newPrice;
-          const newGstStr = rev.newGstPercent == null
-            ? oldGst
-            : (typeof rev.newGstPercent === "number"
-                 ? rev.newGstPercent.toFixed(2)
-                 : rev.newGstPercent);
-          const priceChanged = Number(newPriceStr) !== Number(oldPrice);
-          const gstChanged = Number(newGstStr) !== Number(oldGst);
-          if (!priceChanged && !gstChanged) continue;
-          await tx`
-            INSERT INTO price_revisions (
-              product_id, old_price, new_price,
-              old_gst_percent, new_gst_percent,
-              effective_from, changed_by, reason
-            ) VALUES (
-              ${rev.productId},
-              ${oldPrice}::numeric,
-              ${newPriceStr}::numeric,
-              ${oldGst}::numeric,
-              ${newGstStr}::numeric,
-              ${rev.effectiveFrom ?? today}::date,
-              ${request.admin!.userId},
-              ${body.reason ?? null}
-            )
-          `;
-          await tx`
-            UPDATE products SET
-              base_price = ${newPriceStr}::numeric,
-              gst_percent = ${newGstStr}::numeric,
-              updated_at = now()
-            WHERE id = ${rev.productId}
-          `;
-          applied.push({
-            productId: rev.productId,
-            oldPrice,
-            newPrice: newPriceStr,
-          });
+      const today = istToday();
+
+      if (body.effectiveFrom && body.effectiveFrom !== today) {
+        return reply.status(400).send({
+          error: `Price revisions take effect immediately, so the effective date must be today (${today}). Save a future revision on the day it starts.`,
+        });
+      }
+      // The old page sent { newPrice } (a NET basic price). Refuse it rather
+      // than guess: a stale browser tab must not write base_price again.
+      if (body.revisions.some(r => r.newDealerPrice === undefined && r.newMrp === undefined)) {
+        return reply.status(400).send({
+          error: "Each line needs a new Dealer Price or MRP. Reload the page and try again.",
+        });
+      }
+      const ids = body.revisions.map(r => r.productId);
+      if (new Set(ids).size !== ids.length) {
+        return reply.status(400).send({ error: "A product appears more than once in this revision." });
+      }
+
+      try {
+        // Whole batch in one transaction: every line commits or none does.
+        const results = await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
+          const applied: AppliedPriceRevision[] = [];
+          for (const rev of body.revisions) {
+            const done = await applyPriceRevision(tx, {
+              ...rev,
+              changedBy: request.admin!.userId,
+              reason: body.reason || null,
+            });
+            if (done) applied.push(done);
+          }
+          return applied;
+        });
+
+        const unchanged = body.revisions.length - results.length;
+        return reply.send({
+          message: results.length === 0
+            ? "No prices changed: every line already matches the current price."
+            : `Updated ${results.length} price(s)` + (unchanged ? `, ${unchanged} already current` : ""),
+          results,
+          unchanged,
+        });
+      } catch (err) {
+        if (err instanceof PriceRevisionError) {
+          return reply.status(err.statusCode).send({ error: err.message });
         }
-        return applied;
-      });
-      return reply.send({
-        message: `Updated ${results.length} price(s)`,
-        results,
-      });
+        throw err;
+      }
     }
   );
 

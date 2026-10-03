@@ -19,6 +19,7 @@
 import { pgClient } from "./db.js";
 import { isRazorpayConfigured, createRazorpayRefund } from "./razorpay-client.js";
 import { RefundError } from "./cancel-order.js";
+import { balanceRefundedForOrder, refundableToBank } from "./refund-accounting.js";
 
 export interface BankRefundIntent {
   rpRowId: string;
@@ -53,30 +54,37 @@ export async function initiateOrderBankRefund(
   const paidRemaining = rp
     ? Math.max(0, parseFloat(rp.amount) - parseFloat(rp.amountRefunded))
     : 0;
+  // Earlier refunds that went to the wallet or the available balance never
+  // moved the gateway counter, so they have to come off the ceiling here or
+  // the same rupees can leave twice. See lib/refund-accounting.ts.
+  const refundable = refundableToBank(
+    paidRemaining,
+    await balanceRefundedForOrder(pgClient, orderId),
+  );
 
-  if (!rp || paidRemaining <= 0.001) {
+  if (!rp || refundable <= 0.001) {
     throw new RefundError(
       "This order has no refundable online payment, so it can't be refunded to a bank account. Choose 'available balance' instead.",
     );
   }
-  if (amount - paidRemaining > 0.01) {
+  if (amount - refundable > 0.01) {
     throw new RefundError(
       `The refund (₹${amount.toFixed(2)}) exceeds the refundable online payment ` +
-        `(₹${paidRemaining.toFixed(2)}). Refund to the available balance instead.`,
+        `(₹${refundable.toFixed(2)}). Refund to the available balance instead.`,
     );
   }
   if (!isRazorpayConfigured()) {
     throw new RefundError(
-      "Razorpay is not configured — cannot refund to a bank account. Choose 'available balance' instead.",
+      "Razorpay is not configured, so this cannot be refunded to a bank account. Choose 'available balance' instead.",
     );
   }
   if (!rp.rzpPaymentId) {
     throw new RefundError(
-      "This order's payment has no Razorpay payment id — cannot refund to a bank account. Choose 'available balance' instead.",
+      "This order's payment has no Razorpay payment id, so it cannot be refunded to a bank account. Choose 'available balance' instead.",
     );
   }
 
-  const refundAmt = Math.min(amount, paidRemaining);
+  const refundAmt = Math.min(amount, refundable);
   let rzpRefund: { id: string; status: string };
   try {
     rzpRefund = await createRazorpayRefund({
@@ -135,7 +143,7 @@ export async function recordBankRefund(
        WHERE d.id = ${dealerId}::uuid
     `;
     const balanceAfter = parseFloat(bal!.bal) - refundAmt;
-    const desc = `Razorpay refund ${rzpRefund.id} for ${rzpPaymentId} — modify: ${reason}`;
+    const desc = `Razorpay refund ${rzpRefund.id} for ${rzpPaymentId}, modify: ${reason}`;
     const [led] = await tx`
       INSERT INTO dealer_ledger (
         dealer_id, type, amount,

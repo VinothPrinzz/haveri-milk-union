@@ -38,7 +38,14 @@ function adminUserId(request: FastifyRequest): string {
   return a.userId;
 }
 
+/** Amounts settle in paise, so they carry two decimals. */
 const round2 = (n: number) => Math.round(n * 100) / 100;
+/**
+ * Rates settle in paise too. 0070 left the rate columns at three decimals
+ * so staff could key the old package's rates, but nothing dealer-facing
+ * ever showed that third decimal and no bill could charge it - it only
+ * split one SKU into two identical report lines. Prices are 2dp now.
+ */
 
 /**
  * Subsidized line maths — mirrors POST /direct-sales/employee-subsidy.

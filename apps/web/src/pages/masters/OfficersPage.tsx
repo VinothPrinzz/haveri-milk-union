@@ -97,8 +97,7 @@ function OfficerFormBody({
 
         <FormSection title="Assigned Talukas" cols={1}>
           <div className="text-[11.5px] text-muted-foreground -mt-1 mb-1">
-            Select the talukas this officer covers. A taluka is assigned to only
-            one officer — selecting it here reassigns it from any current officer.
+            Select the talukas this officer covers. A taluka is assigned to only one officer. Selecting it here reassigns it from any current officer.
           </div>
           {zones.length === 0 ? (
             <div className="text-[13px] text-muted-foreground py-2">No talukas configured.</div>
@@ -153,7 +152,7 @@ function OfficerFormBody({
 
 // ─── Talukas chips (list + view) ──────────────────────────────────────
 function TalukaChips({ talukas }: { talukas: Officer["talukas"] }) {
-  if (talukas.length === 0) return <span className="text-muted-foreground">—</span>;
+  if (talukas.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-1">
       {talukas.map(t => (
@@ -247,7 +246,7 @@ export default function OfficersPage({ tab = "list" }: Props) {
                 {!isLoading && sortedOfficers.map((o, i) => (
                   <tr key={o.id} className={i % 2 === 1 ? "zebra" : ""}>
                     <td className="font-medium">{o.name}</td>
-                    <td>{o.phone || <span className="text-muted-foreground">—</span>}</td>
+                    <td>{o.phone}</td>
                     <td><TalukaChips talukas={o.talukas} /></td>
                     <td><StatusPill status={o.active ? "active" : "draft"} /></td>
                     <td style={{ textAlign: "center" }}>
@@ -284,7 +283,7 @@ export default function OfficersPage({ tab = "list" }: Props) {
       <Dialog open={!!editing} onOpenChange={open => !open && setEditing(null)}>
         <DialogContent className="max-w-3xl rounded-sm max-h-[85vh] overflow-auto">
           <DialogHeader>
-            <DialogTitle className="text-[15px] font-semibold">Edit Officer — {editing?.name}</DialogTitle>
+            <DialogTitle className="text-[15px] font-semibold">Edit Officer: {editing?.name}</DialogTitle>
           </DialogHeader>
           {editing && (
             <OfficerFormBody
@@ -311,7 +310,7 @@ export default function OfficersPage({ tab = "list" }: Props) {
             const Row = ({ label, value }: { label: string; value: React.ReactNode }) => (
               <div className="flex items-baseline gap-2 py-1 border-b border-border/60 last:border-0">
                 <span className="text-[11px] uppercase tracking-wide text-muted-foreground w-32 shrink-0">{label}</span>
-                <span className="text-[13px] font-medium">{value || <span className="text-muted-foreground">—</span>}</span>
+                <span className="text-[13px] font-medium">{value}</span>
               </div>
             );
             return (

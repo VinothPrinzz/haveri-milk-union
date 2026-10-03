@@ -22,11 +22,12 @@ import {
   fetchIndents,
   createDispatch,
 } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 export default function CreateDispatchPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
 
   const [date, setDate]                 = useState(today);
   const [routeId, setRouteId]           = useState<string | null>(null);

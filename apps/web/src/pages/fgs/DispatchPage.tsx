@@ -43,7 +43,7 @@ export default function DispatchPage() {
                 <div>
                   <h3 className="font-semibold text-[14px]">{route.name}</h3>
                   <p className="text-[11.5px] text-muted-foreground">
-                    Dispatch: {route.dispatchTime ?? "—"} · {routeIndents.length} order{routeIndents.length !== 1 ? "s" : ""}
+                    Dispatch: {route.dispatchTime ?? ""} · {routeIndents.length} order{routeIndents.length !== 1 ? "s" : ""}
                   </p>
                 </div>
               </div>

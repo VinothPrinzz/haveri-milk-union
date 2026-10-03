@@ -54,6 +54,15 @@ function fmt(n: number): string {
   return n.toFixed(2);
 }
 
+/**
+ * A RATE, not an amount — but still rupees and paise. 0070 left the rate
+ * COLUMNS at three decimals; the printed invoice always was, and stays, a
+ * two-decimal document, so the rate a dealer reads is the rate they pay.
+ */
+function fmtRate(n: number): string {
+  return n.toFixed(2);
+}
+
 function fmtDate(d: Date): string {
   const dd   = String(d.getDate()).padStart(2, "0");
   const mm   = String(d.getMonth() + 1).padStart(2, "0");
@@ -280,7 +289,7 @@ export async function renderInvoicePdf(p: InvoiceRenderParams): Promise<Uint8Arr
       item.hsnNo   || "-",
       item.packSize || "-",
       String(item.quantity),
-      fmt(item.unitPrice),
+      fmtRate(item.unitPrice),
       fmt(item.basic),
       fmt(item.cgstAmount),
       fmt(item.sgstAmount),

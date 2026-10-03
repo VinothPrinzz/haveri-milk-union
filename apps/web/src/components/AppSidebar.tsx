@@ -9,7 +9,7 @@ import {
   ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X, Factory
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { MODULES, moduleOfPath, type ModuleKey } from "@/components/AppLayout";
+import { MODULES, moduleOfPath, allowedModulesForRole, type ModuleKey } from "@/components/AppLayout";
 import { useAuth } from "@/lib/auth";
 import { allowedBucketsForRole } from "@/lib/stock-buckets";
 
@@ -86,18 +86,22 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
   reports: [
     { label: "Route Sheet",      path: "/reports/route-sheet",      icon: RouteIcon },
     { label: "Gate Pass Report", path: "/reports/gate-pass",        icon: FileText },
+    { label: "Indent Status",    path: "/reports/indent-status",    icon: ClipboardCheck },
   ],
   "sales-reports": [
     { label: "Daily Sales Report",        path: "/sales-reports/daily-sales-report", icon: FileSpreadsheet },
     { label: "Monthly Sales Report",      path: "/sales-reports/monthly-sales-report", icon: FileSpreadsheet },
+    { label: "Daily Sales Report MD",     path: "/sales-reports/daily-md",        icon: FileSpreadsheet },
     { label: "Daily Sales Statement",     path: "/sales-reports/daily-statement", icon: FileSpreadsheet },
     { label: "Day/Route Wise Cash",       path: "/sales-reports/day-route-cash",  icon: FileSpreadsheet },
     { label: "Officer Wise Sales",        path: "/sales-reports/officer-wise",    icon: FileSpreadsheet },
     { label: "Cash Sales",                path: "/sales-reports/cash-sales",      icon: FileSpreadsheet },
     { label: "Credit Sales",              path: "/sales-reports/credit-sales",    icon: FileSpreadsheet },
     { label: "Sales Register",            path: "/sales-reports/register",        icon: BookOpen },
-    { label: "Taluka/Agent Wise",         path: "/sales-reports/taluka-agent",    icon: FileSpreadsheet },
+    { label: "Agent Wise Taluka Sales",   path: "/sales-reports/taluka-agent",    icon: FileSpreadsheet },
+    { label: "Agent Sales",               path: "/sales-reports/agent-sales",     icon: FileSpreadsheet },
     { label: "Taluka Wise Report",        path: "/sales-reports/taluka-wise",     icon: FileSpreadsheet },
+    { label: "Product Wise Taluka Sales", path: "/sales-reports/product-taluka",  icon: FileSpreadsheet },
     { label: "Adhoc Sales",               path: "/sales-reports/adhoc",           icon: FileSpreadsheet },
     { label: "GST Statement",             path: "/sales-reports/gst",             icon: FileBarChart2 },
     { label: "Employee Subsidy",          path: "/sales-reports/employee-subsidy", icon: BadgePercent },
@@ -118,7 +122,7 @@ const MODULE_LABEL: Record<ModuleKey, string> = {
   dashboard: "Dashboard",
   masters: "Masters",
   sales: "Sales Operations",
-  fgs: "FGS — Stock & Dispatch",
+  fgs: "FGS: Stock & Dispatch",
   finance: "Finance",
   reports: "Route Sheets",
   "sales-reports": "Sales Reports",
@@ -138,6 +142,11 @@ export function AppSidebar({
   const { user } = useAuth();
   const allowedBuckets = allowedBucketsForRole(user?.role);
   const activeModule = moduleOfPath(pathname);
+
+  // Modules this role may see — mirrors the desktop topbar tabs. The mobile
+  // drawer's module switcher is filtered to the same set.
+  const allowedModuleKeys = new Set(allowedModulesForRole(user?.role));
+  const visibleModules = MODULES.filter(m => allowedModuleKeys.has(m.key));
 
   // Hide the Stock Entry link for a bucket the current user can't access.
   const items = (SIDEBAR_NAV[module] ?? []).filter(item => {
@@ -210,7 +219,7 @@ export function AppSidebar({
         <nav data-kbd-region="sidebar" className="flex-1 overflow-y-auto py-1">
           {/* Mobile only: main module switcher (the former top navigation) */}
           <div className="lg:hidden">
-            {MODULES.map(m => {
+            {visibleModules.map(m => {
               const Icon = m.icon;
               const active = activeModule === m.key;
               return (

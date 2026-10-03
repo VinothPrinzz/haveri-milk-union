@@ -52,7 +52,7 @@ export const priceChart = pgTable("price_chart", {
   rateCategoryId: uuid("rate_category_id")
     .notNull()
     .references(() => rateCategories.id, { onDelete: "restrict" }),
-  price: numeric("price", { precision: 10, scale: 2 }).notNull(),
+  price: numeric("price", { precision: 11, scale: 3 }).notNull(),
   effectiveFrom: date("effective_from").notNull(),
   effectiveTo: date("effective_to"),         // NULL = currently active
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
@@ -108,6 +108,11 @@ export const directSales = pgTable("direct_sales", {
   totalGst: numeric("total_gst", { precision: 10, scale: 2 }).notNull().default("0"),
   grandTotal: numeric("grand_total", { precision: 10, scale: 2 }).notNull(),
   notes: text("notes"),
+  // When the goods physically left FGS (migration 0066). NULL = still on the
+  // floor. A direct sale has no status column, so this is the only dispatch
+  // state it carries; the Dispatch Sheet stamps it when the loader closes out
+  // the sale's route (or the ADHOC bucket, for route-less counter sales).
+  dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -131,7 +136,7 @@ export const directSaleItems = pgTable("direct_sale_items", {
     .references(() => products.id, { onDelete: "restrict" }),
   productName: text("product_name").notNull(), // snapshot: product name at sale time
   quantity: integer("quantity").notNull(),
-  unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
+  unitPrice: numeric("unit_price", { precision: 11, scale: 3 }).notNull(),
   gstPercent: numeric("gst_percent", { precision: 5, scale: 2 }).notNull().default("0"),
   gstAmount: numeric("gst_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   lineTotal: numeric("line_total", { precision: 10, scale: 2 }).notNull(),

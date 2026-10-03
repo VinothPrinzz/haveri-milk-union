@@ -25,7 +25,6 @@
     // bootstrap depends on getDbManager, which is still commented out
     // in @hmu/db's index.ts. Excluded so the worker build stays green;
     // re-include once the dual-DB export is enabled.
-    "src/polling-replication-bootstrap.ts",
-    "src/index.patch.ts"
+    "src/polling-replication-bootstrap.ts"
   ]
 }

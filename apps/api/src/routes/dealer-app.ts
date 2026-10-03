@@ -24,8 +24,8 @@ export async function dealerAppRoutes(app: FastifyInstance) {
       SELECT id, title, subtitle, category, image_url, start_date, end_date
       FROM banners
       WHERE active = true
-        AND start_date <= CURRENT_DATE
-        AND end_date >= CURRENT_DATE
+        AND start_date <= (now() AT TIME ZONE 'Asia/Kolkata')::date
+        AND end_date >= (now() AT TIME ZONE 'Asia/Kolkata')::date
       ORDER BY created_at DESC
     `;
     return reply.send({ banners });
@@ -263,7 +263,8 @@ export async function dealerAppRoutes(app: FastifyInstance) {
       const cartItems = items.map((i: any) => ({
         productId: i.product_id,
         quantity: i.quantity,
-        unitPrice: parseFloat(i.base_price),
+        // Paise, so the reorder preview quotes what POST /orders will bill.
+        unitPrice: Math.round(parseFloat(i.base_price) * 100) / 100,
         gstPercent: parseFloat(i.gst_percent),
       }));
 

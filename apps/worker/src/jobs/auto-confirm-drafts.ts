@@ -49,9 +49,10 @@
 //     on three consecutive ticks confirms each dealer at most once.
 // ═══════════════════════════════════════════════════════════════════════
 
-import { Job } from "bullmq";
 import { sql } from "../lib/db.js";
-import { pushQueue as notifQueue, pdfQueue } from "../lib/queues.js";
+import { enqueuePush, enqueuePdf } from "../lib/queues.js";
+import { resolveUnitPrice } from "../lib/rate-price.js";
+import { calcLine } from "../lib/line-totals.js";
 
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
 
@@ -61,6 +62,7 @@ function istNow(): Date {
 function istTodayIso(): string {
   return istNow().toISOString().slice(0, 10);
 }
+/** Amounts settle in paise, so they carry two decimals. */
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -139,14 +141,20 @@ async function workerStockShortfalls(
   }));
 }
 
-// Order-level Milk minimum (mirror of apps/api/src/lib/min-order-qty.ts —
-// kept in sync because the worker is its own package). Within one order the
-// TOTAL milk must reach 12 L; it applies only when milk is present. Curd has
-// no minimum. Pack sizes normalise to L (ml→L).
-const WORKER_CATEGORY_MIN = { milk: 12 } as const;
+// Order-level Milk + Curd minimum (mirror of apps/api/src/lib/min-order-qty.ts
+// — kept in sync because the worker is its own package). Within one order the
+// TOTAL of milk AND curd must reach 12, counting litres and kilograms as one
+// number; it applies only when milk or curd is present, so a curd-only order
+// is restricted too. Pack sizes normalise to L (ml→L) and kg (g→kg).
+//
+// The floor binds only the dealer's FIRST live order on a route for a
+// delivery date: if they already have a live order there that itself cleared
+// 12, this one goes through however small it is. See
+// workerHasQualifyingSiblingOrder below and the long note in the API lib.
+const WORKER_ORDER_MIN = { min: 12, unit: "L/kg" } as const;
 
-// Measure-matched: only volume-measured milk counts toward the litre minimum
-// (the Milk category also holds gram-measured chocolates).
+// Measure-matched: pack sizes normalise to litres or kilograms, then the two
+// are added into one combined total.
 const WORKER_SIZE_TOKEN = /(\d+(?:\.\d+)?)\s*(kg|kilogram|ltr|litre|liter|ml|gm|g|l)\b/i;
 function workerParseMeasure(text: string): { litres: number; kg: number } | null {
   const m = text.match(WORKER_SIZE_TOKEN);
@@ -174,37 +182,126 @@ function workerUnitMeasure(unit: string | null, packSize: string | number | null
   return { litres: 0, kg: 0 };
 }
 
-interface WorkerCategoryShortfall { category: "milk"; total: number; min: number; unit: string; }
+interface WorkerCategoryShortfall { total: number; min: number; unit: string; }
 
-/** Milk category in this order whose L total is below the minimum. */
+interface WorkerMeasuredLine {
+  quantity: number;
+  unit: string | null;
+  pack_size: string | number | null;
+  name: string | null;
+}
+
+/** Combined milk + curd size of a set of lines: litres and kilograms added. */
+function workerCombinedTotal(lines: WorkerMeasuredLine[]): number {
+  let total = 0;
+  for (const l of lines) {
+    if (!(Number(l.quantity) > 0)) continue;
+    const m = workerUnitMeasure(l.unit, l.pack_size, l.name);
+    total += Number(l.quantity) * (m.litres + m.kg);
+  }
+  return Math.round(total * 1000) / 1000;
+}
+
+/**
+ * True when the dealer already has a LIVE order on the same route and
+ * delivery date whose own milk + curd total reaches 12 — so the order being
+ * auto-confirmed is not the first one for that run and skips the floor.
+ * Mirror of hasQualifyingSiblingOrder in apps/api/src/lib/min-order-qty.ts.
+ */
+async function workerHasQualifyingSiblingOrder(orderId: string): Promise<boolean> {
+  const rows = (await sql`
+    SELECT o.id::text     AS order_id,
+           oi.quantity    AS quantity,
+           p.unit         AS unit,
+           p.pack_size    AS pack_size,
+           p.name         AS name
+      FROM orders w
+      JOIN dealers wd     ON wd.id = w.dealer_id
+      JOIN orders o       ON o.dealer_id = w.dealer_id
+                         AND o.delivery_date = w.delivery_date
+                         AND o.id <> w.id
+      JOIN dealers d      ON d.id = o.dealer_id
+      JOIN order_items oi ON oi.order_id = o.id
+      JOIN products p     ON p.id = oi.product_id
+      JOIN categories c   ON c.id = p.category_id
+     WHERE w.id = ${orderId}::uuid
+       AND COALESCE(o.route_id, d.route_id)
+             IS NOT DISTINCT FROM COALESCE(w.route_id, wd.route_id)
+       -- Live only: a draft/payment_required sibling is exactly what the
+       -- supersede rule cancels when this order lands.
+       AND o.status IN ('confirmed', 'dispatched', 'delivered', 'pending')
+       AND oi.quantity > 0
+       AND lower(c.name) IN ('milk', 'curd')
+       -- Subsidy milk never counts toward nor triggers the minimum:
+       -- the live SKU by code, plus any other scheme SKU by name (two
+       -- older 'HTM 1000ML SUBSIDY' rows exist, both under code P06,
+       -- which is ALSO a live goodlife SKU and so must not be matched
+       -- on code). See MIN_QTY_EXEMPT_CODES.
+       AND COALESCE(p.code, '') <> 'PD0191S'
+       AND p.name NOT ILIKE '%subsid%'
+  `) as any[];
+
+  const byOrder = new Map<string, WorkerMeasuredLine[]>();
+  for (const r of rows) {
+    const list = byOrder.get(r.order_id) ?? [];
+    list.push({ quantity: Number(r.quantity), unit: r.unit, pack_size: r.pack_size, name: r.name });
+    byOrder.set(r.order_id, list);
+  }
+  for (const lines of byOrder.values()) {
+    if (workerCombinedTotal(lines) >= WORKER_ORDER_MIN.min) return true;
+  }
+  return false;
+}
+
+/** Shortfall when this order's milk + curd total is below the minimum. */
 async function workerCategoryMinShortfalls(orderId: string): Promise<WorkerCategoryShortfall[]> {
+  // 'Credit Inst-MRP' dealers are government institutions: supply is
+  // compulsory however small the indent, so the floor never applies to
+  // them. Mirror of MIN_QTY_EXEMPT_RATE_CATEGORIES in
+  // apps/api/src/lib/min-order-qty.ts. WITHOUT this the nightly auto-confirm
+  // would keep rejecting their small standing indents even though every
+  // API path lets the same order through.
+  const [owner] = (await sql`
+    SELECT d.rate_category::text AS rate_category
+      FROM orders o
+      JOIN dealers d ON d.id = o.dealer_id
+     WHERE o.id = ${orderId}::uuid
+     LIMIT 1
+  `) as any[];
+  if (String(owner?.rate_category ?? "").trim() === "Credit Inst-MRP") return [];
+
+  // Not the first live order on this route for the day → no floor.
+  if (await workerHasQualifyingSiblingOrder(orderId)) return [];
+
   // The subsidy HTM 1000ML SKU (code PD0191S, migration 0056) is EXEMPT from
-  // the milk minimum — it's a half-price scheme line, so a subsidy-milk-only
+  // the minimum — it's a half-price scheme line, so a subsidy-milk-only
   // standing indent still auto-confirms. Mirror of MIN_QTY_EXEMPT_CODES in
   // apps/api/src/lib/min-order-qty.ts (the worker is its own package).
-  const rows = await sql`
-    SELECT c.name AS category, oi.quantity AS quantity,
+  const rows = (await sql`
+    SELECT oi.quantity AS quantity,
            p.unit AS unit, p.pack_size AS pack_size, p.name AS name
       FROM order_items oi
       JOIN products p   ON p.id = oi.product_id
       JOIN categories c ON c.id = p.category_id
      WHERE oi.order_id = ${orderId}::uuid
        AND oi.quantity > 0
-       AND lower(c.name) = 'milk'
+       AND lower(c.name) IN ('milk', 'curd')
+       -- Subsidy milk never counts toward nor triggers the minimum:
+       -- the live SKU by code, plus any other scheme SKU by name (two
+       -- older 'HTM 1000ML SUBSIDY' rows exist, both under code P06,
+       -- which is ALSO a live goodlife SKU and so must not be matched
+       -- on code). See MIN_QTY_EXEMPT_CODES.
        AND COALESCE(p.code, '') <> 'PD0191S'
-  `;
-  let milkLitres = 0;
-  for (const r of rows as any[]) {
-    const cat = String(r.category).trim().toLowerCase();
-    const m = workerUnitMeasure(r.unit, r.pack_size, r.name);
-    if (cat === "milk") milkLitres += Number(r.quantity) * m.litres;
+       AND p.name NOT ILIKE '%subsid%'
+  `) as any[];
+
+  const total = workerCombinedTotal(
+    rows.map((r) => ({ quantity: Number(r.quantity), unit: r.unit, pack_size: r.pack_size, name: r.name })),
+  );
+  if (total > 0 && total < WORKER_ORDER_MIN.min) {
+    return [{ total, min: WORKER_ORDER_MIN.min, unit: WORKER_ORDER_MIN.unit }];
   }
-  const out: WorkerCategoryShortfall[] = [];
-  const milk = Math.round(milkLitres * 1000) / 1000;
-  if (milk > 0 && milk < WORKER_CATEGORY_MIN.milk) {
-    out.push({ category: "milk", total: milk, min: WORKER_CATEGORY_MIN.milk, unit: "L" });
-  }
-  return out;
+  return [];
 }
 
 // Thrown when a line can't be satisfied during the guarded deduction
@@ -241,6 +338,9 @@ async function cancelSupersededSiblingsWorker(
        WHERE w.id = ${winnerOrderId}::uuid
          AND o.dealer_id = w.dealer_id
          AND o.delivery_date = w.delivery_date
+         -- Per-route indent: only supersede same-route siblings (keep in sync
+         -- with apps/api/src/lib/supersede-orders.ts).
+         AND o.route_id IS NOT DISTINCT FROM w.route_id
          AND o.id <> w.id
          AND o.status IN ('draft', 'payment_required')
          AND NOT EXISTS (
@@ -363,6 +463,7 @@ interface DealerRow {
   dealer_name: string;
   fcm_token: string | null;
   notifications_enabled: boolean;
+  rate_category: string | null;
   order_id: string | null;
   order_status: string | null;
   payment_mode: string | null; // 'credit' | 'upi' | … — 'upi' = online-pay intent
@@ -377,12 +478,24 @@ interface StandingItem {
   default_qty: number;
   name: string;
   base_price: string;
+  mrp: string | null;
   gst_percent: string;
+  code: string | null;
+  category_name: string | null;
 }
+
+/** Shape resolveUnitPrice() expects, from a snake_case standing-indent row. */
+const pricedFrom = (it: StandingItem) => ({
+  basePrice: it.base_price,
+  mrp: it.mrp,
+  gstPercent: it.gst_percent,
+  code: it.code,
+  categoryName: it.category_name,
+});
 
 // ── Main job ─────────────────────────────────────────────────────────
 
-export async function processAutoConfirmDrafts(_job: Job) {
+export async function processAutoConfirmDrafts() {
   const todayIso = istTodayIso();
   const nowIstTime = istNow().toISOString().slice(11, 19); // "HH:MM:SS"
 
@@ -445,7 +558,8 @@ export async function processAutoConfirmDrafts(_job: Job) {
   // Returns { orderId, grandTotal, itemCount } or null if the template
   // is empty (no active rows / all qty 0).
   async function materializeFromStanding(
-    dealer: DealerRow
+    dealer: DealerRow,
+    routeId: string | null
   ): Promise<{ orderId: string; grandTotal: number; itemCount: number } | null> {
     const items: StandingItem[] = await sql`
       SELECT
@@ -453,12 +567,17 @@ export async function processAutoConfirmDrafts(_job: Job) {
         dsi.default_qty              AS default_qty,
         p.name                       AS name,
         p.base_price::numeric::text  AS base_price,
-        p.gst_percent::numeric::text AS gst_percent
+        p.mrp::numeric::text         AS mrp,
+        p.gst_percent::numeric::text AS gst_percent,
+        p.code                       AS code,
+        c.name                       AS category_name
       FROM dealer_standing_indents dsi
       JOIN products p ON p.id = dsi.product_id
                      AND p.deleted_at IS NULL
                      AND p.available = true
+      LEFT JOIN categories c ON c.id = p.category_id
       WHERE dsi.dealer_id = ${dealer.dealer_id}::uuid
+        AND dsi.route_id = ${routeId}::uuid
         AND dsi.active = true
         AND dsi.default_qty > 0
     `;
@@ -468,12 +587,13 @@ export async function processAutoConfirmDrafts(_job: Job) {
     let totalGst = 0;
     let itemCount = 0;
     const lines = items.map((it) => {
-      const price = parseFloat(it.base_price);
+      const price = resolveUnitPrice(pricedFrom(it), dealer.rate_category);
       const gstPct = parseFloat(it.gst_percent);
-      const lineSub = price * it.default_qty;
-      const lineGst = lineSub * (gstPct / 100);
-      subtotal += lineSub;
-      totalGst += lineGst;
+      // Round at the line, then add up, so the draft's grand_total is the
+      // exact sum of its printed lines. See lib/line-totals.ts.
+      const line = calcLine(price, gstPct, it.default_qty);
+      subtotal = round2(subtotal + line.subtotal);
+      totalGst = round2(totalGst + line.gst);
       itemCount += it.default_qty;
       return {
         product_id: it.product_id,
@@ -481,8 +601,8 @@ export async function processAutoConfirmDrafts(_job: Job) {
         default_qty: it.default_qty,
         unitPrice: price.toFixed(2),
         gst_percent: gstPct.toFixed(2),
-        gstAmount: lineGst.toFixed(2),
-        lineTotal: (lineSub + lineGst).toFixed(2),
+        gstAmount: line.gst.toFixed(2),
+        lineTotal: line.total.toFixed(2),
       };
     });
     const grandTotal = round2(subtotal + totalGst);
@@ -490,11 +610,11 @@ export async function processAutoConfirmDrafts(_job: Job) {
     const orderId = await sql.begin(async (tx) => {
       const [row] = await tx`
         INSERT INTO orders (
-          dealer_id, zone_id, status, payment_mode,
+          dealer_id, zone_id, route_id, status, payment_mode,
           subtotal, total_gst, grand_total, item_count,
           delivery_date
         ) VALUES (
-          ${dealer.dealer_id}::uuid, ${dealer.zone_id}::uuid, 'draft', 'credit',
+          ${dealer.dealer_id}::uuid, ${dealer.zone_id}::uuid, ${routeId}::uuid, 'draft', 'credit',
           ${subtotal.toFixed(2)}::numeric,
           ${totalGst.toFixed(2)}::numeric,
           ${grandTotal.toFixed(2)}::numeric,
@@ -529,33 +649,34 @@ export async function processAutoConfirmDrafts(_job: Job) {
   async function confirmDraftOnCredit(
     dealer: DealerRow,
     orderId: string,
-    grandTotal: number
+    grandTotal: number,
+    routeId: string | null
   ): Promise<"confirmed" | "payment_required" | "stock_blocked" | "min_qty_blocked"> {
     // Notify the dealer their indent is on hold (best-effort).
     const sendStockBlockedNotice = async (names: string) => {
       if (dealer.notifications_enabled && dealer.fcm_token) {
-        await notifQueue
-          .add("stock-blocked", {
-            event: "custom" as const,
-            dealerId: dealer.dealer_id,
-            orderId,
-            title: "Indent on hold — out of stock ⚠️",
-            body: `Out of stock: ${names}. Our team will sort it out shortly.`,
-          })
-          .catch((e) =>
-            console.warn(`[AutoConfirm] notif failed for ${orderId}:`, e?.message)
-          );
+        await enqueuePush("stock-blocked", {
+          event: "custom" as const,
+          dealerId: dealer.dealer_id,
+          orderId,
+          title: "Indent on hold — out of stock ⚠️",
+          body: `Out of stock: ${names}. Our team will sort it out shortly.`,
+        }).catch((e) =>
+          console.warn(`[AutoConfirm] notif failed for ${orderId}:`, e?.message)
+        );
       }
     };
 
-    // ── Min-order gate ── never auto-confirm an order whose Milk total is
-    // below 12 L (curd has no minimum). Leave it a draft so the dealer/
-    // admin can top up the standing indent, then it re-confirms on a later tick.
+    // ── Min-order gate ── never auto-confirm an order whose milk + curd
+    // total is below 12 L/kg combined, unless the dealer already has a live
+    // order clearing 12 on this route for the day. Leave it a draft so the
+    // dealer/admin can top up the standing indent, then it re-confirms on a
+    // later tick.
     const minShortfalls = await workerCategoryMinShortfalls(orderId);
     if (minShortfalls.length > 0) {
       console.warn(
         `[AutoConfirm] min-order-blocked order=${orderId} dealer=${dealer.dealer_id}: ` +
-          minShortfalls.map((s) => `${s.category} ${s.total}${s.unit} < ${s.min}${s.unit}`).join(", ")
+          minShortfalls.map((s) => `milk+curd ${s.total}${s.unit} < ${s.min}${s.unit}`).join(", ")
       );
       return "min_qty_blocked";
     }
@@ -583,19 +704,17 @@ export async function processAutoConfirmDrafts(_job: Job) {
          WHERE id = ${orderId}::uuid AND status = 'draft'
       `;
       if (dealer.notifications_enabled && dealer.fcm_token) {
-        await notifQueue
-          .add("payment-required", {
-            event: "payment.reminder" as const,
-            dealerId: dealer.dealer_id,
-            orderId,
-            title: "Payment required for today's indent ⚠️",
-            body: `Short by ₹${credit.shortfall.toFixed(
-              0
-            )}. Top up credit or pay this order to confirm delivery.`,
-          })
-          .catch((e) =>
-            console.warn(`[AutoConfirm] notif failed for ${orderId}:`, e?.message)
-          );
+        await enqueuePush("payment-required", {
+          event: "payment.reminder" as const,
+          dealerId: dealer.dealer_id,
+          orderId,
+          title: "Payment required for today's indent ⚠️",
+          body: `Short by ₹${credit.shortfall.toFixed(
+            0
+          )}. Top up credit or pay this order to confirm delivery.`,
+        }).catch((e) =>
+          console.warn(`[AutoConfirm] notif failed for ${orderId}:`, e?.message)
+        );
       }
       return "payment_required";
     }
@@ -613,6 +732,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
                payment_mode = 'credit',
                confirmed_at  = COALESCE(confirmed_at, now()),
                cancel_window_ends_at = now(),
+               route_id      = COALESCE(route_id, ${routeId}::uuid),
                updated_at    = now()
          WHERE id = ${orderId}::uuid AND status = 'draft'
       `;
@@ -674,38 +794,31 @@ export async function processAutoConfirmDrafts(_job: Job) {
       console.warn(`[AutoConfirm] supersede failed for ${orderId}:`, e?.message);
     }
 
-    await pdfQueue
-      .add(`invoice-${orderId.slice(0, 8)}`, { orderId }, {
-        removeOnComplete: 100,
-        removeOnFail: 500,
-        attempts: 3,
-        backoff: { type: "exponential", delay: 5000 },
-      })
-      .catch((e) =>
-        console.warn(`[AutoConfirm] invoice enqueue failed for ${orderId}:`, e?.message)
-      );
+    await enqueuePdf(orderId).catch((e) =>
+      console.warn(`[AutoConfirm] invoice enqueue failed for ${orderId}:`, e?.message)
+    );
 
     if (dealer.notifications_enabled && dealer.fcm_token) {
-      await notifQueue
-        .add("indent-confirmed", {
-          event: "order.confirmed" as const,
-          dealerId: dealer.dealer_id,
-          orderId,
-          title: "Indent confirmed ✓",
-          body: `Today's indent · ₹${grandTotal.toFixed(0)}. Out for delivery soon.`,
-        })
-        .catch((e) =>
-          console.warn(`[AutoConfirm] notif failed for ${orderId}:`, e?.message)
-        );
+      await enqueuePush("indent-confirmed", {
+        event: "order.confirmed" as const,
+        dealerId: dealer.dealer_id,
+        orderId,
+        title: "Indent confirmed ✓",
+        body: `Today's indent · ₹${grandTotal.toFixed(0)}. Out for delivery soon.`,
+      }).catch((e) =>
+        console.warn(`[AutoConfirm] notif failed for ${orderId}:`, e?.message)
+      );
     }
     return "confirmed";
   }
 
   // ── Per-route → per-dealer ─────────────────────────────────────────
   for (const route of dueRoutes) {
-    // Every active dealer on this route, with their most-recent order
-    // for today (any status), pause flag, and whether they have an
-    // active standing indent. One pass, no N+1 for the decision.
+    // Every active dealer ASSIGNED to this route (dealer_routes, not just
+    // their primary route_id), with their most-recent order FOR THIS ROUTE
+    // today, pause flag, and whether they have an active standing indent on
+    // this route. Per-route templates → a two-route dealer is processed once
+    // per route, each with its own draft/order. One pass, no N+1.
     const dealers: DealerRow[] = await sql`
       SELECT
         d.id::text              AS dealer_id,
@@ -713,6 +826,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
         d.name                  AS dealer_name,
         d.fcm_token             AS fcm_token,
         d.notifications_enabled AS notifications_enabled,
+        d.rate_category::text   AS rate_category,
         o.id::text              AS order_id,
         o.status::text          AS order_status,
         o.payment_mode::text    AS payment_mode,
@@ -722,15 +836,19 @@ export async function processAutoConfirmDrafts(_job: Job) {
         EXISTS (
           SELECT 1 FROM dealer_standing_indents dsi
            WHERE dsi.dealer_id = d.id
+             AND dsi.route_id = ${route.id}::uuid
              AND dsi.active = true
              AND dsi.default_qty > 0
         ) AS has_standing
       FROM dealers d
+      JOIN dealer_routes dr
+        ON dr.dealer_id = d.id AND dr.route_id = ${route.id}::uuid
       LEFT JOIN LATERAL (
         SELECT o2.id, o2.status, o2.payment_mode, o2.grand_total, o2.item_count
           FROM orders o2
          WHERE o2.dealer_id = d.id
            AND o2.delivery_date = ${todayIso}::date
+           AND COALESCE(o2.route_id, d.route_id) = ${route.id}::uuid
          ORDER BY o2.created_at DESC
          LIMIT 1
       ) o ON true
@@ -741,8 +859,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
            AND ${todayIso}::date BETWEEN dip.from_date AND dip.to_date
          LIMIT 1
       ) pause ON true
-      WHERE d.route_id = ${route.id}::uuid
-        AND d.active = true
+      WHERE d.active = true
         AND d.deleted_at IS NULL
     `;
 
@@ -775,7 +892,8 @@ export async function processAutoConfirmDrafts(_job: Job) {
           const outcome = await confirmDraftOnCredit(
             dealer,
             dealer.order_id,
-            grandTotal
+            grandTotal,
+            route.id
           );
           tally(outcome);
           continue;
@@ -820,17 +938,15 @@ export async function processAutoConfirmDrafts(_job: Job) {
           if (cancelled.count > 0) {
             discardedUnpaid++;
             if (dealer.notifications_enabled && dealer.fcm_token) {
-              await notifQueue
-                .add("indent-discarded", {
-                  event: "custom" as const,
-                  dealerId: dealer.dealer_id,
-                  orderId: dealer.order_id,
-                  title: "Indent not placed — payment incomplete",
-                  body: "Your online payment wasn't completed before the window closed, so today's indent wasn't placed.",
-                })
-                .catch((e) =>
-                  console.warn(`[AutoConfirm] notif failed for ${dealer.order_id}:`, e?.message)
-                );
+              await enqueuePush("indent-discarded", {
+                event: "custom" as const,
+                dealerId: dealer.dealer_id,
+                orderId: dealer.order_id,
+                title: "Indent not placed — payment incomplete",
+                body: "Your online payment wasn't completed before the window closed, so today's indent wasn't placed.",
+              }).catch((e) =>
+                console.warn(`[AutoConfirm] notif failed for ${dealer.order_id}:`, e?.message)
+              );
             }
           } else {
             // A captured payment exists (or the status just moved) — the
@@ -880,7 +996,7 @@ export async function processAutoConfirmDrafts(_job: Job) {
           skipped++;
           continue;
         }
-        const built = await materializeFromStanding(dealer);
+        const built = await materializeFromStanding(dealer, route.id);
         if (!built) {
           skipped++;
           continue;
@@ -889,7 +1005,8 @@ export async function processAutoConfirmDrafts(_job: Job) {
         const outcome = await confirmDraftOnCredit(
           dealer,
           built.orderId,
-          built.grandTotal
+          built.grandTotal,
+          route.id
         );
         tally(outcome);
       } catch (err: any) {

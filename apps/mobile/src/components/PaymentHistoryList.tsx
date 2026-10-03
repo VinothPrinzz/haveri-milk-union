@@ -97,7 +97,7 @@ function PaymentRow({
       </View>
       <View style={styles.right}>
         <Text style={styles.amount}>
-          ₹{payment.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+          ₹{payment.amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </Text>
         <Text style={[styles.statusLabel, { color: variant.color }]}>
           {statusLabel(payment.status)}

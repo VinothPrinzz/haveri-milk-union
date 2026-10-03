@@ -18,6 +18,7 @@ import {
   fetchCreditControl, fetchCreditControlSummary, fetchRoutes,
   type CreditControlRow, type BalanceBucket,
 } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 const STATUS_OPTIONS: F9Option[] = [
   { value: "funded", label: "Funded (has balance)" },
@@ -41,9 +42,11 @@ export default function CreditControlPage() {
   const [routeId, setRouteId] = useState<string | null>(null);
   const [payMode, setPayMode] = useState<string | null>(null);
   const [bucket, setBucket] = useState<string | null>(null);
+  // Read every balance as at the end of this IST day (today = live).
+  const [asOf, setAsOf] = useState(todayIST());
   const [page, setPage] = useState(1);
 
-  useEffect(() => { setPage(1); }, [search, routeId, payMode, bucket]);
+  useEffect(() => { setPage(1); }, [search, routeId, payMode, bucket, asOf]);
 
   const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
   const routeOptions: F9Option[] = useMemo(
@@ -56,22 +59,33 @@ export default function CreditControlPage() {
     routeId: routeId ?? undefined,
     payMode: (payMode as "Cash" | "Credit" | null) ?? undefined,
     statusBucket: (bucket as BalanceBucket | null) ?? undefined,
+    asOf,
   };
   const { data, isLoading } = useQuery({
     queryKey: ["credit-control", filters, page],
     queryFn: () => fetchCreditControl({ ...filters, page, limit: 50 }),
   });
+  // The summary follows the route and date; search/status only narrow the list.
+  const summaryFilters = { routeId: routeId ?? undefined, asOf };
   const { data: summary } = useQuery({
-    queryKey: ["credit-control-summary"],
-    queryFn: fetchCreditControlSummary,
+    queryKey: ["credit-control-summary", summaryFilters],
+    queryFn: () => fetchCreditControlSummary(summaryFilters),
   });
 
   const rows: CreditControlRow[] = data?.data ?? [];
   const totalPages = data?.totalPages ?? 1;
+  const historical = asOf !== todayIST();
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader title="Available Balances" subtitle="Prepaid customer balances — top-ups minus purchases. No credit limit; customers spend only what they've paid in." />
+      <PageHeader
+        title="Available Balances"
+        subtitle={
+          historical
+            ? `Balances as on ${fmtDate(asOf)}, not live. Prepaid customer balances: top-ups minus purchases.`
+            : "Prepaid customer balances: top-ups minus purchases. No credit limit; customers spend only what they've paid in."
+        }
+      />
 
       <FilterBar>
         <div className="flex-1 min-w-[200px]">
@@ -84,6 +98,16 @@ export default function CreditControlPage() {
         <div>
           <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Route</label>
           <F9SearchSelect value={routeId} onChange={setRouteId} options={routeOptions} placeholder="All" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">As on</label>
+          <Input
+            type="date"
+            value={asOf}
+            max={todayIST()}
+            onChange={e => setAsOf(e.target.value || todayIST())}
+            className="erp-input w-36"
+          />
         </div>
         <div>
           <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Pay Mode</label>
@@ -124,12 +148,12 @@ export default function CreditControlPage() {
                   <tr key={d.id} className={d.statusBucket === "empty" ? "bg-muted/20" : ""}>
                     <td className="font-mono text-[11px]">{d.code}</td>
                     <td className="font-medium">{d.name}</td>
-                    <td className="text-[12px]">{d.route_name ?? "—"}</td>
+                    <td className="text-[12px]">{d.route_name ?? ""}</td>
                     <td className="text-[12px]">{d.pay_mode}</td>
                     <td className="num text-success" style={{ textAlign: "right" }}>{fmtINR(d.availableBalance)}</td>
-                    <td className="num text-destructive" style={{ textAlign: "right" }}>{d.outstanding > 0 ? fmtINR(d.outstanding) : "—"}</td>
+                    <td className="num text-destructive" style={{ textAlign: "right" }}>{d.outstanding > 0 ? fmtINR(d.outstanding) : ""}</td>
                     <td><span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${BUCKET_TONE[d.statusBucket]}`}>{BUCKET_LABEL[d.statusBucket]}</span></td>
-                    <td className="text-[12px]">{d.lastPaymentAt ? fmtDate(d.lastPaymentAt) : "—"}</td>
+                    <td className="text-[12px]">{d.lastPaymentAt ? fmtDate(d.lastPaymentAt) : ""}</td>
                   </tr>
                 ))}
               </tbody>

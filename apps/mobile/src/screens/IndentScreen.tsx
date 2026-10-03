@@ -14,7 +14,9 @@
 //    never a separate "draft" row beside a "confirmed" one — it's the same
 //    row changing status. So the page renders by status:
 //      • draft / preview      → editable: +/- steppers + "Confirm" button
-//      • payment_required     → locked items + "Pay for this indent"
+//      • payment_required     → the online payment never completed: the
+//                               order is cancelled automatically so the
+//                               dealer can edit and try again
 //      • confirmed / dispatched / delivered → locked, read-only "Indent placed" card
 //      • paused               → "shop paused" notice
 //    Previously a confirmed order still showed editable steppers and a
@@ -25,7 +27,7 @@
 //           | "delivered" | "cancelled"
 // ("pending" has been removed — dealer confirm goes directly to "confirmed")
 
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -38,7 +40,6 @@ import {
 import { colors, fonts } from "../lib/theme";
 import AppHeader from "../components/AppHeader";
 import DatePickerModal from "../components/DatePickerModal";
-import TopUpSheet from "../components/TopUpSheet";
 import QtyStepper from "../components/QtyStepper";
 import { useAuthStore } from "../store/auth";
 import { useNotifications } from "../hooks/useNotifications";
@@ -53,8 +54,7 @@ import {
   useDailyDraft,
   usePatchDraft,
 } from "../hooks/useDailyDraft";
-import { useOrderPayment } from "../hooks/useOrderPayment";
-import { PaymentPending, RazorpayCancelled } from "../lib/razorpay";
+import { useCancelUnpaidOrder } from "../hooks/useOrders";
 import { snapQtyToMin } from "../lib/minOrderQty";
 import type { DraftItem, OrderStatus } from "../lib/types";
 
@@ -98,45 +98,12 @@ export default function IndentScreen({
 
   const [showCalendar, setShowCalendar] = useState(false);
 
-  // ── Top-up / pay-now state ──
-  const [showTopUp, setShowTopUp] = useState(false);
-  const [shortfall, setShortfall] = useState<number | undefined>(undefined);
-  const [payNowOrderId, setPayNowOrderId] = useState<string | null>(null);
-  const orderPayment = useOrderPayment(payNowOrderId ?? "");
-
-  // Fire the pay-now flow when an orderId is set
-  useEffect(() => {
-    if (!payNowOrderId) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        await orderPayment.mutateAsync();
-        if (!cancelled) {
-          Alert.alert(
-            "Order paid",
-            `Your order is confirmed for ${relativeLabel(selectedDate)}.`
-          );
-        }
-      } catch (err) {
-        if (cancelled || err instanceof RazorpayCancelled) return;
-        // Money likely taken but the server couldn't confirm in time — the
-        // backend confirms it automatically. NOT a failure.
-        if (err instanceof PaymentPending) {
-          Alert.alert("Confirming your payment", err.message);
-          return;
-        }
-        Alert.alert(
-          "Payment failed",
-          err instanceof Error ? err.message : "Please try again."
-        );
-      } finally {
-        if (!cancelled) setPayNowOrderId(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [payNowOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ── Unpaid (payment_required) indent → cancel it ──
+  // An indent lands in payment_required when the dealer's online payment
+  // never completed. It was never placed, so cancel it once and the page
+  // drops back to an editable draft with the items still there.
+  const cancelUnpaid = useCancelUnpaidOrder();
+  const cancelledOrderRef = useRef<string | null>(null);
 
   const isToday = selectedDate === istTodayIso();
   const windowState = windowQuery.data?.state ?? "closed";
@@ -153,6 +120,13 @@ export default function IndentScreen({
   // state. Once confirmed there is no editable draft for this date.
   const draftStatus = (draft?.status ?? "draft") as OrderStatus;
   const isPaymentRequired = draftStatus === "payment_required";
+  const unpaidOrderId = isPaymentRequired ? draft?.orderId ?? null : null;
+  useEffect(() => {
+    if (!unpaidOrderId) return;
+    if (cancelledOrderRef.current === unpaidOrderId) return; // once per order
+    cancelledOrderRef.current = unpaidOrderId;
+    cancelUnpaid.mutate(unpaidOrderId);
+  }, [unpaidOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
   const isPlaced =
     draftStatus === "confirmed" ||
     draftStatus === "dispatched" ||
@@ -479,19 +453,8 @@ export default function IndentScreen({
                 {/* ── PLACED: read-only confirmation ── */}
                 {isPlaced && <PlacedCard status={draftStatus} />}
 
-                {/* ── PAYMENT REQUIRED: pay / top up ── */}
-                {isPaymentRequired && (
-                  <PaymentRequiredCard
-                    busy={!!payNowOrderId}
-                    onPayNow={() => {
-                      if (draft.orderId) setPayNowOrderId(draft.orderId);
-                    }}
-                    onTopUp={() => {
-                      setShortfall(undefined);
-                      setShowTopUp(true);
-                    }}
-                  />
-                )}
+                {/* ── PAYMENT NOT COMPLETED: being cancelled ── */}
+                {isPaymentRequired && <PaymentNotCompletedCard />}
               </>
             )}
           </>
@@ -509,21 +472,6 @@ export default function IndentScreen({
         onClose={() => setShowCalendar(false)}
       />
 
-      {/* Top-up sheet */}
-      <TopUpSheet
-        visible={showTopUp}
-        suggestedAmount={shortfall}
-        onClose={() => setShowTopUp(false)}
-        onSuccess={(paid) => {
-          setShowTopUp(false);
-          Alert.alert(
-            "Top-up successful",
-            `₹${paid.toLocaleString(
-              "en-IN"
-            )} credited. Tap Confirm again to place your indent.`
-          );
-        }}
-      />
     </View>
   );
 }
@@ -652,38 +600,19 @@ function ScheduledCard({ date }: { date: string }) {
   );
 }
 
-/** Shown when the order needs payment (not enough wallet balance). */
-function PaymentRequiredCard({
-  busy,
-  onPayNow,
-  onTopUp,
-}: {
-  busy: boolean;
-  onPayNow: () => void;
-  onTopUp: () => void;
-}) {
+/**
+ * Shown while an indent whose online payment never completed is cancelled
+ * (see the unpaidOrderId effect). It was never placed.
+ */
+function PaymentNotCompletedCard() {
   return (
     <View style={styles.payReqCard}>
-      <Text style={styles.payReqTitle}>Payment required</Text>
+      <Text style={styles.payReqTitle}>Payment not completed</Text>
       <Text style={styles.payReqSub}>
-        This indent is over your wallet balance. Pay for it now, or top up
-        your wallet and it will auto-confirm.
+        This indent was not placed. Clearing it so you can edit your items and
+        try again.
       </Text>
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={onPayNow}
-        disabled={busy}
-        style={[styles.payNowBtn, busy && styles.confirmBtnDisabled]}
-      >
-        {busy ? (
-          <ActivityIndicator color={colors.primaryForeground} />
-        ) : (
-          <Text style={styles.payNowBtnText}>Pay for this indent</Text>
-        )}
-      </TouchableOpacity>
-      <TouchableOpacity activeOpacity={0.6} onPress={onTopUp}>
-        <Text style={styles.topUpLink}>Top up wallet instead</Text>
-      </TouchableOpacity>
+      <ActivityIndicator color={colors.primary} style={{ marginTop: 12 }} />
     </View>
   );
 }
@@ -1088,26 +1017,6 @@ const styles = StyleSheet.create({
     color: "#92400E",
     marginTop: 3,
     lineHeight: 16,
-  },
-  payNowBtn: {
-    marginTop: 10,
-    paddingVertical: 11,
-    borderRadius: 4,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-  },
-  payNowBtnText: {
-    fontSize: 13,
-    fontFamily: fonts.extrabold,
-    color: colors.primaryForeground,
-  },
-  topUpLink: {
-    fontSize: 11,
-    fontFamily: fonts.semibold,
-    color: "#92400E",
-    textAlign: "center",
-    marginTop: 9,
-    textDecorationLine: "underline",
   },
 });
 

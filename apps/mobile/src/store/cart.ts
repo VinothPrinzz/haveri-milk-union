@@ -6,10 +6,22 @@ interface CartProduct {
   icon: string;
   unit: string;
   basePrice: number;
+  /**
+   * NET (pre-GST) price this dealer is actually billed, already resolved
+   * for their rate category (lib/ratePrice.ts) — a 'Credit Inst-MRP'
+   * dealer pays MRP on milk. Callers resolve it because only they know
+   * the logged-in dealer; the subsidy line passes its fixed scheme price
+   * straight through. Falls back to basePrice when absent.
+   */
+  unitPrice?: number;
   dealerPrice?: number;   // Dealer-Price (gross) — shown to the dealer
   mrp: number;
   gstPercent: number;
   categoryName?: string;  // drives the Milk minimum-order-qty rule
+  /** Union-operated subsidy line (PD0191S) — seeded from the day's draft,
+   *  rendered without steppers, exempt from the Milk minimum. The server
+   *  pins its quantity on every order path regardless of what we send. */
+  isSubsidy?: boolean;
 }
 
 interface CartItem extends CartProduct {
@@ -43,6 +55,10 @@ function calcLine(price: number, gst: number, qty: number) {
   return { lineSubtotal: sub, lineGst: gstAmt, lineTotal: sub + gstAmt };
 }
 
+/** The NET price a line bills at — rate-resolved when the caller supplied it. */
+const billedPrice = (p: { unitPrice?: number; basePrice: number }) =>
+  p.unitPrice ?? p.basePrice;
+
 export const useCartStore = create<CartState>((set, get) => ({
   items: {},
   paymentMode: "upi",
@@ -51,7 +67,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     set((state) => {
       const existing = state.items[product.id];
       const qty = (existing?.quantity ?? 0) + 1;
-      const line = calcLine(product.basePrice, product.gstPercent, qty);
+      const line = calcLine(billedPrice(product), product.gstPercent, qty);
       return {
         items: { ...state.items, [product.id]: { ...product, quantity: qty, ...line } },
       };
@@ -66,7 +82,7 @@ export const useCartStore = create<CartState>((set, get) => ({
         return { items: rest };
       }
       const qty = existing.quantity - 1;
-      const line = calcLine(existing.basePrice, existing.gstPercent, qty);
+      const line = calcLine(billedPrice(existing), existing.gstPercent, qty);
       return {
         items: { ...state.items, [productId]: { ...existing, quantity: qty, ...line } },
       };
@@ -81,7 +97,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       }
       const existing = state.items[productId];
       if (!existing) return state;
-      const line = calcLine(existing.basePrice, existing.gstPercent, qty);
+      const line = calcLine(billedPrice(existing), existing.gstPercent, qty);
       return {
         items: { ...state.items, [productId]: { ...existing, quantity: qty, ...line } },
       };
