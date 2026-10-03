@@ -26,6 +26,8 @@ export async function financeRoutes(app: FastifyInstance) {
         routeId:       z.string().uuid().optional(),
         paymentStatus: z.enum(["paid","unpaid","partial"]).optional(),
         search:        z.string().optional(),  // matches invoice_number too
+        dealerId:      z.string().uuid().optional(),
+        openOnly:      z.enum(["true","false"]).optional(),  // unpaid + partial
       });
       const q = querySchema.parse(request.query);
       const offset = offsetFromPage(q.page, q.limit);
@@ -36,6 +38,8 @@ export async function financeRoutes(app: FastifyInstance) {
       const dateTo        = q.dateTo   ? q.dateTo + "T23:59:59Z" : null;
       const routeId       = q.routeId  ?? null;
       const status        = q.paymentStatus ?? null;
+      const dealerId      = q.dealerId ?? null;
+      const openOnly      = q.openOnly === "true";
    
       const rows = await pgClient`
         SELECT
@@ -80,6 +84,8 @@ export async function financeRoutes(app: FastifyInstance) {
           AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
           AND (${routeId}::uuid IS NULL OR i.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
+          AND (${dealerId}::uuid IS NULL OR i.dealer_id = ${dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (NOT ${openOnly}::boolean OR (i.payment_status <> 'paid' AND i.total_amount > i.paid_amount))
         ORDER BY i.invoice_date DESC
         LIMIT ${q.limit} OFFSET ${offset}
       `;
@@ -96,6 +102,8 @@ export async function financeRoutes(app: FastifyInstance) {
           AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
           AND (${routeId}::uuid IS NULL OR i.route_id = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
+          AND (${dealerId}::uuid IS NULL OR i.dealer_id = ${dealerId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
+          AND (NOT ${openOnly}::boolean OR (i.payment_status <> 'paid' AND i.total_amount > i.paid_amount))
       `;
    
       return reply.send({
@@ -191,18 +199,22 @@ export async function financeRoutes(app: FastifyInstance) {
       `;
    
       // Payments recorded against this invoice (may be empty).
+      // `amount` is the part applied to this invoice (a receipt can settle
+      // several invoices — see payment_allocations).
       const payments = await pgClient`
         SELECT
-          id,
-          received_date    AS "receivedDate",
-          amount,
-          mode,
-          reference,
-          notes,
-          created_at       AS "createdAt"
-        FROM payments
-        WHERE invoice_id = ${id}
-        ORDER BY received_date DESC, created_at DESC
+          p.id,
+          p.received_date    AS "receivedDate",
+          pa.amount,
+          p.amount           AS "paymentAmount",
+          p.mode,
+          p.reference,
+          p.notes,
+          p.created_at       AS "createdAt"
+        FROM payment_allocations pa
+        JOIN payments p ON p.id = pa.payment_id
+        WHERE pa.invoice_id = ${id}
+        ORDER BY p.received_date DESC, p.created_at DESC
       `;
    
       return reply.send({ invoice, items, payments });
@@ -274,7 +286,10 @@ export async function financeRoutes(app: FastifyInstance) {
 
       // Block cancel if any payment records exist (partial payments were made).
       const [payCount] = await pgClient`
-        SELECT count(*)::int AS count FROM payments WHERE invoice_id = ${id}
+        SELECT (
+          (SELECT count(*) FROM payments WHERE invoice_id = ${id}) +
+          (SELECT count(*) FROM payment_allocations WHERE invoice_id = ${id})
+        )::int AS count
       `;
       if ((payCount?.count ?? 0) > 0) {
         return reply.status(409).send({
@@ -745,7 +760,7 @@ export async function financeRoutes(app: FastifyInstance) {
           p.reference,
           p.amount,
           p.invoice_id                       AS "invoiceId",
-          i.invoice_number                   AS "invoiceNumber",
+          COALESCE(alloc.numbers, i.invoice_number) AS "invoiceNumber",
           p.notes,
           u.name                             AS "receivedByName",
           p.created_at                       AS "createdAt"
@@ -754,6 +769,12 @@ export async function financeRoutes(app: FastifyInstance) {
         LEFT JOIN invoices i  ON i.id = p.invoice_id
         LEFT JOIN users u     ON u.id = p.received_by
         LEFT JOIN cheques ch  ON ch.payment_id = p.id
+        LEFT JOIN LATERAL (
+          SELECT string_agg(ai.invoice_number, ', ' ORDER BY ai.invoice_date) AS numbers
+            FROM payment_allocations pa
+            JOIN invoices ai ON ai.id = pa.invoice_id
+           WHERE pa.payment_id = p.id
+        ) alloc ON true
         WHERE (${dateFrom}::date IS NULL OR p.received_date >= ${dateFrom ?? '1970-01-01'}::date)
           AND (${dateTo}::date   IS NULL OR p.received_date <= ${dateTo   ?? '9999-12-31'}::date)
           AND (${mode}::text     IS NULL OR p.mode = ${mode ?? 'cash'})
@@ -761,6 +782,10 @@ export async function financeRoutes(app: FastifyInstance) {
           AND (${search}::text   IS NULL OR
               d.name ILIKE ${search ?? ''} OR
               i.invoice_number ILIKE ${search ?? ''} OR
+              EXISTS (SELECT 1 FROM payment_allocations pa
+                        JOIN invoices ai ON ai.id = pa.invoice_id
+                       WHERE pa.payment_id = p.id
+                         AND ai.invoice_number ILIKE ${search ?? ''}) OR
               p.reference ILIKE ${search ?? ''})
         ORDER BY p.received_date DESC, p.created_at DESC
         LIMIT ${q.limit} OFFSET ${offset}
@@ -778,6 +803,10 @@ export async function financeRoutes(app: FastifyInstance) {
           AND (${search}::text   IS NULL OR
               d.name ILIKE ${search ?? ''} OR
               i.invoice_number ILIKE ${search ?? ''} OR
+              EXISTS (SELECT 1 FROM payment_allocations pa
+                        JOIN invoices ai ON ai.id = pa.invoice_id
+                       WHERE pa.payment_id = p.id
+                         AND ai.invoice_number ILIKE ${search ?? ''}) OR
               p.reference ILIKE ${search ?? ''})
       `;
   
@@ -827,6 +856,10 @@ export async function financeRoutes(app: FastifyInstance) {
         mode:         z.enum(["cash","upi","cheque","neft","rtgs","credit","wallet"]),
         receivedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         invoiceId:    z.string().uuid().optional().nullable(),
+        // Invoices this receipt settles. The amount is applied oldest-due
+        // first, capped at each invoice's outstanding; anything left over
+        // stays on account. `invoiceId` is the legacy single-invoice form.
+        invoiceIds:   z.array(z.string().uuid()).max(100).optional(),
         reference:    z.string().optional(),
         notes:        z.string().optional(),
         // Cheque lifecycle details (0041). When mode='cheque' a row is
@@ -852,18 +885,25 @@ export async function financeRoutes(app: FastifyInstance) {
       `;
       if (!dealer) return reply.status(404).send({ error: "Dealer not found" });
   
-      // If invoice_id was given, validate it belongs to this dealer.
-      let invoice: any = null;
-      if (body.invoiceId) {
+      const invoiceIds = [...new Set([
+        ...(body.invoiceIds ?? []),
+        ...(body.invoiceId ? [body.invoiceId] : []),
+      ])];
+
+      // Validate every selected invoice belongs to this dealer and is open.
+      // Re-read under lock inside the transaction before allocating.
+      for (const invoiceId of invoiceIds) {
         const [row] = await pgClient`
-          SELECT id, dealer_id, total_amount, paid_amount, payment_status, invoice_number
-          FROM invoices WHERE id = ${body.invoiceId} LIMIT 1
+          SELECT dealer_id, invoice_number, total_amount, paid_amount
+          FROM invoices WHERE id = ${invoiceId} LIMIT 1
         `;
         if (!row) return reply.status(404).send({ error: "Invoice not found" });
         if (row.dealer_id !== body.dealerId) {
-          return reply.status(400).send({ error: "Invoice does not belong to this dealer" });
+          return reply.status(400).send({ error: `Invoice ${row.invoice_number} does not belong to this dealer` });
         }
-        invoice = row;
+        if (parseFloat(row.total_amount) - parseFloat(row.paid_amount) <= 0) {
+          return reply.status(400).send({ error: `Invoice ${row.invoice_number} is already fully paid` });
+        }
       }
   
       try {
@@ -880,7 +920,7 @@ export async function financeRoutes(app: FastifyInstance) {
               ${body.amount.toFixed(2)}::numeric,
               ${body.mode},
               ${body.reference ?? null},
-              ${body.invoiceId ?? null}::uuid,
+              ${invoiceIds.length === 1 ? invoiceIds[0]! : null}::uuid,
               ${request.admin!.userId}::uuid,
               ${body.notes ?? null}
             )
@@ -910,6 +950,52 @@ export async function financeRoutes(app: FastifyInstance) {
               )
             `;
           }
+
+          // (a.2) Allocate across the selected invoices, oldest due first.
+          // Each invoice is locked and takes at most its outstanding; the
+          // remainder stays on account (the ledger credit is the full amount).
+          const invoices: any[] = [];
+          for (const invoiceId of invoiceIds) {
+            const [row] = await tx`
+              SELECT id, invoice_number, due_date, invoice_date,
+                     total_amount, paid_amount
+              FROM invoices WHERE id = ${invoiceId}::uuid
+              FOR UPDATE
+            `;
+            if (row) invoices.push(row);
+          }
+          const ts = (d: unknown) => (d ? new Date(d as string).getTime() : 0);
+          invoices.sort((a, b) =>
+            ts(a.due_date ?? a.invoice_date) - ts(b.due_date ?? b.invoice_date)
+            || ts(a.invoice_date) - ts(b.invoice_date));
+
+          let remaining = Math.round(body.amount * 100);   // paise
+          const allocations: { invoiceId: string; invoiceNumber: string; amount: number }[] = [];
+          for (const inv of invoices) {
+            if (remaining <= 0) break;
+            const outstanding = Math.round(parseFloat(inv.total_amount) * 100)
+                              - Math.round(parseFloat(inv.paid_amount) * 100);
+            const applied = Math.min(outstanding, remaining);
+            if (applied <= 0) continue;
+            remaining -= applied;
+            const amt = (applied / 100).toFixed(2);
+
+            await tx`
+              INSERT INTO payment_allocations (payment_id, invoice_id, amount)
+              VALUES (${payment.id}::uuid, ${inv.id}::uuid, ${amt}::numeric)
+            `;
+            await tx`
+              UPDATE invoices SET
+                paid_amount    = paid_amount + ${amt}::numeric,
+                payment_status = CASE
+                  WHEN paid_amount + ${amt}::numeric >= total_amount THEN 'paid'
+                  ELSE 'partial'
+                END
+              WHERE id = ${inv.id}::uuid
+            `;
+            allocations.push({ invoiceId: inv.id, invoiceNumber: inv.invoice_number, amount: applied / 100 });
+          }
+          const unallocated = remaining / 100;
 
           // (b) Append to dealer_ledger. voucher_type='Receipt'.
           // reference_type must be a ledger_ref_type enum value —
@@ -943,12 +1029,13 @@ export async function financeRoutes(app: FastifyInstance) {
             // field — once voucher_type is present).
           }
   
-          const voucherNo = invoice?.invoice_number
-            ? `RC-${invoice.invoice_number}-${new Date(receivedDate).getTime().toString().slice(-6)}`
+          const voucherNo = allocations.length === 1
+            ? `RC-${allocations[0]!.invoiceNumber}-${new Date(receivedDate).getTime().toString().slice(-6)}`
             : `RC-${payment.id.slice(0, 8).toUpperCase()}`;
   
-          const particulars = invoice
-            ? `Payment against ${invoice.invoice_number} (${body.mode.toUpperCase()})`
+          const particulars = allocations.length > 0
+            ? `Payment against ${allocations.map(a => a.invoiceNumber).join(", ")} (${body.mode.toUpperCase()})`
+              + (unallocated > 0 ? ` + ₹${unallocated.toFixed(2)} on account` : "")
             : `On-account receipt (${body.mode.toUpperCase()})`;
   
           await tx`
@@ -974,23 +1061,7 @@ export async function financeRoutes(app: FastifyInstance) {
             )
           `;
   
-          // (c) Update invoice payment_status if linked.
-          if (invoice) {
-            const newPaid = parseFloat(invoice.paid_amount) + body.amount;
-            const newStatus =
-              newPaid >= parseFloat(invoice.total_amount) ? 'paid'
-            : newPaid > 0                                 ? 'partial'
-            :                                               'unpaid';
-
-            await tx`
-              UPDATE invoices SET
-                paid_amount    = ${newPaid.toFixed(2)}::numeric,
-                payment_status = ${newStatus}
-              WHERE id = ${body.invoiceId!}::uuid          -- ← Fixed here
-            `;
-          }
-  
-          return { payment, voucherNo };
+          return { payment, voucherNo, allocations, unallocated };
         });
   
         return reply.status(201).send({

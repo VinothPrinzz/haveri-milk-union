@@ -70,7 +70,9 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
             WHEN dl.reference_type = 'order'        THEN 'order_payment'
             WHEN rp.kind = 'credit_topup'           THEN 'topup'
             WHEN rp.kind = 'order_payment'          THEN 'order_payment'
-            WHEN p.invoice_id IS NOT NULL           THEN 'invoice_payment'
+            WHEN p.invoice_id IS NOT NULL
+              OR EXISTS (SELECT 1 FROM payment_allocations pa
+                          WHERE pa.payment_id = p.id) THEN 'invoice_payment'
             ELSE 'on_account'
           END AS type,
           p.mode, p.amount::float8 AS amount,

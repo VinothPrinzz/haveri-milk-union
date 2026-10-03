@@ -178,7 +178,9 @@ export async function financeArAgingRoutes(app: FastifyInstance) {
           (i.total_amount - i.paid_amount)::float8 AS outstanding,
           GREATEST(0, (CURRENT_DATE - i.due_date)) AS "daysOverdue",
           i.payment_status              AS "paymentStatus",
-          (SELECT MAX(p.received_date) FROM payments p WHERE p.invoice_id = i.id) AS "lastReceiptDate"
+          (SELECT MAX(p.received_date)
+             FROM payment_allocations pa JOIN payments p ON p.id = pa.payment_id
+            WHERE pa.invoice_id = i.id)  AS "lastReceiptDate"
         FROM invoices i
         WHERE i.dealer_id     = ${id}::uuid
           AND i.payment_status <> 'paid'

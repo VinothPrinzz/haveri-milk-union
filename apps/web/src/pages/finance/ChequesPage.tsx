@@ -54,6 +54,9 @@ function ActionDialog({ cheque, type, onClose }: { cheque: ChequeRow; type: Acti
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["cheques"] });
     qc.invalidateQueries({ queryKey: ["cheques-summary"] });
+    // Cancel/bounce rolls back the invoices the cheque settled.
+    for (const key of ["invoices", "invoice", "ar-aging", "ar-aging-summary", "ar-aging-dealer", "payments"])
+      qc.invalidateQueries({ queryKey: [key] });
   };
 
   const mut = useMutation({

@@ -2003,6 +2003,7 @@ export const recordPayment = async (body: {
   mode:          PaymentMode;
   receivedDate?: string;
   invoiceId?:    string | null;
+  invoiceIds?:   string[];
   reference?:    string;
   notes?:        string;
 }) => {
@@ -2010,6 +2011,8 @@ export const recordPayment = async (body: {
     message: string;
     payment: Record<string, unknown>;
     voucherNo: string;
+    allocations: { invoiceId: string; invoiceNumber: string; amount: number }[];
+    unallocated: number;
   }>("/payments", body);
 };
 
@@ -2457,9 +2460,40 @@ export const fetchInvoice = async (id: string) => {
   return await get<Record<string, unknown>>(`/invoices/${id}`);
 };
 
-export const fetchInvoicesForCustomer = async (customerId: string) => {
-  const data = await get<{ data: Record<string, unknown>[] }>("/invoices", { dealer: customerId, limit: 100 });
-  return data.data ?? [];
+export interface OpenInvoice {
+  id:            string;
+  invoiceNumber: string;
+  invoiceDate:   string;
+  dueDate:       string | null;
+  totalAmount:   number;
+  paidAmount:    number;
+  balance:       number;
+  overdueDays:   number;
+}
+
+// Unpaid / part-paid invoices for one dealer — the Record Payment picker.
+export const fetchInvoicesForCustomer = async (customerId: string): Promise<OpenInvoice[]> => {
+  const data = await get<{ data: Record<string, unknown>[] }>("/invoices", {
+    dealerId: customerId, openOnly: "true", limit: 100,
+  });
+  return (data.data ?? [])
+    .map((i) => {
+      const totalAmount = Number(i.totalAmount ?? 0);
+      const paidAmount  = Number(i.paidAmount ?? 0);
+      return {
+        id:            i.id as string,
+        invoiceNumber: (i.invoiceNumber ?? "") as string,
+        invoiceDate:   i.invoiceDate as string,
+        dueDate:       (i.dueDate ?? null) as string | null,
+        totalAmount,
+        paidAmount,
+        balance:       Math.round((totalAmount - paidAmount) * 100) / 100,
+        overdueDays:   Number(i.overdueDays ?? 0),
+      };
+    })
+    .filter((i) => i.balance > 0)
+    // Oldest due first — the order the server applies the amount in.
+    .sort((a, b) => String(a.dueDate ?? a.invoiceDate).localeCompare(String(b.dueDate ?? b.invoiceDate)));
 };
 
 export const sendBroadcast = async (body: {
