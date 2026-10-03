@@ -481,7 +481,35 @@ export async function generateDirectSaleInvoicePdfSync(
        AND rp.kind = 'gate_pass'
        AND rp.status IN ('paid', 'refunded')
   `;
-  const collected = Number((collectedRow as any)?.collected ?? 0);
+  // Receipts an admin recorded against this pass's invoice (Record Payment)
+  // — same rule as the orders rail's `receipts` in invoice-settlement.ts.
+  const [receiptRow] = await pgClient`
+    SELECT (
+      COALESCE((
+        SELECT sum(pa.amount)
+          FROM payment_allocations pa
+          JOIN invoices i ON i.id = pa.invoice_id
+         WHERE i.order_id = ${saleId}::uuid
+           AND NOT EXISTS (SELECT 1 FROM cheques c
+                            WHERE c.payment_id = pa.payment_id
+                              AND c.status IN ('bounced', 'cancelled'))
+      ), 0)
+      + COALESCE((
+        SELECT sum(p.amount)
+          FROM payments p
+          JOIN invoices i ON i.id = p.invoice_id
+         WHERE i.order_id = ${saleId}::uuid
+           AND NOT EXISTS (SELECT 1 FROM payment_allocations x WHERE x.payment_id = p.id)
+           AND NOT EXISTS (SELECT 1 FROM cheques c
+                            WHERE c.payment_id = p.id
+                              AND c.status IN ('bounced', 'cancelled'))
+      ), 0)
+    )::float8 AS receipts
+  `;
+  const collected = Math.min(
+    grand,
+    Number((collectedRow as any)?.collected ?? 0) + Number((receiptRow as any)?.receipts ?? 0),
+  );
   // A zero-value issue (VIP sample, complimentary pass) has nothing to
   // collect, so it is settled the moment it is raised — it must never sit in
   // AR Aging as a receivable that can never be cleared.

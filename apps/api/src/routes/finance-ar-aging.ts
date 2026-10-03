@@ -258,7 +258,10 @@ export async function financeArAgingRoutes(app: FastifyInstance) {
           (i.total_amount - COALESCE(i.paid_amount, 0))::float8 AS outstanding,
           GREATEST(0, (ag.today - ag.due)) AS "daysOverdue",
           i.payment_status              AS "paymentStatus",
-          (SELECT MAX(p.received_date) FROM payments p WHERE p.invoice_id = i.id) AS "lastReceiptDate"
+          (SELECT MAX(p.received_date) FROM payments p
+            WHERE p.invoice_id = i.id
+               OR EXISTS (SELECT 1 FROM payment_allocations pa
+                           WHERE pa.payment_id = p.id AND pa.invoice_id = i.id)) AS "lastReceiptDate"
         FROM invoices i
         -- Same IST aging pair as the list and summary queries above.
         CROSS JOIN LATERAL (

@@ -247,8 +247,8 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
         WHEN rp.kind = 'gate_pass'
           THEN 'Counter QR payment for gate pass '
                || COALESCE(gp.gp_no, '#' || left(gp.id::text, 8))
-        WHEN i.invoice_number IS NOT NULL
-          THEN 'Receipt against invoice ' || i.invoice_number
+        WHEN COALESCE(alloc.numbers, i.invoice_number) IS NOT NULL
+          THEN 'Receipt against invoice ' || COALESCE(alloc.numbers, i.invoice_number)
         ELSE 'Receipt on account'
       END
       || ' (' || upper(p.mode) || ')'
@@ -259,6 +259,12 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
       rp.order_id::text
     FROM payments p
     LEFT JOIN invoices i ON i.id = p.invoice_id
+    LEFT JOIN LATERAL (
+      SELECT string_agg(ai.invoice_number, ', ' ORDER BY ai.invoice_date) AS numbers
+        FROM payment_allocations pa
+        JOIN invoices ai ON ai.id = pa.invoice_id
+       WHERE pa.payment_id = p.id
+    ) alloc ON true
     LEFT JOIN LATERAL (
       SELECT l.reference_type::text AS reference_type, l.voucher_no
         FROM dealer_ledger l

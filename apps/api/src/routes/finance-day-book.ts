@@ -116,7 +116,9 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
             -- no ledger row and no gateway row, so without this branch it
             -- would read as an unexplained 'on_account' receipt.
             WHEN gp.gp_no IS NOT NULL               THEN 'counter_cash'
-            WHEN p.invoice_id IS NOT NULL           THEN 'invoice_payment'
+            WHEN p.invoice_id IS NOT NULL
+              OR EXISTS (SELECT 1 FROM payment_allocations pa
+                          WHERE pa.payment_id = p.id) THEN 'invoice_payment'
             ELSE 'on_account'
           END AS type,
           p.mode, p.amount::float8 AS amount,

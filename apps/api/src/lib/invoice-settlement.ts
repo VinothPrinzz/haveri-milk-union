@@ -151,11 +151,29 @@ export async function resolveOrderSettlement(args: {
       -- Receipts an admin recorded against this invoice (Record Payment).
       -- The only rail that already worked, and the one that has to survive
       -- a reissue.
+      --
+      -- One receipt can settle several invoices: payment_allocations (0076)
+      -- holds this invoice's share. Receipts linked only by
+      -- payments.invoice_id (no allocation rows) count in full. Cheques that
+      -- bounced or were cancelled were reversed, so they no longer count.
       COALESCE((
+        SELECT sum(pa.amount)
+          FROM payment_allocations pa
+          JOIN invoices i ON i.id = pa.invoice_id
+         WHERE i.order_id = ${orderId}::uuid
+           AND NOT EXISTS (SELECT 1 FROM cheques c
+                            WHERE c.payment_id = pa.payment_id
+                              AND c.status IN ('bounced', 'cancelled'))
+      ), 0)
+      + COALESCE((
         SELECT sum(p.amount)
           FROM payments p
           JOIN invoices i ON i.id = p.invoice_id
          WHERE i.order_id = ${orderId}::uuid
+           AND NOT EXISTS (SELECT 1 FROM payment_allocations x WHERE x.payment_id = p.id)
+           AND NOT EXISTS (SELECT 1 FROM cheques c
+                            WHERE c.payment_id = p.id
+                              AND c.status IN ('bounced', 'cancelled'))
       ), 0)                                              AS receipts
   `;
 
