@@ -613,8 +613,13 @@
   .cash-grid .cg-route-sub { font-weight: 400; }
   .cash-grid .cg-route-name { font-size: 11px; }
 
-  /* Credit Sales bill: fully ruled, like the union's printed credit bill. */
-  .credit-bill { color: #000; }
+  /* Credit Sales bill: fully ruled, like the union's printed credit bill.
+     The bill is a size container so the grid can fit its font to the sheet:
+     each grid sets --cb-fit (a 100cqi-based size computed from its widest
+     cells, see creditBillFitFont) and the cells use it, capped at the
+     normal bill size, so a 14-column sheet shrinks to the page width
+     instead of running off it. Padding is in em so it scales along. */
+  .credit-bill { color: #000; container-type: inline-size; }
   .credit-bill-head { border: 1px solid #000; }
   .credit-bill-head .cb-head-right { border-left: 1px solid #000; }
   .credit-bill-grid {
@@ -622,17 +627,18 @@
     max-width: 100%;
     border-collapse: collapse;
     font-variant-numeric: tabular-nums;
+    font-size: min(14px, var(--cb-fit, 14px));
   }
   .credit-bill-grid .cb-cell {
     border: 1px solid #000;
-    padding: 2px 6px;
+    padding: 0.15em 0.35em;
     line-height: 1.35;
     white-space: nowrap;
   }
   .credit-bill-grid thead .cb-cell { font-weight: 700; vertical-align: bottom; }
-  .credit-bill-grid .cb-label { min-width: 58px; }
-  .credit-bill-grid .cb-prod { min-width: 98px; }
-  .credit-bill-grid .cb-total { min-width: 112px; }
+  .credit-bill-grid .cb-label { min-width: 4ch; }
+  .credit-bill-grid .cb-prod { min-width: 5ch; }
+  .credit-bill-grid .cb-total { min-width: 8ch; }
   .credit-bill-grid .cb-name { white-space: normal; }
   
   
@@ -811,8 +817,9 @@
     .print-document .credit-bill table th,
     .print-document .credit-bill table td { font-size: 12.5pt !important; }
     .print-document .credit-bill-grid .cb-cell {
+      font-size: min(12.5pt, var(--cb-fit, 12.5pt)) !important;
       border: 1px solid #000 !important;
-      padding: 0.5pt 5pt !important;
+      padding: 0.05em 0.35em !important;
       line-height: 1.15 !important;
       background: transparent !important;
     }
