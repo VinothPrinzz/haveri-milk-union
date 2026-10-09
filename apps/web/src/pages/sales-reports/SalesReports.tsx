@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fmtINR } from "@/components/PageHeader";
 import { Input } from "@/components/ui/input";
@@ -630,9 +630,67 @@ const nKg   = (n: number) => {
   return Number.isInteger(v) ? v.toFixed(1) : String(Math.round(v * 100) / 100);
 };
 
-function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
-  // Only days that carry at least one sale appear on the paper bill.
+// Product columns per bill sheet. A customer with more price columns than
+// this continues on the next sheet (columns spread evenly, the buyer block
+// repeated); the Total Amount column and the notes print on the last one.
+const CREDIT_BILL_COLS_PER_PAGE = 14;
+
+// Monospace glyph advance (≈0.6em across the font-mono stack) and the
+// horizontal cell padding (0.35em a side, see .credit-bill-grid in
+// index.css), with a little slack so the grid never quite touches the edge.
+const CB_CHAR_EM = 0.61;
+const CB_PAD_EM = 0.7;
+const CB_SLACK = 1.04;
+
+// Widest unbreakable run in a cell: header names wrap on spaces, the rest
+// are nowrap.
+const cbWidth = (s: string) => Math.max(0, ...s.split(/\s+/).map(w => w.length));
+
+/**
+ * Font size that makes the bill grid exactly as wide as the sheet. The
+ * grid is pure monospace, so its width is linear in the font size: sum
+ * the widest cell of every column (in characters), add the em padding,
+ * and divide the container width (100cqi, the printable width on paper or
+ * the canvas on screen) by it. CSS caps the result at the normal bill size,
+ * so narrow bills print exactly as before.
+ */
+function creditBillFitFont(columns: string[][]): string {
+  const chars = columns.reduce((s, col) => s + Math.max(1, ...col.map(cbWidth)), 0);
+  const em = (chars * CB_CHAR_EM + columns.length * CB_PAD_EM) * CB_SLACK;
+  const borders = columns.length + 1; // 1px rules between cells
+  return `calc((100cqi - ${borders}px) / ${em.toFixed(2)})`;
+}
+
+function renderCreditBillPage(
+  b: CreditBillCustomer,
+  pageNo: number,
+  part: { start: number; count: number; index: number; of: number },
+) {
+  // Only days that carry at least one sale appear on the paper bill (across
+  // ALL its products, so every sheet of a split bill has the same rows).
   const activeRows = b.dailyRows.filter(row => row.qty.some(q => q > 0));
+  // This sheet's product columns, with their index into the bill's arrays.
+  const cols = b.products
+    .slice(part.start, part.start + part.count)
+    .map((p, k) => ({ p, i: part.start + k }));
+  const isLast = part.index === part.of - 1;
+  const fitFont = creditBillFitFont([
+    ["Kg\\ltr", "Amount", ...activeRows.map(r => r.day)],
+    ...cols.map(({ p, i }) => [
+      p.session, p.reportAlias, p.hsn, nRate(p.rate), "Qty",
+      ...activeRows.map(r => nPk(r.qty[i] ?? 0)),
+      nPk(b.totals.pkts[i] ?? 0), nKg(b.totals.kgLtr[i] ?? 0),
+      nRaw(b.totals.basic[i] ?? 0), nTax(b.totals.cgst[i] ?? 0),
+      nTax(b.totals.sgst[i] ?? 0), nAmt(b.totals.amount[i] ?? 0),
+    ]),
+    ...(isLast
+      ? [[
+          "Total Amount", ...activeRows.map(r => (r.dayTotal ? nAmt(r.dayTotal) : "")),
+          nAmt(b.totals.basicGrand), nTax(b.totals.cgstGrand),
+          nTax(b.totals.sgstGrand), nAmt(b.totals.amountGrand),
+        ]]
+      : []),
+  ]);
   // Cell classes: product columns, the row-label column, the total column.
   const th = "cb-cell cb-prod align-bottom";
   const td = "cb-cell cb-prod";
@@ -646,7 +704,9 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
       <div className="flex items-center justify-between mb-1">
         <span className="tracking-[0.25em]">[ H A V E M U L ]</span>
         <span className="font-bold tracking-wide">HAVERI MILK UNION LTD - HAVERI</span>
-        <span>Page {pageNo}</span>
+        <span>
+          {part.of > 1 && `Cols ${part.index + 1}/${part.of} · `}Page {pageNo}
+        </span>
       </div>
 
       {/* Two-column header: buyer block | union GST declaration */}
@@ -670,79 +730,82 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
 
       {/* Product grid: session / name / HSN / rate header stack, daily qty, footer totals.
           One column per product PRICE (key), so a revised rate is its own column. */}
-      <table className="credit-bill-grid no-ledger mt-1.5">
+      <table
+        className="credit-bill-grid no-ledger mt-1.5"
+        style={{ "--cb-fit": fitFont } as CSSProperties}
+      >
         <thead>
           <tr>
             <th className={thLabel}></th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-center`}>{p.session}</th>)}
-            <th className={thTotal}></th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} text-center`}>{p.session}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Pkt</th>
-            {b.products.map(p => <th key={p.key} className={`${th} cb-name text-center`}>{p.reportAlias}</th>)}
-            <th className={thTotal}></th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} cb-name text-center`}>{p.reportAlias}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>HSN</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>{p.hsn}</th>)}
-            <th className={thTotal}></th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} text-right`}>{p.hsn}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Rate</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>{nRate(p.rate)}</th>)}
-            <th className={thTotal}></th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} text-right`}>{nRate(p.rate)}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Date</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>Qty</th>)}
-            <th className={`${thTotal} text-right`}>Total Amount</th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} text-right`}>Qty</th>)}
+            {isLast && <th className={`${thTotal} cb-name text-right`}>Total Amount</th>}
           </tr>
         </thead>
         <tbody>
           {activeRows.map((row, ri) => (
             <tr key={ri}>
               <td className={tdLabel}>{row.day}</td>
-              {b.products.map((p, pi) => <td key={p.key} className={`${td} text-right`}>{nPk(row.qty[pi] ?? 0)}</td>)}
-              <td className={`${tdTotal} text-right`}>{row.dayTotal ? nAmt(row.dayTotal) : ""}</td>
+              {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nPk(row.qty[i] ?? 0)}</td>)}
+              {isLast && <td className={`${tdTotal} text-right`}>{row.dayTotal ? nAmt(row.dayTotal) : ""}</td>}
             </tr>
           ))}
         </tbody>
         <tfoot>
           <tr className="font-semibold">
             <td className={tdLabel}>Pkts</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nPk(b.totals.pkts[i] ?? 0)}</td>)}
-            <td className={tdTotal}></td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nPk(b.totals.pkts[i] ?? 0)}</td>)}
+            {isLast && <td className={tdTotal}></td>}
           </tr>
           <tr>
             <td className={tdLabel}>Kg\ltr</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nKg(b.totals.kgLtr[i] ?? 0)}</td>)}
-            <td className={tdTotal}></td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nKg(b.totals.kgLtr[i] ?? 0)}</td>)}
+            {isLast && <td className={tdTotal}></td>}
           </tr>
           <tr>
             <td className={tdLabel}>BASIC</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nRaw(b.totals.basic[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nAmt(b.totals.basicGrand)}</td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nRaw(b.totals.basic[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nAmt(b.totals.basicGrand)}</td>}
           </tr>
           <tr>
             <td className={tdLabel}>CGST</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.cgst[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nTax(b.totals.cgstGrand)}</td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.cgst[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nTax(b.totals.cgstGrand)}</td>}
           </tr>
           <tr>
             <td className={tdLabel}>SGST</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.sgst[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nTax(b.totals.sgstGrand)}</td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.sgst[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nTax(b.totals.sgstGrand)}</td>}
           </tr>
           <tr className="font-semibold">
             <td className={tdLabel}>Amount</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nAmt(b.totals.amount[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nAmt(b.totals.amountGrand)}</td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nAmt(b.totals.amount[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nAmt(b.totals.amountGrand)}</td>}
           </tr>
         </tfoot>
       </table>
 
-      {/* Notes + signature */}
-      <div className="cb-notes flex justify-between mt-2 text-[12px]">
+      {/* Notes + signature (last sheet of the bill) */}
+      {isLast && <div className="cb-notes flex justify-between mt-2 text-[12px]">
         <div>
           <div>NOTE: - Kindly acknowledge receipt of this bill immediately.</div>
           <div className="pl-10">- Variation in the above bill if any may be intimated within 15 days.</div>
@@ -750,7 +813,7 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
           <div className="pl-14">CO-OP MILK PRODUCERS SOCIETIES UNION LTD., HAVERI".</div>
         </div>
         <div className="self-end whitespace-nowrap">AUTHORISED SIGNATURE.</div>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -795,14 +858,28 @@ export const CreditSalesReport = () => (
     title="Credit Sales"
     description="Monthly credit bill: credit institutions only"
     printMeta={null}
+    printOrientation="landscape"
     fetcher={(from, to) => fetchCreditSales({ from, to })}
     renderPages={(_from, _to, apiData) => {
       if (!apiData || apiData.customers.length === 0) return [];
-      const pages: ReactNode[] = apiData.customers.map((b, i) => (
-        <div key={b.id}>{renderCreditBillPage(b, i + 1)}</div>
-      ));
+      const pages: ReactNode[] = [];
+      apiData.customers.forEach(b => {
+        // At most CREDIT_BILL_COLS_PER_PAGE product columns per sheet, spread
+        // evenly (15 columns → 8 + 7, not 14 + 1).
+        const of = Math.max(1, Math.ceil(b.products.length / CREDIT_BILL_COLS_PER_PAGE));
+        const per = Math.max(1, Math.ceil(b.products.length / of));
+        for (let index = 0; index < of; index++) {
+          const start = index * per;
+          const count = Math.min(per, b.products.length - start);
+          pages.push(
+            <div key={`${b.id}:${index}`}>
+              {renderCreditBillPage(b, pages.length + 1, { start, count, index, of })}
+            </div>,
+          );
+        }
+      });
       pages.push(
-        <div key="summary">{renderCreditSummaryPage(apiData, apiData.customers.length + 1)}</div>
+        <div key="summary">{renderCreditSummaryPage(apiData, pages.length + 1)}</div>
       );
       return pages;
     }}
