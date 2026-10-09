@@ -3071,6 +3071,56 @@ export const createAdjustment = (body: {
 export const reverseAdjustment = (id: string, body: { reasonText: string }) =>
   post<{ message: string; voucherNo: string }>(`/finance/adjustments/${id}/reverse`, body);
 
+// ── Milk Leakage Incentive ──
+export interface LeakageIncentiveSettings {
+  litresPer1000: number;
+  ratePerLitre: number;
+  productCodes: string[];
+  /** Picker: live Milk-category products plus anything already selected. */
+  products: { code: string; name: string; packSize: number; unit: string | null; selected: boolean }[];
+}
+export interface LeakageIncentiveRow {
+  sl: number; dealerId: string; code: string; name: string; taluka: string;
+  milkLitres: number; incentiveLitres: number; amount: number;
+  /** Only on a posted statement. */
+  voucherNo?: string | null; reversed?: boolean;
+}
+export interface LeakageIncentiveTotals { milkLitres: number; incentiveLitres: number; amount: number }
+export interface LeakageIncentiveRunSummary {
+  id: string; periodFrom: string; periodTo: string; voucherDate: string; status: "posted" | "reversed";
+  litresPer1000: number; ratePerLitre: number; dealerCount: number; totalAmount: number;
+  createdAt: string; createdByName: string | null;
+}
+export interface LeakageIncentiveReport {
+  from: string; to: string;
+  /** "posted": the stored lines of the run that credited exactly this period. */
+  source: "live" | "posted";
+  rule: { litresPer1000: number; ratePerLitre: number; productCodes: string[]; products: { code: string; name: string }[] };
+  talukas: { name: string; rows: LeakageIncentiveRow[]; totals: LeakageIncentiveTotals }[];
+  totals: LeakageIncentiveTotals & { dealerCount: number };
+  run: LeakageIncentiveRunSummary | null;
+  /** Posted runs that cover part of this period (posting is blocked). */
+  overlappingRuns: LeakageIncentiveRunSummary[];
+  /** On a posted statement: today's live total, to spot late changes. */
+  liveAmount: number | null;
+}
+export interface LeakageIncentiveRun extends LeakageIncentiveRunSummary {
+  totalMilkLitres: number;
+  reversedAt: string | null; reversedByName: string | null; reverseReason: string | null;
+}
+export const fetchLeakageIncentiveSettings = () =>
+  get<LeakageIncentiveSettings>("/finance/leakage-incentive/settings");
+export const saveLeakageIncentiveSettings = (body: { litresPer1000: number; ratePerLitre: number; productCodes: string[] }) =>
+  put<{ message: string }>("/finance/leakage-incentive/settings", body);
+export const fetchLeakageIncentiveReport = (params: { from: string; to: string }) =>
+  get<LeakageIncentiveReport>("/finance/leakage-incentive/report", params);
+export const fetchLeakageIncentiveRuns = async () =>
+  (await get<{ data: LeakageIncentiveRun[] }>("/finance/leakage-incentive/runs")).data;
+export const postLeakageIncentiveRun = (body: { from: string; to: string; voucherDate?: string; expectedAmount: number }) =>
+  post<{ message: string; runId: string; dealerCount: number; totalAmount: number }>("/finance/leakage-incentive/runs", body);
+export const reverseLeakageIncentiveRun = (id: string, body: { reasonText: string }) =>
+  post<{ message: string; reversedCount: number }>(`/finance/leakage-incentive/runs/${id}/reverse`, body);
+
 // ── Finance Dashboard ──
 export interface FinanceDashboard {
   period: { period: string; from: string; to: string };

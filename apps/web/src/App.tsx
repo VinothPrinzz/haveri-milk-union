@@ -50,6 +50,7 @@ import ARAgingPage                from "@/pages/finance/ARAgingPage";
 import DealerStatementsPage       from "@/pages/finance/DealerStatementsPage";
 import ChequesPage                from "@/pages/finance/ChequesPage";
 import AdjustmentsPage            from "@/pages/finance/AdjustmentsPage";
+import LeakageIncentivePage      from "@/pages/finance/LeakageIncentivePage";
 import DayBookPage                from "@/pages/finance/DayBookPage";
 import DealerIndentsPage from "@/pages/sales/DealerIndentsPage";
 // import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
@@ -203,6 +204,7 @@ function AppInner() {
           <Route path="/finance/dealer-statements" element={<DealerStatementsPage />} />
           <Route path="/finance/cheques" element={<ChequesPage />} />
           <Route path="/finance/adjustments" element={<AdjustmentsPage />} />
+          <Route path="/finance/leakage-incentive" element={<LeakageIncentivePage />} />
           <Route path="/finance/day-book" element={<DayBookPage />} />
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
