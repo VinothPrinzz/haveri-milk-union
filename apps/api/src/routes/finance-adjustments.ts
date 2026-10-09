@@ -18,7 +18,9 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
-import { istToday } from "../lib/ist-date.js";
+import {
+  postLedgerAdjustment, reverseLedgerAdjustment, AdjustmentError,
+} from "../lib/ledger-adjustments.js";
 
 function adminUserId(request: FastifyRequest): string {
   const a = (request as unknown as { admin?: { userId: string } }).admin;
@@ -202,9 +204,6 @@ export async function financeAdjustmentsRoutes(app: FastifyInstance) {
         attachmentUrl: z.string().url().optional().nullable(),
       }).parse(request.body);
 
-      const ledgerType: "credit" | "debit" =
-        body.voucherType === "Debit Note" ? "debit" : "credit";
-
       if (body.voucherType === "Write-off" && body.reason !== "write_off") {
         return reply.status(400).send({
           error: "Reason mismatch",
@@ -212,97 +211,20 @@ export async function financeAdjustmentsRoutes(app: FastifyInstance) {
         });
       }
 
-      return await pgClient.begin(async (_tx) => {
-        const tx = _tx as unknown as typeof pgClient;
-
-        const [bal] = await tx`
-          SELECT COALESCE(d.opening_balance, 0)
-               + COALESCE((
-                   SELECT SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
-                                   WHEN dl.type = 'debit'  THEN -dl.amount END)
-                     FROM dealer_ledger dl
-                    WHERE dl.dealer_id = d.id
-                      AND COALESCE(dl.voucher_type, '') <> 'Opening'
-                 ), 0)::numeric AS bal
-            FROM dealers d WHERE d.id = ${body.dealerId}::uuid AND d.deleted_at IS NULL
-        `;
-        if (!bal) return reply.status(404).send({ error: "Dealer not found" });
-
-        const delta = ledgerType === "credit" ? body.amount : -body.amount;
-        const newBalance = parseFloat((bal as any).bal) + delta;
-        const voucherDate = body.voucherDate ?? istToday();
-
-        const prefix = body.voucherType === "Credit Note" ? "CN"
-                     : body.voucherType === "Debit Note"  ? "DN"
-                     :                                       "WO";
-        const [seq] = await tx`
-          SELECT COALESCE(MAX(
-            (regexp_match(voucher_no, ${prefix} || '-\\d{8}-(\\d+)$'))[1]::int
-          ), 0) + 1 AS next
-          FROM dealer_ledger
-          WHERE voucher_no LIKE ${prefix + "-" + voucherDate.replace(/-/g, "") + "-%"}
-        `;
-        const voucherNo = `${prefix}-${voucherDate.replace(/-/g, "")}-${String((seq as any).next).padStart(3, "0")}`;
-
-        const [led] = await tx`
-          INSERT INTO dealer_ledger (
-            dealer_id, type, amount,
-            reference_id, reference_type,
-            description, balance_after, performed_by,
-            voucher_no, voucher_type, particulars, voucher_date
-          ) VALUES (
-            ${body.dealerId}::uuid, ${ledgerType}::ledger_type,
-            ${body.amount.toFixed(2)}::numeric,
-            NULL, 'adjustment'::ledger_ref_type,
-            ${`${body.voucherType}: ${body.reasonText}`},
-            ${newBalance.toFixed(2)}::numeric,
-            ${adminUserId(request)}::uuid,
-            ${voucherNo}, ${body.voucherType}, ${body.reasonText}, ${voucherDate}::date
-          )
-          RETURNING id
-        `;
-
-        const [adj] = await tx`
-          INSERT INTO ledger_adjustments (
-            ledger_entry_id, dealer_id, voucher_type, reason, reason_text,
-            invoice_id, order_id, attachment_url, initiated_by
-          ) VALUES (
-            ${(led as any).id}::uuid, ${body.dealerId}::uuid,
-            ${body.voucherType}, ${body.reason}::adjustment_reason,
-            ${body.reasonText},
-            ${body.invoiceId ?? null}::uuid, ${body.orderId ?? null}::uuid,
-            ${body.attachmentUrl ?? null}, ${adminUserId(request)}::uuid
-          )
-          RETURNING id
-        `;
-
-        if (body.invoiceId) {
-          const sign = ledgerType === "credit" ? 1 : -1;
-          await tx`
-            UPDATE invoices SET
-              paid_amount = LEAST(total_amount,
-                              GREATEST(0, paid_amount + ${(sign * body.amount).toFixed(2)}::numeric)),
-              payment_status = CASE
-                WHEN LEAST(total_amount,
-                       GREATEST(0, paid_amount + ${(sign * body.amount).toFixed(2)}::numeric))
-                     >= total_amount THEN 'paid'
-                WHEN LEAST(total_amount,
-                       GREATEST(0, paid_amount + ${(sign * body.amount).toFixed(2)}::numeric))
-                     > 0 THEN 'partial'
-                ELSE 'unpaid'
-              END
-            WHERE id = ${body.invoiceId}::uuid
-          `;
+      try {
+        const r = await pgClient.begin((tx) =>
+          postLedgerAdjustment(tx as unknown as typeof pgClient, {
+            ...body,
+            userId: adminUserId(request),
+          }),
+        );
+        return reply.status(201).send({ message: `${body.voucherType} posted`, ...r });
+      } catch (e) {
+        if (e instanceof AdjustmentError) {
+          return reply.status(e.status).send({ error: e.error, message: e.message });
         }
-
-        return reply.status(201).send({
-          message: `${body.voucherType} posted`,
-          ledgerEntryId: (led as any).id,
-          adjustmentId:  (adj as any).id,
-          voucherNo,
-          balanceAfter:  newBalance,
-        });
-      });
+        throw e;
+      }
     }
   );
 
@@ -314,113 +236,21 @@ export async function financeAdjustmentsRoutes(app: FastifyInstance) {
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
       const body = z.object({ reasonText: z.string().min(5, "Reason text is required") }).parse(request.body);
 
-      return await pgClient.begin(async (_tx) => {
-        const tx = _tx as unknown as typeof pgClient;
-
-        const [src] = await tx`
-          SELECT a.id, a.dealer_id, a.voucher_type, a.invoice_id,
-                 a.reverses_ledger_entry_id,
-                 dl.id AS ledger_entry_id, dl.type::text AS ledger_type,
-                 dl.amount::numeric AS amount
-            FROM ledger_adjustments a
-            JOIN dealer_ledger dl ON dl.id = a.ledger_entry_id
-           WHERE a.id = ${id}::uuid
-           FOR UPDATE
-        `;
-        if (!src) return reply.status(404).send({ error: "Adjustment not found" });
-        if ((src as any).reverses_ledger_entry_id) {
-          return reply.status(400).send({
-            error: "Cannot reverse a reversal",
-            message: "This entry is already a reversal of another voucher.",
-          });
+      try {
+        const r = await pgClient.begin((tx) =>
+          reverseLedgerAdjustment(tx as unknown as typeof pgClient, {
+            adjustmentId: id,
+            reasonText: body.reasonText,
+            userId: adminUserId(request),
+          }),
+        );
+        return reply.status(201).send({ message: "Adjustment reversed", ...r });
+      } catch (e) {
+        if (e instanceof AdjustmentError) {
+          return reply.status(e.status).send({ error: e.error, message: e.message });
         }
-        const [already] = await tx`
-          SELECT 1 FROM ledger_adjustments
-           WHERE reverses_ledger_entry_id = ${(src as any).ledger_entry_id}::uuid LIMIT 1
-        `;
-        if (already) {
-          return reply.status(400).send({ error: "Already reversed", message: "This voucher has already been reversed." });
-        }
-
-        const amount = parseFloat((src as any).amount);
-        const flipped: "credit" | "debit" = (src as any).ledger_type === "credit" ? "debit" : "credit";
-
-        const [bal] = await tx`
-          SELECT COALESCE(d.opening_balance, 0)
-               + COALESCE((
-                   SELECT SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
-                                   WHEN dl.type = 'debit'  THEN -dl.amount END)
-                     FROM dealer_ledger dl
-                    WHERE dl.dealer_id = d.id
-                      AND COALESCE(dl.voucher_type, '') <> 'Opening'
-                 ), 0)::numeric AS bal
-            FROM dealers d WHERE d.id = ${(src as any).dealer_id}::uuid
-        `;
-        const delta = flipped === "credit" ? amount : -amount;
-        const newBalance = parseFloat((bal as any).bal) + delta;
-        const voucherDate = istToday();
-        const voucherNo = `REV-${voucherDate.replace(/-/g, "")}-${String((src as any).ledger_entry_id).slice(0, 6).toUpperCase()}`;
-
-        const [led] = await tx`
-          INSERT INTO dealer_ledger (
-            dealer_id, type, amount,
-            reference_id, reference_type,
-            description, balance_after, performed_by,
-            voucher_no, voucher_type, particulars, voucher_date
-          ) VALUES (
-            ${(src as any).dealer_id}::uuid, ${flipped}::ledger_type,
-            ${amount.toFixed(2)}::numeric,
-            NULL, 'adjustment'::ledger_ref_type,
-            ${`Reversal of ${(src as any).voucher_type}: ${body.reasonText}`},
-            ${newBalance.toFixed(2)}::numeric, ${adminUserId(request)}::uuid,
-            ${voucherNo}, ${(src as any).voucher_type}, ${body.reasonText}, ${voucherDate}::date
-          )
-          RETURNING id
-        `;
-
-        const [adj] = await tx`
-          INSERT INTO ledger_adjustments (
-            ledger_entry_id, dealer_id, voucher_type, reason, reason_text,
-            invoice_id, reverses_ledger_entry_id, initiated_by
-          ) VALUES (
-            ${(led as any).id}::uuid, ${(src as any).dealer_id}::uuid,
-            ${(src as any).voucher_type}, 'reversal'::adjustment_reason,
-            ${body.reasonText},
-            ${(src as any).invoice_id ?? null}::uuid,
-            ${(src as any).ledger_entry_id}::uuid,
-            ${adminUserId(request)}::uuid
-          )
-          RETURNING id
-        `;
-
-        if ((src as any).invoice_id) {
-          // Reverse the original invoice effect: flip the sign.
-          const sign = flipped === "credit" ? 1 : -1;
-          await tx`
-            UPDATE invoices SET
-              paid_amount = LEAST(total_amount,
-                              GREATEST(0, paid_amount + ${(sign * amount).toFixed(2)}::numeric)),
-              payment_status = CASE
-                WHEN LEAST(total_amount,
-                       GREATEST(0, paid_amount + ${(sign * amount).toFixed(2)}::numeric))
-                     >= total_amount THEN 'paid'
-                WHEN LEAST(total_amount,
-                       GREATEST(0, paid_amount + ${(sign * amount).toFixed(2)}::numeric))
-                     > 0 THEN 'partial'
-                ELSE 'unpaid'
-              END
-            WHERE id = ${(src as any).invoice_id}::uuid
-          `;
-        }
-
-        return reply.status(201).send({
-          message: "Adjustment reversed",
-          ledgerEntryId: (led as any).id,
-          adjustmentId:  (adj as any).id,
-          voucherNo,
-          balanceAfter:  newBalance,
-        });
-      });
+        throw e;
+      }
     }
   );
 }

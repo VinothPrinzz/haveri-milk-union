@@ -3429,7 +3429,7 @@ async function buildMilkCurdCrossTab(
 // "180 ML 30 PACK" = 5.40 L — so volume is simply qty × pack_size. Micro units
 // (ml/g), still selectable on the product form, hold a sub-unit size and
 // convert ÷1000. This matches the web helper in apps/web/src/lib/kgLtr.ts.
-function toKgLtr(qty: number, packSize: number, unit: string): number {
+export function toKgLtr(qty: number, packSize: number, unit: string): number {
   const u = (unit ?? "").trim().toLowerCase();
   const isMicro =
     u === "ml" || u === "g" || u === "gm" || u === "gram" || u === "grams";
