@@ -81,7 +81,7 @@ export default function RecentSalesPage() {
 
   const { data: sales = [], isLoading } = useQuery({
     queryKey: ["recent-sales", { from, to }],
-    queryFn: () => fetchRecentSales(),
+    queryFn: () => fetchRecentSales(undefined, { dateFrom: from, dateTo: to }),
   });
 
   // Date range + sale-type filter (date is normalized to YYYY-MM-DD)

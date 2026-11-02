@@ -121,13 +121,13 @@ export default function SubsidyIndentsPage() {
         paymentMode,
         paymentReference: paymentMode === "upi" ? paymentRef.trim() : undefined,
         notes,
+        // Always placed as its own new confirmed order; the customer's
+        // draft or placed indent for the day is never touched.
         quantity: qty ?? 0,
       });
     },
     onSuccess: (res) => {
-      toast.success(res.appended
-        ? "Subsidy added to the customer's indent for today"
-        : "Subsidy indent submitted");
+      toast.success(`Subsidy indent placed and confirmed: ${res.quantity} packet(s)`);
       qc.invalidateQueries({ queryKey: ["indents"] });
       qc.invalidateQueries({ queryKey: ["customers"] });
       navigate("/sales/all-indents");
@@ -208,7 +208,7 @@ export default function SubsidyIndentsPage() {
           <Field label="Product">
             <Input className="erp-input bg-muted" value={product?.name ?? "HTM 1000ML (sub)"} readOnly />
           </Field>
-          <Field label="Quantity (packets)" required>
+          <Field label="Quantity (packets)" hint="New indent" required>
             <Input
               className="erp-input num text-right"
               type="number" min="0" step="1"
@@ -245,7 +245,7 @@ export default function SubsidyIndentsPage() {
 
       <FormFooter>
         <span className="text-[11px] text-muted-foreground mr-auto">
-          Records an HTM 1000ML (sub) line on the customer's indent for today.
+          Places a new confirmed HTM 1000ML (sub) indent for today. The customer's other indents are not changed.
         </span>
         <Button variant="outline" size="sm" className="h-8" onClick={() => navigate(-1)}>Cancel</Button>
         <Button size="sm" className="h-8" disabled={submit.isPending || (qty ?? 0) <= 0} onClick={() => submit.mutate()}>

@@ -21,12 +21,26 @@ import {
   fetchCustomers,
   fetchPayments,
   recordPayment,
+  updatePayment,
+  deletePayment,
   fetchInvoicesForCustomer,
   type PaymentMode,
   type PaymentRow,
   type PaymentStatus,
 } from "@/services/api";
 import { todayIST } from "@/lib/istDate";
+import { useAuth } from "@/lib/auth";
+
+// Roles that may edit / delete a recorded receipt. Mirrors the API's
+// requireExactRole("super_admin", "manager") on PATCH / DELETE /payments/:id.
+const CAN_EDIT = new Set(["manager", "super_admin"]);
+
+// Everything a receipt feeds — refetched after a record, edit or delete.
+const PAYMENT_QUERY_KEYS = [
+  "payments", "invoices", "invoice", "invoices-for-customer", "dealer-ledger",
+  "dealer-ledger-summary", "ar-aging", "ar-aging-summary", "ar-aging-dealer",
+  "credit-control", "credit-control-summary", "finance-dashboard", "cheques", "cheques-summary",
+];
 
 const MODE_LABELS: Record<PaymentMode, string> = {
   cash:   "Cash",
@@ -74,6 +88,11 @@ export default function PaymentsOverviewPage() {
   const [dealerId, setDealerId] = useState<string | null>(null);
   const [page,     setPage]     = useState(1);
   const [recordOpen, setRecordOpen] = useState(false);
+  const [editing, setEditing] = useState<PaymentRow | null>(null);
+  const [deleting, setDeleting] = useState<PaymentRow | null>(null);
+
+  const { user } = useAuth();
+  const canEdit = CAN_EDIT.has(user?.role ?? "");
 
   useEffect(() => { setPage(1); }, [search, dateFrom, dateTo, mode, dealerId]);
 
@@ -172,6 +191,7 @@ export default function PaymentsOverviewPage() {
                   <th>Reference</th>
                   <th className="num" style={{ textAlign: "right", width: 130 }}>Amount ₹</th>
                   <th>Invoice</th>
+                  {canEdit && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -179,13 +199,23 @@ export default function PaymentsOverviewPage() {
                   const reversed = isReversed(p.status);
                   return (
                     <tr key={p.id} className={reversed ? "bg-destructive/5" : ""}>
-                      <td>{fmtDate(p.receivedAt ?? p.received_date ?? p.createdAt)}</td>
+                      <td>{fmtDate(p.receivedDate ?? p.receivedAt ?? p.received_date ?? p.createdAt)}</td>
                       <td className="font-medium">{p.customerName ?? p.dealerName ?? ""}</td>
                       <td>{MODE_LABELS[p.mode as PaymentMode] ?? p.mode}</td>
                       <td><PaymentStatusBadge status={p.status} /></td>
                       <td className="font-mono text-[12px] text-muted-foreground">{p.reference ?? ""}</td>
                       <td className={`num font-semibold ${reversed ? "text-muted-foreground line-through" : ""}`} style={{ textAlign: "right" }}>{fmtINR(p.amount)}</td>
                       <td className="font-mono text-[12px]">{p.invoiceNumber ?? ""}</td>
+                      {canEdit && (
+                        <td>
+                          {p.editable && (
+                            <div className="flex gap-1">
+                              <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={() => setEditing(p)}>Edit</Button>
+                              <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={() => setDeleting(p)}>Delete</Button>
+                            </div>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -205,7 +235,136 @@ export default function PaymentsOverviewPage() {
       </div>
 
       <RecordPaymentDialog open={recordOpen} onOpenChange={setRecordOpen} customerOptions={customerOptions} />
+      {editing && <EditPaymentDialog payment={editing} onClose={() => setEditing(null)} />}
+      {deleting && <DeletePaymentDialog payment={deleting} onClose={() => setDeleting(null)} />}
     </div>
+  );
+}
+
+// "RTGS · T1EH-RELIANCE · ₹1,340.84 · 20 Aug 2026" — which receipt a dialog acts on.
+function paymentSummary(p: PaymentRow) {
+  return [
+    MODE_LABELS[p.mode] ?? p.mode, p.dealerName, fmtINR(p.amount), fmtDate(p.receivedDate),
+  ].filter(Boolean).join(" · ");
+}
+
+// ── Delete Payment Dialog ────────────────────────────────────────
+function DeletePaymentDialog({ payment, onClose }: { payment: PaymentRow; onClose: () => void }) {
+  const qc = useQueryClient();
+  const mut = useMutation({
+    mutationFn: () => deletePayment(payment.id),
+    onSuccess: () => {
+      toast.success("Payment deleted");
+      for (const key of PAYMENT_QUERY_KEYS) qc.invalidateQueries({ queryKey: [key] });
+      onClose();
+    },
+    onError: (err: any) => toast.error(err?.message || "Failed to delete payment"),
+  });
+  return (
+    <Dialog open onOpenChange={v => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader><DialogTitle>Delete Payment</DialogTitle></DialogHeader>
+        <div className="space-y-3 text-[13px]">
+          <div className="text-muted-foreground">{paymentSummary(payment)}</div>
+          <p className="text-[12px]">
+            {payment.invoiceNumber
+              ? <>Invoice {payment.invoiceNumber} will show as due again, and the receipt is reversed with a matching debit on the customer's ledger.</>
+              : <>The receipt is reversed with a matching debit on the customer's ledger.</>}
+            {" "}This cannot be undone.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" className="h-8" onClick={onClose}>Cancel</Button>
+          <Button size="sm" variant="destructive" className="h-8" disabled={mut.isPending} onClick={() => mut.mutate()}>
+            {mut.isPending ? "Deleting…" : "Delete Payment"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Edit Payment Dialog ──────────────────────────────────────────
+// Corrects a recorded receipt. Customer and invoices are fixed: a changed
+// amount is re-applied to the same invoices by the API. Wallet receipts keep
+// their mode (the API refuses a switch to or from Wallet), and cheques never
+// reach here — they are corrected from the Cheque Register.
+const EDIT_MODE_OPTIONS = MODE_OPTIONS.filter(o => o.value !== "cheque" && o.value !== "wallet");
+
+function EditPaymentDialog({ payment, onClose }: { payment: PaymentRow; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [amount, setAmount]         = useState(Number(payment.amount).toFixed(2));
+  const [pMode, setPMode]           = useState<string | null>(payment.mode);
+  const [receivedAt, setReceivedAt] = useState(String(payment.receivedDate ?? "").slice(0, 10));
+  const [reference, setReference]   = useState(payment.reference ?? "");
+  const [notes, setNotes]           = useState(payment.notes ?? "");
+  const isWallet = payment.mode === "wallet";
+
+  const save = useMutation({
+    mutationFn: () => updatePayment(payment.id, {
+      amount: Number(amount),
+      mode: pMode as PaymentMode,
+      receivedDate: receivedAt,
+      reference: reference.trim() || null,
+      notes: notes.trim() || null,
+    }),
+    onSuccess: () => {
+      toast.success("Payment updated");
+      for (const key of PAYMENT_QUERY_KEYS) qc.invalidateQueries({ queryKey: [key] });
+      onClose();
+    },
+    onError: (err: any) => toast.error(err?.message || "Failed to update payment"),
+  });
+
+  const canSave = Number(amount) > 0 && !!pMode && !!receivedAt && !save.isPending;
+
+  return (
+    <Dialog open onOpenChange={v => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>Edit Payment</DialogTitle></DialogHeader>
+        <div className="space-y-3 text-[13px]">
+          <div className="text-muted-foreground">{paymentSummary(payment)}</div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Amount (₹)" required>
+              <Input
+                type="number" min="0" step="0.01" value={amount}
+                onChange={e => setAmount(e.target.value)}
+                className="erp-input num"
+              />
+            </Field>
+            <Field label="Received date" required>
+              <Input type="date" value={receivedAt} onChange={e => setReceivedAt(e.target.value)} className="erp-input" />
+            </Field>
+          </div>
+          <Field label="Mode" required>
+            {isWallet ? (
+              <Input value={MODE_LABELS.wallet} disabled className="erp-input" />
+            ) : (
+              <F9SearchSelect value={pMode} onChange={setPMode} options={EDIT_MODE_OPTIONS} placeholder="Select mode" />
+            )}
+          </Field>
+          {payment.invoiceNumber && (
+            <p className="text-[12px]">
+              Settles {payment.invoiceNumber}. A changed amount is re-applied to the same
+              invoice(s), oldest due first. To settle different invoices, delete this
+              payment and record it again.
+            </p>
+          )}
+          <Field label="Reference">
+            <Input value={reference} onChange={e => setReference(e.target.value)} className="erp-input" placeholder="UPI txn id, etc." />
+          </Field>
+          <Field label="Notes">
+            <Textarea value={notes} onChange={e => setNotes(e.target.value)} className="erp-input min-h-[60px]" />
+          </Field>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" className="h-8" onClick={onClose}>Cancel</Button>
+          <Button size="sm" className="h-8" disabled={!canSave} onClick={() => save.mutate()}>
+            {save.isPending ? "Saving…" : "Save Changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -286,11 +445,7 @@ function RecordPaymentDialog({
             (res.unallocated > 0 ? `, ${fmtINR(res.unallocated)} on account` : "")
           : "Payment recorded on account"
       );
-      for (const key of [
-        "payments", "invoices", "invoice", "invoices-for-customer", "dealer-ledger",
-        "dealer-ledger-summary", "ar-aging", "ar-aging-summary", "ar-aging-dealer",
-        "credit-control", "credit-control-summary", "finance-dashboard", "cheques", "cheques-summary",
-      ]) qc.invalidateQueries({ queryKey: [key] });
+      for (const key of PAYMENT_QUERY_KEYS) qc.invalidateQueries({ queryKey: [key] });
       reset();
       onOpenChange(false);
     },

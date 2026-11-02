@@ -1,13 +1,22 @@
 import type { FastifyInstance } from "fastify";
+import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { eq, and, ne, sql, gt, isNull } from "drizzle-orm";
+import { eq, and, ne, sql, gt, lt, isNull, desc } from "drizzle-orm";
 import { db } from "../lib/db.js";
 import {
   dealers,
+  dealerOtps,
   dealerRefreshTokens,
   users,
   adminSessions,
 } from "@hmu/db/schema";
+import { env } from "../lib/env.js";
+import {
+  sendSms,
+  isSmsConfigured,
+  normalizeIndianMobile,
+  SmsNotConfiguredError,
+} from "../lib/sms.js";
 import {
   signDealerAccessToken,
   signDealerRefreshToken,
@@ -17,6 +26,17 @@ import {
   verifyDealerRefreshToken,
 } from "../lib/auth.js";
 import { adminAuth } from "../middleware/admin-auth.js";
+
+// ── Dealer OTP policy ──
+const OTP_TTL_SECONDS = 5 * 60;
+const OTP_RESEND_SECONDS = 60;
+const OTP_MAX_PER_HOUR = 5;
+const OTP_MAX_ATTEMPTS = 5;
+
+/** Keyed hash so a DB leak doesn't expose live OTPs (6 digits is trivially brute-forced unkeyed). */
+function hashOtp(phone: string, otp: string): string {
+  return createHmac("sha256", env.JWT_SECRET).update(`${phone}:${otp}`).digest("hex");
+}
 
 export async function authRoutes(app: FastifyInstance) {
   // ─────────────────────────────────────────────────────────────
@@ -131,6 +151,27 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Unauthorized", message: "Refresh token revoked or not found" });
     }
 
+    // A deleted / deactivated dealer must not be able to mint new access
+    // tokens. Kill every outstanding refresh token so the session ends here.
+    const [dealer] = await db
+      .select({ active: dealers.active, deletedAt: dealers.deletedAt })
+      .from(dealers)
+      .where(eq(dealers.id, row.dealerId))
+      .limit(1);
+
+    if (!dealer || !dealer.active || dealer.deletedAt) {
+      await db
+        .update(dealerRefreshTokens)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(dealerRefreshTokens.dealerId, row.dealerId),
+            isNull(dealerRefreshTokens.revokedAt)
+          )
+        );
+      return reply.status(401).send({ error: "Unauthorized", message: "Account is inactive or deleted" });
+    }
+
     // Rotate — revoke old, issue new
     const tokenPayload = {
       dealerId: payload.dealerId,
@@ -231,6 +272,203 @@ export async function authRoutes(app: FastifyInstance) {
       );
 
     return reply.status(200).send({ message: "Password changed successfully" });
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // DEALER PASSWORD CHANGE VIA SMS OTP
+  // Two steps: request an OTP to the dealer's registered phone, then
+  // submit it with the new password. Proving phone possession replaces
+  // the current-password check, so this also covers "forgot password".
+  // The current-password route above is kept for older app builds.
+  //
+  // OTPs live in dealer_otps keyed by phone; `otp` stores an HMAC of the
+  // code (never the code itself), and only the newest row per phone is
+  // ever accepted — requesting a new OTP implicitly voids older ones.
+  // ─────────────────────────────────────────────────────────────
+
+  // POST /api/v1/auth/dealer/otp/request
+  app.post("/api/v1/auth/dealer/otp/request", async (request, reply) => {
+    const { username } = z
+      .object({ username: z.string().trim().min(1) })
+      .parse(request.body);
+
+    if (!isSmsConfigured()) {
+      return reply.status(503).send({
+        error: "Service Unavailable",
+        message: "OTP service is not available right now. Please contact the union office.",
+      });
+    }
+
+    const [dealer] = await db
+      .select({ id: dealers.id, phone: dealers.phone, active: dealers.active })
+      .from(dealers)
+      .where(and(eq(dealers.username, username), isNull(dealers.deletedAt)))
+      .limit(1);
+
+    if (!dealer || !dealer.active) {
+      return reply.status(404).send({
+        error: "Not Found",
+        message: "No active account found for this username",
+      });
+    }
+    const mobile = normalizeIndianMobile(dealer.phone);
+    if (!mobile) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "No valid mobile number is registered for this account. Please contact the union office.",
+      });
+    }
+
+    // Throttle per phone: one OTP per resend window, capped per hour.
+    const recent = await db
+      .select({ createdAt: dealerOtps.createdAt })
+      .from(dealerOtps)
+      .where(
+        and(
+          eq(dealerOtps.phone, dealer.phone),
+          gt(dealerOtps.createdAt, new Date(Date.now() - 60 * 60 * 1000))
+        )
+      )
+      .orderBy(desc(dealerOtps.createdAt));
+
+    const sinceLast = recent[0]
+      ? Math.floor((Date.now() - recent[0].createdAt.getTime()) / 1000)
+      : Infinity;
+    if (sinceLast < OTP_RESEND_SECONDS) {
+      const retryAfter = OTP_RESEND_SECONDS - sinceLast;
+      return reply.status(429).send({
+        error: "Too Many Requests",
+        message: `Please wait ${retryAfter} seconds before requesting another OTP`,
+        retryAfterSeconds: retryAfter,
+      });
+    }
+    if (recent.length >= OTP_MAX_PER_HOUR) {
+      return reply.status(429).send({
+        error: "Too Many Requests",
+        message: "Too many OTP requests. Please try again after an hour.",
+      });
+    }
+
+    // Housekeeping: old rows for this phone are never read again.
+    await db
+      .delete(dealerOtps)
+      .where(
+        and(
+          eq(dealerOtps.phone, dealer.phone),
+          lt(dealerOtps.createdAt, new Date(Date.now() - 24 * 60 * 60 * 1000))
+        )
+      );
+
+    const otp = randomInt(0, 1_000_000).toString().padStart(6, "0");
+    const [row] = await db
+      .insert(dealerOtps)
+      .values({
+        phone: dealer.phone,
+        otp: hashOtp(dealer.phone, otp),
+        expiresAt: new Date(Date.now() + OTP_TTL_SECONDS * 1000),
+      })
+      .returning({ id: dealerOtps.id });
+
+    try {
+      await sendSms(dealer.phone, env.SMS_OTP_MESSAGE.replace("{otp}", otp), { otp });
+    } catch (err) {
+      // Don't leave an undeliverable OTP counting against the throttle.
+      if (row) await db.delete(dealerOtps).where(eq(dealerOtps.id, row.id));
+      request.log.error({ err, dealerId: dealer.id }, "dealer OTP SMS failed");
+      return reply.status(err instanceof SmsNotConfiguredError ? 503 : 502).send({
+        error: "Bad Gateway",
+        message: "Could not send OTP SMS. Please try again in a few minutes.",
+      });
+    }
+
+    return reply.send({
+      message: "OTP sent",
+      maskedPhone: `******${mobile.slice(-4)}`,
+      expiresInSeconds: OTP_TTL_SECONDS,
+      resendAfterSeconds: OTP_RESEND_SECONDS,
+    });
+  });
+
+  // POST /api/v1/auth/dealer/otp/reset-password
+  app.post("/api/v1/auth/dealer/otp/reset-password", async (request, reply) => {
+    const { username, otp, newPassword } = z
+      .object({
+        username: z.string().trim().min(1),
+        otp: z.string().regex(/^\d{6}$/, "OTP must be 6 digits"),
+        newPassword: z
+          .string()
+          .min(6, "New password must be at least 6 characters"),
+      })
+      .parse(request.body);
+
+    const invalid = (message = "OTP is invalid or has expired. Please request a new one.") =>
+      reply.status(400).send({ error: "Bad Request", message });
+
+    const [dealer] = await db
+      .select({ id: dealers.id, phone: dealers.phone, active: dealers.active })
+      .from(dealers)
+      .where(and(eq(dealers.username, username), isNull(dealers.deletedAt)))
+      .limit(1);
+    if (!dealer || !dealer.active) return invalid();
+
+    const [latest] = await db
+      .select()
+      .from(dealerOtps)
+      .where(eq(dealerOtps.phone, dealer.phone))
+      .orderBy(desc(dealerOtps.createdAt))
+      .limit(1);
+
+    const attempts = latest ? Number(latest.attempts) : 0;
+    if (
+      !latest ||
+      latest.verified ||
+      latest.expiresAt.getTime() < Date.now() ||
+      attempts >= OTP_MAX_ATTEMPTS
+    ) {
+      return invalid();
+    }
+
+    const expected = Buffer.from(latest.otp, "hex");
+    const given = Buffer.from(hashOtp(dealer.phone, otp), "hex");
+    if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+      await db
+        .update(dealerOtps)
+        .set({ attempts: sql`${dealerOtps.attempts} + 1` })
+        .where(eq(dealerOtps.id, latest.id));
+      const left = OTP_MAX_ATTEMPTS - attempts - 1;
+      return invalid(
+        left > 0
+          ? `Incorrect OTP. ${left} attempt${left === 1 ? "" : "s"} left.`
+          : "Incorrect OTP. Please request a new one."
+      );
+    }
+
+    // Consume atomically so two concurrent submits can't both succeed.
+    const consumed = await db
+      .update(dealerOtps)
+      .set({ verified: true })
+      .where(and(eq(dealerOtps.id, latest.id), eq(dealerOtps.verified, false)))
+      .returning({ id: dealerOtps.id });
+    if (consumed.length === 0) return invalid();
+
+    const newHash = await hashPassword(newPassword);
+    await db
+      .update(dealers)
+      .set({ passwordHash: newHash, updatedAt: new Date() })
+      .where(eq(dealers.id, dealer.id));
+
+    // Sign out every device, same as the current-password route.
+    await db
+      .update(dealerRefreshTokens)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(dealerRefreshTokens.dealerId, dealer.id),
+          isNull(dealerRefreshTokens.revokedAt)
+        )
+      );
+
+    return reply.send({ message: "Password changed successfully" });
   });
 
   // ════════════════════════════════════════════

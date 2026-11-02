@@ -38,7 +38,7 @@ function inr(n: number): string {
 }
 
 // Running closing-balance for a dealer (same formula as checkDealerCredit).
-async function dealerBalance(tx: typeof pgClient, dealerId: string): Promise<number> {
+export async function dealerBalance(tx: typeof pgClient, dealerId: string): Promise<number> {
   const [bal] = await tx`
     SELECT COALESCE(d.opening_balance, 0)
          + COALESCE((
@@ -55,7 +55,7 @@ async function dealerBalance(tx: typeof pgClient, dealerId: string): Promise<num
 
 // Undo what the receipt applied to invoices (payment_allocations, 0076) —
 // a cheque can settle several invoices, each rolled back by its own share.
-async function rollbackInvoiceAllocations(tx: typeof pgClient, paymentId: string) {
+export async function rollbackInvoiceAllocations(tx: typeof pgClient, paymentId: string) {
   let allocs = await tx`
     SELECT invoice_id, amount FROM payment_allocations WHERE payment_id = ${paymentId}::uuid
   `;

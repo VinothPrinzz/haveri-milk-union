@@ -1742,6 +1742,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           SELECT o.dealer_id,
                  oi.product_id,
                  o.delivery_date         AS sale_date,
+                 o.created_at            AS priced_at,
                  round(oi.unit_price * (1 + oi.gst_percent / 100), 2) AS rate,
                  oi.quantity::int        AS qty,
                  oi.line_total::numeric  AS amount
@@ -1759,6 +1760,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           SELECT ds.customer_id,
                  dsi.product_id,
                  ds.sale_date,
+                 ds.created_at,
                  round(dsi.unit_price * (1 + dsi.gst_percent / 100), 2),
                  dsi.quantity::int,
                  dsi.line_total::numeric
@@ -1769,6 +1771,28 @@ export async function salesReportRoutes(app: FastifyInstance) {
             AND ds.sale_date <= ${q.to}::date
             AND ds.status = 'confirmed'
             AND NOT EXISTS (SELECT 1 FROM routes dr WHERE dr.code = 'DEMO' AND dr.id = ds.route_id)
+        ),
+        -- Agent's margin on a line: (MRP - the rate billed) x packets, both
+        -- GST-inclusive. The MRP is the one in force when the line was
+        -- priced: the first MRP revision logged AFTER that moment carries it
+        -- as old_mrp, and with no later revision it is today's products.mrp.
+        -- A product with no MRP on file, or billed at / above MRP (a Credit
+        -- Inst-MRP customer's milk), earns no margin rather than a negative.
+        priced AS (
+          SELECT cb.*,
+                 cb.qty * GREATEST(
+                   COALESCE(
+                     (SELECT round(pr.old_mrp, 2)
+                        FROM price_revisions pr
+                       WHERE pr.product_id = cb.product_id
+                         AND pr.created_at > cb.priced_at
+                         AND pr.old_mrp IS NOT NULL
+                       ORDER BY pr.created_at
+                       LIMIT 1),
+                     round(pm.mrp, 2),
+                     cb.rate) - cb.rate, 0) AS margin
+          FROM combined cb
+          JOIN products pm ON pm.id = cb.product_id
         )
         SELECT d.id AS dealer_id, d.code AS dealer_code, d.name AS dealer_name,
                cb.product_id,
@@ -1778,8 +1802,9 @@ export async function salesReportRoutes(app: FastifyInstance) {
                cb.rate                 AS rate,
                to_char(MIN(cb.sale_date), 'YYYY-MM-DD') AS first_date,
                SUM(cb.qty)::int        AS qty,
-               SUM(cb.amount)::numeric AS amount
-        FROM combined cb
+               SUM(cb.amount)::numeric AS amount,
+               SUM(cb.margin)::numeric AS margin
+        FROM priced cb
         JOIN dealers d ON d.id = cb.dealer_id
         JOIN products p ON p.id = cb.product_id
         JOIN categories c ON c.id = p.category_id
@@ -1810,6 +1835,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
         qtyVol: number;
         unit: string;
         amount: number;
+        margin: number;
       };
       const agentMap = new Map<string, {
         id: string; code: string; name: string; lines: Line[];
@@ -1838,6 +1864,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
           qtyVol: round2(toKgLtr(Number(r.qty) || 0, parseFloat(r.pack_size) || 0, r.unit ?? "")),
           unit: r.unit ?? "",
           amount: round2(parseFloat(r.amount) || 0),
+          margin: round2(parseFloat(r.margin) || 0),
         });
       }
 
@@ -1866,6 +1893,10 @@ export async function salesReportRoutes(app: FastifyInstance) {
             curdAmount:   sum("curd",  l => l.amount),
             otherQty:     sum("other", l => l.qtyVol),
             otherAmount:  sum("other", l => l.amount),
+            milkMargin:   sum("milk",  l => l.margin),
+            curdMargin:   sum("curd",  l => l.margin),
+            otherMargin:  sum("other", l => l.margin),
+            margin:       round2(lines.reduce((s, l) => s + l.margin, 0)),
           };
         });
 
@@ -1884,6 +1915,10 @@ export async function salesReportRoutes(app: FastifyInstance) {
           curdAmount:  gsum(a => a.curdAmount),
           otherQty:    gsum(a => a.otherQty),
           otherAmount: gsum(a => a.otherAmount),
+          milkMargin:  gsum(a => a.milkMargin),
+          curdMargin:  gsum(a => a.curdMargin),
+          otherMargin: gsum(a => a.otherMargin),
+          margin:      gsum(a => a.margin),
         },
       });
     }
@@ -1959,7 +1994,9 @@ export async function salesReportRoutes(app: FastifyInstance) {
         ),
         page AS (
           SELECT * FROM combined
-          ORDER BY sale_date DESC, gp_no NULLS LAST
+          -- id breaks ties (employee rows share a NULL gp_no) so pages
+          -- neither repeat nor skip rows.
+          ORDER BY sale_date DESC, gp_no NULLS LAST, id
           LIMIT ${q.limit} OFFSET ${offset}
         )
         SELECT p.*,
@@ -1988,7 +2025,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
                  ''
                ) AS items_text
         FROM page p
-        ORDER BY p.sale_date DESC, p.gp_no NULLS LAST
+        ORDER BY p.sale_date DESC, p.gp_no NULLS LAST, p.id
       `;
 
       const [countRow] = await pgClient`

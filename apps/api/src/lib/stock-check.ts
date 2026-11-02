@@ -25,8 +25,10 @@
 // EVERY confirm path now gates on fgsAvailable and serializes concurrent
 // confirms on a per-product advisory lock (lockStockProducts) so the check
 // can't be raced into overselling: dealer-app checkout (orders.ts), Call Desk
-// + standing indents (deductOrderStock), Razorpay pay-now (deductOrderStockCapped,
-// which caps instead of blocking since money is already captured). The reserved
+// + standing indents (deductOrderStock), Razorpay pay-now (deductPaidOrderStock,
+// which trims the short lines and refunds them to the dealer's balance instead
+// of blocking, since money is already captured), and every rail that writes
+// lines onto an already-latched order (assertOrderNoOversell). The reserved
 // side of fgsAvailable counts an order the moment stock_deducted latches, so a
 // confirm reserves against the next reader automatically — products.stock is
 // now VESTIGIAL bookkeeping, kept roughly maintained (floored, ungated) only
@@ -39,6 +41,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { pgClient } from "./db.js";
+import { calcLine, round2, sumLines, type LineTotals } from "./line-totals.js";
 
 export interface StockShortfall {
   productId: string;
@@ -244,52 +247,184 @@ export async function deductOrderStock(
   }
 }
 
+/** Cancellation reason for a paid order none of whose lines could be covered. */
+export const OUT_OF_STOCK_AFTER_PAYMENT_REASON =
+  "Out of stock when the online payment arrived - refunded to balance";
+
+export interface TrimmedLine {
+  productId: string;
+  productName: string;
+  /** Units taken off the order because the stock had already gone. */
+  removed: number;
+  /** Units left on the order (0 → the line was deleted). */
+  kept: number;
+}
+
+export interface PaidOrderStockResult {
+  trimmed: TrimmedLine[];
+  /** Rupees to give back: grand_total before the trim − after. */
+  refund: number;
+  /** Every line was short → the order was cancelled. */
+  emptied: boolean;
+}
+
 /**
- * Like deductOrderStock but NEVER throws and NEVER lets stock go negative
- * (floors each line at 0). Returns the lines that couldn't be fully
- * covered (oversold), for the caller to log/alert. Idempotent.
+ * Confirm a PAID order's stock (Razorpay pay-now). Money is already captured,
+ * so this never throws for stock — but it never oversells either: any line
+ * the FGS sheet can no longer cover is cut down (or removed) and the caller
+ * credits `refund` back to the dealer. If nothing at all can be covered the
+ * order is cancelled with OUT_OF_STOCK_AFTER_PAYMENT_REASON.
  *
- * Use this AFTER money is captured (Razorpay pay-now): refusing a paid
- * order is worse than a logged oversell, so we cap rather than block.
+ * The incident this exists for (order c4796159, 2026-10-09): the order was
+ * created and reserved stock, the payment stalled, a system cancel released
+ * the reservation, other dealers bought the last units, and the late capture
+ * then revived the order and took the same units again — SWEET BUN went to −6.
+ *
+ * Runs the check when THIS call claims the latch (the order held nothing
+ * until now) or when `recheck` is set (a revive: the cancel may have released
+ * the stock even though the latch reads true). A normal cart-UPI order was
+ * gated and latched at creation, so it is a no-op here — it is never trimmed
+ * for a shortage someone else caused.
+ *
+ * MUST run inside a transaction; serializes on the products like the other
+ * gates so two late payments can't both see the same last units.
  */
-export async function deductOrderStockCapped(
+export async function deductPaidOrderStock(
   tx: typeof pgClient,
-  orderId: string
-): Promise<StockShortfall[]> {
-  if (!(await claimDeduction(tx, orderId))) return []; // already deducted
-  // Demand per STOCK product — variant SKUs draw from their base (migration 0059).
-  const lines = await tx`
-    SELECT COALESCE(p.stock_source_product_id, p.id)::text AS "stockProductId",
-           MIN(oi.product_name)                            AS "productName",
-           SUM(oi.quantity)::int                           AS "ordered"
+  orderId: string,
+  opts: { recheck?: boolean } = {}
+): Promise<PaidOrderStockResult> {
+  const result: PaidOrderStockResult = { trimmed: [], refund: 0, emptied: false };
+  const claimed = await claimDeduction(tx, orderId);
+  if (!claimed && !opts.recheck) return result;
+
+  const [order] = (await tx`
+    SELECT delivery_date::text AS "deliveryDate", status::text AS status,
+           stock_deducted AS "stockDeducted", grand_total::numeric AS "grandTotal",
+           notes
+      FROM orders WHERE id = ${orderId}::uuid
+  `) as any[];
+  if (!order || !order.stockDeducted || order.status === "cancelled") return result;
+
+  const lines = (await tx`
+    SELECT oi.id::text AS id, oi.product_id::text AS "productId",
+           oi.product_name AS "productName", oi.quantity::int AS quantity,
+           oi.unit_price::numeric AS "unitPrice", oi.gst_percent::numeric AS "gstPercent",
+           COALESCE(p.stock_source_product_id, p.id)::text AS "stockProductId"
       FROM order_items oi
       JOIN products p ON p.id = oi.product_id
      WHERE oi.order_id = ${orderId}::uuid
-     GROUP BY COALESCE(p.stock_source_product_id, p.id)
-  `;
-  const oversold: StockShortfall[] = [];
-  for (const l of lines as any[]) {
-    // The claim latched this order into the FGS reservation; a negative
-    // remainder means it oversold today's stock. We DON'T block (money is
-    // already captured) — just report it for the caller to alert on. No
-    // advisory lock either: never blocking, so racing can only mis-log by a
-    // hair, never oversell-vs-refuse.
-    const remaining = await fgsAvailable(tx, l.stockProductId);
-    if (remaining < 0) {
-      oversold.push({
-        productId: l.stockProductId,
-        productName: l.productName,
-        ordered: Number(l.ordered),
-        available: Number(l.ordered) + remaining, // availability before this order
-      });
+     ORDER BY oi.product_name, oi.id
+  `) as any[];
+
+  const stockIds = [...new Set(lines.map((l) => l.stockProductId as string))];
+  await lockStockProducts(tx, stockIds);
+  const dates = await datesToCheck(tx, order.deliveryDate);
+
+  // Units over, per stock product — this order is latched, so fgs_available
+  // already counts it and a negative remainder is exactly the oversell.
+  const short = new Map<string, number>();
+  for (const id of stockIds) {
+    let worst = Infinity;
+    for (const date of dates) {
+      const on = await fgsAvailable(tx, id, date);
+      if (on < worst) worst = on;
     }
-    await tx`
-      UPDATE products
-         SET stock = GREATEST(stock - ${l.ordered}, 0), updated_at = now()
-       WHERE id = ${l.stockProductId}::uuid
-    `;
+    if (worst < 0) short.set(id, -worst);
   }
-  return oversold;
+
+  const trimmed: TrimmedLine[] = [];
+  for (const l of lines) {
+    const need = short.get(l.stockProductId) ?? 0;
+    if (need <= 0) continue;
+    const take = Math.min(need, Number(l.quantity));
+    short.set(l.stockProductId, need - take);
+    const kept = Number(l.quantity) - take;
+    if (kept === 0) {
+      await tx`DELETE FROM order_items WHERE id = ${l.id}::uuid`;
+    } else {
+      const t = calcLine(Number(l.unitPrice), Number(l.gstPercent), kept);
+      await tx`
+        UPDATE order_items
+           SET quantity   = ${kept},
+               gst_amount = ${t.gst.toFixed(2)}::numeric,
+               line_total = ${t.total.toFixed(2)}::numeric
+         WHERE id = ${l.id}::uuid
+      `;
+    }
+    trimmed.push({ productId: l.productId, productName: l.productName, removed: take, kept });
+  }
+
+  if (trimmed.length > 0) {
+    // Re-total from what is left, with the same line-first rounding as
+    // placement so the reissued invoice still foots.
+    const rest = (await tx`
+      SELECT line_total::numeric AS total, gst_amount::numeric AS gst
+        FROM order_items WHERE order_id = ${orderId}::uuid
+    `) as any[];
+    const totals = sumLines(
+      rest.map((r): LineTotals => ({
+        subtotal: round2(Number(r.total) - Number(r.gst)),
+        gst: Number(r.gst),
+        total: Number(r.total),
+      }))
+    );
+    const refund = round2(Number(order.grandTotal) - totals.grandTotal);
+    const emptied = rest.length === 0;
+    const note =
+      "[Out of stock when payment arrived: " +
+      trimmed.map((t) => `${t.removed} x ${t.productName}`).join(", ") +
+      ` removed, Rs ${refund.toFixed(2)} credited to balance]`;
+
+    if (emptied) {
+      // Nothing left to deliver — cancel and release the latch so the order
+      // stops counting against the sheet.
+      await tx`
+        UPDATE orders
+           SET status = 'cancelled',
+               cancellation_reason = ${OUT_OF_STOCK_AFTER_PAYMENT_REASON},
+               cancelled_at = now(),
+               stock_deducted = false,
+               notes = CONCAT_WS(' ', notes, ${note}::text),
+               updated_at = now()
+         WHERE id = ${orderId}::uuid
+      `;
+    } else {
+      await tx`
+        UPDATE orders
+           SET subtotal    = ${totals.subtotal.toFixed(2)}::numeric,
+               total_gst   = ${totals.totalGst.toFixed(2)}::numeric,
+               grand_total = ${totals.grandTotal.toFixed(2)}::numeric,
+               item_count  = ${rest.length},
+               notes       = CONCAT_WS(' ', notes, ${note}::text),
+               updated_at  = now()
+         WHERE id = ${orderId}::uuid
+      `;
+    }
+    result.trimmed = trimmed;
+    result.refund = refund;
+    result.emptied = emptied;
+  }
+
+  // Legacy bookkeeping only (see deductOrderStock), for what is actually kept.
+  if (claimed && !result.emptied) {
+    const kept = await tx`
+      SELECT COALESCE(p.stock_source_product_id, p.id)::text AS "stockProductId",
+             SUM(oi.quantity)::int AS qty
+        FROM order_items oi
+        JOIN products p ON p.id = oi.product_id
+       WHERE oi.order_id = ${orderId}::uuid
+       GROUP BY 1
+    `;
+    for (const k of kept as any[]) {
+      await tx`
+        UPDATE products
+           SET stock = GREATEST(stock - ${k.qty}, 0), updated_at = now()
+         WHERE id = ${k.stockProductId}::uuid
+      `;
+    }
+  }
+  return result;
 }
 
 /**
@@ -478,4 +613,119 @@ export async function assertNoOversell(
     }
   }
   if (shortfalls.length > 0) throw new StockConflictError(shortfalls);
+}
+
+/**
+ * Oversell guard for the rails that write lines onto an order whose stock is
+ * ALREADY latched (stock_deducted = true), or that latch it themselves without
+ * going through deductOrderStock: admin-place, the Modify (edit items) screen,
+ * subsidy top-ups, and a status change that brings a cancelled order back.
+ * None of these used to check anything, so an edit or a re-confirm could
+ * quietly push the sheet below zero.
+ *
+ * Same shape as assertNoOversell: the rows are already written in this
+ * transaction, so fgs_available counts them and a negative remainder IS the
+ * oversell. Checked on the order's delivery date and, for a back-dated order,
+ * today too (opening carries forward). No-op for an order that holds no stock.
+ *
+ * `onlyStockProductIds` narrows the check to the stock products whose demand
+ * went UP — an edit that cuts a line must never be refused because the SKU is
+ * already short for some other reason.
+ *
+ * MUST run inside a transaction. Throws StockConflictError (→ 409).
+ */
+export async function assertOrderNoOversell(
+  tx: typeof pgClient,
+  orderId: string,
+  onlyStockProductIds?: Iterable<string>
+): Promise<void> {
+  const [order] = (await tx`
+    SELECT delivery_date::text AS "deliveryDate", status::text AS status,
+           stock_deducted AS "stockDeducted"
+      FROM orders WHERE id = ${orderId}::uuid
+  `) as any[];
+  if (!order || !order.stockDeducted || order.status === "cancelled") return;
+
+  const only = onlyStockProductIds ? new Set(onlyStockProductIds) : null;
+  const lines = ((await tx`
+    SELECT COALESCE(p.stock_source_product_id, p.id)::text AS "stockProductId",
+           MIN(oi.product_name)                            AS "productName",
+           SUM(oi.quantity)::int                           AS "ordered"
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+     WHERE oi.order_id = ${orderId}::uuid
+     GROUP BY COALESCE(p.stock_source_product_id, p.id)
+  `) as any[]).filter((l) => !only || only.has(l.stockProductId));
+  if (lines.length === 0) return;
+
+  await lockStockProducts(tx, lines.map((l) => l.stockProductId));
+  const dates = await datesToCheck(tx, order.deliveryDate);
+
+  const shortfalls: StockShortfall[] = [];
+  for (const l of lines) {
+    let worst = Infinity;
+    for (const date of dates) {
+      const remaining = await fgsAvailable(tx, l.stockProductId, date); // counts this order
+      if (remaining < worst) worst = remaining;
+    }
+    if (worst < 0) {
+      shortfalls.push({
+        productId: l.stockProductId,
+        productName: l.productName,
+        ordered: Number(l.ordered),
+        available: Math.max(0, Number(l.ordered) + worst),
+      });
+    }
+  }
+  if (shortfalls.length > 0) throw new StockConflictError(shortfalls);
+}
+
+/**
+ * Oversell guard for an employee subsidy indent leaving draft. employee_orders
+ * has no stock_deducted latch: since migration 0072 every non-draft,
+ * non-cancelled indent counts against the sheet — 'payment_required' included —
+ * yet no transition out of draft ever checked the sheet could cover it.
+ *
+ * Call it AFTER the status UPDATE, inside the same transaction: the indent
+ * then counts, so a negative remainder is the oversell (assertNoOversell).
+ * No-op while the indent is still a draft or is cancelled. Throws
+ * StockConflictError (→ 409), rolling the status change back.
+ */
+export async function assertEmployeeOrderNoOversell(
+  tx: typeof pgClient,
+  employeeOrderId: string
+): Promise<void> {
+  const [eo] = (await tx`
+    SELECT delivery_date::text AS "deliveryDate", status::text AS status
+      FROM employee_orders WHERE id = ${employeeOrderId}::uuid
+  `) as any[];
+  if (!eo || eo.status === "draft" || eo.status === "cancelled") return;
+  const lines = (await tx`
+    SELECT product_id::text AS "productId", product_name AS "productName",
+           quantity::int AS quantity
+      FROM employee_order_items WHERE employee_order_id = ${employeeOrderId}::uuid
+  `) as any[];
+  await assertNoOversell(tx, lines, eo.deliveryDate);
+}
+
+/**
+ * What an order edit asks the floor for MORE of: one line per stock product
+ * whose total demand on `after` exceeds `before`, carrying just the increase.
+ * Variants fold onto their base (migration 0059). The result's productId IS
+ * the stock product, so it can go straight into getDemandShortfalls (as a
+ * pre-check by delta) and assertOrderNoOversell (as the filter).
+ */
+export async function demandIncrease(
+  client: typeof pgClient,
+  before: StockDemandLine[],
+  after: StockDemandLine[]
+): Promise<StockDemandLine[]> {
+  const b = await foldDemand(client, before);
+  const a = await foldDemand(client, after);
+  const out: StockDemandLine[] = [];
+  for (const [id, v] of a) {
+    const increase = v.quantity - (b.get(id)?.quantity ?? 0);
+    if (increase > 0) out.push({ productId: id, productName: v.productName, quantity: increase });
+  }
+  return out;
 }

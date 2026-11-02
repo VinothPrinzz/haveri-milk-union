@@ -22,6 +22,7 @@ import {
   fetchBatches,
   fetchCustomers,
   createRoute,
+  fetchNextRouteCode,
   updateRoute,
   deleteRoute,
   type Route as RouteType,
@@ -166,11 +167,13 @@ export default function RoutesPage({ tab = "list" }: Props) {
   const [deleting, setDeleting] = useState<RouteType | null>(null);
   const [viewing, setViewing] = useState<RouteType | null>(null);
 
-  const nextCode = useMemo(() => {
-    const nums = routes.map(r => r.code).filter(c => /^R\d+$/.test(c)).map(c => parseInt(c.slice(1)));
-    const max = nums.length ? Math.max(...nums) : 0;
-    return `R${max + 1}`;
-  }, [routes]);
+  // Preview only — the server assigns the code on save. It comes from the
+  // server because deleted routes keep their codes but are not in `routes`.
+  const { data: nextCode } = useQuery({
+    queryKey: ["routes", "next-code"],
+    queryFn: fetchNextRouteCode,
+    enabled: tab === "new",
+  });
 
   const sortedRoutes = useMemo(() =>
     [...routes].sort((a, b) => {

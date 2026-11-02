@@ -447,6 +447,14 @@ export async function dealerRoutes(app: FastifyInstance) {
       `;
 
       if (!deleted) return reply.status(404).send({ error: "Dealer not found" });
+
+      // End the dealer's app sessions: without this a signed-in device keeps
+      // refreshing its token and can go on placing indents after deletion.
+      await pgClient`
+        UPDATE dealer_refresh_tokens SET revoked_at = now()
+         WHERE dealer_id = ${id} AND revoked_at IS NULL
+      `;
+
       return reply.send({ id: deleted.id, deleted: true });
     },
   );

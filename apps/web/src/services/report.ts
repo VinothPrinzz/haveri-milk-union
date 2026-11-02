@@ -560,6 +560,7 @@ export interface AgentSalesLine {
   qtyVol: number;
   unit: string;
   amount: number;
+  margin: number;     // (MRP - rate) x packets
 }
 
 export interface AgentSalesVolumes {
@@ -569,6 +570,10 @@ export interface AgentSalesVolumes {
   curdAmount: number;
   otherQty: number;
   otherAmount: number;
+  milkMargin: number;
+  curdMargin: number;
+  otherMargin: number;
+  margin: number;
 }
 
 export interface AgentSalesAgent extends AgentSalesVolumes {
@@ -611,8 +616,17 @@ export interface AdhocResponse {
   totalPages?: number;
 }
 
-export const fetchAdhocSales = (params: { from: string; to: string; page?: number; limit?: number }) =>
-  get<AdhocResponse>("/reports/sales-reports/adhoc", { page: 1, limit: 100, ...params });
+// Fetches every page for the range, so a busy period can't cut rows off the
+// report while the grand total (computed server-side) still counts them.
+export const fetchAdhocSales = async (params: { from: string; to: string; limit?: number }) => {
+  const first = await get<AdhocResponse>("/reports/sales-reports/adhoc", { limit: 100, ...params, page: 1 });
+  const rows = [...first.rows];
+  for (let page = 2; page <= (first.totalPages ?? 1); page++) {
+    const next = await get<AdhocResponse>("/reports/sales-reports/adhoc", { limit: 100, ...params, page });
+    rows.push(...next.rows);
+  }
+  return { ...first, rows, page: 1, totalPages: 1 };
+};
 
 // ═══════════════════════════════════════════════════════════════
 // B9. GST Sales Statement

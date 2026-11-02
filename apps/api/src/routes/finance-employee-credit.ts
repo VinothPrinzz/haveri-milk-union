@@ -22,6 +22,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pgClient } from "../lib/db.js";
+import { assertEmployeeOrderNoOversell } from "../lib/stock-check.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 
@@ -246,6 +247,9 @@ export async function financeEmployeeCreditRoutes(app: FastifyInstance) {
                  confirmed_at = COALESCE(confirmed_at, now()), updated_at = now()
            WHERE id = ${id}::uuid
         `;
+        // A draft commits its stock right here (migration 0072) — refuse if
+        // the sheet can't cover it. A payment_required indent already holds it.
+        if (order.status === "draft") await assertEmployeeOrderNoOversell(tx, id);
 
         const [bal] = await tx`
           SELECT

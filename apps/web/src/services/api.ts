@@ -791,10 +791,17 @@ export const updateOfficer = async (id: string, body: {
   return data.officer;
 };
 
+/** Code the server will give the next new route (counts deleted routes too). */
+export const fetchNextRouteCode = async () => {
+  const data = await get<{ code: string }>("/routes/next-code");
+  return data.code;
+};
+
 export const createRoute = async (body: Record<string, unknown>) => {
+  // No code sent: the field is read-only "Auto", and only the server can see
+  // the deleted routes that still hold their codes.
   const data = await post<{ route: Record<string, unknown> }>("/routes", {
     name:           body.name,
-    code:           body.code,
     contractorId:   body.contractorId || undefined,
     primaryBatchId: body.primaryBatchId || undefined,
     dispatchTime:   body.dispatchTime || null,
@@ -966,11 +973,17 @@ export const fetchIndents = async (filters?: {
   if (filters?.from) params.from = filters.from; // YYYY-MM-DD (delivery_date >= from)
   if (filters?.to) params.to = filters.to;       // YYYY-MM-DD (delivery_date <= to)
   if (filters?.dealerId) params.dealerId = filters.dealerId;
-  const data = await get<{ data: Record<string, unknown>[] }>(
-    "/orders",
-    params,
-  );
-  return (data.data ?? []).map(normalizeIndent);
+  // The API caps a page at 100 rows; fetch every page so nothing is dropped.
+  const rows: Record<string, unknown>[] = [];
+  for (let page = 1; ; page++) {
+    const data = await get<{ data: Record<string, unknown>[]; totalPages?: number }>(
+      "/orders",
+      { ...params, page },
+    );
+    rows.push(...(data.data ?? []));
+    if (page >= (data.totalPages ?? 1)) break;
+  }
+  return rows.map(normalizeIndent);
 };
 
 // Paginated + server-searched variant for the All-Indents page. Unlike
@@ -1098,6 +1111,8 @@ export const placeSubsidyIndent = async (b: {
     message: string;
     orderId: string;
     appended: boolean;
+    /** Packets on the new subsidy order. */
+    quantity: number;
     lineTotal: string;
     invoiceNumber: string | null;
     invoicePdfUrl: string | null;
@@ -1151,16 +1166,30 @@ export const fetchDirectSales = async (filters?: {
   return (data.data ?? []).map(normalizeDirectSale);
 };
 
-export const fetchRecentDirectSales = async (customerType?: string) => {
-  const params: Record<string, string | number | boolean | undefined> = { limit: 100 };
+// The API caps a page at 100 rows, so the date range is filtered server-side
+// and every page is fetched; otherwise a busy week pushes older sales out.
+export const fetchRecentDirectSales = async (
+  customerType?: string,
+  range?: { dateFrom?: string; dateTo?: string },
+) => {
+  const params: Record<string, string | number | boolean | undefined> = {
+    limit: 100,
+    dateFrom: range?.dateFrom || undefined,
+    dateTo: range?.dateTo || undefined,
+  };
   if (customerType) {
     params.customerType = customerType.toLowerCase();
   }
-  const data = await get<{ data: Record<string, unknown>[] }>(
-    "/direct-sales",
-    params,
-  );
-  return (data.data ?? []).map(normalizeDirectSale);
+  const rows: Record<string, unknown>[] = [];
+  for (let page = 1; ; page++) {
+    const data = await get<{ data: Record<string, unknown>[]; totalPages?: number }>(
+      "/direct-sales",
+      { ...params, page },
+    );
+    rows.push(...(data.data ?? []));
+    if (page >= (data.totalPages ?? 1)) break;
+  }
+  return rows.map(normalizeDirectSale);
 };
 
 export const fetchGatePassReport = async (
@@ -2210,8 +2239,9 @@ export interface PaymentRow {
   notes:           string | null;
   receivedByName:  string | null;
   createdAt:       string;
+  editable:        boolean;          // a Record Payment receipt (not cheque) — can be edited / deleted
 }
- 
+
 export interface PaymentsResponse {
   data: PaymentRow[];
   summary: {
@@ -2260,6 +2290,21 @@ export const recordPayment = async (body: {
     allocations: { invoiceId: string; invoiceNumber: string; amount: number }[];
     unallocated: number;
   }>("/payments", body);
+};
+
+// Correct / remove a Record Payment receipt — manager and super_admin only.
+export const updatePayment = async (id: string, body: {
+  amount?:       number;
+  mode?:         PaymentMode;
+  receivedDate?: string;
+  reference?:    string | null;
+  notes?:        string | null;
+}) => {
+  return await patch<{ message: string; payment: Record<string, unknown> }>(`/payments/${id}`, body);
+};
+
+export const deletePayment = async (id: string) => {
+  await del<{ message: string; id: string }>(`/payments/${id}`);
 };
 
 

@@ -29,12 +29,14 @@ import {
 } from "../lib/razorpay-client.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 import {
-  deductOrderStockCapped,
-  describeShortfalls,
+  deductPaidOrderStock,
+  OUT_OF_STOCK_AFTER_PAYMENT_REASON,
   restoreOrderStock,
+  type PaidOrderStockResult,
 } from "../lib/stock-check.js";
-import { enqueuePDFInvoice } from "../lib/queue.js";
-import { reissueDirectSaleInvoiceIfExists } from "../lib/invoice-pdf.js";
+import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
+import { reissueDirectSaleInvoiceIfExists, reissueInvoiceIfExists } from "../lib/invoice-pdf.js";
+import { creditDealerBalance } from "../lib/direct-sale-money.js";
 import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 import {
   cancelSupersededSiblings,
@@ -260,7 +262,11 @@ async function confirmPaidOrder(
   tx: typeof pgClient,
   orderId: string,
   rzpPaymentId: string
-): Promise<void> {
+): Promise<PaidOrderStockResult | null> {
+  // Set when a system cancel raced the payment and this call reinstates the
+  // order — its reservation was released by the cancel, so stock must be
+  // re-checked even if the latch still reads true.
+  let wasRevived = false;
   // cancel_window_ends_at = LEAST(now + 30 min, route's close_time for the
   // delivery date). Same rule as the credit-confirm path so online-paid
   // orders are cancellable for the same window.
@@ -298,10 +304,13 @@ async function confirmPaidOrder(
       console.error(
         `[apply-payment] captured payment ${rzpPaymentId} references missing order ${orderId}`
       );
-      return;
+      return null;
     }
     if (["confirmed", "dispatched", "delivered"].includes(ord.status)) {
-      return; // another path already confirmed it — nothing to do
+      return null; // another path already confirmed it — nothing to do
+    }
+    if (ord.status === "cancelled" && ord.reason === OUT_OF_STOCK_AFTER_PAYMENT_REASON) {
+      return null; // a previous apply found nothing in stock and refunded it
     }
     const autoCancelled =
       ord.status === "cancelled" &&
@@ -333,6 +342,7 @@ async function confirmPaidOrder(
         console.warn(
           `[apply-payment] revived order ${orderId}: it was cancelled (${ord.reason}) but payment ${rzpPaymentId} WAS captured`
         );
+        wasRevived = true;
       }
     } else {
       // Cancelled by the dealer/admin (or some unexpected state) with money
@@ -341,26 +351,41 @@ async function confirmPaidOrder(
         `[apply-payment] ORDER NOT CONFIRMED: order ${orderId} is '${ord.status}' ` +
           `but payment ${rzpPaymentId} is captured — needs manual review (refund or reinstate)`
       );
-      return;
+      return null;
     }
   }
 
-  // Move physical stock now that the order is confirmed. Money is
-  // already captured, so we never block here — deduct capped at 0
-  // (never negative) and log any oversell for ops. Idempotent: the
-  // cart path that deducted at creation already set the latch, so a
-  // cart-UPI order is a no-op here (no double-deduct).
-  const oversold = await deductOrderStockCapped(tx, orderId);
-  if (oversold.length > 0) {
-    console.warn(
-      `[pay-now] order ${orderId} oversold (paid, stock capped at 0): ` +
-        describeShortfalls(oversold)
+  // Move physical stock now that the order is confirmed. Money is already
+  // captured, so we never block — but we never oversell either: lines the
+  // sheet can no longer cover are trimmed and refunded to the dealer's
+  // available balance below. Idempotent: a cart-UPI order latched (and was
+  // gated) at creation, so it is a no-op here unless it was just revived.
+  const stock = await deductPaidOrderStock(tx, orderId, { recheck: wasRevived });
+  if (stock.refund > 0) {
+    const [o] = await tx`SELECT dealer_id::text AS "dealerId" FROM orders WHERE id = ${orderId}::uuid`;
+    // Same rail as a downward Modify: store credit on the available balance.
+    await creditDealerBalance(
+      tx,
+      o!.dealerId,
+      stock.refund,
+      orderId,
+      `Out-of-stock refund ${orderId}: ` +
+        stock.trimmed.map((t) => `${t.removed} x ${t.productName}`).join(", "),
+      null
+    );
+    console.error(
+      `[pay-now] order ${orderId} (payment ${rzpPaymentId}) was short when the payment landed: ` +
+        stock.trimmed.map((t) => `${t.productName} -${t.removed}`).join(", ") +
+        ` — Rs ${stock.refund.toFixed(2)} credited to balance${stock.emptied ? ", order cancelled" : ""}`
     );
   }
 
   // The paid order is now the day's placed order — cancel any stranded
   // twin (duplicate draft / unpaid payment_required) for the same date.
-  await cancelSupersededSiblings(tx, orderId);
+  // Not when nothing could be delivered: the order is cancelled, so the
+  // dealer's draft for the day is all they have left.
+  if (!stock.emptied) await cancelSupersededSiblings(tx, orderId);
+  return stock;
 }
 
 export interface ApplyPaidPaymentResult {
@@ -396,6 +421,8 @@ export async function applyPaidPayment(
     return applyPaidGatePassPayment(rzpRowId);
   }
 
+  // Set when the confirm had to trim out-of-stock lines (see confirmPaidOrder).
+  let stockResult: PaidOrderStockResult | null = null;
   const result = await pgClient.begin(async (_tx) => {
     const tx = _tx as unknown as typeof pgClient;
 
@@ -430,7 +457,7 @@ export async function applyPaidPayment(
       // The confirm is idempotent, so always give the order another chance to
       // advance before declaring this apply a no-op.
       if (row.kind === "order_payment" && row.orderId) {
-        await confirmPaidOrder(tx, row.orderId, row.rzpPaymentId);
+        stockResult = await confirmPaidOrder(tx, row.orderId, row.rzpPaymentId);
       }
       return {
         alreadyApplied: true,
@@ -525,7 +552,7 @@ export async function applyPaidPayment(
     // revives a wrongly auto-discarded order, and deducts stock — never
     // assume the guarded UPDATE hit a row (see the HMU-2A9B incident).
     if (row.kind === "order_payment" && row.orderId) {
-      await confirmPaidOrder(tx, row.orderId, row.rzpPaymentId);
+      stockResult = await confirmPaidOrder(tx, row.orderId, row.rzpPaymentId);
     }
 
     return {
@@ -548,6 +575,25 @@ export async function applyPaidPayment(
     } catch (err) {
       console.warn("[pay-now] invoice enqueue failed:", err);
     }
+  }
+
+  // Lines were cut because the stock had gone by the time the payment landed:
+  // fix the invoice (if one was already minted) and tell the dealer where the
+  // money went. After commit — neither may roll back the money movement.
+  // (Cast: TS can't see the assignment inside the transaction callback.)
+  const trim = stockResult as PaidOrderStockResult | null;
+  if (trim && trim.refund > 0 && result.orderId) {
+    if (!trim.emptied) await reissueInvoiceIfExists(result.orderId);
+    const items = trim.trimmed.map((t) => `${t.removed} x ${t.productName}`).join(", ");
+    await enqueuePushNotification({
+      event: "custom",
+      dealerId: result.dealerId,
+      orderId: result.orderId,
+      title: trim.emptied ? "Indent cancelled — out of stock" : "Some items were out of stock",
+      body:
+        `${items} sold out before your payment went through. ` +
+        `Rs ${trim.refund.toFixed(2)} has been added to your available balance.`,
+    }).catch((e) => console.warn("[pay-now] out-of-stock notice failed:", e?.message));
   }
 
   return result;
@@ -581,6 +627,7 @@ export async function applyPaidGatePassPayment(
              dealer_id::text       AS "dealerId",
              direct_sale_id::text  AS "directSaleId",
              amount::numeric       AS amount,
+             amount_refunded::numeric AS "amountRefunded",
              status::text          AS status,
              razorpay_payment_id   AS "rzpPaymentId",
              -- Resolved to an IST date STRING here, never handed back as a
@@ -618,7 +665,9 @@ export async function applyPaidGatePassPayment(
              gp_no                AS "gpNo",
              grand_total::numeric AS "grandTotal",
              payment_ref          AS "paymentRef",
-             status::text         AS status
+             status::text         AS status,
+             customer_type::text  AS "customerType",
+             customer_id::text    AS "customerId"
         FROM direct_sales
        WHERE id = ${row.directSaleId}::uuid
        FOR UPDATE
@@ -631,12 +680,16 @@ export async function applyPaidGatePassPayment(
 
     // Money against a CANCELLED sale should be impossible — cancelling closes
     // the live QR at Razorpay first, precisely so nothing can still be
-    // scanned. If it happens anyway (a scan that raced the close), the money
-    // is already taken: record it and shout, never block.
-    if ((sale as any).status === "cancelled") {
+    // scanned. It happens anyway when the customer had already scanned and
+    // was mid-payment as the operator cancelled: GP-0229 was cancelled as
+    // unpaid and captured 40 seconds later. The money is already taken, so
+    // record it and shout, never block; it is handed back to the agent's
+    // balance once the receipt is booked, below.
+    const onCancelledSale = (sale as any).status === "cancelled";
+    if (onCancelledSale) {
       console.error(
         `[gate-pass-qr] PAYMENT ON CANCELLED SALE: ${row.directSaleId} was cancelled but ` +
-          `payment ${row.rzpPaymentId} (Rs.${amount.toFixed(2)}) was credited — refund it by hand`
+          `payment ${row.rzpPaymentId} (Rs.${amount.toFixed(2)}) was credited`
       );
     }
 
@@ -705,6 +758,48 @@ export async function applyPaidGatePassPayment(
           ${`Counter UPI for gate pass ${(sale as any).gpNo ?? row.directSaleId}`}
         )
       `;
+    }
+
+    // ── A capture that arrived after the cancel goes to the agent's balance ──
+    // The cancel saw nothing collected, so it returned nothing, and a counter
+    // receipt posts no ledger row: without this the union holds the money
+    // against no sale, visible on the dealer statement but absent from
+    // Available Balances (GP-0229 sat that way for Rs.681.83). Store credit
+    // rather than a bank refund — no money leaves, and it can still be
+    // refunded to the bank from the balance if the agent asks.
+    //
+    // Only on the call that books the receipt: every later call (webhook
+    // re-delivery, the counter poll, the sweep) finds it booked and must not
+    // credit again. Whatever the cancel itself already returned is netted
+    // off — a bank refund shows in amount_refunded, a refund-to-balance as a
+    // net ledger credit against the sale. The sale row is locked above, so a
+    // concurrent cancel cannot slip between this check and the commit.
+    if (onCancelledSale && !alreadyBooked && (sale as any).customerType === "agent") {
+      const [returned] = await tx`
+        SELECT COALESCE(SUM(CASE WHEN dl.type = 'credit' THEN dl.amount
+                                 ELSE -dl.amount END), 0)::float8 AS net
+          FROM dealer_ledger dl
+         WHERE dl.reference_id = ${row.directSaleId}::uuid
+      `;
+      const owed =
+        amount -
+        parseFloat((row as any).amountRefunded ?? "0") -
+        Math.max(0, Number((returned as any)?.net ?? 0));
+      if (owed > 0.001) {
+        await creditDealerBalance(
+          tx,
+          (sale as any).customerId,
+          owed,
+          row.directSaleId,
+          `Cancellation credit for gate pass ${(sale as any).gpNo ?? row.directSaleId} ` +
+            `(paid after cancel, ${row.rzpPaymentId})`,
+          null
+        );
+        console.error(
+          `[gate-pass-qr] Rs.${owed.toFixed(2)} from ${row.rzpPaymentId} credited to the ` +
+            `agent's available balance for cancelled sale ${row.directSaleId}`
+        );
+      }
     }
 
     // Stamp the sale's reference. The FIRST payment's reference is the one

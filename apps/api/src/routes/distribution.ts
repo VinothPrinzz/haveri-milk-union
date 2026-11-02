@@ -6,7 +6,28 @@ import { vehicles } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { istToday } from "../lib/ist-date.js";
 
+// Next free R number. Deleted routes are counted too: they keep their code
+// for the history printed under it, so a new route must never reuse it.
+async function nextRouteCode(): Promise<string> {
+  const [lastRoute] = await pgClient`
+    SELECT code FROM routes
+    WHERE code ~ '^R[0-9]+$'
+    ORDER BY CAST(SUBSTRING(code FROM 2) AS integer) DESC
+    LIMIT 1
+  `;
+  const lastNum = lastRoute ? parseInt(lastRoute.code.slice(1)) : 0;
+  return `R${lastNum + 1}`;
+}
+
 export async function distributionRoutes(app: FastifyInstance) {
+  // GET /api/v1/routes/next-code — the code a new route will get. The route
+  // list hides deleted routes, so the web form can't work this out itself.
+  app.get(
+    "/api/v1/routes/next-code",
+    { preHandler: [adminAuth, requireRole("routes.view")] },
+    async (_request, reply) => reply.send({ code: await nextRouteCode() })
+  );
+
   // GET /api/v1/routes — all routes with stop details
   app.get(
     "/api/v1/routes",
@@ -54,20 +75,10 @@ export async function distributionRoutes(app: FastifyInstance) {
       });
       const body = schema.parse(request.body);
 
-      // Auto-generate route code if not provided. Deleted routes are counted
-      // too (no deleted_at filter): they keep their code for the history that
-      // prints under it, so the next R number carries on past them instead of
-      // handing an old route's code to a new one.
+      // Auto-generate route code if not provided (see nextRouteCode).
       let routeCode = body.code;
       if (!routeCode) {
-        const [lastRoute] = await pgClient`
-          SELECT code FROM routes
-          WHERE code ~ '^R[0-9]+$'
-          ORDER BY CAST(SUBSTRING(code FROM 2) AS integer) DESC
-          LIMIT 1
-        `;
-        const lastNum = lastRoute ? parseInt(lastRoute.code.slice(1)) : 0;
-        routeCode = `R${lastNum + 1}`;
+        routeCode = await nextRouteCode();
       } else {
         // Hand-typed code: say plainly that it is taken rather than letting the
         // unique constraint surface as a 500. A deleted route still holds its

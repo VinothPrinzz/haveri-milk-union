@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TextInputProps,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -26,30 +27,73 @@ interface ChangePasswordScreenProps {
   onBack: () => void;
 }
 
+interface OtpRequestResponse {
+  maskedPhone: string;
+  resendAfterSeconds: number;
+}
+
 /**
- * ChangePasswordScreen — replaces the old "Forgot Password" flow.
+ * ChangePasswordScreen — OTP-verified password change.
  *
- * The dealer proves they know their current password (no OTP / SMS), so the
- * screen collects username + current password + new password and calls
- * POST /api/v1/auth/dealer/change-password. It is reached from the login
- * screen, so it does not assume an authenticated session.
+ * Step 1: dealer enters their username; the API texts a 6-digit OTP to the
+ *         phone registered on that account (POST /auth/dealer/otp/request).
+ * Step 2: dealer enters the OTP + new password
+ *         (POST /auth/dealer/otp/reset-password).
+ *
+ * Proving phone possession replaces the current-password check, so this
+ * screen also serves dealers who have forgotten their password. It is
+ * reached from the login screen, so it does not assume a session.
  */
 export default function ChangePasswordScreen({ onBack }: ChangePasswordScreenProps) {
   const insets = useSafeAreaInsets();
 
+  const [step, setStep] = useState<"username" | "otp">("username");
   const [username, setUsername] = useState("");
-  const [currentPassword, setCurrentPassword] = useState("");
+  const [maskedPhone, setMaskedPhone] = useState("");
+  const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
   const [focused, setFocused] = useState<string | null>(null);
 
+  // Resend countdown
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendIn]);
+
+  const errorMessage = (err: unknown, fallback: string) =>
+    err instanceof ApiError ? err.message : fallback;
+
+  const requestOtp = async () => {
+    if (!username.trim() || loading) return;
+    setLoading(true);
+    try {
+      const res = await api.post<OtpRequestResponse>(
+        "/api/v1/auth/dealer/otp/request",
+        { username: username.trim() }
+      );
+      setMaskedPhone(res.maskedPhone);
+      setResendIn(res.resendAfterSeconds);
+      setOtp("");
+      setStep("otp");
+    } catch (err) {
+      // Server-side throttle tells us how long to wait; reflect it in the timer.
+      if (err instanceof ApiError && err.status === 429) {
+        const retry = (err.body as { retryAfterSeconds?: number } | null)
+          ?.retryAfterSeconds;
+        if (retry && step === "otp") setResendIn(retry);
+      }
+      Alert.alert("Error", errorMessage(err, "Could not send OTP. Please try again."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const canSubmit =
-    !!username &&
-    !!currentPassword &&
-    !!newPassword &&
-    !!confirmPassword &&
-    !loading;
+    otp.length === 6 && !!newPassword && !!confirmPassword && !loading;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -62,19 +106,12 @@ export default function ChangePasswordScreen({ onBack }: ChangePasswordScreenPro
       Alert.alert("Mismatch", "New password and confirmation do not match.");
       return;
     }
-    if (newPassword === currentPassword) {
-      Alert.alert(
-        "Same Password",
-        "New password must be different from your current password."
-      );
-      return;
-    }
 
     setLoading(true);
     try {
-      await api.post("/api/v1/auth/dealer/change-password", {
-        username,
-        currentPassword,
+      await api.post("/api/v1/auth/dealer/otp/reset-password", {
+        username: username.trim(),
+        otp,
         newPassword,
       });
       Alert.alert(
@@ -83,14 +120,15 @@ export default function ChangePasswordScreen({ onBack }: ChangePasswordScreenPro
         [{ text: "OK", onPress: onBack }]
       );
     } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? err.message
-          : "Could not change password. Please try again.";
-      Alert.alert("Error", msg);
+      Alert.alert("Error", errorMessage(err, "Could not change password. Please try again."));
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleBack = () => {
+    if (step === "otp") setStep("username");
+    else onBack();
   };
 
   const { colors: gradColors, angle } = gradients.otpHeader;
@@ -101,25 +139,47 @@ export default function ChangePasswordScreen({ onBack }: ChangePasswordScreenPro
     label: string,
     value: string,
     onChange: (t: string) => void,
-    opts: { placeholder: string; secure?: boolean } = { placeholder: "" }
-  ) => (
-    <View style={styles.formGroup}>
-      <Text style={styles.formLabel}>{label}</Text>
-      <View style={[styles.formInput, focused === key && styles.formInputFocused]}>
-        <TextInput
-          style={styles.fiInput}
-          value={value}
-          onChangeText={onChange}
-          onFocus={() => setFocused(key)}
-          onBlur={() => setFocused(null)}
-          placeholder={opts.placeholder}
-          placeholderTextColor={colors.ink4}
-          secureTextEntry={opts.secure}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
+    opts: { placeholder: string; secure?: boolean } & Pick<
+      TextInputProps,
+      "keyboardType" | "maxLength" | "textContentType" | "autoComplete" | "editable"
+    > = { placeholder: "" }
+  ) => {
+    const { placeholder, secure, ...inputProps } = opts;
+    return (
+      <View style={styles.formGroup}>
+        <Text style={styles.formLabel}>{label}</Text>
+        <View style={[styles.formInput, focused === key && styles.formInputFocused]}>
+          <TextInput
+            style={styles.fiInput}
+            value={value}
+            onChangeText={onChange}
+            onFocus={() => setFocused(key)}
+            onBlur={() => setFocused(null)}
+            placeholder={placeholder}
+            placeholderTextColor={colors.ink4}
+            secureTextEntry={secure}
+            autoCapitalize="none"
+            autoCorrect={false}
+            {...inputProps}
+          />
+        </View>
       </View>
-    </View>
+    );
+  };
+
+  const button = (label: string, onPress: () => void, enabled: boolean) => (
+    <TouchableOpacity
+      style={[styles.btnBrand, !enabled && styles.btnBrandDisabled]}
+      activeOpacity={0.85}
+      onPress={onPress}
+      disabled={!enabled}
+    >
+      {loading ? (
+        <ActivityIndicator color={colors.primaryForeground} />
+      ) : (
+        <Text style={styles.btnBrandText}>{label}</Text>
+      )}
+    </TouchableOpacity>
   );
 
   return (
@@ -134,13 +194,15 @@ export default function ChangePasswordScreen({ onBack }: ChangePasswordScreenPro
         end={end}
         style={[styles.header, { paddingTop: Math.max(insets.top + 8, 42) }]}
       >
-        <TouchableOpacity onPress={onBack} style={styles.backBtn} activeOpacity={0.7}>
+        <TouchableOpacity onPress={handleBack} style={styles.backBtn} activeOpacity={0.7}>
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
 
         <Text style={styles.headerTitle}>Change Password 🔒</Text>
         <Text style={styles.headerSub}>
-          Verify your current password to set a new one
+          {step === "username"
+            ? "We'll send an OTP to your registered mobile number"
+            : `Enter the OTP sent to ${maskedPhone}`}
         </Text>
       </LinearGradient>
 
@@ -149,40 +211,50 @@ export default function ChangePasswordScreen({ onBack }: ChangePasswordScreenPro
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {field("username", "Username / Phone", username, setUsername, {
-          placeholder: "Enter username or phone",
+        {field("username", "Username", username, setUsername, {
+          placeholder: "Enter your username",
+          editable: step === "username",
         })}
-        {field(
-          "current",
-          "Current Password",
-          currentPassword,
-          setCurrentPassword,
-          { placeholder: "Enter current password", secure: true }
-        )}
-        {field("new", "New Password", newPassword, setNewPassword, {
-          placeholder: "At least 6 characters",
-          secure: true,
-        })}
-        {field(
-          "confirm",
-          "Confirm New Password",
-          confirmPassword,
-          setConfirmPassword,
-          { placeholder: "Re-enter new password", secure: true }
-        )}
 
-        <TouchableOpacity
-          style={[styles.btnBrand, !canSubmit && styles.btnBrandDisabled]}
-          activeOpacity={0.85}
-          onPress={handleSubmit}
-          disabled={!canSubmit}
-        >
-          {loading ? (
-            <ActivityIndicator color={colors.primaryForeground} />
-          ) : (
-            <Text style={styles.btnBrandText}>Update Password</Text>
-          )}
-        </TouchableOpacity>
+        {step === "username" ? (
+          button("Send OTP", requestOtp, !!username.trim() && !loading)
+        ) : (
+          <>
+            {field("otp", "OTP", otp, (t) => setOtp(t.replace(/\D/g, "")), {
+              placeholder: "6-digit OTP",
+              keyboardType: "number-pad",
+              maxLength: 6,
+              textContentType: "oneTimeCode",
+              autoComplete: "sms-otp",
+            })}
+
+            <TouchableOpacity
+              style={styles.resendContainer}
+              activeOpacity={0.7}
+              onPress={requestOtp}
+              disabled={resendIn > 0 || loading}
+            >
+              <Text style={[styles.resendText, resendIn > 0 && styles.resendTextDisabled]}>
+                {resendIn > 0 ? `Resend OTP in ${resendIn}s` : "Resend OTP"}
+              </Text>
+            </TouchableOpacity>
+
+            {field("new", "New Password", newPassword, setNewPassword, {
+              placeholder: "At least 6 characters",
+              secure: true,
+              textContentType: "newPassword",
+            })}
+            {field(
+              "confirm",
+              "Confirm New Password",
+              confirmPassword,
+              setConfirmPassword,
+              { placeholder: "Re-enter new password", secure: true, textContentType: "newPassword" }
+            )}
+
+            {button("Update Password", handleSubmit, canSubmit)}
+          </>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -282,5 +354,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: fonts.extrabold,
     color: colors.primaryForeground,
+  },
+  resendContainer: {
+    alignSelf: "flex-end",
+    marginTop: -8,
+    marginBottom: 16,
+    paddingVertical: 4,
+  },
+  resendText: {
+    fontSize: 12,
+    fontFamily: fonts.bold,
+    color: colors.primary,
+  },
+  resendTextDisabled: {
+    color: colors.mutedForeground,
   },
 });

@@ -44,6 +44,9 @@ export const orders = pgTable("orders", {
   // (cleared on cancel). Keeps deduct/restore idempotent across every
   // confirm entry point — see apps/api/src/lib/stock-check.ts (migration 0049).
   stockDeducted: boolean("stock_deducted").notNull().default(false),
+  // Standalone order from the Subsidy Indents page (migration 0079). Lookups
+  // for "the dealer's order for the day" skip it.
+  isSubsidy: boolean("is_subsidy").notNull().default(false),
   notes: text("notes"), // dealer's order notes
   placedBy: uuid("placed_by"), // null = dealer placed it; set to admin user ID if Call Desk placed
   officerId: uuid("officer_id"), // Phase 2: sales officer who processed this order (no FK on partitioned table)
