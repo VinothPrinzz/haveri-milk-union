@@ -3,7 +3,7 @@ import { useLocation, useNavigate, Outlet } from "react-router-dom";
 import {
   LayoutDashboard, Database, ShoppingCart, Truck, Boxes,
   BookOpenCheck, FileBarChart2, ShieldCheck, Search, Bell,
-  ChevronDown, LogOut, Keyboard, Wallet, KeyRound, Menu,
+  ChevronDown, LogOut, Keyboard, Wallet, KeyRound, Menu, Route as RouteIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -20,7 +20,7 @@ import { useKeyboardNav } from "@/lib/useKeyboardNav";
 
 export type ModuleKey =
   | "dashboard" | "masters" | "sales" | "fgs" | "finance"
-  | "reports" | "sales-reports" | "system";
+  | "dtc" | "reports" | "sales-reports" | "system";
 
 export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType<any>; path: string }[] = [
   { key: "dashboard",      label: "Dashboard",      icon: LayoutDashboard, path: "/" },
@@ -28,6 +28,7 @@ export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType
   { key: "sales",          label: "Sales",          icon: ShoppingCart,    path: "/sales/record-indents" },
   { key: "fgs",            label: "Stock & Dispatch", icon: Truck,         path: "/fgs/dashboard" },
   { key: "finance",        label: "Finance",        icon: Wallet,          path: "/finance/payments" },
+  { key: "dtc",            label: "DTC Billing",    icon: RouteIcon,       path: "/dtc/bills" },
   { key: "reports",        label: "Route Sheets",        icon: FileBarChart2,   path: "/reports/route-sheet" },
   { key: "sales-reports",  label: "Sales Reports", icon: FileBarChart2,   path: "/sales-reports/daily-statement" },
   { key: "system",         label: "Admin",          icon: ShieldCheck,     path: "/system/users" },
@@ -43,11 +44,19 @@ const ROLE_MODULES: Partial<Record<string, ModuleKey[]>> = {
   officer: ["reports", "sales-reports"],
 };
 
+// Modules shown only to the roles listed (mirrors the API's *.view permission).
+//   • DTC Billing → dtc.view (call_desk is a super role on the API).
+const MODULE_ROLES: Partial<Record<ModuleKey, string[]>> = {
+  dtc: ["super_admin", "call_desk", "manager", "accountant", "viewer"],
+};
+
 /** Module keys the given role may see, in MODULES order. */
 export function allowedModulesForRole(role: string | null | undefined): ModuleKey[] {
   const restricted = role ? ROLE_MODULES[role] : undefined;
   const allow = restricted ? new Set<ModuleKey>(restricted) : null;
-  return MODULES.map(m => m.key).filter(k => !allow || allow.has(k));
+  return MODULES.map(m => m.key)
+    .filter(k => !allow || allow.has(k))
+    .filter(k => !MODULE_ROLES[k] || (!!role && MODULE_ROLES[k]!.includes(role)));
 }
 
 /** Landing path for a role: its first allowed module (or Dashboard). */
@@ -65,6 +74,7 @@ export function moduleOfPath(pathname: string): ModuleKey {
     case "sales": return "sales";
     case "fgs": return "fgs";
     case "finance": return "finance";
+    case "dtc": return "dtc";
     case "reports": return "reports";
     case "sales-reports": return "sales-reports";
     case "system": return "system";
@@ -144,6 +154,12 @@ function CommandPalette({
 // Static index of jump targets (extend as needed; resolved against existing routes)
 const COMMAND_ITEMS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/" },
+  { label: "DTC: Monthly Bills", path: "/dtc/bills" },
+  { label: "DTC: Route Billing Setup", path: "/dtc/setup/routes" },
+  { label: "DTC: Approvals", path: "/dtc/approvals" },
+  { label: "DTC: Payments", path: "/dtc/payments" },
+  { label: "DTC: Consolidated DTC Bill", path: "/dtc/reports/consolidated" },
+  { label: "DTC: Cost per Litre", path: "/dtc/reports/cost-per-litre" },
   { label: "All Customers", path: "/masters/customers" },
   { label: "New Customer", path: "/masters/customers/new" },
   { label: "All Routes", path: "/masters/routes" },
@@ -288,7 +304,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
                 key={m.key}
                 to={m.path}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 h-9 text-[12.5px] font-medium rounded-sm whitespace-nowrap transition-colors",
+                  "flex items-center gap-1.5 px-2.5 2xl:px-3 h-9 text-[12.5px] font-medium rounded-sm whitespace-nowrap transition-colors",
                   active ? "bg-topbar-accent text-white" : "text-white/80 hover:bg-white/10"
                 )}
               >
@@ -306,10 +322,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         {/* Search trigger (Ctrl+K) */}
         <button
           onClick={() => setCmdOpen(true)}
-          className="hidden lg:flex items-center gap-2 bg-white/10 hover:bg-white/15 rounded-sm px-2.5 h-8 text-[12px] text-white/80 min-w-[200px]"
+          title="Search (Ctrl+K)"
+          className="hidden lg:flex items-center gap-2 bg-white/10 hover:bg-white/15 rounded-sm px-2.5 h-8 text-[12px] text-white/80 shrink-0 2xl:min-w-[200px]"
         >
           <Search className="w-3.5 h-3.5" />
-          <span className="flex-1 text-left">Search dealers, products…</span>
+          {/* Label only on wide screens, so all module tabs fit at laptop widths. */}
+          <span className="hidden 2xl:inline flex-1 text-left">Search dealers, products…</span>
           <span className="kbd !text-white/70 !border-white/20 !bg-white/10">Ctrl+K</span>
         </button>
 

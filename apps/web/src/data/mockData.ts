@@ -52,6 +52,10 @@ export interface Contractor {
   // v1.4 additions
   bankName?: string;
   accountNo?: string;
+  ifscCode?: string;
+  panNumber?: string;
+  tdsEntityType?: "individual" | "other";
+  tdsDeclarationFy?: string;
   /** @deprecated superseded by per-route routeRates[].ratePerTrip */
   ratePerKm?: number;
   periodFrom?: string | null;  // ISO date

@@ -204,13 +204,11 @@ export async function contractorRoutes(app: FastifyInstance) {
           ? body.routeRates
           : (body.routeIds ?? []).map((routeId) => ({ routeId, totalKmPerDay: null, ratePerTrip: null }));
 
+        // Rates / km per day are owned by DTC Billing → Route Billing Setup
+        // (dtc_route_terms, mirrored onto routes); only the assignment changes here.
         for (const a of assignments) {
           await tx`
-            UPDATE routes SET
-              contractor_id    = ${contractor.id},
-              rate_per_trip    = ${a.ratePerTrip   != null ? String(a.ratePerTrip)   : null}::numeric,
-              total_km_per_day = ${a.totalKmPerDay != null ? String(a.totalKmPerDay) : null}::numeric,
-              updated_at = now()
+            UPDATE routes SET contractor_id = ${contractor.id}, updated_at = now()
             WHERE id = ${a.routeId}::uuid AND deleted_at IS NULL
           `;
         }
@@ -297,10 +295,10 @@ export async function contractorRoutes(app: FastifyInstance) {
         if (!updated) return null;
 
         if (body.routeRates !== undefined || body.routeIds !== undefined) {
-          // Clear previous assignments incl. their per-route rates.
+          // Clear previous assignments. Per-route rates stay: they belong to
+          // the route (DTC Billing → Route Billing Setup), not the contractor.
           await tx`
-            UPDATE routes
-            SET contractor_id = NULL, rate_per_trip = NULL, total_km_per_day = NULL, updated_at = now()
+            UPDATE routes SET contractor_id = NULL, updated_at = now()
             WHERE contractor_id = ${id}
           `;
 
@@ -310,11 +308,7 @@ export async function contractorRoutes(app: FastifyInstance) {
 
           for (const a of assignments) {
             await tx`
-              UPDATE routes SET
-                contractor_id    = ${id},
-                rate_per_trip    = ${a.ratePerTrip   != null ? String(a.ratePerTrip)   : null}::numeric,
-                total_km_per_day = ${a.totalKmPerDay != null ? String(a.totalKmPerDay) : null}::numeric,
-                updated_at = now()
+              UPDATE routes SET contractor_id = ${id}, updated_at = now()
               WHERE id = ${a.routeId}::uuid AND deleted_at IS NULL
             `;
           }
