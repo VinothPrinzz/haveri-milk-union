@@ -43,6 +43,10 @@ import { financeDealerStatementsRoutes } from "./routes/finance-dealer-statement
 import { financeChequesRoutes } from "./routes/finance-cheques.js";
 import { financeAdjustmentsRoutes } from "./routes/finance-adjustments.js";
 import { financeLeakageIncentiveRoutes } from "./routes/finance-leakage-incentive.js";
+import { dtcSetupRoutes } from "./routes/dtc-setup.js";
+import { dtcBillRoutes } from "./routes/dtc-bills.js";
+import { dtcPaymentRoutes } from "./routes/dtc-payments.js";
+import { dtcReportRoutes } from "./routes/dtc-reports.js";
 import { financeDashboardRoutes } from "./routes/finance-dashboard.js";
 import { financeDayBookRoutes } from "./routes/finance-day-book.js";
 
@@ -206,6 +210,11 @@ await app.register(financeDealerStatementsRoutes);
 await app.register(financeChequesRoutes);
 await app.register(financeAdjustmentsRoutes);
 await app.register(financeLeakageIncentiveRoutes);
+// DTC Billing (transport contractor monthly bills)
+await app.register(dtcSetupRoutes);
+await app.register(dtcBillRoutes);
+await app.register(dtcPaymentRoutes);
+await app.register(dtcReportRoutes);
 await app.register(financeDashboardRoutes);
 await app.register(financeDayBookRoutes);
 await app.register(crudRoutes);

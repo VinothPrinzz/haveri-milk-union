@@ -224,7 +224,26 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // Cash Customers (used by Direct Sales)
   "cash_customers.view":   ["super_admin", "manager", "call_desk", "officer", "viewer"],
   "cash_customers.manage": ["super_admin", "manager", "call_desk", "officer"],
+
+  // DTC Billing (transport contractor monthly bills). Marketing (manager)
+  // prepares the bill and gives the Marketing approval; Finance (accountant)
+  // pre-audits, gives the final approval and pays. Each step records who
+  // did it, so the printed sheet carries the right names.
+  "dtc.view":            ["super_admin", "manager", "accountant", "viewer"],
+  "dtc.setup":           ["super_admin", "manager", "accountant"],
+  "dtc.prepare":         ["super_admin", "manager"],
+  "dtc.audit":           ["super_admin", "accountant"],
+  "dtc.approve_mktg":    ["super_admin", "manager"],
+  "dtc.approve_finance": ["super_admin", "accountant"],
+  "dtc.pay":             ["super_admin", "accountant"],
 };
+
+/** Same test as requireRole, for endpoints whose permission depends on the request body. */
+export function roleHasPermission(role: UserRole | string | undefined, permission: string): boolean {
+  const allowed = ROLE_PERMISSIONS[permission];
+  if (!allowed || !role) return false;
+  return SUPER_ROLES.includes(role as UserRole) || allowed.includes(role as UserRole);
+}
 
 /**
  * Role guard factory — creates a preHandler that checks if the admin
