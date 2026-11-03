@@ -10,6 +10,7 @@ import {
   boolean,
   numeric,
   timestamp,
+  date,
   index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
@@ -85,6 +86,10 @@ export const dealers = pgTable(
     area:          text("area"),
     houseNo:       text("house_no"),
     street:        text("street"),
+    // City / village the customer trades in (migration 0080).
+    village:       text("village"),
+    // Day the agency started — backfilled by 0080, editable in the master.
+    agencyStartDate: date("agency_start_date").notNull().defaultNow(),
     lastIndentAt:  timestamp("last_indent_at", { withTimezone: true }),
 
     createdAt: timestamp("created_at", { withTimezone: true })

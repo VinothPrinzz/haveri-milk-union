@@ -59,6 +59,8 @@ function normalizeCustomer(d: Record<string, unknown>) {
     area:        (d.area ?? "") as string,
     houseNo:     (d.house_no ?? d.houseNo ?? "") as string,
     street:      (d.street ?? "") as string,
+    village:     (d.village ?? "") as string,
+    agencyStartDate: String(d.agency_start_date ?? d.agencyStartDate ?? "").slice(0, 10),
     pinCode:     (d.pin_code ?? d.pinCode ?? "") as string,
     lastIndentAt: (d.last_indent_at ?? d.lastIndentAt ?? null) as string | null,
 
@@ -487,6 +489,8 @@ export const createCustomer = async (body: Record<string, unknown>) => {
     area: body.area || undefined,
     houseNo: body.houseNo || undefined,
     street: body.street || undefined,
+    village: body.village || undefined,
+    agencyStartDate: body.agencyStartDate || undefined,
     pinCode: body.pinCode || undefined,
     address: body.address || undefined,
     code: body.code,
@@ -508,6 +512,9 @@ export const updateCustomer = async (id: string, body: Record<string, unknown>) 
     addressType: body.addressType || undefined, state: body.state || undefined,
     city: body.city || undefined, area: body.area || undefined,
     houseNo: body.houseNo || undefined, street: body.street || undefined,
+    // Always sent (blank clears it), like the GST no. below.
+    village: body.village ?? "",
+    agencyStartDate: body.agencyStartDate || undefined,
     pinCode: body.pinCode || undefined,
     address: body.address || undefined,
     // Always sent (blank clears it) so removing a GST no. actually saves.
@@ -719,6 +726,12 @@ export const fetchSupplierCostMap = async (): Promise<SupplierCostMap> => {
 export const fetchRoutes = async () => {
   const data = await get<{ routes: Record<string, unknown>[] }>("/routes");
   return (data.routes ?? []).map(normalizeRoute);
+};
+
+// Distinct City / Village names already on the customer master, A→Z.
+export const fetchCustomerVillages = async (): Promise<string[]> => {
+  const data = await get<{ villages: string[] }>("/dealers/villages");
+  return data.villages ?? [];
 };
 
 export const fetchZones = async () => {
@@ -2940,6 +2953,29 @@ export const releaseEmployeeOrder = async (orderId: string) =>
   post<{ orderId: string; status: string; released: boolean }>(
     `/finance/employee-orders/${orderId}/release`, {},
   );
+
+// ── Employee salary recovery (subsidy goods recovered from salary) ──
+export interface EmployeeRecoveryDueRow {
+  id: string; code: string | null; name: string;
+  department: string | null; routeName: string | null;
+  outstanding: number;        // owed right now
+  recoveredInMonth: number;   // already recovered in the selected month
+}
+export interface EmployeeRecoveryRow {
+  id: string; recoveryDate: string; amount: number; description: string | null;
+  createdAt: string; employeeId: string; employeeCode: string | null;
+  employeeName: string; postedBy: string | null; reversedOn: string | null;
+}
+export const fetchEmployeeRecoveryDue = async (params: { month: string; search?: string }) =>
+  (await get<{ data: EmployeeRecoveryDueRow[] }>("/finance/employee-recoveries/due", params)).data;
+export const fetchEmployeeRecoveries = async (month: string) =>
+  (await get<{ data: EmployeeRecoveryRow[] }>("/finance/employee-recoveries", { month })).data;
+export const postEmployeeRecoveries = async (body: {
+  recoveryDate: string; salaryMonth: string; note?: string;
+  items: Array<{ employeeId: string; amount: number }>;
+}) => post<{ posted: number; total: number }>("/finance/employee-recoveries", body);
+export const reverseEmployeeRecovery = async (id: string) =>
+  post<{ id: string; reversed: boolean }>(`/finance/employee-recoveries/${id}/reverse`, {});
 
 // ── Refunds ──
 export interface RefundRow {
