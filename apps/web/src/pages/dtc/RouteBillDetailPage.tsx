@@ -119,10 +119,10 @@ export default function RouteBillDetailPage() {
         <Routes>
           <Route index element={<SummaryPage data={data} editable={!!editable} onSaved={refresh} />} />
           <Route path="earnings" element={
-            <LinesSection kind="earning" data={data} lines={earnings} editable={!!editable} onSaved={refresh} />} />
+            <LinesSection key="earning" kind="earning" data={data} lines={earnings} editable={!!editable} onSaved={refresh} />} />
           <Route path="deductions" element={
             <>
-              <LinesSection kind="deduction" data={data} lines={deductions} editable={!!editable} onSaved={refresh} />
+              <LinesSection key="deduction" kind="deduction" data={data} lines={deductions} editable={!!editable} onSaved={refresh} />
               {editable && bill.suppressedAuto.length > 0 && <RestoreAuto billId={bill.id} count={bill.suppressedAuto.length} onDone={refresh} />}
             </>} />
           <Route path="contractor" element={<ContractorPage data={data} />} />
