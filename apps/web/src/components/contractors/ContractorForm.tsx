@@ -24,6 +24,7 @@ import {
   type Contractor,
 } from "@/services/api";
 import { contractorSchema, type ContractorFormData } from "@/lib/validations";
+import { Link } from "react-router-dom";
 import PageHeader, { FormSection, Field, FormFooter } from "@/components/PageHeader";
 
 interface Props {
@@ -74,6 +75,10 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
           licenseNumber: initialData.licenseNumber ?? "",
           bankName: initialData.bankName ?? "",
           accountNo: initialData.accountNo ?? "",
+          ifscCode: initialData.ifscCode ?? "",
+          panNumber: initialData.panNumber ?? "",
+          tdsEntityType: initialData.tdsEntityType ?? "individual",
+          tdsDeclarationFy: initialData.tdsDeclarationFy ?? "",
           vehicleNumber: initialData.vehicleNumber ?? "",
           periodFrom: initialData.periodFrom ?? "",
           periodTo: initialData.periodTo ?? "",
@@ -96,6 +101,7 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
       : {
           active: true,
           state: "Karnataka",
+          tdsEntityType: "individual",
           routeRates: [],
         },
   });
@@ -124,20 +130,6 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
     form.setValue(
       "routeRates",
       newIds.map(id => byId.get(id) ?? { routeId: id, totalKmPerDay: 0, ratePerTrip: 0 }),
-      { shouldDirty: true }
-    );
-  };
-
-  const updateRouteRate = (
-    routeId: string,
-    key: "totalKmPerDay" | "ratePerTrip",
-    value: number
-  ) => {
-    form.setValue(
-      "routeRates",
-      (form.getValues("routeRates") ?? []).map(r =>
-        r.routeId === routeId ? { ...r, [key]: value } : r
-      ),
       { shouldDirty: true }
     );
   };
@@ -249,6 +241,20 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
               />
             </Field>
 
+            <Field label="IFSC" error={form.formState.errors.ifscCode?.message}>
+              <FormField
+                control={form.control}
+                name="ifscCode"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input uppercase" placeholder="SBIN0001234" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
+
             <Field label="Vehicle Number" error={form.formState.errors.vehicleNumber?.message}>
               <FormField
                 control={form.control}
@@ -257,6 +263,54 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
                   <FormItem>
                     <FormControl>
                       <Input className="erp-input" placeholder="KA-25-AB-1234" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
+          </FormSection>
+
+          {/* Tax — TDS u/s 194C (used by DTC Billing) */}
+          <FormSection title="Tax (TDS on transport, section 194C)" cols={3}>
+            <Field label="PAN" error={form.formState.errors.panNumber?.message}>
+              <FormField
+                control={form.control}
+                name="panNumber"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input uppercase" placeholder="ABCDE1234F" {...field} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
+
+            <Field label="Contractor is" error={form.formState.errors.tdsEntityType?.message}>
+              <FormField
+                control={form.control}
+                name="tdsEntityType"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <select className="erp-input w-full" value={field.value} onChange={e => field.onChange(e.target.value)}>
+                        <option value="individual">Individual / HUF (1%)</option>
+                        <option value="other">Firm / company (2%)</option>
+                      </select>
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </Field>
+
+            <Field label="10-vehicle declaration for FY" hint="e.g. 2026-27" error={form.formState.errors.tdsDeclarationFy?.message}>
+              <FormField
+                control={form.control}
+                name="tdsDeclarationFy"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Input className="erp-input" placeholder="2026-27" {...field} />
                     </FormControl>
                   </FormItem>
                 )}
@@ -433,8 +487,8 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
                     <thead>
                       <tr>
                         <th>Route</th>
-                        <th style={{ width: 150 }}>Total Km/Day</th>
-                        <th style={{ width: 170 }}>Rate per Km/Trip (₹)</th>
+                        <th style={{ width: 150 }} className="text-right">Total Km/Day</th>
+                        <th style={{ width: 170 }} className="text-right">Rate per Km/Trip (₹)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -446,35 +500,18 @@ export function ContractorForm({ initialData, onSubmit, isSubmitting, onCancel }
                               <span className="font-mono">{r?.code ?? rr.routeId.slice(0, 6)}</span>
                               {r?.name ? `: ${r.name}` : ""}
                             </td>
-                            <td>
-                              <Input
-                                className="erp-input"
-                                type="number"
-                                min={0}
-                                step="0.1"
-                                value={rr.totalKmPerDay}
-                                onChange={e =>
-                                  updateRouteRate(rr.routeId, "totalKmPerDay", parseFloat(e.target.value) || 0)
-                                }
-                              />
-                            </td>
-                            <td>
-                              <Input
-                                className="erp-input"
-                                type="number"
-                                min={0}
-                                step="0.001"
-                                value={rr.ratePerTrip}
-                                onChange={e =>
-                                  updateRouteRate(rr.routeId, "ratePerTrip", parseFloat(e.target.value) || 0)
-                                }
-                              />
-                            </td>
+                            <td className="text-right num">{rr.totalKmPerDay || ""}</td>
+                            <td className="text-right num">{rr.ratePerTrip || ""}</td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
+                </div>
+                <div className="text-[11.5px] text-muted-foreground mt-1">
+                  Rates, km per day and billing type are set in{" "}
+                  <Link to="/dtc/setup/routes" className="text-primary underline">DTC Billing → Route Billing Setup</Link>
+                  , with their effective dates.
                 </div>
               </Field>
             )}

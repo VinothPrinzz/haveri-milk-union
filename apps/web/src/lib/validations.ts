@@ -61,7 +61,13 @@ export const contractorSchema = z.object({
   // Business
   bankName:      z.string().default(""),
   accountNo:     z.string().default(""),
+  ifscCode:      z.string().trim().regex(/^([A-Za-z]{4}0[A-Za-z0-9]{6})?$/, "IFSC is 11 characters, e.g. SBIN0001234").default(""),
   vehicleNumber: z.string().default(""),
+
+  // Tax (TDS u/s 194C on transport contracts)
+  panNumber:        z.string().trim().regex(/^([A-Za-z]{5}[0-9]{4}[A-Za-z])?$/, "PAN is 10 characters, e.g. ABCDE1234F").default(""),
+  tdsEntityType:    z.enum(["individual", "other"]).default("individual"),
+  tdsDeclarationFy: z.string().trim().regex(/^(\d{4}-\d{2})?$/, "Financial year like 2026-27").default(""),
 
   // Period
   periodFrom:    z.string().optional().default(""),

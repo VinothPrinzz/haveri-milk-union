@@ -6,7 +6,9 @@ import {
   Wallet, Bell, Image as ImageIcon, Shield, UserCog, Timer, ChevronLeft,
   ChevronRight, FileBarChart2, BookOpen, Map as RouteIcon, Database,
   Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows,
-  ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X, Factory, Droplets
+  ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X, Factory, Droplets,
+  Route as RouteBilling, Container, Satellite, PiggyBank, CalendarRange, CheckSquare, Landmark,
+  FileStack, Fuel, BookUser,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MODULES, moduleOfPath, allowedModulesForRole, type ModuleKey } from "@/components/AppLayout";
@@ -85,6 +87,19 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Leakage Incentive", path: "/finance/leakage-incentive", icon: Droplets },
     { label: "Day Book",          path: "/finance/day-book",        icon: BookOpen },
   ],
+  dtc: [
+    { label: "Monthly Bills",        path: "/dtc/bills",                    icon: CalendarRange },
+    { label: "Approvals",            path: "/dtc/approvals",                icon: CheckSquare },
+    { label: "Payments & Advances",  path: "/dtc/payments",                 icon: Landmark },
+    { label: "Consolidated DTC Bill", path: "/dtc/reports/consolidated",    icon: FileStack },
+    { label: "Contractor Bill Slips", path: "/dtc/reports/bill-slips",      icon: Receipt },
+    { label: "Cost per Litre",       path: "/dtc/reports/cost-per-litre",   icon: Fuel },
+    { label: "Contractor Ledger",    path: "/dtc/reports/ledger",           icon: BookUser },
+    { label: "Route Billing Setup",  path: "/dtc/setup/routes",             icon: RouteBilling },
+    { label: "Crate Rates",          path: "/dtc/setup/crate-rates",        icon: Container },
+    { label: "GPS & Fixed Charges",  path: "/dtc/setup/charges",            icon: Satellite },
+    { label: "Security Deposits",    path: "/dtc/setup/deposits",           icon: PiggyBank },
+  ],
   reports: [
     { label: "Route Sheet",      path: "/reports/route-sheet",      icon: RouteIcon },
     { label: "Gate Pass Report", path: "/reports/gate-pass",        icon: FileText },
@@ -128,6 +143,7 @@ const MODULE_LABEL: Record<ModuleKey, string> = {
   sales: "Sales Operations",
   fgs: "FGS: Stock & Dispatch",
   finance: "Finance",
+  dtc: "DTC Billing",
   reports: "Route Sheets",
   "sales-reports": "Sales Reports",
   system: "Admin",

@@ -133,6 +133,10 @@ export async function contractorRoutes(app: FastifyInstance) {
         licenseNumber: z.string().optional().nullable(),
         bankName: z.string().optional().nullable(),
         accountNo: z.string().optional().nullable(),
+        ifscCode: z.string().trim().max(20).optional().nullable(),
+        panNumber: z.string().trim().max(20).optional().nullable(),
+        tdsEntityType: z.enum(["individual", "other"]).optional().nullable(),
+        tdsDeclarationFy: z.string().trim().regex(/^(\d{4}-\d{2})?$/, "expected e.g. 2026-27").optional().nullable(),
         ratePerKm: z.union([z.string(), z.number()]).optional().nullable(),
         vehicleNumber: z.string().optional().nullable(),
         periodFrom: z.string().optional().nullable(),
@@ -176,7 +180,8 @@ export async function contractorRoutes(app: FastifyInstance) {
             code, name, phone, email, license_number, zone_id, address,
             vehicle_number, bank_name, account_no, rate_per_km,
             address_type, state, city, area, house_no, street,
-            period_from, period_to, active
+            period_from, period_to, active,
+            ifsc_code, pan_number, tds_entity_type, tds_declaration_fy
           ) VALUES (
             ${code}, ${body.name}, ${body.phone}, ${body.email ?? null},
             ${body.licenseNumber ?? null}, ${body.zoneId ?? null}, ${body.address ?? null},
@@ -185,7 +190,9 @@ export async function contractorRoutes(app: FastifyInstance) {
             ${body.addressType ?? null}, ${body.state ?? null}, ${body.city ?? null},
             ${body.area ?? null}, ${body.houseNo ?? null}, ${body.street ?? null},
             ${body.periodFrom ?? null}::date, ${body.periodTo ?? null}::date,
-            ${body.active !== false}
+            ${body.active !== false},
+            ${body.ifscCode ? body.ifscCode.toUpperCase() : null}, ${body.panNumber ? body.panNumber.toUpperCase() : null},
+            ${body.tdsEntityType ?? "individual"}, ${body.tdsDeclarationFy || null}
           )
           RETURNING *
         `;
@@ -197,13 +204,11 @@ export async function contractorRoutes(app: FastifyInstance) {
           ? body.routeRates
           : (body.routeIds ?? []).map((routeId) => ({ routeId, totalKmPerDay: null, ratePerTrip: null }));
 
+        // Rates / km per day are owned by DTC Billing → Route Billing Setup
+        // (dtc_route_terms, mirrored onto routes); only the assignment changes here.
         for (const a of assignments) {
           await tx`
-            UPDATE routes SET
-              contractor_id    = ${contractor.id},
-              rate_per_trip    = ${a.ratePerTrip   != null ? String(a.ratePerTrip)   : null}::numeric,
-              total_km_per_day = ${a.totalKmPerDay != null ? String(a.totalKmPerDay) : null}::numeric,
-              updated_at = now()
+            UPDATE routes SET contractor_id = ${contractor.id}, updated_at = now()
             WHERE id = ${a.routeId}::uuid AND deleted_at IS NULL
           `;
         }
@@ -227,6 +232,10 @@ export async function contractorRoutes(app: FastifyInstance) {
         licenseNumber: z.string().optional().nullable(),
         bankName: z.string().optional().nullable(),
         accountNo: z.string().optional().nullable(),
+        ifscCode: z.string().trim().max(20).optional().nullable(),
+        panNumber: z.string().trim().max(20).optional().nullable(),
+        tdsEntityType: z.enum(["individual", "other"]).optional().nullable(),
+        tdsDeclarationFy: z.string().trim().regex(/^(\d{4}-\d{2})?$/, "expected e.g. 2026-27").optional().nullable(),
         ratePerKm: z.union([z.string(), z.number()]).optional().nullable(),
         vehicleNumber: z.string().optional().nullable(),
         periodFrom: z.string().optional().nullable(),
@@ -261,6 +270,10 @@ export async function contractorRoutes(app: FastifyInstance) {
             license_number = COALESCE(${body.licenseNumber ?? null}, license_number),
             bank_name = COALESCE(${body.bankName ?? null}, bank_name),
             account_no = COALESCE(${body.accountNo ?? null}, account_no),
+            ifsc_code = CASE WHEN ${body.ifscCode !== undefined} THEN ${body.ifscCode ? body.ifscCode.toUpperCase() : null} ELSE ifsc_code END,
+            pan_number = CASE WHEN ${body.panNumber !== undefined} THEN ${body.panNumber ? body.panNumber.toUpperCase() : null} ELSE pan_number END,
+            tds_entity_type = COALESCE(${body.tdsEntityType ?? null}, tds_entity_type),
+            tds_declaration_fy = CASE WHEN ${body.tdsDeclarationFy !== undefined} THEN ${body.tdsDeclarationFy || null} ELSE tds_declaration_fy END,
             rate_per_km = COALESCE(${body.ratePerKm != null ? String(body.ratePerKm) : null}::numeric, rate_per_km),
             vehicle_number = COALESCE(${body.vehicleNumber ?? null}, vehicle_number),
             period_from = COALESCE(${body.periodFrom ?? null}::date, period_from),
@@ -282,10 +295,10 @@ export async function contractorRoutes(app: FastifyInstance) {
         if (!updated) return null;
 
         if (body.routeRates !== undefined || body.routeIds !== undefined) {
-          // Clear previous assignments incl. their per-route rates.
+          // Clear previous assignments. Per-route rates stay: they belong to
+          // the route (DTC Billing → Route Billing Setup), not the contractor.
           await tx`
-            UPDATE routes
-            SET contractor_id = NULL, rate_per_trip = NULL, total_km_per_day = NULL, updated_at = now()
+            UPDATE routes SET contractor_id = NULL, updated_at = now()
             WHERE contractor_id = ${id}
           `;
 
@@ -295,11 +308,7 @@ export async function contractorRoutes(app: FastifyInstance) {
 
           for (const a of assignments) {
             await tx`
-              UPDATE routes SET
-                contractor_id    = ${id},
-                rate_per_trip    = ${a.ratePerTrip   != null ? String(a.ratePerTrip)   : null}::numeric,
-                total_km_per_day = ${a.totalKmPerDay != null ? String(a.totalKmPerDay) : null}::numeric,
-                updated_at = now()
+              UPDATE routes SET contractor_id = ${id}, updated_at = now()
               WHERE id = ${a.routeId}::uuid AND deleted_at IS NULL
             `;
           }
