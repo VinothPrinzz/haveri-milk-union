@@ -222,3 +222,29 @@ export interface LedgerReport {
   totals: { gross: number; otherEarnings: number; totalEarnings: number; totalDeductions: number; payable: number; paid: number; outstanding: number };
 }
 export const fetchLedger = (q: { contractorId: string; from: string; to: string }) => get<LedgerReport>("/dtc/reports/ledger", q);
+
+// ── Record pages ──
+export interface RouteRecord {
+  today: string;
+  route: { id: string; code: string; name: string; contractorId: string | null; contractorName: string | null; contractorPhone: string | null; contractorVehicle: string | null };
+  current: RouteTerms | null;
+  upcoming: RouteTerms | null;
+  history: RouteTerms[];
+  bills: {
+    id: string; month: string; runStatus: RunStatus; contractorName: string | null; billingType: BillingType;
+    days: number; qty: number; gross: number; totalEarnings: number; totalDeductions: number; net: number; costPerLitre: number;
+  }[];
+}
+export const fetchRouteRecord = (routeId: string) => get<RouteRecord>(`/dtc/route-terms/${routeId}`);
+
+export interface DepositRecord {
+  contractor: { id: string; code: string | null; name: string; phone: string };
+  plan: null | {
+    id: string; targetAmount: number; monthlyInstalment: number; openingCollected: number;
+    status: DepositPlan["status"]; refundedAmount: number; refundedOn: string | null; refundReference: string | null;
+    notes: string | null; createdAt: string; updatedAt: string;
+  };
+  collections: { id: string; month: string; runStatus: RunStatus; routeCode: string; routeName: string; amount: number; source: string; remarks: string | null }[];
+  collected: number; collectedPending: number; balanceDue: number;
+}
+export const fetchDepositRecord = (contractorId: string) => get<DepositRecord>(`/dtc/deposits/contractor/${contractorId}`);

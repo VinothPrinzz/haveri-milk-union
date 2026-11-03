@@ -6,12 +6,14 @@
 //   GET    /api/v1/dtc/settings                     cost-per-litre basis, TDS, signatures
 //   PUT    /api/v1/dtc/settings
 //   GET    /api/v1/dtc/route-terms                  every route with its current terms
+//   GET    /api/v1/dtc/route-terms/:routeId           one route: terms, history, recent bills
 //   GET    /api/v1/dtc/route-terms/:routeId/history
 //   POST   /api/v1/dtc/route-terms                  add / replace a version (route + date)
 //   DELETE /api/v1/dtc/route-terms/:id
 //   GET    /api/v1/dtc/crate-rates      POST  DELETE /:id
 //   GET    /api/v1/dtc/charges          POST  PATCH /:id  DELETE /:id
 //   GET    /api/v1/dtc/deposits         POST (upsert per contractor)  POST /:id/refund
+//   GET    /api/v1/dtc/deposits/contractor/:contractorId   plan + every instalment taken
 //
 // Terms are versioned by effective date: a rate revision is a new row, so a
 // bill already prepared keeps the rate it was made with. The version in force
@@ -146,6 +148,45 @@ export async function dtcSetupRoutes(app: FastifyInstance) {
     `;
     return {
       data: (rows as any[]).map(r => ({ ...mapTerms(r), createdByName: r.createdByName, usedInBills: r.usedInBills })),
+    };
+  });
+
+  // One route's billing record: the route, its terms (current / upcoming /
+  // every version) and its last 12 bills.
+  dtcRoute(app, "get", "/api/v1/dtc/route-terms/:routeId", "dtc.view", async (request) => {
+    const { routeId } = parseWith(z.object({ routeId: z.string().uuid() }), request.params);
+    const today = istToday();
+    const [route] = await pgClient`
+      SELECT r.id, r.code, r.name, r.contractor_id AS "contractorId", c.name AS "contractorName",
+             c.phone AS "contractorPhone", c.vehicle_number AS "contractorVehicle"
+        FROM routes r LEFT JOIN contractors c ON c.id = r.contractor_id AND c.deleted_at IS NULL
+       WHERE r.id = ${routeId}::uuid AND r.deleted_at IS NULL
+    ` as any[];
+    if (!route) throw new HttpError(404, "Not found", "Route not found.");
+    const versions = await pgClient`
+      SELECT t.*, u.name AS "createdByName",
+             EXISTS (SELECT 1 FROM dtc_bills b JOIN dtc_bill_runs br ON br.id = b.run_id
+                      WHERE br.status <> 'draft'
+                        AND b.segments @> jsonb_build_array(jsonb_build_object('termsId', t.id::text))) AS "usedInBills"
+        FROM dtc_route_terms t LEFT JOIN users u ON u.id = t.created_by
+       WHERE t.route_id = ${routeId}::uuid
+       ORDER BY t.effective_from DESC
+    ` as any[];
+    const history = versions.map(r => ({ ...mapTerms(r), createdByName: r.createdByName, usedInBills: r.usedInBills }));
+    const bills = await pgClient`
+      SELECT b.id, to_char(r.bill_month, 'YYYY-MM') AS month, r.status AS "runStatus", b.contractor_name AS "contractorName",
+             b.billing_type AS "billingType", b.days, b.qty_litres::float8 AS qty, b.gross_amount::float8 AS gross,
+             b.total_earnings::float8 AS "totalEarnings", b.total_deductions::float8 AS "totalDeductions",
+             b.net_amount::float8 AS net, b.cost_per_litre::float8 AS "costPerLitre"
+        FROM dtc_bills b JOIN dtc_bill_runs r ON r.id = b.run_id
+       WHERE b.route_id = ${routeId}::uuid
+       ORDER BY r.bill_month DESC LIMIT 12
+    `;
+    return {
+      today, route,
+      current: history.find(h => h.effectiveFrom! <= today) ?? null,
+      upcoming: [...history].reverse().find(h => h.effectiveFrom! > today) ?? null,
+      history, bills,
     };
   });
 
@@ -354,6 +395,38 @@ export async function dtcSetupRoutes(app: FastifyInstance) {
         const collected = round2(r.openingCollected + r.collectedApproved);
         return { ...r, collected, balanceDue: round2(Math.max(0, r.targetAmount - collected)) };
       }),
+    };
+  });
+
+  // One contractor's deposit: the plan (or null) and every instalment taken.
+  dtcRoute(app, "get", "/api/v1/dtc/deposits/contractor/:contractorId", "dtc.view", async (request) => {
+    const { contractorId } = parseWith(z.object({ contractorId: z.string().uuid() }), request.params);
+    const [contractor] = await pgClient`
+      SELECT id, code, name, phone FROM contractors WHERE id = ${contractorId}::uuid
+    ` as any[];
+    if (!contractor) throw new HttpError(404, "Not found", "Contractor not found.");
+    const [plan] = await pgClient`
+      SELECT id, target_amount::float8 AS "targetAmount", monthly_instalment::float8 AS "monthlyInstalment",
+             opening_collected::float8 AS "openingCollected", status, refunded_amount::float8 AS "refundedAmount",
+             refunded_on::text AS "refundedOn", refund_reference AS "refundReference", notes,
+             created_at AS "createdAt", updated_at AS "updatedAt"
+        FROM dtc_security_deposits WHERE contractor_id = ${contractorId}::uuid
+    ` as any[];
+    const collections = await pgClient`
+      SELECT l.id, to_char(r.bill_month, 'YYYY-MM') AS month, r.status AS "runStatus",
+             b.route_code AS "routeCode", b.route_name AS "routeName", l.amount::float8 AS amount,
+             l.source, l.remarks
+        FROM dtc_bill_lines l JOIN dtc_bills b ON b.id = l.bill_id JOIN dtc_bill_runs r ON r.id = b.run_id
+       WHERE l.head = 'security_deposit' AND b.contractor_id = ${contractorId}::uuid
+       ORDER BY r.bill_month DESC
+    ` as any[];
+    const approved = round2(collections.filter(c => c.runStatus === "approved").reduce((s, c) => s + c.amount, 0));
+    const pending = round2(collections.filter(c => c.runStatus !== "approved").reduce((s, c) => s + c.amount, 0));
+    const collected = round2((plan?.openingCollected ?? 0) + approved);
+    return {
+      contractor, plan: plan ?? null, collections,
+      collected, collectedPending: pending,
+      balanceDue: plan ? round2(Math.max(0, plan.targetAmount - collected)) : 0,
     };
   });
 

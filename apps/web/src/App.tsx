@@ -65,6 +65,10 @@ import DtcRouteBillingPage        from "@/pages/dtc/RouteBillingPage";
 import DtcCrateRatesPage          from "@/pages/dtc/CrateRatesPage";
 import DtcRecurringChargesPage    from "@/pages/dtc/RecurringChargesPage";
 import DtcSecurityDepositsPage    from "@/pages/dtc/SecurityDepositsPage";
+import DtcRouteTermsRecordPage    from "@/pages/dtc/RouteTermsRecordPage";
+import DtcSettingsPage            from "@/pages/dtc/DtcSettingsPage";
+import DtcDepositRecordPage       from "@/pages/dtc/DepositRecordPage";
+import DtcAdvanceFormPage         from "@/pages/dtc/AdvanceFormPage";
 import DealerIndentsPage from "@/pages/sales/DealerIndentsPage";
 // import DatabaseHealthPage from "@/pages/system/DatabaseHealthPage";
 import {
@@ -226,14 +230,18 @@ function AppInner() {
           <Route path="/dtc/bills/:month/:billId" element={<DtcRouteBillDetailPage />} />
           <Route path="/dtc/approvals" element={<DtcApprovalsPage />} />
           <Route path="/dtc/payments" element={<DtcPaymentsPage />} />
+          <Route path="/dtc/payments/advances/new" element={<DtcAdvanceFormPage />} />
           <Route path="/dtc/reports/consolidated" element={<DtcConsolidatedReportPage />} />
           <Route path="/dtc/reports/bill-slips" element={<DtcBillSlipsPage />} />
           <Route path="/dtc/reports/cost-per-litre" element={<DtcCostPerLitrePage />} />
           <Route path="/dtc/reports/ledger" element={<DtcContractorLedgerPage />} />
           <Route path="/dtc/setup/routes" element={<DtcRouteBillingPage />} />
+          <Route path="/dtc/setup/routes/:routeId" element={<DtcRouteTermsRecordPage />} />
+          <Route path="/dtc/setup/settings" element={<DtcSettingsPage />} />
           <Route path="/dtc/setup/crate-rates" element={<DtcCrateRatesPage />} />
           <Route path="/dtc/setup/charges" element={<DtcRecurringChargesPage />} />
           <Route path="/dtc/setup/deposits" element={<DtcSecurityDepositsPage />} />
+          <Route path="/dtc/setup/deposits/:contractorId" element={<DtcDepositRecordPage />} />
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />

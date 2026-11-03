@@ -12,16 +12,17 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import PageHeader, { EmptyState, StatCard, fmtINR } from "@/components/PageHeader";
+import PageHeader, { EmptyState } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle, ArrowLeft, CalendarPlus, Printer, RefreshCw, Search, Trash2 } from "lucide-react";
+import { AlertTriangle, CalendarPlus, FileText, Printer, RefreshCw, Search, Trash2 } from "lucide-react";
 import { ApiError } from "@/lib/apiClient";
 import { createRun, deleteRun, fetchRun, regenerateRun, updateBill, type Bill } from "@/services/dtc";
-import { RunActionButtons, RunTimeline } from "./RunActions";
+import { RunActionArea, RunPipeline, RunTimeline } from "./RunActions";
+import { RecordHeader, Section, Timeline } from "./ui";
 import {
-  BILLING_TYPE_LABEL, RunStatusBadge, errMsg, monthLong, qtyFmt, rs, rs2, useDtcPerms,
+  BILLING_TYPE_LABEL, RunStatusBadge, errMsg, fmtStamp, monthLong, qtyFmt, rs, rs2, useDtcPerms,
 } from "./shared";
 
 export default function MonthlyBillSheetPage() {
@@ -95,16 +96,24 @@ export default function MonthlyBillSheetPage() {
     );
   }
 
+  if (isLoading || !run || !data) {
+    return <div className="p-4 space-y-2">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}</div>;
+  }
+
   return (
-    <div className="flex flex-col h-full">
-      <PageHeader
+    <div className="h-full overflow-auto">
+      <RecordHeader
+        back={{ to: "/dtc/bills", label: "Monthly Bills" }}
         title={`DTC Bills: ${monthLong(month)}`}
-        subtitle={run ? `${run.billCount} routes · ${run.contractorCount} contractors · generated ${run.generatedByName ? `by ${run.generatedByName}` : ""}` : "Loading…"}
-        actions={run && (
+        status={<RunStatusBadge status={run.status} />}
+        subtitle={`${run.billCount} routes · ${run.contractorCount} contractors · generated${run.generatedByName ? ` by ${run.generatedByName}` : ""} ${fmtStamp(run.generatedAt)}`}
+        actions={
           <>
-            <Button size="sm" variant="ghost" className="h-8" onClick={() => navigate("/dtc/bills")}><ArrowLeft className="h-3.5 w-3.5 mr-1" /> Months</Button>
             <Button size="sm" variant="outline" className="h-8" asChild>
               <Link to={`/dtc/reports/consolidated?month=${month}`}><Printer className="h-3.5 w-3.5 mr-1.5" /> Consolidated bill</Link>
+            </Button>
+            <Button size="sm" variant="outline" className="h-8" asChild>
+              <Link to={`/dtc/reports/bill-slips?month=${month}`}><FileText className="h-3.5 w-3.5 mr-1.5" /> Bill slips</Link>
             </Button>
             {editable && (
               <>
@@ -112,27 +121,30 @@ export default function MonthlyBillSheetPage() {
                   title="Refresh days, litres, rates and automatic deductions. Your entries and day corrections are kept.">
                   <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${regen.isPending ? "animate-spin" : ""}`} /> Regenerate
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 text-destructive" disabled={discard.isPending}
+                <Button size="sm" variant="ghost" className="h-8 text-destructive" disabled={discard.isPending} title="Discard draft"
                   onClick={() => { if (confirm(`Discard the draft ${monthLong(month)} bills and everything entered on them?`)) discard.mutate(); }}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </>
             )}
-            <RunActionButtons run={run} />
           </>
-        )}
-      />
+        }
+        facts={[
+          { label: "Gross payable", value: `₹${rs(totals.gross)}` },
+          { label: "Other earnings", value: `₹${rs2(totals.other)}` },
+          { label: "Total earnings", value: `₹${rs(totals.earnings)}`, tone: "info" },
+          { label: "Deductions", value: `₹${rs(totals.deductions)}`, tone: "warning" },
+          { label: "Net payable", value: `₹${rs(totals.payable)}`, tone: "success", hint: totals.carry > 0 ? `₹${rs(totals.carry)} to recover next month` : `${run.paidCount} of ${run.billCount} paid` },
+          { label: "Cost per litre", value: `₹${rs2(totals.cpl)}`, hint: `${qtyFmt(totals.qty)} L/kg carried` },
+        ]}
+      >
+        <div className="mt-3 flex flex-wrap items-start gap-3">
+          <RunPipeline run={run} />
+          <div className="flex-1 min-w-[260px]"><RunActionArea run={run} /></div>
+        </div>
+      </RecordHeader>
 
-      <div className="flex-1 overflow-auto p-3 sm:p-4 space-y-3">
-        {isLoading || !run || !data ? (
-          <div className="space-y-2">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}</div>
-        ) : (
-          <>
-            <div className="flex flex-wrap items-center gap-2">
-              <RunStatusBadge status={run.status} className="text-[12px] px-2 py-1" />
-              <RunTimeline run={run} className="flex-1" />
-            </div>
-
+      <div className="p-3 sm:p-5 space-y-4">
             {run.status === "draft" && run.returnedComment && (
               <div className="erp-panel p-3 border-l-4 border-l-warning text-[12.5px] flex gap-2">
                 <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
@@ -146,25 +158,15 @@ export default function MonthlyBillSheetPage() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-              <StatCard label="Gross payable" value={fmtINR(totals.gross, false)} />
-              <StatCard label="Other earnings" value={fmtINR(totals.other, false)} />
-              <StatCard label="Total earnings" value={fmtINR(totals.earnings, false)} tone="info" />
-              <StatCard label="Deductions" value={fmtINR(totals.deductions, false)} tone="warning" />
-              <StatCard label="Net payable" value={fmtINR(totals.payable, false)} tone="success"
-                hint={totals.carry > 0 ? `₹${rs(totals.carry)} to recover next month` : undefined} />
-              <StatCard label="Cost per litre" value={`₹${rs2(totals.cpl)}`} hint={`${qtyFmt(totals.qty)} L/kg carried`} />
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="relative w-72 max-w-full">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Route, contractor, vehicle" className="erp-input pl-7 w-full" />
-              </div>
-              {editable && <span className="text-[11.5px] text-muted-foreground">Correct days in the Days column; click a row to add earnings and deductions.</span>}
-            </div>
-
-            <div className="erp-panel overflow-auto">
+            <Section title="Route bills" flush
+              description={editable ? "Correct days in the Days column; open a route to enter earnings and deductions." : "Open a route to see its bill."}
+              actions={
+                <div className="relative w-64 max-w-full">
+                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                  <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Route, contractor, vehicle" className="erp-input pl-7 w-full h-7" />
+                </div>
+              }>
+            <div className="overflow-auto">
               {bills.length === 0 ? (
                 <EmptyState title="No route bills" hint={run.billCount === 0 ? "No route has billing terms for this month. Set them up in Route Billing Setup, then regenerate." : "Nothing matches the search"} />
               ) : (
@@ -223,8 +225,22 @@ export default function MonthlyBillSheetPage() {
                 </table>
               )}
             </div>
-          </>
-        )}
+            </Section>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <Section title="Approvals" description="Who signed each step">
+                <RunTimeline run={run} />
+              </Section>
+              <Section title="Activity" description="Generation, approvals and send-backs for this month">
+                <Timeline
+                  items={data.events.map(e => ({
+                    id: e.id, who: e.userName, when: fmtStamp(e.createdAt),
+                    text: e.detail ?? e.action,
+                    tone: e.action === "send_back" || e.action === "reopen" ? "warning" : e.action === "approve" ? "success" : "default",
+                  }))}
+                />
+              </Section>
+            </div>
       </div>
     </div>
   );

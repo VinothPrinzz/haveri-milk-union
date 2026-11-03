@@ -2,40 +2,46 @@
 // ════════════════════════════════════════════════════════════════════
 // DTC Billing → one route's bill  (/dtc/bills/:month/:billId)
 //
-// Days and litres found for the month (correctable), the gross worked out
-// from the route terms, and the earnings / deductions on the bill:
-//   • typed by the clerk: extra km, crate / packet shortage, short km, dues,
-//     penalties, … — qty × rate fills the amount;
-//   • added automatically: GPS and fixed charges, the security deposit
-//     instalment, advances to recover, last month's negative balance, TDS.
-// Removing an automatic line keeps it off when the month is regenerated.
-// Finance can hold the bill from payment here.
+// A record page: the header carries the bill's figures and its approval
+// stage; the sections below are
+//   Days & gross          days and litres found, correctable per part of the month
+//   Other earnings        } editable tables: add a row at the bottom, edit in
+//   Deductions            } place; automatic rows (GPS, deposit, advance,
+//                         } last month's balance, TDS) are marked "auto"
+//   Contractor & vehicle  bank, PAN / TDS status, route terms
+//   Activity & payments   who changed what, payment record
+// Holding a bill from payment opens in place under the header.
 // ════════════════════════════════════════════════════════════════════
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import PageHeader, { Field } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowLeft, ChevronLeft, ChevronRight, Hand, Pencil, Plus, RotateCcw, Trash2, Unlock } from "lucide-react";
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Hand, Pencil, Plus, RotateCcw, Trash2, Unlock, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   addBillLine, deleteBillLine, fetchBill, fetchRun, holdBill, restoreAutoLines, updateBill, updateBillLine,
-  type BillLine, type BillDetail, type BillSegment,
+  type BillDetail, type BillLine, type BillSegment,
 } from "@/services/dtc";
 import {
-  BILLING_TYPE_LABEL, DEDUCTION_HEADS, EARNING_HEADS, HEAD_LABEL, InfoRow, RATE_UNIT, RunStatusBadge,
+  BILLING_TYPE_LABEL, DEDUCTION_HEADS, EARNING_HEADS, HEAD_LABEL, RATE_UNIT, RunStatusBadge,
   errMsg, fmtDMY, fmtStamp, monthLong, qtyFmt, rs, rs2, useDtcPerms,
 } from "./shared";
+import { RunPipeline } from "./RunActions";
+import { FieldList, InlinePanel, RecordHeader, Section, SectionTabs, Timeline } from "./ui";
+
+type HeadDef = { head: string; label: string; unit?: string; usesBillRate?: string; usesCrateRate?: boolean };
+const ALL_HEADS = [...EARNING_HEADS, ...DEDUCTION_HEADS] as HeadDef[];
 
 export default function RouteBillDetailPage() {
   const { month = "", billId = "" } = useParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const perms = useDtcPerms();
+  const [holdOpen, setHoldOpen] = useState(false);
 
   const { data, isLoading } = useQuery({ queryKey: ["dtc-bill", billId], queryFn: () => fetchBill(billId) });
   const { data: run } = useQuery({ queryKey: ["dtc-run", month], queryFn: () => fetchRun(month) });
@@ -52,146 +58,176 @@ export default function RouteBillDetailPage() {
     qc.invalidateQueries({ queryKey: ["dtc-run", month] });
     qc.invalidateQueries({ queryKey: ["dtc-runs"] });
   };
+  const hold = useMutation({
+    mutationFn: ({ on, reason }: { on: boolean; reason?: string }) => holdBill(billId, on, reason),
+    onSuccess: (r) => { toast.success(r.message); setHoldOpen(false); refresh(); },
+    onError: (e) => toast.error(errMsg(e)),
+  });
 
   if (isLoading || !bill || !data) {
-    return <div className="p-4 space-y-2">{Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}</div>;
+    return <div className="p-4 space-y-2">{Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>;
   }
   const earnings = bill.lines.filter(l => l.kind === "earning");
   const deductions = bill.lines.filter(l => l.kind === "deduction");
 
   return (
-    <div className="flex flex-col h-full">
-      <PageHeader
-        title={`${bill.routeCode}: ${bill.routeName}`}
-        subtitle={`DTC bill for ${monthLong(month)} · ${bill.contractorName ?? "no contractor"}`}
-        actions={
+    <div className="h-full overflow-auto">
+      <RecordHeader
+        back={{ to: `/dtc/bills/${month}`, label: `DTC Bills: ${monthLong(month)}` }}
+        code={bill.routeCode}
+        title={bill.routeName}
+        status={
           <>
-            <Button size="sm" variant="ghost" className="h-8" asChild>
-              <Link to={`/dtc/bills/${month}`}><ArrowLeft className="h-3.5 w-3.5 mr-1" /> {monthLong(month)}</Link>
-            </Button>
-            <Button size="sm" variant="outline" className="h-8" disabled={!prev} onClick={() => prev && navigate(`/dtc/bills/${month}/${prev.id}`)} title={prev ? `${prev.routeCode} ${prev.routeName}` : ""}>
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </Button>
-            <Button size="sm" variant="outline" className="h-8" disabled={!next} onClick={() => next && navigate(`/dtc/bills/${month}/${next.id}`)} title={next ? `${next.routeCode} ${next.routeName}` : ""}>
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-            {perms.pay && !bill.paidOn && <HoldButton billId={bill.id} onHold={bill.onHold} onDone={refresh} />}
+            <RunStatusBadge status={bill.runStatus} />
+            {bill.onHold && <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-warning/15 text-warning">On hold</span>}
+            {bill.paidOn && <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-success/15 text-success">Paid {fmtDMY(bill.paidOn)}</span>}
           </>
         }
-      />
-
-      <div className="flex-1 overflow-auto p-3 sm:p-4">
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3">
-          <div className="space-y-3 min-w-0">
-            {bill.onHold && (
-              <div className="erp-panel p-3 border-l-4 border-l-warning text-[12.5px]">
-                <b>On hold for payment:</b> {bill.holdReason}
-              </div>
-            )}
-            {!editable && bill.runStatus !== "draft" && (
-              <div className="text-[12px] text-muted-foreground">
-                This month is <RunStatusBadge status={bill.runStatus} />; the bill can't be edited. To correct it, the approver sends the month back.
-              </div>
-            )}
-
-            <SegmentsPanel data={data} editable={!!editable} onSaved={refresh} />
-
-            <LinesPanel title="Other earnings" lines={earnings} billId={bill.id} editable={!!editable} onSaved={refresh} />
-            <LinesPanel title="Deductions" lines={deductions} billId={bill.id} editable={!!editable} onSaved={refresh} />
-
-            {editable && <AddLineForm data={data} onSaved={refresh} />}
-
-            {editable && bill.suppressedAuto.length > 0 && (
-              <RestoreAuto billId={bill.id} count={bill.suppressedAuto.length} onDone={refresh} />
-            )}
-
-            <NotesPanel billId={bill.id} notes={bill.notes} editable={!!editable} onSaved={refresh} />
-
-            <ActivityPanel data={data} />
-          </div>
-
-          <div className="space-y-3">
-            <div className="erp-panel p-3">
-              <div className="erp-section-title">Bill</div>
-              <InfoRow label="Gross payable">₹{rs(bill.gross)}</InfoRow>
-              <InfoRow label="Other earnings">₹{rs2(bill.otherEarnings)}</InfoRow>
-              <InfoRow label="Total earnings">₹{rs(bill.totalEarnings)}</InfoRow>
-              <InfoRow label="Total deductions">₹{rs(bill.totalDeductions)}</InfoRow>
-              <div className="border-t border-border my-1.5" />
-              <InfoRow label={bill.net < 0 ? "Net (negative)" : "Net payable"}>
-                <span className={`text-[15px] ${bill.net < 0 ? "text-destructive" : "text-success"}`}>₹{rs(bill.net)}</span>
-              </InfoRow>
-              {bill.carryForward > 0 && (
-                <p className="text-[11.5px] text-destructive mt-1">
-                  Deductions are more than the earnings. ₹{rs(bill.carryForward)} is recovered from the contractor's next bill.
-                </p>
-              )}
-              <InfoRow label="Cost per litre">₹{rs2(bill.costPerLitre)}</InfoRow>
-              {bill.paidOn && (
-                <p className="text-[12px] text-success mt-1.5">Paid on {fmtDMY(bill.paidOn)} ({bill.paymentMode?.toUpperCase()} {bill.paymentReference ?? ""})</p>
-              )}
-            </div>
-
-            <div className="erp-panel p-3">
-              <div className="erp-section-title">Route & vehicle</div>
-              <InfoRow label="Billing">{BILLING_TYPE_LABEL[bill.billingType]} @ ₹{rs2(bill.rate)} {RATE_UNIT[bill.billingType]}</InfoRow>
-              {bill.billingType === "km" && <InfoRow label="Km per day">{rs2(bill.kmPerDay)}</InfoRow>}
-              <InfoRow label="Vehicle">{bill.vehicleNumber ?? "—"}</InfoRow>
-              <InfoRow label="Capacity">{bill.vehicleCapacityMt != null ? `${rs2(bill.vehicleCapacityMt)} MT` : "—"}</InfoRow>
-              <InfoRow label="Litres/kg carried">{qtyFmt(bill.qtyLitres)}</InfoRow>
-              {bill.cashCollection && (
-                <InfoRow label="Sales billed on route">₹{rs(data.routeSales)}</InfoRow>
-              )}
-              {bill.cashCollection && (
-                <p className="text-[11px] text-muted-foreground">Cash-collection route: enter any cash not handed over as Dues.</p>
-              )}
-            </div>
-
-            <div className="erp-panel p-3">
-              <div className="erp-section-title">Contractor</div>
-              <InfoRow label="Name">{bill.contractorName ?? "—"}</InfoRow>
-              <InfoRow label="Phone">{bill.contractorPhone ?? "—"}</InfoRow>
-              <InfoRow label="Bank">{bill.bankName ?? "—"}</InfoRow>
-              <InfoRow label="Account / IFSC">{bill.accountNo ? `${bill.accountNo} / ${bill.ifscCode ?? "no IFSC"}` : "—"}</InfoRow>
-              <InfoRow label="PAN">{bill.panNumber ?? <span className="text-warning">not on record</span>}</InfoRow>
-              <InfoRow label="194C declaration">{bill.tdsDeclarationFy ?? "—"}</InfoRow>
-              {bill.contractorId && (
-                <Link to={`/dtc/reports/ledger?contractor=${bill.contractorId}`} className="text-[12px] text-primary underline">Contractor ledger</Link>
-              )}
-            </div>
-          </div>
+        subtitle={<>
+          {monthLong(month)} · {bill.contractorName ?? "no contractor"} · {BILLING_TYPE_LABEL[bill.billingType]} @ ₹{rs2(bill.rate)} {RATE_UNIT[bill.billingType]}
+          {bill.billingType === "km" ? ` × ${rs2(bill.kmPerDay)} km/day` : ""}
+          {idx >= 0 && <span className="ml-2">· route {idx + 1} of {order.length}</span>}
+        </>}
+        actions={
+          <>
+            <Button size="sm" variant="outline" className="h-8" disabled={!prev} onClick={() => prev && navigate(`/dtc/bills/${month}/${prev.id}`)} title={prev ? `${prev.routeCode} ${prev.routeName}` : ""}>
+              <ChevronLeft className="h-3.5 w-3.5 mr-0.5" /> Previous
+            </Button>
+            <Button size="sm" variant="outline" className="h-8" disabled={!next} onClick={() => next && navigate(`/dtc/bills/${month}/${next.id}`)} title={next ? `${next.routeCode} ${next.routeName}` : ""}>
+              Next <ChevronRight className="h-3.5 w-3.5 ml-0.5" />
+            </Button>
+            {perms.pay && !bill.paidOn && (bill.onHold
+              ? <Button size="sm" variant="outline" className="h-8" disabled={hold.isPending} onClick={() => hold.mutate({ on: false })}><Unlock className="h-3.5 w-3.5 mr-1.5" /> Release for payment</Button>
+              : <Button size="sm" variant="outline" className="h-8" onClick={() => setHoldOpen(v => !v)}><Hand className="h-3.5 w-3.5 mr-1.5" /> Hold payment</Button>)}
+          </>
+        }
+        facts={[
+          { label: "Days", value: bill.days, hint: `${qtyFmt(bill.qtyLitres)} L/kg carried` },
+          { label: "Gross payable", value: `₹${rs(bill.gross)}` },
+          { label: "Other earnings", value: `₹${rs2(bill.otherEarnings)}` },
+          { label: "Total deductions", value: `₹${rs(bill.totalDeductions)}`, tone: "warning" },
+          {
+            label: bill.net < 0 ? "Net (to recover)" : "Net payable", value: `₹${rs(bill.net)}`,
+            tone: bill.net < 0 ? "danger" : "success",
+            hint: bill.carryForward > 0 ? "recovered from next month's bill" : `earnings ₹${rs(bill.totalEarnings)}`,
+          },
+          { label: "Cost per litre", value: `₹${rs2(bill.costPerLitre)}` },
+        ]}
+      >
+        {run && <div className="mt-3"><RunPipeline run={run.run} /></div>}
+        <div className="mt-3">
+          <HoldPanel open={holdOpen} busy={hold.isPending} onCancel={() => setHoldOpen(false)} onHold={reason => hold.mutate({ on: true, reason })} />
         </div>
+      </RecordHeader>
+
+      <SectionTabs sections={[
+        { id: "gross", label: "Days & gross" },
+        { id: "earnings", label: "Other earnings", count: earnings.length },
+        { id: "deductions", label: "Deductions", count: deductions.length },
+        { id: "contractor", label: "Contractor & vehicle" },
+        { id: "activity", label: "Activity & payments", count: data.events.length },
+      ]} />
+
+      <div className="p-3 sm:p-5 space-y-4 max-w-6xl">
+        {bill.onHold && (
+          <div className="erp-panel p-3 border-l-4 border-l-warning text-[12.5px]"><b>On hold for payment:</b> {bill.holdReason}</div>
+        )}
+        {!editable && bill.runStatus !== "draft" && (
+          <div className="text-[12px] text-muted-foreground">
+            This month is with the approvers, so the bill is read-only. To correct it, the approver sends the month back.
+          </div>
+        )}
+
+        <GrossSection data={data} editable={!!editable} onSaved={refresh} />
+
+        <LinesSection id="earnings" title="Other earnings" kind="earning" data={data} lines={earnings} editable={!!editable} onSaved={refresh}
+          description="Extra km, extra trips, extra litres and other amounts paid on top of the gross." />
+        <LinesSection id="deductions" title="Deductions" kind="deduction" data={data} lines={deductions} editable={!!editable} onSaved={refresh}
+          description="Crate and packet shortage, short km, dues, penalties and others. Rows marked auto come from setup and are refreshed on regenerate." />
+
+        {editable && bill.suppressedAuto.length > 0 && <RestoreAuto billId={bill.id} count={bill.suppressedAuto.length} onDone={refresh} />}
+
+        <Section id="contractor" title="Contractor & vehicle">
+          <FieldList cols={3} items={[
+            { label: "Contractor", value: bill.contractorName ? <>{bill.contractorName}{bill.contractorCode ? ` (${bill.contractorCode})` : ""}</> : "—" },
+            { label: "Phone", value: bill.contractorPhone ?? "—" },
+            { label: "Bank", value: bill.bankName ?? "—" },
+            { label: "Account no.", value: bill.accountNo ?? <span className="text-warning">not on record</span> },
+            { label: "IFSC", value: bill.ifscCode ?? <span className="text-warning">not on record</span> },
+            { label: "PAN", value: bill.panNumber ?? <span className="text-warning">not on record</span> },
+            { label: "194C declaration", value: bill.tdsDeclarationFy ? `for ${bill.tdsDeclarationFy}` : "—" },
+            { label: "Vehicle", value: [bill.vehicleNumber, bill.vehicleCapacityMt != null ? `${rs2(bill.vehicleCapacityMt)} MT` : null].filter(Boolean).join(" · ") || "—" },
+            { label: "Cash collection route", value: bill.cashCollection ? <>Yes · sales billed on the route this month ₹{rs(data.routeSales)}</> : "No" },
+          ]} />
+          <div className="mt-3 flex flex-wrap gap-3 text-[12.5px]">
+            {bill.contractorId && <Link to={`/dtc/reports/ledger?contractor=${bill.contractorId}`} className="text-primary hover:underline">Contractor ledger →</Link>}
+            <Link to={`/dtc/setup/routes/${bill.routeId}`} className="text-primary hover:underline">Route billing terms →</Link>
+          </div>
+          {bill.cashCollection && <p className="text-[11.5px] text-muted-foreground mt-2">Cash-collection route: enter any cash the driver did not hand over as a Dues deduction.</p>}
+        </Section>
+
+        <NotesSection billId={bill.id} notes={bill.notes} editable={!!editable} onSaved={refresh} />
+
+        <Section id="activity" title="Activity & payments">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
+            <Timeline items={data.events.map(e => ({
+              id: e.id, who: e.userName, when: fmtStamp(e.createdAt), text: e.detail ?? e.action,
+              tone: e.action === "paid" ? "success" : e.action === "held" || e.action === "line_removed" ? "warning" : "default",
+            }))} />
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">Payments</div>
+              {data.payments.length === 0 ? <p className="text-[12.5px] text-muted-foreground">Not paid yet.</p> : (
+                <ul className="space-y-1.5 text-[12.5px]">
+                  {data.payments.map(p => (
+                    <li key={p.id} className={p.reversedAt ? "line-through text-muted-foreground" : ""}>
+                      ₹{rs2(p.amount)} on {fmtDMY(p.paidOn)} · {p.mode.toUpperCase()} {p.reference ?? ""}
+                      {p.reversedAt && <span className="no-underline"> (reversed: {p.reverseReason})</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </Section>
       </div>
     </div>
   );
 }
 
-// ─── Days / segments ────────────────────────────────────────────────
-function SegmentsPanel({ data, editable, onSaved }: { data: BillDetail; editable: boolean; onSaved: () => void }) {
+function HoldPanel({ open, busy, onCancel, onHold }: { open: boolean; busy: boolean; onCancel: () => void; onHold: (reason: string) => void }) {
+  const [reason, setReason] = useState("");
+  return (
+    <InlinePanel open={open} tone="warning" title="Hold this bill from payment">
+      <Textarea autoFocus value={reason} onChange={e => setReason(e.target.value)} placeholder="Why (at least 5 characters), e.g. km dispute with the route officer" className="erp-input min-h-[60px]" />
+      <div className="flex justify-end gap-1.5">
+        <Button size="sm" variant="ghost" className="h-8" onClick={onCancel}>Cancel</Button>
+        <Button size="sm" className="h-8" disabled={reason.trim().length < 5 || busy} onClick={() => onHold(reason)}>Hold payment</Button>
+      </div>
+    </InlinePanel>
+  );
+}
+
+// ─── Days & gross ───────────────────────────────────────────────────
+function GrossSection({ data, editable, onSaved }: { data: BillDetail; editable: boolean; onSaved: () => void }) {
   const { bill } = data;
-  const [open, setOpen] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: (u: { key: string; daysOverride: number | null }) => updateBill(bill.id, { segments: [u] }),
     onSuccess: onSaved,
     onError: (e) => toast.error(errMsg(e)),
   });
   return (
-    <div className="erp-panel overflow-auto">
-      <div className="px-3 pt-2.5 erp-section-title">Gross payable</div>
-      <table className="erp-table text-[12px]">
+    <Section id="gross" title="Days & gross payable" flush
+      description="Days are the dates the route sold or was dispatched. Correct the billed days if the vehicle ran on other days.">
+      <table className="erp-table text-[12.5px]">
         <thead>
           <tr>
-            <th>Period</th><th>Type</th><th className="text-right">Rate</th><th className="text-right">Km/day</th>
+            <th>Period</th><th>Billing</th><th className="text-right">Rate</th><th className="text-right">Km/day</th>
             <th className="text-right">Days found</th><th className="text-right">Days billed</th>
             <th className="text-right">Litres/kg</th><th className="text-right">Amount</th>
           </tr>
         </thead>
         <tbody>
-          {bill.segments.map((s: BillSegment) => (
-            <SegmentRow key={s.key} s={s} editable={editable} busy={mut.isPending}
-              open={open === s.key} onToggle={() => setOpen(open === s.key ? null : s.key)}
-              onSave={(d) => mut.mutate({ key: s.key, daysOverride: d })} />
-          ))}
+          {bill.segments.map(s => <SegmentRow key={s.key} s={s} editable={editable} busy={mut.isPending} onSave={d => mut.mutate({ key: s.key, daysOverride: d })} />)}
           <tr className="font-semibold bg-muted/40">
             <td colSpan={5}>Gross payable (rounded to the rupee)</td>
             <td className="text-right num">{bill.days}</td>
@@ -200,24 +236,21 @@ function SegmentsPanel({ data, editable, onSaved }: { data: BillDetail; editable
           </tr>
         </tbody>
       </table>
-      {bill.segments.length > 1 && (
-        <p className="px-3 py-2 text-[11.5px] text-muted-foreground">The rate changed during the month, so the month is billed in parts.</p>
-      )}
-    </div>
+      {bill.segments.length > 1 && <p className="px-4 py-2 text-[11.5px] text-muted-foreground">The rate changed during the month, so each part is billed at its own rate.</p>}
+    </Section>
   );
 }
 
-function SegmentRow({ s, editable, busy, open, onToggle, onSave }: {
-  s: BillSegment; editable: boolean; busy: boolean; open: boolean; onToggle: () => void; onSave: (d: number | null) => void;
-}) {
+function SegmentRow({ s, editable, busy, onSave }: { s: BillSegment; editable: boolean; busy: boolean; onSave: (d: number | null) => void }) {
   const [val, setVal] = useState(String(s.daysOverride ?? s.autoDays));
+  const [showDates, setShowDates] = useState(false);
   useEffect(() => setVal(String(s.daysOverride ?? s.autoDays)), [s.daysOverride, s.autoDays]);
-  const formula = s.billingType === "km"
-    ? `${s.daysOverride ?? s.autoDays} × ${rs2(s.kmPerDay)} km × ₹${rs2(s.rate)}`
-    : s.billingType === "trip" ? `${s.daysOverride ?? s.autoDays} × ₹${rs2(s.rate)}` : `${qtyFmt(s.qty)} × ₹${rs2(s.rate)}`;
+  const days = s.daysOverride ?? s.autoDays;
+  const formula = s.billingType === "km" ? `${days} days × ${rs2(s.kmPerDay)} km × ₹${rs2(s.rate)}`
+    : s.billingType === "trip" ? `${days} days × ₹${rs2(s.rate)}` : `${qtyFmt(s.qty)} L/kg × ₹${rs2(s.rate)}`;
   const commit = () => {
     const n = val.trim() === "" ? null : Math.max(0, Math.round(Number(val)));
-    if (n === (s.daysOverride ?? s.autoDays)) return;
+    if (n === days) return;
     onSave(n === s.autoDays ? null : n);
   };
   return (
@@ -228,28 +261,31 @@ function SegmentRow({ s, editable, busy, open, onToggle, onSave }: {
         <td className="text-right num">{rs2(s.rate)}</td>
         <td className="text-right num">{s.billingType === "km" ? rs2(s.kmPerDay) : ""}</td>
         <td className="text-right">
-          <button type="button" className="underline decoration-dotted num" onClick={onToggle} title="Show the dates">{s.autoDays}</button>
+          <button type="button" className="num underline decoration-dotted underline-offset-2" onClick={() => setShowDates(v => !v)} title="Show the dates">{s.autoDays}</button>
         </td>
         <td className="text-right">
           {editable ? (
-            <input type="number" min={0} max={31} value={val} disabled={busy}
-              onChange={e => setVal(e.target.value)} onBlur={commit}
-              onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-              className={`w-16 h-6 text-right num rounded border px-1 bg-background ${s.daysOverride != null ? "border-info text-info" : "border-input"}`} />
-          ) : (
-            <span className="num">{s.daysOverride ?? s.autoDays}{s.daysOverride != null && <span className="text-info">*</span>}</span>
-          )}
+            <span className="inline-flex items-center gap-1">
+              <input type="number" min={0} max={31} value={val} disabled={busy}
+                onChange={e => setVal(e.target.value)} onBlur={commit}
+                onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                className={cn("w-16 h-7 text-right num rounded border px-1.5 bg-background", s.daysOverride != null ? "border-info text-info" : "border-input")} />
+              {s.daysOverride != null && (
+                <button type="button" title="Back to the days found" className="text-muted-foreground hover:text-foreground" onClick={() => onSave(null)}><RotateCcw className="h-3.5 w-3.5" /></button>
+              )}
+            </span>
+          ) : <span className="num">{days}{s.daysOverride != null && <span className="text-info">*</span>}</span>}
         </td>
         <td className="text-right num">{qtyFmt(s.qty)}</td>
-        <td className="text-right num" title={formula}>₹{rs2(s.amount)}<div className="text-[10px] text-muted-foreground">{formula}</div></td>
+        <td className="text-right num">₹{rs2(s.amount)}<div className="text-[10.5px] text-muted-foreground">{formula}</div></td>
       </tr>
-      {open && (
+      {showDates && (
         <tr>
-          <td colSpan={8} className="text-[11.5px] text-muted-foreground bg-muted/20">
-            {s.runDates && s.runDates.length
-              ? <>Days the route sold or was dispatched: {s.runDates.map(d => d.slice(8, 10)).join(", ")}</>
+          <td colSpan={8} className="text-[12px] text-muted-foreground bg-muted/20">
+            {s.runDates?.length
+              ? <>Ran on: {s.runDates.map(d => <span key={d} className="inline-block rounded bg-background border border-border px-1 mr-1 mb-0.5 num">{d.slice(8, 10)}</span>)}</>
               : "No sale or dispatch found on this route in this period."}
-            {s.daysOverride != null && <> · Billed for {s.daysOverride} days (corrected by hand).</>}
+            {s.daysOverride != null && <> · Billed for {s.daysOverride} days, corrected by hand.</>}
           </td>
         </tr>
       )}
@@ -257,46 +293,53 @@ function SegmentRow({ s, editable, busy, open, onToggle, onSave }: {
   );
 }
 
-// ─── Lines ──────────────────────────────────────────────────────────
-function LinesPanel({ title, lines, billId, editable, onSaved }: {
-  title: string; lines: BillLine[]; billId: string; editable: boolean; onSaved: () => void;
+// ─── Earnings / deductions: editable table ──────────────────────────
+function LinesSection({ id, title, description, kind, data, lines, editable, onSaved }: {
+  id: string; title: string; description: string; kind: "earning" | "deduction";
+  data: BillDetail; lines: BillLine[]; editable: boolean; onSaved: () => void;
 }) {
-  const [editing, setEditing] = useState<BillLine | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
   const del = useMutation({
-    mutationFn: (l: BillLine) => deleteBillLine(billId, l.id),
+    mutationFn: (l: BillLine) => deleteBillLine(data.bill.id, l.id),
     onSuccess: (r) => { toast.success(r.message); onSaved(); },
     onError: (e) => toast.error(errMsg(e)),
   });
   const total = lines.reduce((s, l) => s + l.amount, 0);
   return (
-    <div className="erp-panel overflow-auto">
-      <div className="px-3 pt-2.5 erp-section-title">{title}</div>
-      {lines.length === 0 ? (
-        <div className="px-3 pb-3 text-[12px] text-muted-foreground">None.</div>
-      ) : (
-        <table className="erp-table text-[12px]">
-          <thead><tr><th>Head</th><th className="text-right">Qty</th><th className="text-right">Rate</th><th className="text-right">Amount</th><th>Remarks</th><th /></tr></thead>
-          <tbody>
-            {lines.map(l => (
+    <Section id={id} title={title} description={description} flush
+      actions={<span className="text-[13px] font-semibold num">Total ₹{rs2(total)}</span>}>
+      <table className="erp-table text-[12.5px]">
+        <thead>
+          <tr>
+            <th style={{ width: "24%" }}>Head</th><th className="text-right" style={{ width: 100 }}>Qty</th>
+            <th className="text-right" style={{ width: 110 }}>Rate (₹)</th><th className="text-right" style={{ width: 120 }}>Amount (₹)</th>
+            <th>Remarks</th><th style={{ width: 80 }} />
+          </tr>
+        </thead>
+        <tbody>
+          {lines.length === 0 && !editable && <tr><td colSpan={6} className="text-muted-foreground">None.</td></tr>}
+          {lines.map(l => editing === l.id
+            ? <LineEditor key={l.id} kind={kind} data={data} line={l} onDone={() => { setEditing(null); onSaved(); }} onCancel={() => setEditing(null)} />
+            : (
               <tr key={l.id}>
-                <td className="whitespace-nowrap">
+                <td>
                   {HEAD_LABEL[l.head] ?? l.head}
-                  {l.source === "auto" && <span className="ml-1.5 text-[10px] rounded bg-info/15 text-info px-1">auto</span>}
+                  {l.source === "auto" && <span className="ml-1.5 text-[10px] rounded bg-info/15 text-info px-1" title="Added from setup; refreshed on regenerate">auto</span>}
                 </td>
                 <td className="text-right num">{l.qty != null && l.head !== "tds" ? rs2(l.qty) : ""}</td>
                 <td className="text-right num">{l.rate != null ? (l.head === "tds" ? `${l.rate}%` : rs2(l.rate)) : ""}</td>
-                <td className="text-right num">₹{rs2(l.amount)}</td>
-                <td className="text-[11.5px]">{l.remarks ?? ""}</td>
+                <td className="text-right num font-medium">{rs2(l.amount)}</td>
+                <td className="text-[12px]">{l.remarks ?? ""}</td>
                 <td className="text-right whitespace-nowrap">
                   {editable && (
                     <>
                       {!(l.source === "auto" && l.head === "tds") && (
-                        <Button size="sm" variant="ghost" className="h-6" onClick={() => setEditing(l)}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button size="sm" variant="ghost" className="h-6 w-6 p-0" title="Edit" onClick={() => setEditing(l.id)}><Pencil className="h-3.5 w-3.5" /></Button>
                       )}
-                      <Button size="sm" variant="ghost" className="h-6 text-destructive" disabled={del.isPending}
+                      <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-destructive" title="Remove" disabled={del.isPending}
                         onClick={() => {
                           const msg = l.source === "auto"
-                            ? `Remove this automatic ${HEAD_LABEL[l.head] ?? l.head} line? It stays off this bill when the month is regenerated.`
+                            ? `Remove this automatic ${HEAD_LABEL[l.head] ?? l.head} row? It stays off this bill when the month is regenerated.`
                             : `Remove ${HEAD_LABEL[l.head] ?? l.head} ₹${rs2(l.amount)}?`;
                           if (confirm(msg)) del.mutate(l);
                         }}>
@@ -307,133 +350,91 @@ function LinesPanel({ title, lines, billId, editable, onSaved }: {
                 </td>
               </tr>
             ))}
-            <tr className="font-semibold bg-muted/40">
-              <td colSpan={3}>Total</td><td className="text-right num">₹{rs2(total)}</td><td colSpan={2} />
-            </tr>
-          </tbody>
-        </table>
-      )}
-      {editing && <EditLineDialog billId={billId} line={editing} onClose={() => setEditing(null)} onSaved={onSaved} />}
-    </div>
+          {editable && editing == null && <LineEditor kind={kind} data={data} onDone={onSaved} />}
+        </tbody>
+      </table>
+    </Section>
   );
 }
 
-function EditLineDialog({ billId, line, onClose, onSaved }: { billId: string; line: BillLine; onClose: () => void; onSaved: () => void }) {
-  const [qty, setQty] = useState(line.qty != null ? String(line.qty) : "");
-  const [rate, setRate] = useState(line.rate != null ? String(line.rate) : "");
-  const [amount, setAmount] = useState(String(line.amount));
-  const [remarks, setRemarks] = useState(line.remarks ?? "");
-  const both = qty !== "" && rate !== "";
-  const computed = both ? Math.round(Number(qty) * Number(rate) * 100) / 100 : Number(amount) || 0;
-  const mut = useMutation({
-    mutationFn: () => updateBillLine(billId, line.id, {
-      qty: both ? Number(qty) : null, rate: both ? Number(rate) : null, amount: both ? null : Number(amount), remarks: remarks || null,
-    }),
-    onSuccess: (r) => { toast.success(r.message); onSaved(); onClose(); },
-    onError: (e) => toast.error(errMsg(e)),
-  });
-  return (
-    <Dialog open onOpenChange={v => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-md">
-        <DialogHeader><DialogTitle>Edit {HEAD_LABEL[line.head] ?? line.head}</DialogTitle></DialogHeader>
-        <div className="space-y-3 text-[13px]">
-          {line.source === "auto" && <p className="text-[12px] text-muted-foreground">An edited automatic line becomes a manual one and is no longer updated on regeneration.</p>}
-          <div className="grid grid-cols-3 gap-2">
-            <Field label="Qty"><Input type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} className="erp-input num" /></Field>
-            <Field label="Rate (₹)"><Input type="number" min="0" step="0.01" value={rate} onChange={e => setRate(e.target.value)} className="erp-input num" /></Field>
-            <Field label="Amount (₹)">
-              <Input type="number" min="0" step="0.01" value={both ? String(computed) : amount} disabled={both} onChange={e => setAmount(e.target.value)} className="erp-input num" />
-            </Field>
-          </div>
-          <Field label="Remarks"><Input value={remarks} onChange={e => setRemarks(e.target.value)} className="erp-input" /></Field>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" size="sm" className="h-8" onClick={onClose}>Cancel</Button>
-          <Button size="sm" className="h-8" disabled={!(computed > 0) || mut.isPending} onClick={() => mut.mutate()}>{mut.isPending ? "Saving…" : "Save"}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function AddLineForm({ data, onSaved }: { data: BillDetail; onSaved: () => void }) {
+/** One editable row: a new line (bottom of the table) or an existing one. */
+function LineEditor({ kind, data, line, onDone, onCancel }: {
+  kind: "earning" | "deduction"; data: BillDetail; line?: BillLine; onDone: () => void; onCancel?: () => void;
+}) {
   const { bill } = data;
-  const [kind, setKind] = useState<"deduction" | "earning">("deduction");
-  const heads = kind === "earning" ? EARNING_HEADS : DEDUCTION_HEADS.filter(h => h.head !== "tds" || !bill.lines.some(l => l.head === "tds"));
-  const [head, setHead] = useState("crate");
-  const def = useMemo(() => [...EARNING_HEADS, ...DEDUCTION_HEADS].find(h => h.head === head), [head]);
-  const [qty, setQty] = useState("");
-  const [rate, setRate] = useState("");
-  const [amount, setAmount] = useState("");
-  const [remarks, setRemarks] = useState("");
-
-  // Offer the right rate for the head: the crate rate, or the bill's own rate.
-  useEffect(() => {
-    const d = [...EARNING_HEADS, ...DEDUCTION_HEADS].find(h => h.head === head) as
-      { usesBillRate?: string; usesCrateRate?: boolean; unit?: string } | undefined;
-    if (d?.usesCrateRate) setRate(data.crateRate ? String(data.crateRate) : "");
-    else if (d?.usesBillRate && d.usesBillRate === bill.billingType) setRate(String(bill.rate));
-    else setRate("");
-    setQty(""); setAmount("");
-  }, [head, data.crateRate, bill.billingType, bill.rate]);
-
-  const hasUnit = !!(def as { unit?: string } | undefined)?.unit;
+  const heads = (kind === "earning" ? EARNING_HEADS : DEDUCTION_HEADS.filter(h => h.head !== "tds" || !bill.lines.some(l => l.head === "tds"))) as HeadDef[];
+  const [head, setHead] = useState(line?.head ?? heads[0]!.head);
+  const def = useMemo(() => ALL_HEADS.find(h => h.head === head), [head]);
+  const defaultRate = (d?: HeadDef) =>
+    d?.usesCrateRate ? (data.crateRate ? String(data.crateRate) : "")
+      : d?.usesBillRate && d.usesBillRate === bill.billingType ? String(bill.rate) : "";
+  const [qty, setQty] = useState(line?.qty != null ? String(line.qty) : "");
+  const [rate, setRate] = useState(line ? (line.rate != null ? String(line.rate) : "") : defaultRate(def));
+  const [amount, setAmount] = useState(line && line.qty == null ? String(line.amount) : "");
+  const [remarks, setRemarks] = useState(line?.remarks ?? "");
+  const hasUnit = !!def?.unit;
   const both = hasUnit && qty !== "" && rate !== "";
   const computed = both ? Math.round(Number(qty) * Number(rate) * 100) / 100 : Number(amount) || 0;
+
+  const pickHead = (h: string) => {
+    setHead(h);
+    const d = ALL_HEADS.find(x => x.head === h);
+    setRate(defaultRate(d)); setQty(""); setAmount("");
+  };
   const mut = useMutation({
-    mutationFn: () => addBillLine(bill.id, {
-      head, qty: both ? Number(qty) : null, rate: both ? Number(rate) : null, amount: both ? null : Number(amount), remarks: remarks || null,
-    }),
-    onSuccess: () => { toast.success(`${HEAD_LABEL[head]} ₹${rs2(computed)} added`); setQty(""); setAmount(""); setRemarks(""); onSaved(); },
+    mutationFn: () => {
+      const body = { qty: both ? Number(qty) : null, rate: both ? Number(rate) : null, amount: both ? null : Number(amount), remarks: remarks || null };
+      return line ? updateBillLine(bill.id, line.id, body) : addBillLine(bill.id, { head, ...body });
+    },
+    onSuccess: () => {
+      toast.success(line ? "Updated" : `${HEAD_LABEL[head]} ₹${rs2(computed)} added`);
+      if (!line) { setQty(""); setAmount(""); setRemarks(""); }
+      onDone();
+    },
     onError: (e) => toast.error(errMsg(e)),
   });
+  const submit = () => { if (computed > 0 && !mut.isPending) mut.mutate(); };
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Enter") submit(); if (e.key === "Escape") onCancel?.(); };
 
   return (
-    <div className="erp-panel p-3">
-      <div className="erp-section-title flex items-center gap-2">
-        Add
-        <div className="flex rounded border border-border overflow-hidden text-[11.5px] font-normal normal-case tracking-normal">
-          {(["deduction", "earning"] as const).map(k => (
-            <button key={k} type="button"
-              onClick={() => { setKind(k); setHead(k === "earning" ? "extra_km" : "crate"); }}
-              className={`px-2.5 py-0.5 ${kind === k ? "bg-primary text-primary-foreground" : ""}`}>
-              {k === "deduction" ? "Deduction" : "Other earning"}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end">
-        <Field label="Head" className="col-span-2">
-          <select value={head} onChange={e => setHead(e.target.value)} className="erp-input w-full">
+    <tr className={line ? "bg-primary/5" : "bg-muted/20"}>
+      <td>
+        {line ? (
+          <span>{HEAD_LABEL[line.head] ?? line.head}{line.source === "auto" && <span className="block text-[10.5px] text-muted-foreground">becomes manual when saved</span>}</span>
+        ) : (
+          <select value={head} onChange={e => pickHead(e.target.value)} className="erp-input w-full h-7">
             {heads.map(h => <option key={h.head} value={h.head}>{h.label}</option>)}
           </select>
-        </Field>
-        {hasUnit ? (
-          <>
-            <Field label={`Qty (${(def as { unit?: string }).unit})`}>
-              <Input type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} className="erp-input num" />
-            </Field>
-            <Field label="Rate (₹)">
-              <Input type="number" min="0" step="0.01" value={rate} onChange={e => setRate(e.target.value)} className="erp-input num" />
-            </Field>
-          </>
-        ) : (
-          <Field label="Amount (₹)" className="col-span-2">
-            <Input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} className="erp-input num" />
-          </Field>
         )}
-        <Field label="Remarks" className="col-span-2 md:col-span-1">
-          <Input value={remarks} onChange={e => setRemarks(e.target.value)} placeholder="e.g. As per route officer" className="erp-input" />
-        </Field>
-        <Button size="sm" className="h-8" disabled={!(computed > 0) || mut.isPending} onClick={() => mut.mutate()}>
-          <Plus className="h-3.5 w-3.5 mr-1" /> {computed > 0 ? `₹${rs2(computed)}` : "Add"}
+      </td>
+      <td>
+        {hasUnit
+          ? <Input type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} onKeyDown={onKey} placeholder={def?.unit} className="erp-input h-7 text-right num" />
+          : <span className="block text-right text-muted-foreground text-[11px]">—</span>}
+      </td>
+      <td>
+        {hasUnit
+          ? <Input type="number" min="0" step="0.01" value={rate} onChange={e => setRate(e.target.value)} onKeyDown={onKey} className="erp-input h-7 text-right num" />
+          : <span className="block text-right text-muted-foreground text-[11px]">—</span>}
+      </td>
+      <td>
+        {both
+          ? <div className="text-right num font-medium pr-1">{rs2(computed)}</div>
+          : <Input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} onKeyDown={onKey} placeholder="0.00" className="erp-input h-7 text-right num" />}
+      </td>
+      <td>
+        <Input value={remarks} onChange={e => setRemarks(e.target.value)} onKeyDown={onKey}
+          placeholder={head === "crate" ? "e.g. 5 crates short as per audit" : head === "km" ? "e.g. As per route officer recommendation" : "Remarks"}
+          className="erp-input h-7" />
+        {head === "crate" && !data.crateRate && <div className="text-[10.5px] text-warning mt-0.5">No crate rate set (Setup → Crate Rates): type the rate.</div>}
+      </td>
+      <td className="text-right whitespace-nowrap">
+        <Button size="sm" className="h-7 px-2" disabled={!(computed > 0) || mut.isPending} onClick={submit} title={line ? "Save" : "Add"}>
+          {line ? <Check className="h-3.5 w-3.5" /> : <><Plus className="h-3.5 w-3.5 mr-0.5" />Add</>}
         </Button>
-      </div>
-      {head === "crate" && !data.crateRate && <p className="text-[11.5px] text-warning mt-1.5">No crate rate is set (DTC Billing → Crate Rates). Type the rate.</p>}
-      {hasUnit && (def as { usesBillRate?: string }).usesBillRate && (def as { usesBillRate?: string }).usesBillRate !== bill.billingType && (
-        <p className="text-[11.5px] text-muted-foreground mt-1.5">This route is billed {BILLING_TYPE_LABEL[bill.billingType]}: type the rate to use.</p>
-      )}
-    </div>
+        {line && <Button size="sm" variant="ghost" className="h-7 w-7 p-0 ml-0.5" onClick={onCancel} title="Cancel"><X className="h-3.5 w-3.5" /></Button>}
+      </td>
+    </tr>
   );
 }
 
@@ -444,16 +445,17 @@ function RestoreAuto({ billId, count, onDone }: { billId: string; count: number;
     onError: (e) => toast.error(errMsg(e)),
   });
   return (
-    <div className="text-[12px] text-muted-foreground flex items-center gap-2">
-      {count} automatic line{count === 1 ? " was" : "s were"} removed or changed by hand on this bill.
-      <Button size="sm" variant="outline" className="h-7" disabled={mut.isPending} onClick={() => mut.mutate()}>
-        <RotateCcw className="h-3 w-3 mr-1" /> Restore automatic lines
+    <div className="erp-panel p-3 text-[12.5px] flex flex-wrap items-center gap-2">
+      <AlertTriangle className="h-4 w-4 text-warning" />
+      {count} automatic row{count === 1 ? " was" : "s were"} removed or changed by hand on this bill.
+      <Button size="sm" variant="outline" className="h-7 ml-auto" disabled={mut.isPending} onClick={() => mut.mutate()}>
+        <RotateCcw className="h-3 w-3 mr-1" /> Restore automatic rows
       </Button>
     </div>
   );
 }
 
-function NotesPanel({ billId, notes, editable, onSaved }: { billId: string; notes: string | null; editable: boolean; onSaved: () => void }) {
+function NotesSection({ billId, notes, editable, onSaved }: { billId: string; notes: string | null; editable: boolean; onSaved: () => void }) {
   const [val, setVal] = useState(notes ?? "");
   useEffect(() => setVal(notes ?? ""), [notes]);
   const mut = useMutation({
@@ -463,65 +465,10 @@ function NotesPanel({ billId, notes, editable, onSaved }: { billId: string; note
   });
   if (!editable && !notes) return null;
   return (
-    <div className="erp-panel p-3">
-      <div className="erp-section-title">Notes</div>
+    <Section title="Notes" description={editable ? "Saved when you click away" : undefined}>
       {editable
-        ? <Textarea value={val} onChange={e => setVal(e.target.value)} onBlur={() => { if ((notes ?? "") !== val) mut.mutate(); }} className="erp-input min-h-[50px]" />
+        ? <Textarea value={val} onChange={e => setVal(e.target.value)} onBlur={() => { if ((notes ?? "") !== val) mut.mutate(); }} className="erp-input min-h-[60px]" placeholder="Anything the pre-auditor should know about this bill" />
         : <p className="text-[12.5px] whitespace-pre-wrap">{notes}</p>}
-    </div>
-  );
-}
-
-function ActivityPanel({ data }: { data: BillDetail }) {
-  if (data.events.length === 0 && data.payments.length === 0) return null;
-  return (
-    <div className="erp-panel p-3">
-      <div className="erp-section-title">Activity</div>
-      <ul className="space-y-1 text-[12px]">
-        {data.events.map(e => (
-          <li key={e.id} className="flex gap-2">
-            <span className="text-muted-foreground whitespace-nowrap">{fmtStamp(e.createdAt)}</span>
-            <span className="font-medium whitespace-nowrap">{e.userName ?? ""}</span>
-            <span>{e.detail ?? e.action}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function HoldButton({ billId, onHold, onDone }: { billId: string; onHold: boolean; onDone: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [reason, setReason] = useState("");
-  const mut = useMutation({
-    mutationFn: (v: boolean) => holdBill(billId, v, reason),
-    onSuccess: (r) => { toast.success(r.message); setOpen(false); setReason(""); onDone(); },
-    onError: (e) => toast.error(errMsg(e)),
-  });
-  if (onHold) {
-    return (
-      <Button size="sm" variant="outline" className="h-8" disabled={mut.isPending} onClick={() => mut.mutate(false)}>
-        <Unlock className="h-3.5 w-3.5 mr-1.5" /> Release for payment
-      </Button>
-    );
-  }
-  return (
-    <>
-      <Button size="sm" variant="outline" className="h-8" onClick={() => setOpen(true)}><Hand className="h-3.5 w-3.5 mr-1.5" /> Hold payment</Button>
-      {open && (
-        <Dialog open onOpenChange={v => { if (!v) setOpen(false); }}>
-          <DialogContent className="max-w-md">
-            <DialogHeader><DialogTitle>Hold this bill from payment</DialogTitle></DialogHeader>
-            <Field label="Why" required hint="min 5 chars">
-              <Textarea autoFocus value={reason} onChange={e => setReason(e.target.value)} className="erp-input min-h-[70px]" />
-            </Field>
-            <DialogFooter>
-              <Button variant="outline" size="sm" className="h-8" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button size="sm" className="h-8" disabled={reason.trim().length < 5 || mut.isPending} onClick={() => mut.mutate(true)}>Hold</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-    </>
+    </Section>
   );
 }
