@@ -58,7 +58,7 @@ export default function BillRunsPage() {
         )}
       </FilterBar>
 
-      <div className="flex-1 overflow-auto p-3 sm:p-4">
+      <div className="dtc-plain flex-1 overflow-auto p-4 sm:p-6">
         <div className="erp-panel overflow-auto">
           {isLoading ? (
             <div className="p-4 space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}</div>
@@ -68,10 +68,8 @@ export default function BillRunsPage() {
             <table className="erp-table">
               <thead>
                 <tr>
-                  <th>Month</th><th>Status</th><th className="text-right">Routes</th><th className="text-right">Contractors</th>
-                  <th className="text-right">Gross</th><th className="text-right">Total earnings</th>
-                  <th className="text-right">Deductions</th><th className="text-right">Net payable</th>
-                  <th className="text-right">Paid</th><th>Prepared by</th><th />
+                  <th>Month</th><th>Status</th><th className="text-right">Routes</th>
+                  <th className="text-right">Net payable</th><th className="text-right">Paid</th><th />
                 </tr>
               </thead>
               <tbody>
@@ -80,16 +78,11 @@ export default function BillRunsPage() {
                     <td className="font-medium">{monthLabel(r.month)}</td>
                     <td><RunStatusBadge status={r.status} /></td>
                     <td className="text-right num">{r.billCount}</td>
-                    <td className="text-right num">{r.contractorCount}</td>
-                    <td className="text-right num">{rs(r.gross)}</td>
-                    <td className="text-right num">{rs(r.totalEarnings)}</td>
-                    <td className="text-right num">{rs(r.totalDeductions)}</td>
-                    <td className="text-right num font-medium">{rs(r.payable)}</td>
+                    <td className="text-right num font-medium">₹{rs(r.payable)}</td>
                     <td className="text-right num">
                       {r.status === "approved" ? `${r.paidCount} / ${r.billCount}` : ""}
                       {r.onHoldCount > 0 && <span className="ml-1 text-[10.5px] text-warning">{r.onHoldCount} held</span>}
                     </td>
-                    <td className="text-[12px]">{r.generatedByName ?? ""}</td>
                     <td><ChevronRight className="h-4 w-4 text-muted-foreground" /></td>
                   </tr>
                 ))}

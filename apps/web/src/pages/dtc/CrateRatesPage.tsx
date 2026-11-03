@@ -38,7 +38,7 @@ export default function CrateRatesPage() {
   return (
     <div className="flex flex-col h-full">
       <PageHeader title="Crate Rates" subtitle="Amount deducted per crate short, by the date the rate applies from" />
-      <div className="flex-1 overflow-auto p-3 sm:p-4 space-y-3 max-w-3xl">
+      <div className="dtc-plain flex-1 overflow-auto p-4 sm:p-6 space-y-4 max-w-3xl">
         <div className="erp-panel p-3 text-[13px]">
           Current rate: <b>{current ? `₹${rs2(current.rate)} per crate` : "not set"}</b>
           {current && <span className="text-muted-foreground"> (from {fmtDMY(current.effectiveFrom)})</span>}

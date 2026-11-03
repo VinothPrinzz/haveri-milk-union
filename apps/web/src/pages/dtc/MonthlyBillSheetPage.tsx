@@ -1,36 +1,36 @@
 // apps/web/src/pages/dtc/MonthlyBillSheetPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// DTC Billing → one month's bills  (/dtc/bills/:month)
+// DTC Billing → one month's bills  (/dtc/bills/:month, /approvals)
 //
-// The month at a glance, laid out like the Consolidated DTC Bill: one row
-// per route with days, km, rate, litres, gross, other earnings, deductions,
-// net payable and cost per litre. In a draft, days can be corrected right
-// here; everything else is entered on the route's bill (click the row).
-// The approval buttons for the signed-in user's stage sit in the header.
+//   (index)    Route bills  one row per route: days (correctable in a draft),
+//                           gross, deductions, net payable. Open a row for the
+//                           route's bill. The full 23-column sheet is the
+//                           Consolidated DTC Bill report.
+//   approvals  Approvals    who signed each step, and what happened when
+// The status bar and the button for the signed-in user's step sit in the header.
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import PageHeader, { EmptyState } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle, CalendarPlus, FileText, Printer, RefreshCw, Search, Trash2 } from "lucide-react";
+import { CalendarPlus, ChevronRight, Printer, RefreshCw, Search, Trash2 } from "lucide-react";
 import { ApiError } from "@/lib/apiClient";
-import { createRun, deleteRun, fetchRun, regenerateRun, updateBill, type Bill } from "@/services/dtc";
+import { createRun, deleteRun, fetchRun, regenerateRun, updateBill, type Bill, type RunDetail } from "@/services/dtc";
 import { RunActionArea, RunPipeline, RunTimeline } from "./RunActions";
-import { RecordHeader, Section, Timeline } from "./ui";
-import {
-  BILLING_TYPE_LABEL, RunStatusBadge, errMsg, fmtStamp, monthLong, qtyFmt, rs, rs2, useDtcPerms,
-} from "./shared";
+import { RecordBody, RecordHeader, Section, Timeline } from "./ui";
+import { RunStatusBadge, errMsg, fmtStamp, monthLong, rs, rs2, useDtcPerms } from "./shared";
 
 export default function MonthlyBillSheetPage() {
   const { month = "" } = useParams();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const showApprovals = pathname.endsWith("/approvals");
   const qc = useQueryClient();
   const perms = useDtcPerms();
-  const [search, setSearch] = useState("");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["dtc-run", month],
@@ -61,33 +61,14 @@ export default function MonthlyBillSheetPage() {
     onError: (e) => toast.error(errMsg(e)),
   });
 
-  const bills = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (data?.bills ?? []).filter(b =>
-      !q || `${b.routeCode} ${b.routeName} ${b.contractorName ?? ""} ${b.vehicleNumber ?? ""}`.toLowerCase().includes(q));
-  }, [data, search]);
-  const totals = useMemo(() => {
-    const all = data?.bills ?? [];
-    const sum = (k: keyof Bill) => all.reduce((s, b) => s + (Number(b[k]) || 0), 0);
-    const qty = sum("qtyLitres");
-    const earnings = sum("totalEarnings");
-    return {
-      qty, gross: sum("gross"), other: sum("otherEarnings"), earnings,
-      deductions: sum("totalDeductions"), payable: sum("payable"), carry: sum("carryForward"),
-      cpl: qty > 0 ? (run?.costBasis === "gross" ? sum("gross") : earnings) / qty : 0,
-      zeroDays: all.filter(b => b.days === 0).length,
-      noContractor: all.filter(b => !b.contractorId).length,
-    };
-  }, [data, run]);
-
   if (notFound) {
     return (
       <div className="flex flex-col h-full">
-        <PageHeader title={`DTC Bills: ${monthLong(month)}`} />
-        <EmptyState title="Bills for this month are not prepared yet" />
+        <PageHeader title={`${monthLong(month)} bills`} />
+        <EmptyState title="Not prepared yet" />
         {perms.prepare && (
           <div className="text-center">
-            <Button size="sm" className="h-8" disabled={create.isPending} onClick={() => create.mutate()}>
+            <Button size="sm" className="h-9" disabled={create.isPending} onClick={() => create.mutate()}>
               <CalendarPlus className="h-3.5 w-3.5 mr-1.5" /> {create.isPending ? "Preparing…" : "Prepare now"}
             </Button>
           </div>
@@ -95,154 +76,145 @@ export default function MonthlyBillSheetPage() {
       </div>
     );
   }
-
   if (isLoading || !run || !data) {
-    return <div className="p-4 space-y-2">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-7 w-full" />)}</div>;
+    return <div className="p-6 space-y-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>;
   }
+
+  const sum = (k: keyof Bill) => data.bills.reduce((s, b) => s + (Number(b[k]) || 0), 0);
+  const qty = sum("qtyLitres");
+  const earnings = sum("totalEarnings");
+  const cpl = qty > 0 ? (run.costBasis === "gross" ? sum("gross") : earnings) / qty : 0;
+  const base = `/dtc/bills/${month}`;
 
   return (
     <div className="h-full overflow-auto">
       <RecordHeader
-        back={{ to: "/dtc/bills", label: "Monthly Bills" }}
-        title={`DTC Bills: ${monthLong(month)}`}
+        back={{ to: "/dtc/bills", label: "All months" }}
+        title={`${monthLong(month)} bills`}
         status={<RunStatusBadge status={run.status} />}
-        subtitle={`${run.billCount} routes · ${run.contractorCount} contractors · generated${run.generatedByName ? ` by ${run.generatedByName}` : ""} ${fmtStamp(run.generatedAt)}`}
+        subtitle={`${run.billCount} routes · ${run.contractorCount} contractors`}
         actions={
           <>
-            <Button size="sm" variant="outline" className="h-8" asChild>
-              <Link to={`/dtc/reports/consolidated?month=${month}`}><Printer className="h-3.5 w-3.5 mr-1.5" /> Consolidated bill</Link>
-            </Button>
-            <Button size="sm" variant="outline" className="h-8" asChild>
-              <Link to={`/dtc/reports/bill-slips?month=${month}`}><FileText className="h-3.5 w-3.5 mr-1.5" /> Bill slips</Link>
-            </Button>
             {editable && (
               <>
-                <Button size="sm" variant="outline" className="h-8" disabled={regen.isPending} onClick={() => regen.mutate()}
-                  title="Refresh days, litres, rates and automatic deductions. Your entries and day corrections are kept.">
-                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${regen.isPending ? "animate-spin" : ""}`} /> Regenerate
+                <Button size="sm" variant="ghost" className="h-8" disabled={regen.isPending} onClick={() => regen.mutate()}
+                  title="Count days and litres again and refresh automatic deductions. What you typed is kept.">
+                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${regen.isPending ? "animate-spin" : ""}`} /> Refresh
                 </Button>
-                <Button size="sm" variant="ghost" className="h-8 text-destructive" disabled={discard.isPending} title="Discard draft"
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-destructive" disabled={discard.isPending} title="Discard this draft"
                   onClick={() => { if (confirm(`Discard the draft ${monthLong(month)} bills and everything entered on them?`)) discard.mutate(); }}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </>
             )}
+            <Button size="sm" variant="outline" className="h-8" asChild>
+              <Link to={`/dtc/reports/consolidated?month=${month}`}><Printer className="h-3.5 w-3.5 mr-1.5" /> Print</Link>
+            </Button>
           </>
         }
         facts={[
-          { label: "Gross payable", value: `₹${rs(totals.gross)}` },
-          { label: "Other earnings", value: `₹${rs2(totals.other)}` },
-          { label: "Total earnings", value: `₹${rs(totals.earnings)}`, tone: "info" },
-          { label: "Deductions", value: `₹${rs(totals.deductions)}`, tone: "warning" },
-          { label: "Net payable", value: `₹${rs(totals.payable)}`, tone: "success", hint: totals.carry > 0 ? `₹${rs(totals.carry)} to recover next month` : `${run.paidCount} of ${run.billCount} paid` },
-          { label: "Cost per litre", value: `₹${rs2(totals.cpl)}`, hint: `${qtyFmt(totals.qty)} L/kg carried` },
+          { label: "Total earnings", value: `₹${rs(earnings)}` },
+          { label: "Deductions", value: `₹${rs(sum("totalDeductions"))}` },
+          { label: "Net payable", value: `₹${rs(sum("payable"))}`, tone: "success", hint: run.status === "approved" ? `${run.paidCount} of ${run.billCount} paid` : undefined },
+          { label: "Cost per litre", value: `₹${rs2(cpl)}` },
+        ]}
+        tabs={[
+          { to: base, label: "Route bills", end: true, count: run.billCount },
+          { to: `${base}/approvals`, label: "Approvals" },
         ]}
       >
-        <div className="mt-3 flex flex-wrap items-start gap-3">
+        <div className="mt-4 flex flex-wrap items-start gap-3">
           <RunPipeline run={run} />
           <div className="flex-1 min-w-[260px]"><RunActionArea run={run} /></div>
         </div>
       </RecordHeader>
 
-      <div className="p-3 sm:p-5 space-y-4">
-            {run.status === "draft" && run.returnedComment && (
-              <div className="erp-panel p-3 border-l-4 border-l-warning text-[12.5px] flex gap-2">
-                <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-                <div><b>Sent back:</b> {run.returnedComment}</div>
-              </div>
-            )}
-            {run.status === "draft" && (totals.zeroDays > 0 || totals.noContractor > 0) && (
-              <div className="erp-panel p-3 border-l-4 border-l-warning text-[12.5px] space-y-0.5">
-                {totals.zeroDays > 0 && <div>{totals.zeroDays} route{totals.zeroDays === 1 ? " has" : "s have"} 0 days: no sale or dispatch found on the route this month. Check them before submitting.</div>}
-                {totals.noContractor > 0 && <div>{totals.noContractor} route{totals.noContractor === 1 ? " has" : "s have"} no contractor assigned (Masters → Contractors).</div>}
-              </div>
-            )}
-
-            <Section title="Route bills" flush
-              description={editable ? "Correct days in the Days column; open a route to enter earnings and deductions." : "Open a route to see its bill."}
-              actions={
-                <div className="relative w-64 max-w-full">
-                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                  <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Route, contractor, vehicle" className="erp-input pl-7 w-full h-7" />
-                </div>
-              }>
-            <div className="overflow-auto">
-              {bills.length === 0 ? (
-                <EmptyState title="No route bills" hint={run.billCount === 0 ? "No route has billing terms for this month. Set them up in Route Billing Setup, then regenerate." : "Nothing matches the search"} />
-              ) : (
-                <table className="erp-table text-[12px]">
-                  <thead>
-                    <tr>
-                      <th className="text-right">Sl</th><th>Route</th><th>Contractor</th><th>Type</th>
-                      <th className="text-right">Cap (MT)</th><th className="text-right">Days</th>
-                      <th className="text-right">Km/Day</th><th className="text-right">Rate</th>
-                      <th className="text-right">Qty L/Kg</th><th className="text-right">Gross</th>
-                      <th className="text-right">Other earn.</th><th className="text-right">Total earn.</th>
-                      <th className="text-right">Deductions</th><th className="text-right">Net payable</th>
-                      <th className="text-right">Cost/Ltr</th><th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bills.map((b, i) => (
-                      <tr key={b.id} className="cursor-pointer" onClick={() => navigate(`/dtc/bills/${month}/${b.id}`)}>
-                        <td className="text-right num">{i + 1}</td>
-                        <td className="whitespace-nowrap"><span className="font-mono text-[10.5px] text-muted-foreground mr-1">{b.routeCode}</span>{b.routeName}</td>
-                        <td>{b.contractorName ?? <span className="text-warning">none</span>}</td>
-                        <td>{BILLING_TYPE_LABEL[b.billingType]}{b.segments.length > 1 && <span className="text-[10px] text-info ml-1" title="Rate changed during the month">split</span>}</td>
-                        <td className="text-right num">{b.vehicleCapacityMt != null ? rs2(b.vehicleCapacityMt) : ""}</td>
-                        <td className="text-right" onClick={e => editable && b.segments.length === 1 && e.stopPropagation()}>
-                          <DaysCell bill={b} editable={!!editable} onSaved={refresh} />
-                        </td>
-                        <td className="text-right num">{b.billingType === "km" ? rs2(b.kmPerDay) : ""}</td>
-                        <td className="text-right num">{rs2(b.rate)}</td>
-                        <td className="text-right num">{qtyFmt(b.qtyLitres)}</td>
-                        <td className="text-right num">{rs(b.gross)}</td>
-                        <td className="text-right num">{b.otherEarnings ? rs2(b.otherEarnings) : ""}</td>
-                        <td className="text-right num">{rs(b.totalEarnings)}</td>
-                        <td className="text-right num">{b.totalDeductions ? rs(b.totalDeductions) : ""}</td>
-                        <td className={`text-right num font-medium ${b.net < 0 ? "text-destructive" : ""}`}>{rs(b.net)}</td>
-                        <td className="text-right num">{rs2(b.costPerLitre)}</td>
-                        <td className="whitespace-nowrap text-[11px]">
-                          {b.paidOn ? <span className="text-success">Paid {b.paidOn.slice(8, 10)}/{b.paidOn.slice(5, 7)}</span>
-                            : b.onHold ? <span className="text-warning" title={b.holdReason ?? ""}>On hold</span>
-                            : b.carryForward > 0 ? <span className="text-destructive" title="Recovered from the next month's bill">₹{rs(b.carryForward)} to recover</span>
-                            : ""}
-                        </td>
-                      </tr>
-                    ))}
-                    <tr className="font-semibold bg-muted/40">
-                      <td /><td colSpan={7}>TOTAL</td>
-                      <td className="text-right num">{qtyFmt(totals.qty)}</td>
-                      <td className="text-right num">{rs(totals.gross)}</td>
-                      <td className="text-right num">{rs2(totals.other)}</td>
-                      <td className="text-right num">{rs(totals.earnings)}</td>
-                      <td className="text-right num">{rs(totals.deductions)}</td>
-                      <td className="text-right num">{rs(totals.payable - totals.carry)}</td>
-                      <td className="text-right num">{rs2(totals.cpl)}</td>
-                      <td />
-                    </tr>
-                  </tbody>
-                </table>
-              )}
-            </div>
-            </Section>
-
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              <Section title="Approvals" description="Who signed each step">
-                <RunTimeline run={run} />
-              </Section>
-              <Section title="Activity" description="Generation, approvals and send-backs for this month">
-                <Timeline
-                  items={data.events.map(e => ({
-                    id: e.id, who: e.userName, when: fmtStamp(e.createdAt),
-                    text: e.detail ?? e.action,
-                    tone: e.action === "send_back" || e.action === "reopen" ? "warning" : e.action === "approve" ? "success" : "default",
-                  }))}
-                />
-              </Section>
-            </div>
-      </div>
+      <RecordBody wide>
+        {showApprovals ? <Approvals data={data} /> : <RouteBills data={data} editable={!!editable} onSaved={refresh} />}
+      </RecordBody>
     </div>
+  );
+}
+
+function RouteBills({ data, editable, onSaved }: { data: RunDetail; editable: boolean; onSaved: () => void }) {
+  const navigate = useNavigate();
+  const { run } = data;
+  const [search, setSearch] = useState("");
+  const bills = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return data.bills.filter(b => !q || `${b.routeCode} ${b.routeName} ${b.contractorName ?? ""}`.toLowerCase().includes(q));
+  }, [data, search]);
+  const zeroDays = data.bills.filter(b => b.days === 0).length;
+  const noContractor = data.bills.filter(b => !b.contractorId).length;
+  const notes = [
+    run.status === "draft" && run.returnedComment ? `Sent back: ${run.returnedComment}` : null,
+    run.status === "draft" && zeroDays ? `${zeroDays} route${zeroDays === 1 ? " shows" : "s show"} 0 days. Check before submitting.` : null,
+    run.status === "draft" && noContractor ? `${noContractor} route${noContractor === 1 ? " has" : "s have"} no contractor.` : null,
+  ].filter(Boolean);
+
+  return (
+    <>
+      {notes.length > 0 && (
+        <div className="rounded-md bg-warning/10 px-4 py-3 text-[13px] space-y-0.5">{notes.map(n => <div key={n!}>{n}</div>)}</div>
+      )}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative w-72 max-w-full">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Find a route or contractor" className="erp-input pl-8 w-full" />
+        </div>
+        {editable && <span className="text-[12.5px] text-muted-foreground">Change days here. Open a route to add earnings or deductions.</span>}
+      </div>
+      <div className="erp-panel overflow-auto">
+        {bills.length === 0 ? (
+          <EmptyState title={data.bills.length === 0 ? "No routes are set up for billing" : "Nothing matches"} hint={data.bills.length === 0 ? "Set them up in Route Billing Setup, then refresh." : undefined} />
+        ) : (
+          <table className="erp-table text-[13px]">
+            <thead>
+              <tr>
+                <th>Route</th><th>Contractor</th><th className="text-right">Days</th>
+                <th className="text-right">Gross</th><th className="text-right">Deductions</th><th className="text-right">Net payable</th><th /><th />
+              </tr>
+            </thead>
+            <tbody>
+              {bills.map(b => (
+                <tr key={b.id} className="cursor-pointer" onClick={() => navigate(`/dtc/bills/${run.month}/${b.id}`)}>
+                  <td className="whitespace-nowrap"><span className="text-muted-foreground mr-1.5 text-[12px]">{b.routeCode}</span>{b.routeName}</td>
+                  <td>{b.contractorName ?? <span className="text-warning">none</span>}</td>
+                  <td className="text-right" onClick={e => editable && b.segments.length === 1 && e.stopPropagation()}>
+                    <DaysCell bill={b} editable={editable} onSaved={onSaved} />
+                  </td>
+                  <td className="text-right num">₹{rs(b.gross)}</td>
+                  <td className="text-right num">{b.totalDeductions ? `₹${rs(b.totalDeductions)}` : ""}</td>
+                  <td className={`text-right num font-medium ${b.net < 0 ? "text-destructive" : ""}`}>₹{rs(b.net)}</td>
+                  <td className="whitespace-nowrap text-[12px]">
+                    {b.paidOn ? <span className="text-success">Paid</span>
+                      : b.onHold ? <span className="text-warning">On hold</span>
+                      : b.net < 0 ? <span className="text-destructive">Recover next month</span> : ""}
+                  </td>
+                  <td><ChevronRight className="h-4 w-4 text-muted-foreground" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}
+
+function Approvals({ data }: { data: RunDetail }) {
+  return (
+    <>
+      <Section title="Signatures">
+        <RunTimeline run={data.run} />
+      </Section>
+      <Section title="What happened">
+        <Timeline items={data.events.map(e => ({
+          id: e.id, who: e.userName, when: fmtStamp(e.createdAt), text: e.detail ?? e.action,
+          tone: e.action === "send_back" || e.action === "reopen" ? "warning" : e.action === "approve" ? "success" : "default",
+        }))} />
+      </Section>
+    </>
   );
 }
 
@@ -275,7 +247,7 @@ function DaysCell({ bill, editable, onSaved }: { bill: Bill; editable: boolean; 
       onBlur={commit}
       onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setVal(null); }}
       disabled={mut.isPending}
-      className={`w-14 h-6 text-right num rounded border px-1 bg-background ${seg.daysOverride != null ? "border-info text-info" : "border-input"}`}
+      className={`w-16 h-8 text-right num rounded border px-2 bg-background ${seg.daysOverride != null ? "border-info text-info" : "border-input"}`}
     />
   );
 }

@@ -4,19 +4,19 @@
 //
 // The module follows the list → record-page pattern of established ERPs
 // (SAP Fiori list report + object page, Odoo list + form view, ERPNext
-// list + form): every record opens on its own page with a URL, a header
-// that carries the key figures and the status pipeline, section tabs,
-// tables edited in place, and an activity trail. Dialogs are kept for
-// consequential confirmations only.
+// list + form): every record opens on its own page with a URL. A record's
+// parts (summary, earnings, history, …) are separate pages behind tabs, so
+// each page does one job. Headers carry at most four figures; labels are
+// in sentence case. Dialogs are kept for consequential confirmations only.
 // ════════════════════════════════════════════════════════════════════
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { ArrowLeft, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** Page header for a record: back link, title, status, actions, key figures. */
 export function RecordHeader({
-  back, title, code, subtitle, status, actions, facts, children,
+  back, title, code, subtitle, status, actions, facts, tabs, children,
 }: {
   back?: { to: string; label: string };
   title: ReactNode;
@@ -24,7 +24,10 @@ export function RecordHeader({
   subtitle?: ReactNode;
   status?: ReactNode;
   actions?: ReactNode;
+  /** At most four: the numbers someone opens this page for. */
   facts?: { label: string; value: ReactNode; hint?: ReactNode; tone?: "default" | "success" | "warning" | "danger" | "info" }[];
+  /** The record's pages, as tabs under the header. */
+  tabs?: { to: string; label: string; end?: boolean; count?: number }[];
   children?: ReactNode;
 }) {
   const tone = {
@@ -32,7 +35,7 @@ export function RecordHeader({
   };
   return (
     <div className="bg-panel border-b border-border">
-      <div className="px-3 sm:px-5 pt-2.5 pb-3">
+      <div className={cn("px-4 sm:px-6 pt-3", tabs ? "pb-0" : "pb-4")}>
         {back && (
           <Link to={back.to} className="inline-flex items-center gap-1 text-[12px] text-muted-foreground hover:text-foreground mb-1.5">
             <ArrowLeft className="h-3.5 w-3.5" /> {back.label}
@@ -50,20 +53,43 @@ export function RecordHeader({
           {actions && <div className="flex flex-wrap items-center gap-1.5">{actions}</div>}
         </div>
         {facts && facts.length > 0 && (
-          <dl className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-6 gap-y-2">
-            {facts.map(f => (
+          <dl className="mt-4 flex flex-wrap gap-x-10 gap-y-3">
+            {facts.slice(0, 4).map(f => (
               <div key={f.label} className="min-w-0">
-                <dt className="text-[10.5px] uppercase tracking-wider text-muted-foreground">{f.label}</dt>
-                <dd className={cn("text-[15px] font-semibold num truncate", tone[f.tone ?? "default"])}>{f.value}</dd>
-                {f.hint && <dd className="text-[11px] text-muted-foreground truncate">{f.hint}</dd>}
+                <dt className="text-[12px] text-muted-foreground">{f.label}</dt>
+                <dd className={cn("text-[20px] font-semibold num leading-tight", tone[f.tone ?? "default"])}>{f.value}</dd>
+                {f.hint && <dd className="text-[11.5px] text-muted-foreground">{f.hint}</dd>}
               </div>
             ))}
           </dl>
         )}
         {children}
+        {tabs && (
+          <nav className="mt-4 -mb-px flex gap-1 overflow-x-auto no-print">
+            {tabs.map(t => (
+              <NavLink
+                key={t.to}
+                to={t.to}
+                end={t.end}
+                className={({ isActive }) => cn(
+                  "h-10 inline-flex items-center px-3 text-[13px] whitespace-nowrap border-b-2 transition-colors",
+                  isActive ? "border-primary text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t.label}
+                {!!t.count && <span className="ml-1.5 rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground">{t.count}</span>}
+              </NavLink>
+            ))}
+          </nav>
+        )}
       </div>
     </div>
   );
+}
+
+/** Content column under a record header. */
+export function RecordBody({ children, wide }: { children: ReactNode; wide?: boolean }) {
+  return <div className={cn("dtc-plain px-4 sm:px-6 py-5 space-y-5", wide ? "max-w-7xl" : "max-w-4xl")}>{children}</div>;
 }
 
 /** Odoo-style status pipeline: done steps, the current step, the rest. */
@@ -143,14 +169,14 @@ export function Section({ id, title, description, actions, children, className, 
 }) {
   return (
     <section id={id} className={cn("erp-panel scroll-mt-12", className)}>
-      <header className="flex flex-wrap items-start gap-2 px-4 pt-3 pb-2 border-b border-border">
+      <header className="flex flex-wrap items-start gap-2 px-5 pt-4 pb-3">
         <div className="flex-1 min-w-0">
-          <h2 className="text-[13.5px] font-semibold">{title}</h2>
-          {description && <p className="text-[12px] text-muted-foreground mt-0.5">{description}</p>}
+          <h2 className="text-[14.5px] font-semibold">{title}</h2>
+          {description && <p className="text-[12.5px] text-muted-foreground mt-0.5">{description}</p>}
         </div>
         {actions && <div className="flex flex-wrap items-center gap-1.5">{actions}</div>}
       </header>
-      <div className={flush ? "" : "p-4"}>{children}</div>
+      <div className={flush ? "border-t border-border" : "px-5 pb-5"}>{children}</div>
     </section>
   );
 }
@@ -162,11 +188,11 @@ export function FieldList({ items, cols = 3 }: {
 }) {
   const grid = { 2: "sm:grid-cols-2", 3: "sm:grid-cols-2 lg:grid-cols-3", 4: "sm:grid-cols-2 lg:grid-cols-4" }[cols];
   return (
-    <dl className={cn("grid grid-cols-1 gap-x-6 gap-y-3", grid)}>
+    <dl className={cn("grid grid-cols-1 gap-x-8 gap-y-4", grid)}>
       {items.map(i => (
         <div key={i.label} className={cn("min-w-0", i.wide && "sm:col-span-2 lg:col-span-full")}>
-          <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{i.label}</dt>
-          <dd className="text-[13px] mt-0.5 break-words">{i.value ?? "—"}</dd>
+          <dt className="text-[12px] text-muted-foreground">{i.label}</dt>
+          <dd className="text-[13.5px] mt-0.5 break-words">{i.value ?? "—"}</dd>
         </div>
       ))}
     </dl>
@@ -229,6 +255,32 @@ export function Progress({ value, max, tone = "primary" }: { value: number; max:
   return (
     <div className="h-2 rounded-full bg-muted overflow-hidden" title={`${pct.toFixed(0)}%`}>
       <div className={cn("h-full rounded-full", tone === "success" ? "bg-success" : "bg-primary")} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+/** A short sentence or two that says what the page is about, in plain words. */
+export function Summary({ children }: { children: ReactNode }) {
+  return <p className="text-[14px] leading-relaxed">{children}</p>;
+}
+
+/** Receipt-style money breakdown: rows, then a total line. */
+export function Breakdown({ rows, total }: {
+  rows: { label: ReactNode; value: ReactNode; sign?: "+" | "−"; muted?: boolean }[];
+  total: { label: ReactNode; value: ReactNode; tone?: "success" | "danger" };
+}) {
+  return (
+    <div className="text-[13.5px]">
+      {rows.map((r, i) => (
+        <div key={i} className={cn("flex justify-between gap-4 py-1.5", r.muted && "text-muted-foreground")}>
+          <span>{r.sign && <span className="inline-block w-4 text-muted-foreground">{r.sign}</span>}{r.label}</span>
+          <span className="num">{r.value}</span>
+        </div>
+      ))}
+      <div className={cn("flex justify-between gap-4 pt-2 mt-1 border-t border-border font-semibold text-[15px]",
+        total.tone === "success" && "text-success", total.tone === "danger" && "text-destructive")}>
+        <span>{total.label}</span><span className="num">{total.value}</span>
+      </div>
     </div>
   );
 }

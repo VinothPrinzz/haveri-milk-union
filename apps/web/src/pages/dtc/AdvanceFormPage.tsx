@@ -41,14 +41,14 @@ export default function AdvanceFormPage() {
       contractorId: contractorId!, routeId: routeId || null, paidOn, amount: Number(amount), mode,
       reference: reference || null, recoverMonth, notes: notes || null,
     }),
-    onSuccess: (r) => { toast.success(r.message); qc.invalidateQueries({ queryKey: ["dtc-advances"] }); navigate("/dtc/payments?tab=advances"); },
+    onSuccess: (r) => { toast.success(r.message); qc.invalidateQueries({ queryKey: ["dtc-advances"] }); navigate("/dtc/payments/advances"); },
     onError: (e) => toast.error(errMsg(e)),
   });
   const valid = !!contractorId && Number(amount) > 0 && !!paidOn && (mode === "cash" || !!reference.trim());
 
   return (
     <div className="h-full overflow-auto">
-      <RecordHeader back={{ to: "/dtc/payments?tab=advances", label: "Advances" }} title="Record advance"
+      <RecordHeader back={{ to: "/dtc/payments/advances", label: "Advances" }} title="Record advance"
         subtitle="Paid to a contractor before the bill; recovered from the bill of the month you choose." />
       <div className="p-3 sm:p-5 space-y-4 max-w-4xl">
         {!perms.pay && <p className="text-[12.5px] text-muted-foreground">Only Finance can record advances.</p>}
@@ -99,7 +99,7 @@ export default function AdvanceFormPage() {
         </Section>
 
         <div className="flex justify-end gap-2">
-          <Button size="sm" variant="ghost" className="h-8" onClick={() => navigate("/dtc/payments?tab=advances")}>Cancel</Button>
+          <Button size="sm" variant="ghost" className="h-8" onClick={() => navigate("/dtc/payments/advances")}>Cancel</Button>
           <Button size="sm" className="h-8" disabled={!perms.pay || !valid || mut.isPending} onClick={() => mut.mutate()}>
             {mut.isPending ? "Saving…" : amount ? `Record ₹${rs2(Number(amount))} advance` : "Record advance"}
           </Button>

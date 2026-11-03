@@ -6,7 +6,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import PageHeader, { EmptyState, StatCard } from "@/components/PageHeader";
+import PageHeader, { EmptyState } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -45,12 +45,8 @@ export default function RecurringChargesPage() {
   return (
     <div className="flex flex-col h-full">
       <PageHeader title="GPS & Fixed Charges" subtitle="Monthly deductions added to a route's bill automatically (GPS rent and similar)" />
-      <div className="flex-1 overflow-auto p-3 sm:p-4 space-y-3">
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <StatCard label="Deducted per month" value={`₹${rs2(active.reduce((s, r) => s + r.monthlyAmount, 0))}`} hint={`${active.length} active charges`} tone="info" />
-          <StatCard label="GPS rent" value={`₹${rs2(gps.reduce((s, r) => s + r.monthlyAmount, 0))}`} hint={`${gps.length} vehicles`} />
-          <StatCard label="Switched off" value={rows.length - active.length} />
-        </div>
+      <div className="dtc-plain flex-1 overflow-auto p-4 sm:p-6 space-y-4">
+        <p className="text-[14px]"><b>₹{rs2(active.reduce((s, r) => s + r.monthlyAmount, 0))}</b> is deducted every month across {active.length} charge{active.length === 1 ? "" : "s"}{gps.length ? `, ${gps.length} of them GPS rent` : ""}.</p>
         <div className="erp-panel overflow-auto">
           {isLoading ? <div className="p-4 text-muted-foreground">Loading…</div> : (
             <table className="erp-table text-[12.5px]">

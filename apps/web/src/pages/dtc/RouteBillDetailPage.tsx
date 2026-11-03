@@ -1,19 +1,17 @@
 // apps/web/src/pages/dtc/RouteBillDetailPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// DTC Billing → one route's bill  (/dtc/bills/:month/:billId)
+// DTC Billing → one route's bill  (/dtc/bills/:month/:billId/*)
 //
-// A record page: the header carries the bill's figures and its approval
-// stage; the sections below are
-//   Days & gross          days and litres found, correctable per part of the month
-//   Other earnings        } editable tables: add a row at the bottom, edit in
-//   Deductions            } place; automatic rows (GPS, deposit, advance,
-//                         } last month's balance, TDS) are marked "auto"
-//   Contractor & vehicle  bank, PAN / TDS status, route terms
-//   Activity & payments   who changed what, payment record
-// Holding a bill from payment opens in place under the header.
+// The bill is split into small pages behind tabs, each doing one job:
+//   (index)      Summary     the bill in plain words: how the gross is worked
+//                            out (days × km × rate) and gross + earnings − deductions
+//   earnings     Earnings    extra km / trips / litres and others (editable table)
+//   deductions   Deductions  crate, short km, dues, … (editable table)
+//   contractor   Contractor  bank, PAN / TDS, vehicle
+//   history      History     who changed what, payments
 // ════════════════════════════════════════════════════════════════════
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -28,10 +26,9 @@ import {
 } from "@/services/dtc";
 import {
   BILLING_TYPE_LABEL, DEDUCTION_HEADS, EARNING_HEADS, HEAD_LABEL, RATE_UNIT, RunStatusBadge,
-  errMsg, fmtDMY, fmtStamp, monthLong, qtyFmt, rs, rs2, useDtcPerms,
+  errMsg, fmtDMY, fmtStamp, monthLong, nice, qtyFmt, rs, rs2, useDtcPerms,
 } from "./shared";
-import { RunPipeline } from "./RunActions";
-import { FieldList, InlinePanel, RecordHeader, Section, SectionTabs, Timeline } from "./ui";
+import { Breakdown, FieldList, InlinePanel, RecordBody, RecordHeader, Section, Summary, Timeline } from "./ui";
 
 type HeadDef = { head: string; label: string; unit?: string; usesBillRate?: string; usesCrateRate?: boolean };
 const ALL_HEADS = [...EARNING_HEADS, ...DEDUCTION_HEADS] as HeadDef[];
@@ -39,6 +36,7 @@ const ALL_HEADS = [...EARNING_HEADS, ...DEDUCTION_HEADS] as HeadDef[];
 export default function RouteBillDetailPage() {
   const { month = "", billId = "" } = useParams();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const qc = useQueryClient();
   const perms = useDtcPerms();
   const [holdOpen, setHoldOpen] = useState(false);
@@ -47,6 +45,8 @@ export default function RouteBillDetailPage() {
   const { data: run } = useQuery({ queryKey: ["dtc-run", month], queryFn: () => fetchRun(month) });
   const bill = data?.bill;
   const editable = bill?.runStatus === "draft" && perms.prepare;
+  const base = `/dtc/bills/${month}/${billId}`;
+  const sub = pathname.startsWith(base) ? pathname.slice(base.length) : "";
 
   const order = run?.bills ?? [];
   const idx = order.findIndex(b => b.id === billId);
@@ -65,7 +65,7 @@ export default function RouteBillDetailPage() {
   });
 
   if (isLoading || !bill || !data) {
-    return <div className="p-4 space-y-2">{Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>;
+    return <div className="p-6 space-y-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>;
   }
   const earnings = bill.lines.filter(l => l.kind === "earning");
   const deductions = bill.lines.filter(l => l.kind === "deduction");
@@ -73,124 +73,148 @@ export default function RouteBillDetailPage() {
   return (
     <div className="h-full overflow-auto">
       <RecordHeader
-        back={{ to: `/dtc/bills/${month}`, label: `DTC Bills: ${monthLong(month)}` }}
+        back={{ to: `/dtc/bills/${month}`, label: `${monthLong(month)} bills` }}
         code={bill.routeCode}
         title={bill.routeName}
         status={
           <>
             <RunStatusBadge status={bill.runStatus} />
             {bill.onHold && <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-warning/15 text-warning">On hold</span>}
-            {bill.paidOn && <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-success/15 text-success">Paid {fmtDMY(bill.paidOn)}</span>}
+            {bill.paidOn && <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-success/15 text-success">Paid</span>}
           </>
         }
-        subtitle={<>
-          {monthLong(month)} · {bill.contractorName ?? "no contractor"} · {BILLING_TYPE_LABEL[bill.billingType]} @ ₹{rs2(bill.rate)} {RATE_UNIT[bill.billingType]}
-          {bill.billingType === "km" ? ` × ${rs2(bill.kmPerDay)} km/day` : ""}
-          {idx >= 0 && <span className="ml-2">· route {idx + 1} of {order.length}</span>}
-        </>}
+        subtitle={`${bill.contractorName ?? "No contractor"} · ${monthLong(month)}`}
         actions={
           <>
-            <Button size="sm" variant="outline" className="h-8" disabled={!prev} onClick={() => prev && navigate(`/dtc/bills/${month}/${prev.id}`)} title={prev ? `${prev.routeCode} ${prev.routeName}` : ""}>
-              <ChevronLeft className="h-3.5 w-3.5 mr-0.5" /> Previous
-            </Button>
-            <Button size="sm" variant="outline" className="h-8" disabled={!next} onClick={() => next && navigate(`/dtc/bills/${month}/${next.id}`)} title={next ? `${next.routeCode} ${next.routeName}` : ""}>
-              Next <ChevronRight className="h-3.5 w-3.5 ml-0.5" />
-            </Button>
             {perms.pay && !bill.paidOn && (bill.onHold
-              ? <Button size="sm" variant="outline" className="h-8" disabled={hold.isPending} onClick={() => hold.mutate({ on: false })}><Unlock className="h-3.5 w-3.5 mr-1.5" /> Release for payment</Button>
-              : <Button size="sm" variant="outline" className="h-8" onClick={() => setHoldOpen(v => !v)}><Hand className="h-3.5 w-3.5 mr-1.5" /> Hold payment</Button>)}
+              ? <Button size="sm" variant="outline" className="h-8" disabled={hold.isPending} onClick={() => hold.mutate({ on: false })}><Unlock className="h-3.5 w-3.5 mr-1.5" /> Release</Button>
+              : <Button size="sm" variant="ghost" className="h-8" onClick={() => setHoldOpen(v => !v)}><Hand className="h-3.5 w-3.5 mr-1.5" /> Hold payment</Button>)}
+            <Button size="sm" variant="outline" className="h-8 w-8 p-0" disabled={!prev} title={prev ? `Previous: ${prev.routeName}` : ""}
+              onClick={() => prev && navigate(`/dtc/bills/${month}/${prev.id}${sub}`)}><ChevronLeft className="h-4 w-4" /></Button>
+            <Button size="sm" variant="outline" className="h-8 w-8 p-0" disabled={!next} title={next ? `Next: ${next.routeName}` : ""}
+              onClick={() => next && navigate(`/dtc/bills/${month}/${next.id}${sub}`)}><ChevronRight className="h-4 w-4" /></Button>
           </>
         }
         facts={[
-          { label: "Days", value: bill.days, hint: `${qtyFmt(bill.qtyLitres)} L/kg carried` },
-          { label: "Gross payable", value: `₹${rs(bill.gross)}` },
-          { label: "Other earnings", value: `₹${rs2(bill.otherEarnings)}` },
-          { label: "Total deductions", value: `₹${rs(bill.totalDeductions)}`, tone: "warning" },
-          {
-            label: bill.net < 0 ? "Net (to recover)" : "Net payable", value: `₹${rs(bill.net)}`,
-            tone: bill.net < 0 ? "danger" : "success",
-            hint: bill.carryForward > 0 ? "recovered from next month's bill" : `earnings ₹${rs(bill.totalEarnings)}`,
-          },
-          { label: "Cost per litre", value: `₹${rs2(bill.costPerLitre)}` },
+          { label: "Days run", value: bill.days },
+          { label: "Gross", value: `₹${rs(bill.gross)}` },
+          { label: "Deductions", value: `₹${rs(bill.totalDeductions)}` },
+          { label: bill.net < 0 ? "To recover" : "Net payable", value: `₹${rs(Math.abs(bill.net))}`, tone: bill.net < 0 ? "danger" : "success" },
+        ]}
+        tabs={[
+          { to: base, label: "Summary", end: true },
+          { to: `${base}/earnings`, label: "Earnings", count: earnings.length },
+          { to: `${base}/deductions`, label: "Deductions", count: deductions.length },
+          { to: `${base}/contractor`, label: "Contractor" },
+          { to: `${base}/history`, label: "History" },
         ]}
       >
-        {run && <div className="mt-3"><RunPipeline run={run.run} /></div>}
-        <div className="mt-3">
-          <HoldPanel open={holdOpen} busy={hold.isPending} onCancel={() => setHoldOpen(false)} onHold={reason => hold.mutate({ on: true, reason })} />
-        </div>
+        {holdOpen && <div className="mt-3 max-w-xl"><HoldPanel open busy={hold.isPending} onCancel={() => setHoldOpen(false)} onHold={reason => hold.mutate({ on: true, reason })} /></div>}
       </RecordHeader>
 
-      <SectionTabs sections={[
-        { id: "gross", label: "Days & gross" },
-        { id: "earnings", label: "Other earnings", count: earnings.length },
-        { id: "deductions", label: "Deductions", count: deductions.length },
-        { id: "contractor", label: "Contractor & vehicle" },
-        { id: "activity", label: "Activity & payments", count: data.events.length },
-      ]} />
-
-      <div className="p-3 sm:p-5 space-y-4 max-w-6xl">
+      <RecordBody>
         {bill.onHold && (
-          <div className="erp-panel p-3 border-l-4 border-l-warning text-[12.5px]"><b>On hold for payment:</b> {bill.holdReason}</div>
+          <div className="rounded-md bg-warning/10 px-4 py-3 text-[13px]"><b>On hold:</b> {bill.holdReason}</div>
         )}
-        {!editable && bill.runStatus !== "draft" && (
-          <div className="text-[12px] text-muted-foreground">
-            This month is with the approvers, so the bill is read-only. To correct it, the approver sends the month back.
-          </div>
-        )}
-
-        <GrossSection data={data} editable={!!editable} onSaved={refresh} />
-
-        <LinesSection id="earnings" title="Other earnings" kind="earning" data={data} lines={earnings} editable={!!editable} onSaved={refresh}
-          description="Extra km, extra trips, extra litres and other amounts paid on top of the gross." />
-        <LinesSection id="deductions" title="Deductions" kind="deduction" data={data} lines={deductions} editable={!!editable} onSaved={refresh}
-          description="Crate and packet shortage, short km, dues, penalties and others. Rows marked auto come from setup and are refreshed on regenerate." />
-
-        {editable && bill.suppressedAuto.length > 0 && <RestoreAuto billId={bill.id} count={bill.suppressedAuto.length} onDone={refresh} />}
-
-        <Section id="contractor" title="Contractor & vehicle">
-          <FieldList cols={3} items={[
-            { label: "Contractor", value: bill.contractorName ? <>{bill.contractorName}{bill.contractorCode ? ` (${bill.contractorCode})` : ""}</> : "—" },
-            { label: "Phone", value: bill.contractorPhone ?? "—" },
-            { label: "Bank", value: bill.bankName ?? "—" },
-            { label: "Account no.", value: bill.accountNo ?? <span className="text-warning">not on record</span> },
-            { label: "IFSC", value: bill.ifscCode ?? <span className="text-warning">not on record</span> },
-            { label: "PAN", value: bill.panNumber ?? <span className="text-warning">not on record</span> },
-            { label: "194C declaration", value: bill.tdsDeclarationFy ? `for ${bill.tdsDeclarationFy}` : "—" },
-            { label: "Vehicle", value: [bill.vehicleNumber, bill.vehicleCapacityMt != null ? `${rs2(bill.vehicleCapacityMt)} MT` : null].filter(Boolean).join(" · ") || "—" },
-            { label: "Cash collection route", value: bill.cashCollection ? <>Yes · sales billed on the route this month ₹{rs(data.routeSales)}</> : "No" },
-          ]} />
-          <div className="mt-3 flex flex-wrap gap-3 text-[12.5px]">
-            {bill.contractorId && <Link to={`/dtc/reports/ledger?contractor=${bill.contractorId}`} className="text-primary hover:underline">Contractor ledger →</Link>}
-            <Link to={`/dtc/setup/routes/${bill.routeId}`} className="text-primary hover:underline">Route billing terms →</Link>
-          </div>
-          {bill.cashCollection && <p className="text-[11.5px] text-muted-foreground mt-2">Cash-collection route: enter any cash the driver did not hand over as a Dues deduction.</p>}
-        </Section>
-
-        <NotesSection billId={bill.id} notes={bill.notes} editable={!!editable} onSaved={refresh} />
-
-        <Section id="activity" title="Activity & payments">
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
-            <Timeline items={data.events.map(e => ({
-              id: e.id, who: e.userName, when: fmtStamp(e.createdAt), text: e.detail ?? e.action,
-              tone: e.action === "paid" ? "success" : e.action === "held" || e.action === "line_removed" ? "warning" : "default",
-            }))} />
-            <div>
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">Payments</div>
-              {data.payments.length === 0 ? <p className="text-[12.5px] text-muted-foreground">Not paid yet.</p> : (
-                <ul className="space-y-1.5 text-[12.5px]">
-                  {data.payments.map(p => (
-                    <li key={p.id} className={p.reversedAt ? "line-through text-muted-foreground" : ""}>
-                      ₹{rs2(p.amount)} on {fmtDMY(p.paidOn)} · {p.mode.toUpperCase()} {p.reference ?? ""}
-                      {p.reversedAt && <span className="no-underline"> (reversed: {p.reverseReason})</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        </Section>
-      </div>
+        <Routes>
+          <Route index element={<SummaryPage data={data} editable={!!editable} onSaved={refresh} />} />
+          <Route path="earnings" element={
+            <LinesSection kind="earning" data={data} lines={earnings} editable={!!editable} onSaved={refresh} />} />
+          <Route path="deductions" element={
+            <>
+              <LinesSection kind="deduction" data={data} lines={deductions} editable={!!editable} onSaved={refresh} />
+              {editable && bill.suppressedAuto.length > 0 && <RestoreAuto billId={bill.id} count={bill.suppressedAuto.length} onDone={refresh} />}
+            </>} />
+          <Route path="contractor" element={<ContractorPage data={data} />} />
+          <Route path="history" element={<HistoryPage data={data} />} />
+        </Routes>
+      </RecordBody>
     </div>
+  );
+}
+
+// ─── Summary ────────────────────────────────────────────────────────
+function SummaryPage({ data, editable, onSaved }: { data: BillDetail; editable: boolean; onSaved: () => void }) {
+  const { bill } = data;
+  const how = bill.billingType === "km"
+    ? <>paid <b>₹{rs2(bill.rate)} a km</b> for <b>{nice(bill.kmPerDay)} km a day</b></>
+    : bill.billingType === "trip" ? <>paid <b>₹{rs2(bill.rate)} a trip</b></> : <>paid <b>₹{rs2(bill.rate)} a litre</b> carried</>;
+  return (
+    <>
+      <Summary>
+        {bill.contractorName ?? "The contractor"} is {how}. In {monthLong(data.bill.month)} the route ran on <b>{bill.days} days</b> and
+        carried <b>{qtyFmt(bill.qtyLitres)} litres/kg</b> of milk and products.
+        {bill.paidOn && <> Paid on {fmtDMY(bill.paidOn)}{bill.paymentReference ? ` (${bill.paymentReference})` : ""}.</>}
+      </Summary>
+      {!editable && bill.runStatus !== "draft" && (
+        <p className="text-[12.5px] text-muted-foreground">This month is with the approvers, so the bill can't be changed now.</p>
+      )}
+      <GrossSection data={data} editable={editable} onSaved={onSaved} />
+      <Section title="The bill">
+        <Breakdown
+          rows={[
+            { label: "Gross", value: `₹${rs(bill.gross)}` },
+            { label: <Link to="earnings" className="hover:underline">Other earnings</Link>, value: `₹${rs2(bill.otherEarnings)}`, sign: "+" },
+            { label: <Link to="deductions" className="hover:underline">Deductions</Link>, value: `₹${rs(bill.totalDeductions)}`, sign: "−" },
+          ]}
+          total={{ label: bill.net < 0 ? "To recover next month" : "Net payable", value: `₹${rs(Math.abs(bill.net))}`, tone: bill.net < 0 ? "danger" : "success" }}
+        />
+        <p className="text-[12px] text-muted-foreground mt-3">Cost of transport: ₹{rs2(bill.costPerLitre)} a litre.</p>
+      </Section>
+      <NotesSection billId={bill.id} notes={bill.notes} editable={editable} onSaved={onSaved} />
+    </>
+  );
+}
+
+function ContractorPage({ data }: { data: BillDetail }) {
+  const { bill } = data;
+  return (
+    <>
+      <Section title="Contractor">
+        <FieldList cols={2} items={[
+          { label: "Name", value: bill.contractorName ? <>{bill.contractorName}{bill.contractorCode ? ` (${bill.contractorCode})` : ""}</> : "—" },
+          { label: "Phone", value: bill.contractorPhone ?? "—" },
+          { label: "Bank account", value: bill.accountNo ? `${bill.bankName ?? ""} ${bill.accountNo}` : <span className="text-warning">Not on record</span> },
+          { label: "IFSC", value: bill.ifscCode ?? <span className="text-warning">Not on record</span> },
+          { label: "PAN", value: bill.panNumber ?? <span className="text-warning">Not on record</span> },
+          { label: "TDS declaration", value: bill.tdsDeclarationFy ? `Given for ${bill.tdsDeclarationFy}` : "Not given" },
+        ]} />
+        {bill.contractorId && <Link to={`/dtc/reports/ledger?contractor=${bill.contractorId}`} className="inline-block mt-4 text-[13px] text-primary hover:underline">See all their bills →</Link>}
+      </Section>
+      <Section title="Route and vehicle">
+        <FieldList cols={2} items={[
+          { label: "Paid on", value: `${BILLING_TYPE_LABEL[bill.billingType]} basis, ₹${rs2(bill.rate)} ${RATE_UNIT[bill.billingType]}` },
+          { label: "Vehicle", value: [bill.vehicleNumber, bill.vehicleCapacityMt != null ? `${nice(bill.vehicleCapacityMt)} MT` : null].filter(Boolean).join(", ") || "—" },
+          { label: "Collects cash", value: bill.cashCollection ? `Yes. Sales on the route this month: ₹${rs(data.routeSales)}` : "No" },
+        ]} />
+        <Link to={`/dtc/setup/routes/${bill.routeId}`} className="inline-block mt-4 text-[13px] text-primary hover:underline">Route terms →</Link>
+      </Section>
+    </>
+  );
+}
+
+function HistoryPage({ data }: { data: BillDetail }) {
+  return (
+    <>
+      <Section title="Payments">
+        {data.payments.length === 0 ? <p className="text-[13px] text-muted-foreground">Not paid yet.</p> : (
+          <ul className="space-y-1.5 text-[13px]">
+            {data.payments.map(p => (
+              <li key={p.id} className={p.reversedAt ? "text-muted-foreground" : ""}>
+                <span className={p.reversedAt ? "line-through" : ""}>₹{rs2(p.amount)} on {fmtDMY(p.paidOn)}, {p.mode.toUpperCase()} {p.reference ?? ""}</span>
+                {p.reversedAt && <> (reversed: {p.reverseReason})</>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+      <Section title="What happened">
+        <Timeline items={data.events.map(e => ({
+          id: e.id, who: e.userName, when: fmtStamp(e.createdAt), text: e.detail ?? e.action,
+          tone: e.action === "paid" ? "success" : e.action === "held" ? "warning" : "default",
+        }))} />
+      </Section>
+    </>
   );
 }
 
@@ -216,27 +240,24 @@ function GrossSection({ data, editable, onSaved }: { data: BillDetail; editable:
     onError: (e) => toast.error(errMsg(e)),
   });
   return (
-    <Section id="gross" title="Days & gross payable" flush
-      description="Days are the dates the route sold or was dispatched. Correct the billed days if the vehicle ran on other days.">
-      <table className="erp-table text-[12.5px]">
+    <Section title="How the gross is worked out" flush
+      description={editable ? "Days are counted from sales and dispatch on the route. Change them if the vehicle ran on other days." : undefined}>
+      <table className="erp-table text-[13px]">
         <thead>
           <tr>
-            <th>Period</th><th>Billing</th><th className="text-right">Rate</th><th className="text-right">Km/day</th>
-            <th className="text-right">Days found</th><th className="text-right">Days billed</th>
-            <th className="text-right">Litres/kg</th><th className="text-right">Amount</th>
+            <th>Period</th><th className="text-right">Days found</th><th className="text-right">Days billed</th><th className="text-right">Amount</th>
           </tr>
         </thead>
         <tbody>
           {bill.segments.map(s => <SegmentRow key={s.key} s={s} editable={editable} busy={mut.isPending} onSave={d => mut.mutate({ key: s.key, daysOverride: d })} />)}
-          <tr className="font-semibold bg-muted/40">
-            <td colSpan={5}>Gross payable (rounded to the rupee)</td>
+          <tr className="font-semibold">
+            <td colSpan={2}>Gross</td>
             <td className="text-right num">{bill.days}</td>
-            <td className="text-right num">{qtyFmt(bill.qtyLitres)}</td>
             <td className="text-right num">₹{rs(bill.gross)}</td>
           </tr>
         </tbody>
       </table>
-      {bill.segments.length > 1 && <p className="px-4 py-2 text-[11.5px] text-muted-foreground">The rate changed during the month, so each part is billed at its own rate.</p>}
+      {bill.segments.length > 1 && <p className="px-5 py-3 text-[12px] text-muted-foreground">The rate changed during the month, so each part is paid at its own rate.</p>}
     </Section>
   );
 }
@@ -246,8 +267,8 @@ function SegmentRow({ s, editable, busy, onSave }: { s: BillSegment; editable: b
   const [showDates, setShowDates] = useState(false);
   useEffect(() => setVal(String(s.daysOverride ?? s.autoDays)), [s.daysOverride, s.autoDays]);
   const days = s.daysOverride ?? s.autoDays;
-  const formula = s.billingType === "km" ? `${days} days × ${rs2(s.kmPerDay)} km × ₹${rs2(s.rate)}`
-    : s.billingType === "trip" ? `${days} days × ₹${rs2(s.rate)}` : `${qtyFmt(s.qty)} L/kg × ₹${rs2(s.rate)}`;
+  const formula = s.billingType === "km" ? `${days} days × ${nice(s.kmPerDay)} km × ₹${rs2(s.rate)}`
+    : s.billingType === "trip" ? `${days} trips × ₹${rs2(s.rate)}` : `${qtyFmt(s.qty)} litres × ₹${rs2(s.rate)}`;
   const commit = () => {
     const n = val.trim() === "" ? null : Math.max(0, Math.round(Number(val)));
     if (n === days) return;
@@ -256,36 +277,34 @@ function SegmentRow({ s, editable, busy, onSave }: { s: BillSegment; editable: b
   return (
     <>
       <tr>
-        <td className="whitespace-nowrap">{fmtDMY(s.from)} – {fmtDMY(s.to)}</td>
-        <td>{BILLING_TYPE_LABEL[s.billingType]}</td>
-        <td className="text-right num">{rs2(s.rate)}</td>
-        <td className="text-right num">{s.billingType === "km" ? rs2(s.kmPerDay) : ""}</td>
+        <td className="whitespace-nowrap">
+          {fmtDMY(s.from)} – {fmtDMY(s.to)}
+          <div className="text-[12px] text-muted-foreground">{formula}</div>
+        </td>
         <td className="text-right">
           <button type="button" className="num underline decoration-dotted underline-offset-2" onClick={() => setShowDates(v => !v)} title="Show the dates">{s.autoDays}</button>
         </td>
         <td className="text-right">
           {editable ? (
             <span className="inline-flex items-center gap-1">
-              <input type="number" min={0} max={31} value={val} disabled={busy}
+              <input type="number" min={0} max={31} value={val} disabled={busy} aria-label="Days billed"
                 onChange={e => setVal(e.target.value)} onBlur={commit}
                 onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                className={cn("w-16 h-7 text-right num rounded border px-1.5 bg-background", s.daysOverride != null ? "border-info text-info" : "border-input")} />
+                className={cn("w-16 h-8 text-right num rounded border px-2 bg-background", s.daysOverride != null ? "border-info text-info" : "border-input")} />
               {s.daysOverride != null && (
                 <button type="button" title="Back to the days found" className="text-muted-foreground hover:text-foreground" onClick={() => onSave(null)}><RotateCcw className="h-3.5 w-3.5" /></button>
               )}
             </span>
-          ) : <span className="num">{days}{s.daysOverride != null && <span className="text-info">*</span>}</span>}
+          ) : <span className="num">{days}</span>}
         </td>
-        <td className="text-right num">{qtyFmt(s.qty)}</td>
-        <td className="text-right num">₹{rs2(s.amount)}<div className="text-[10.5px] text-muted-foreground">{formula}</div></td>
+        <td className="text-right num">₹{rs2(s.amount)}</td>
       </tr>
       {showDates && (
         <tr>
-          <td colSpan={8} className="text-[12px] text-muted-foreground bg-muted/20">
+          <td colSpan={4} className="text-[12.5px] text-muted-foreground bg-muted/20">
             {s.runDates?.length
-              ? <>Ran on: {s.runDates.map(d => <span key={d} className="inline-block rounded bg-background border border-border px-1 mr-1 mb-0.5 num">{d.slice(8, 10)}</span>)}</>
+              ? <>Ran on {s.runDates.map(d => Number(d.slice(8, 10))).join(", ")}</>
               : "No sale or dispatch found on this route in this period."}
-            {s.daysOverride != null && <> · Billed for {s.daysOverride} days, corrected by hand.</>}
           </td>
         </tr>
       )}
@@ -294,10 +313,13 @@ function SegmentRow({ s, editable, busy, onSave }: { s: BillSegment; editable: b
 }
 
 // ─── Earnings / deductions: editable table ──────────────────────────
-function LinesSection({ id, title, description, kind, data, lines, editable, onSaved }: {
-  id: string; title: string; description: string; kind: "earning" | "deduction";
-  data: BillDetail; lines: BillLine[]; editable: boolean; onSaved: () => void;
+function LinesSection({ kind, data, lines, editable, onSaved }: {
+  kind: "earning" | "deduction"; data: BillDetail; lines: BillLine[]; editable: boolean; onSaved: () => void;
 }) {
+  const title = kind === "earning" ? "Other earnings" : "Deductions";
+  const description = kind === "earning"
+    ? "Paid on top of the gross: extra km, extra trips, extra litres."
+    : "Taken off the bill: crates or packets short, short km, dues, penalties. Rows marked auto come from setup.";
   const [editing, setEditing] = useState<string | null>(null);
   const del = useMutation({
     mutationFn: (l: BillLine) => deleteBillLine(data.bill.id, l.id),
@@ -306,9 +328,9 @@ function LinesSection({ id, title, description, kind, data, lines, editable, onS
   });
   const total = lines.reduce((s, l) => s + l.amount, 0);
   return (
-    <Section id={id} title={title} description={description} flush
-      actions={<span className="text-[13px] font-semibold num">Total ₹{rs2(total)}</span>}>
-      <table className="erp-table text-[12.5px]">
+    <Section title={title} description={description} flush
+      actions={<span className="text-[14px] font-semibold num">₹{rs2(total)}</span>}>
+      <table className="erp-table text-[13px]">
         <thead>
           <tr>
             <th style={{ width: "24%" }}>Head</th><th className="text-right" style={{ width: 100 }}>Qty</th>
@@ -317,7 +339,7 @@ function LinesSection({ id, title, description, kind, data, lines, editable, onS
           </tr>
         </thead>
         <tbody>
-          {lines.length === 0 && !editable && <tr><td colSpan={6} className="text-muted-foreground">None.</td></tr>}
+          {lines.length === 0 && !editable && <tr><td colSpan={6} className="text-muted-foreground">Nothing this month.</td></tr>}
           {lines.map(l => editing === l.id
             ? <LineEditor key={l.id} kind={kind} data={data} line={l} onDone={() => { setEditing(null); onSaved(); }} onCancel={() => setEditing(null)} />
             : (
@@ -326,7 +348,7 @@ function LinesSection({ id, title, description, kind, data, lines, editable, onS
                   {HEAD_LABEL[l.head] ?? l.head}
                   {l.source === "auto" && <span className="ml-1.5 text-[10px] rounded bg-info/15 text-info px-1" title="Added from setup; refreshed on regenerate">auto</span>}
                 </td>
-                <td className="text-right num">{l.qty != null && l.head !== "tds" ? rs2(l.qty) : ""}</td>
+                <td className="text-right num">{l.qty != null && l.head !== "tds" ? nice(l.qty) : ""}</td>
                 <td className="text-right num">{l.rate != null ? (l.head === "tds" ? `${l.rate}%` : rs2(l.rate)) : ""}</td>
                 <td className="text-right num font-medium">{rs2(l.amount)}</td>
                 <td className="text-[12px]">{l.remarks ?? ""}</td>
@@ -445,9 +467,9 @@ function RestoreAuto({ billId, count, onDone }: { billId: string; count: number;
     onError: (e) => toast.error(errMsg(e)),
   });
   return (
-    <div className="erp-panel p-3 text-[12.5px] flex flex-wrap items-center gap-2">
+    <div className="text-[12.5px] text-muted-foreground flex flex-wrap items-center gap-2">
       <AlertTriangle className="h-4 w-4 text-warning" />
-      {count} automatic row{count === 1 ? " was" : "s were"} removed or changed by hand on this bill.
+      {count} automatic row{count === 1 ? " was" : "s were"} removed or changed by hand.
       <Button size="sm" variant="outline" className="h-7 ml-auto" disabled={mut.isPending} onClick={() => mut.mutate()}>
         <RotateCcw className="h-3 w-3 mr-1" /> Restore automatic rows
       </Button>
@@ -465,7 +487,7 @@ function NotesSection({ billId, notes, editable, onSaved }: { billId: string; no
   });
   if (!editable && !notes) return null;
   return (
-    <Section title="Notes" description={editable ? "Saved when you click away" : undefined}>
+    <Section title="Notes">
       {editable
         ? <Textarea value={val} onChange={e => setVal(e.target.value)} onBlur={() => { if ((notes ?? "") !== val) mut.mutate(); }} className="erp-input min-h-[60px]" placeholder="Anything the pre-auditor should know about this bill" />
         : <p className="text-[12.5px] whitespace-pre-wrap">{notes}</p>}

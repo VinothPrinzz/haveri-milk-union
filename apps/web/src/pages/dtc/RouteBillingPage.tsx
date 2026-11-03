@@ -9,14 +9,14 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import PageHeader, { EmptyState, FilterBar, StatCard } from "@/components/PageHeader";
+import PageHeader, { EmptyState, FilterBar } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, ChevronRight, Search, Settings2 } from "lucide-react";
 import { todayIST } from "@/lib/istDate";
 import { fetchRouteTerms, type RouteTermsRow } from "@/services/dtc";
-import { BILLING_TYPE_LABEL, FilterLabel, RATE_UNIT, fmtDMY, rs2, useDtcPerms } from "./shared";
+import { BILLING_TYPE_LABEL, FilterLabel, RATE_UNIT, fmtDMY, nice, rs2, useDtcPerms } from "./shared";
 
 const daysUntil = (iso: string, today: string) => Math.round((Date.parse(iso) - Date.parse(today)) / 86400000);
 type Filter = "all" | "billed" | "missing" | "expiring" | "verify";
@@ -89,13 +89,13 @@ export default function RouteBillingPage() {
         </div>
       </FilterBar>
 
-      <div className="flex-1 overflow-auto p-3 sm:p-4 space-y-3">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="Routes billed" value={counts.billed} hint={`of ${rows.length} routes`} tone="success" />
-          <StatCard label="Not set up" value={counts.missing} hint="not billed until set up" tone={counts.missing ? "warning" : "default"} />
-          <StatCard label="Contracts ending" value={counts.expiring} hint="within 30 days" tone={counts.expiring ? "danger" : "default"} />
-          <StatCard label="To verify" value={counts.verify} hint="copied from the old route master" tone={counts.verify ? "warning" : "default"} />
-        </div>
+      <div className="dtc-plain flex-1 overflow-auto p-4 sm:p-6 space-y-4">
+        <p className="text-[14px]">
+          <b>{counts.billed}</b> of {rows.length} routes are billed.
+          {counts.missing > 0 && <> {counts.missing} not set up.</>}
+          {counts.expiring > 0 && <span className="text-destructive"> {counts.expiring} contract{counts.expiring === 1 ? " ends" : "s end"} within 30 days.</span>}
+          {counts.verify > 0 && <span className="text-warning"> {counts.verify} to check (copied from the old route master).</span>}
+        </p>
 
         <div className="erp-panel overflow-auto">
           {isLoading ? (
@@ -106,9 +106,8 @@ export default function RouteBillingPage() {
             <table className="erp-table">
               <thead>
                 <tr>
-                  <th>Route</th><th>Contractor</th><th>Type</th>
-                  <th className="text-right">Veh Cap (MT)</th><th className="text-right">Rate (₹)</th>
-                  <th className="text-right">Km / Day</th><th>Vehicle</th><th>Contract ends</th><th>Terms from</th><th />
+                  <th>Route</th><th>Contractor</th><th>Paid on</th><th className="text-right">Rate</th>
+                  <th className="text-right">Km a day</th><th>Contract ends</th><th />
                 </tr>
               </thead>
               <tbody>
@@ -123,24 +122,17 @@ export default function RouteBillingPage() {
                         <>
                           <td className="whitespace-nowrap">
                             {BILLING_TYPE_LABEL[c.billingType]}
-                            {c.cashCollection && <span className="ml-1.5 text-[10.5px] rounded bg-info/15 text-info px-1">cash</span>}
+                            {f.verify && <span className="ml-1.5 text-[11px] text-warning">check</span>}
                           </td>
-                          <td className="text-right num">{c.vehicleCapacityMt != null ? rs2(c.vehicleCapacityMt) : ""}</td>
-                          <td className="text-right num whitespace-nowrap">{rs2(c.rate)} <span className="text-[10.5px] text-muted-foreground">{RATE_UNIT[c.billingType]}</span></td>
-                          <td className="text-right num">{c.billingType === "km" ? rs2(c.kmPerDay) : ""}</td>
-                          <td className="font-mono text-[11px]">{c.vehicleNumber ?? ""}</td>
+                          <td className="text-right num whitespace-nowrap">₹{rs2(c.rate)} <span className="text-[11.5px] text-muted-foreground">{RATE_UNIT[c.billingType]}</span></td>
+                          <td className="text-right num">{c.billingType === "km" ? nice(c.kmPerDay) : ""}</td>
                           <td className={`whitespace-nowrap ${f.expiring ? "text-destructive font-medium" : ""}`}>
                             {f.expiring && <AlertTriangle className="inline h-3.5 w-3.5 mr-1 -mt-0.5" />}
                             {c.contractEnd ? fmtDMY(c.contractEnd) : ""}
                           </td>
-                          <td className="whitespace-nowrap text-[12px]">
-                            {fmtDMY(c.effectiveFrom)}
-                            {f.verify && <span className="ml-1.5 text-[10.5px] rounded bg-warning/15 text-warning px-1">verify</span>}
-                            {r.upcoming && <span className="ml-1.5 text-[10.5px] rounded bg-muted px-1" title="A change is scheduled">change {fmtDMY(r.upcoming.effectiveFrom)}</span>}
-                          </td>
                         </>
                       ) : (
-                        <td colSpan={7} className="text-muted-foreground text-[12px]">
+                        <td colSpan={4} className="text-muted-foreground text-[12.5px]">
                           {c && !c.active ? `Not billed from ${fmtDMY(c.effectiveFrom)}` : "Not set up: this route is not billed"}
                         </td>
                       )}

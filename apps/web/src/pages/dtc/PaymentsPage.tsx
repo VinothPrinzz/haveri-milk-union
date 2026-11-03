@@ -1,23 +1,23 @@
 // apps/web/src/pages/dtc/PaymentsPage.tsx
 // ════════════════════════════════════════════════════════════════════
-// DTC Billing → Payments & Advances  (/dtc/payments, ?tab=paid|advances)
+// DTC Billing → Payments  (/dtc/payments/*)
 //
-//   To pay    approved bills not yet paid, grouped by contractor. Tick the
-//             bills; the payment details (date, mode, UTR) open below the
-//             table, with the bank upload file for the same selection.
-//   Paid      payment history; a wrong payment is reversed in its row.
-//   Advances  money paid mid-month, recovered from a chosen month's bill.
-//             New advances are recorded on their own page.
+//   (index)    To pay    approved bills not yet paid, by contractor. Tick
+//                        bills, then "Continue to payment".
+//   record     Pay       the ticked bills and the payment form (date, mode,
+//                        UTR), with the bank upload file
+//   paid       Paid      payment history; a wrong payment is reversed in its row
+//   advances   Advances  money paid before the bill, recovered later
+// New advances: /dtc/payments/advances/new (AdvanceFormPage).
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import PageHeader, { EmptyState, Field, StatCard, fmtINR } from "@/components/PageHeader";
+import { EmptyState, Field } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AlertTriangle, Banknote, Download, Plus, Undo2, XCircle } from "lucide-react";
+import { ArrowRight, Download, Plus, Undo2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toCsv } from "@/lib/exporters";
 import { todayIST } from "@/lib/istDate";
@@ -26,196 +26,201 @@ import {
   type PayMode, type PendingBill,
 } from "@/services/dtc";
 import { MonthInput, PAY_MODES, errMsg, fmtDMY, monthLabel, rs, rs2, useDtcPerms } from "./shared";
+import { RecordBody, RecordHeader, Section } from "./ui";
 
 const modeLabel = (m: string) => PAY_MODES.find(p => p.value === m)?.label ?? m;
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const REFRESH = ["dtc-pending-payments", "dtc-payments", "dtc-runs", "dtc-run", "dtc-bill", "dtc-advances"];
 
 export default function PaymentsPage() {
-  const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") ?? "pending";
   return (
-    <div className="flex flex-col h-full">
-      <PageHeader title="Payments & Advances" subtitle="Pay approved DTC bills, keep the payment record, and track advances" />
-      <div className="flex-1 overflow-auto p-3 sm:p-4">
-        <Tabs value={tab} onValueChange={v => setParams(v === "pending" ? {} : { tab: v })}>
-          <TabsList>
-            <TabsTrigger value="pending">To pay</TabsTrigger>
-            <TabsTrigger value="paid">Paid</TabsTrigger>
-            <TabsTrigger value="advances">Advances</TabsTrigger>
-          </TabsList>
-          <TabsContent value="pending"><PendingTab /></TabsContent>
-          <TabsContent value="paid"><PaidTab /></TabsContent>
-          <TabsContent value="advances"><AdvancesTab /></TabsContent>
-        </Tabs>
-      </div>
+    <div className="h-full overflow-auto">
+      <RecordHeader
+        title="Payments"
+        subtitle="Pay approved bills and keep track of advances"
+        tabs={[
+          { to: "/dtc/payments", label: "To pay", end: true },
+          { to: "/dtc/payments/paid", label: "Paid" },
+          { to: "/dtc/payments/advances", label: "Advances" },
+        ]}
+      />
+      <RecordBody wide>
+        <Routes>
+          <Route index element={<PendingTab />} />
+          <Route path="record" element={<RecordPayment />} />
+          <Route path="paid" element={<PaidTab />} />
+          <Route path="advances" element={<AdvancesTab />} />
+        </Routes>
+      </RecordBody>
     </div>
   );
 }
 
+function groupByContractor(rows: PendingBill[]) {
+  const m = new Map<string, { key: string; name: string; bank: PendingBill; bills: PendingBill[] }>();
+  for (const r of rows) {
+    const key = r.contractorId ?? `none:${r.billId}`;
+    if (!m.has(key)) m.set(key, { key, name: r.contractorName ?? "No contractor", bank: r, bills: [] });
+    m.get(key)!.bills.push(r);
+  }
+  return Array.from(m.values());
+}
+
+function bankFile(chosen: PendingBill[]) {
+  // One line per contractor: their bills are paid in one transfer.
+  const out: (string | number)[][] = [["Beneficiary Name", "Account Number", "IFSC", "Amount", "Narration"]];
+  for (const g of groupByContractor(chosen)) {
+    const b = g.bank;
+    const months = Array.from(new Set(g.bills.map(x => monthLabel(x.month)))).join(", ");
+    out.push([
+      b.contractorName ?? "", b.accountNo ?? "", b.ifscCode ?? "",
+      g.bills.reduce((s, x) => s + x.payable, 0).toFixed(2),
+      `DTC ${months} ${g.bills.map(x => x.routeCode).join(" ")}`.slice(0, 60),
+    ]);
+  }
+  const url = URL.createObjectURL(new Blob([toCsv(out)], { type: "text/csv" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `dtc-bank-upload_${todayIST()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── To pay ─────────────────────────────────────────────────────────
 function PendingTab() {
-  const perms = useDtcPerms();
-  const qc = useQueryClient();
+  const navigate = useNavigate();
   const { data: rows = [], isLoading } = useQuery({ queryKey: ["dtc-pending-payments"], queryFn: fetchPendingPayments });
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [paidOn, setPaidOn] = useState(todayIST());
-  const [mode, setMode] = useState<PayMode>("neft");
-  const [reference, setReference] = useState("");
-  const [notes, setNotes] = useState("");
-
-  const groups = useMemo(() => {
-    const m = new Map<string, { key: string; name: string; bank: PendingBill; bills: PendingBill[] }>();
-    for (const r of rows) {
-      const key = r.contractorId ?? `none:${r.billId}`;
-      if (!m.has(key)) m.set(key, { key, name: r.contractorName ?? "No contractor", bank: r, bills: [] });
-      m.get(key)!.bills.push(r);
-    }
-    return Array.from(m.values());
-  }, [rows]);
-  const payable = rows.filter(r => !r.onHold);
+  const groups = useMemo(() => groupByContractor(rows), [rows]);
   const chosen = rows.filter(r => selected.has(r.billId));
   const chosenTotal = chosen.reduce((s, r) => s + r.payable, 0);
-  const contractors = new Set(chosen.map(b => b.contractorId)).size;
-  const missingBank = chosen.filter(r => !r.accountNo || !r.ifscCode);
-
+  const held = rows.filter(r => r.onHold).length;
   const toggle = (ids: string[], on: boolean) => setSelected(prev => {
     const n = new Set(prev);
     ids.forEach(id => (on ? n.add(id) : n.delete(id)));
     return n;
   });
 
+  if (isLoading) return <p className="text-muted-foreground">Loading…</p>;
+  if (rows.length === 0) return <EmptyState title="Nothing to pay" hint="Bills show up here once Finance approves a month." />;
+
+  return (
+    <>
+      <p className="text-[14px]">
+        <b>₹{rs(rows.reduce((s, r) => s + r.payable, 0))}</b> to pay on {plural(rows.length, "bill")}
+        {held > 0 && <span className="text-warning">, {held} on hold</span>}. Tick the bills you are paying.
+      </p>
+      <div className="space-y-3">
+        {groups.map(g => {
+          const ids = g.bills.filter(b => !b.onHold).map(b => b.billId);
+          const all = ids.length > 0 && ids.every(id => selected.has(id));
+          return (
+            <div key={g.key} className={cn("erp-panel", all && "ring-1 ring-primary")}>
+              <label className="flex items-center gap-3 px-5 py-3 cursor-pointer">
+                <input type="checkbox" className="h-4 w-4" disabled={ids.length === 0} checked={all} onChange={e => toggle(ids, e.target.checked)} />
+                <span className="flex-1 min-w-0">
+                  <span className="font-medium text-[14px]">{g.name}</span>
+                  <span className="block text-[12.5px] text-muted-foreground">
+                    {g.bank.accountNo ? `${g.bank.bankName ?? "Bank"} · ${g.bank.accountNo}${g.bank.ifscCode ? ` · ${g.bank.ifscCode}` : ""}` : <span className="text-warning">No bank details on record</span>}
+                  </span>
+                </span>
+                <span className="num font-semibold text-[15px]">₹{rs(g.bills.reduce((s, b) => s + b.payable, 0))}</span>
+              </label>
+              <div className="border-t border-border">
+                {g.bills.map(b => (
+                  <label key={b.billId} className={cn("flex items-center gap-3 px-5 py-2 text-[13px] cursor-pointer hover:bg-muted/30", b.onHold && "opacity-60 cursor-default")}>
+                    <input type="checkbox" className="h-4 w-4 ml-6" disabled={b.onHold} checked={selected.has(b.billId)} onChange={e => toggle([b.billId], e.target.checked)} />
+                    <span className="flex-1">{b.routeName} <span className="text-muted-foreground">· {monthLabel(b.month)}</span>
+                      {b.onHold && <span className="text-warning"> · on hold: {b.holdReason}</span>}
+                    </span>
+                    <span className="num">₹{rs(b.payable)}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {chosen.length > 0 && (
+        <div className="sticky bottom-0 z-10 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 bg-panel border-t border-border flex flex-wrap items-center gap-3 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+          <span className="flex-1 text-[14px]">{plural(chosen.length, "bill")} ticked · <b>₹{rs2(chosenTotal)}</b></span>
+          <Button size="sm" variant="outline" className="h-9" onClick={() => bankFile(chosen)}><Download className="h-3.5 w-3.5 mr-1.5" /> Bank file</Button>
+          <Button size="sm" className="h-9" onClick={() => navigate(`record?bills=${chosen.map(c => c.billId).join(",")}`)}>
+            Continue to payment <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
+          </Button>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── Record a payment (its own page) ────────────────────────────────
+function RecordPayment() {
+  const perms = useDtcPerms();
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const [params] = useSearchParams();
+  const ids = new Set((params.get("bills") ?? "").split(",").filter(Boolean));
+  const { data: rows = [], isLoading } = useQuery({ queryKey: ["dtc-pending-payments"], queryFn: fetchPendingPayments });
+  const chosen = rows.filter(r => ids.has(r.billId) && !r.onHold);
+  const groups = groupByContractor(chosen);
+  const total = chosen.reduce((s, r) => s + r.payable, 0);
+  const [paidOn, setPaidOn] = useState(todayIST());
+  const [mode, setMode] = useState<PayMode>("neft");
+  const [reference, setReference] = useState("");
+  const [notes, setNotes] = useState("");
   const pay = useMutation({
     mutationFn: () => recordPayment({ billIds: chosen.map(b => b.billId), paidOn, mode, reference: reference || null, notes: notes || null }),
-    onSuccess: (r) => {
-      toast.success(r.message);
-      REFRESH.forEach(k => qc.invalidateQueries({ queryKey: [k] }));
-      setSelected(new Set()); setReference(""); setNotes("");
-    },
+    onSuccess: (r) => { toast.success(r.message); REFRESH.forEach(k => qc.invalidateQueries({ queryKey: [k] })); navigate("/dtc/payments/paid"); },
     onError: (e) => toast.error(errMsg(e)),
   });
 
-  const bankFile = () => {
-    // One line per contractor: their ticked bills are paid in one transfer.
-    const byContractor = new Map<string, PendingBill[]>();
-    for (const r of chosen) {
-      const k = r.contractorId ?? r.billId;
-      if (!byContractor.has(k)) byContractor.set(k, []);
-      byContractor.get(k)!.push(r);
-    }
-    const out: (string | number)[][] = [["Beneficiary Name", "Account Number", "IFSC", "Amount", "Narration"]];
-    for (const bills of byContractor.values()) {
-      const b = bills[0]!;
-      const months = Array.from(new Set(bills.map(x => monthLabel(x.month)))).join(", ");
-      out.push([
-        b.contractorName ?? "", b.accountNo ?? "", b.ifscCode ?? "",
-        bills.reduce((s, x) => s + x.payable, 0).toFixed(2),
-        `DTC ${months} ${bills.map(x => x.routeCode).join(" ")}`.slice(0, 60),
-      ]);
-    }
-    const url = URL.createObjectURL(new Blob([toCsv(out)], { type: "text/csv" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `dtc-bank-upload_${todayIST()}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
+  if (isLoading) return <p className="text-muted-foreground">Loading…</p>;
+  if (chosen.length === 0) {
+    return <EmptyState title="No bills to pay here" hint="They may already be paid. Go back to To pay and tick them again." />;
+  }
   return (
-    <div className="space-y-3 mt-3">
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <StatCard label="Waiting payment" value={fmtINR(rows.reduce((s, r) => s + r.payable, 0), false)} hint={plural(rows.length, "bill")} tone="warning" />
-        <StatCard label="On hold" value={rows.filter(r => r.onHold).length} hint="released on the bill page" tone={rows.some(r => r.onHold) ? "danger" : "default"} />
-        <StatCard label="Ticked" value={fmtINR(chosenTotal, false)} hint={`${plural(chosen.length, "bill")} · ${plural(contractors, "contractor")}`} tone="info" />
-      </div>
-
-      <div className="erp-panel overflow-auto">
-        {isLoading ? <div className="p-4 text-muted-foreground">Loading…</div> : rows.length === 0 ? (
-          <EmptyState title="Nothing to pay" hint="Bills appear here once a month is approved by Finance." />
-        ) : (
-          <table className="erp-table text-[12.5px]">
-            <thead>
-              <tr>
-                <th style={{ width: 30 }}>
-                  <input type="checkbox" aria-label="Tick all" checked={payable.length > 0 && payable.every(r => selected.has(r.billId))}
-                    onChange={e => toggle(payable.map(r => r.billId), e.target.checked)} />
-                </th>
-                <th>Contractor / route bill</th><th>Month</th><th>Bank account</th><th className="text-right">Payable (₹)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {groups.map(g => {
-                const ids = g.bills.filter(b => !b.onHold).map(b => b.billId);
-                const total = g.bills.reduce((s, b) => s + b.payable, 0);
-                return [
-                  <tr key={g.key} className="bg-muted/40 font-medium">
-                    <td><input type="checkbox" aria-label={`Tick ${g.name}`} disabled={ids.length === 0} checked={ids.length > 0 && ids.every(id => selected.has(id))} onChange={e => toggle(ids, e.target.checked)} /></td>
-                    <td>{g.name}{g.bank.contractorCode && <span className="ml-1.5 font-mono text-[11px] text-muted-foreground">{g.bank.contractorCode}</span>}</td>
-                    <td />
-                    <td className="text-[12px] font-normal">
-                      {g.bank.accountNo
-                        ? <>{g.bank.bankName ?? ""} · {g.bank.accountNo} · {g.bank.ifscCode ?? <span className="text-warning">no IFSC</span>}</>
-                        : <span className="text-warning">No bank details: add them in Masters → Contractors</span>}
-                    </td>
-                    <td className="text-right num">{rs(total)}</td>
-                  </tr>,
-                  ...g.bills.map(b => (
-                    <tr key={b.billId} className={b.onHold ? "opacity-60" : ""}>
-                      <td><input type="checkbox" disabled={b.onHold} checked={selected.has(b.billId)} onChange={e => toggle([b.billId], e.target.checked)} /></td>
-                      <td className="pl-7">
-                        <Link to={`/dtc/bills/${b.month}/${b.billId}`} className="hover:underline">
-                          <span className="font-mono text-[11px] text-muted-foreground mr-1.5">{b.routeCode}</span>{b.routeName}
-                        </Link>
-                      </td>
-                      <td>{monthLabel(b.month)}</td>
-                      <td className="text-[12px] text-warning">{b.onHold ? `On hold: ${b.holdReason ?? ""}` : ""}</td>
-                      <td className="text-right num">{rs(b.payable)}</td>
-                    </tr>
-                  )),
-                ];
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {chosen.length > 0 && (
-        <div className="erp-panel border-l-4 border-l-primary sticky bottom-0 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.06)]">
-          <div className="px-4 pt-3 pb-2 border-b border-border flex flex-wrap items-center gap-2">
-            <div className="flex-1">
-              <div className="text-[13.5px] font-semibold">Payment details</div>
-              <div className="text-[12px] text-muted-foreground">
-                {plural(chosen.length, "bill")} of {plural(contractors, "contractor")}, total <b className="text-foreground">₹{rs2(chosenTotal)}</b>
+    <>
+      <Link to="/dtc/payments" className="text-[13px] text-muted-foreground hover:text-foreground">← Back to the list</Link>
+      <Section title={`Paying ₹${rs2(total)}`} description={`${plural(chosen.length, "bill")} of ${plural(groups.length, "contractor")}`}>
+        <div className="space-y-3">
+          {groups.map(g => (
+            <div key={g.key} className="text-[13.5px]">
+              <div className="flex justify-between font-medium"><span>{g.name}</span><span className="num">₹{rs2(g.bills.reduce((s, b) => s + b.payable, 0))}</span></div>
+              <div className="text-[12.5px] text-muted-foreground">
+                {g.bank.accountNo ? `${g.bank.bankName ?? "Bank"} · ${g.bank.accountNo}${g.bank.ifscCode ? ` · ${g.bank.ifscCode}` : " · no IFSC"}` : <span className="text-warning">No bank details on record</span>}
               </div>
+              <div className="text-[12.5px] text-muted-foreground">{g.bills.map(b => `${b.routeName} (${monthLabel(b.month)})`).join(", ")}</div>
             </div>
-            <Button size="sm" variant="outline" className="h-8" onClick={bankFile}><Download className="h-3.5 w-3.5 mr-1.5" /> Bank upload file (CSV)</Button>
-          </div>
-          <div className="p-4 space-y-3">
-            {missingBank.length > 0 && (
-              <div className="text-[12.5px] text-warning flex gap-2"><AlertTriangle className="h-4 w-4 shrink-0" />{plural(missingBank.length, "ticked bill")} without an account number or IFSC on the contractor.</div>
-            )}
-            {perms.pay ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
-                <Field label="Paid on" required><Input type="date" value={paidOn} max={todayIST()} onChange={e => setPaidOn(e.target.value)} className="erp-input" /></Field>
-                <Field label="Mode" required>
-                  <select value={mode} onChange={e => setMode(e.target.value as PayMode)} className="erp-input w-full">
-                    {PAY_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-                  </select>
-                </Field>
-                <Field label={mode === "cheque" ? "Cheque number" : "UTR / reference"} required={mode !== "cash"}>
-                  <Input value={reference} onChange={e => setReference(e.target.value)} className="erp-input" />
-                </Field>
-                <Field label="Notes"><Input value={notes} onChange={e => setNotes(e.target.value)} className="erp-input" /></Field>
-                <Button size="sm" className="h-8" disabled={!paidOn || (mode !== "cash" && !reference.trim()) || pay.isPending} onClick={() => pay.mutate()}>
-                  <Banknote className="h-3.5 w-3.5 mr-1.5" /> {pay.isPending ? "Saving…" : `Record ₹${rs(chosenTotal)} paid`}
-                </Button>
-              </div>
-            ) : <p className="text-[12.5px] text-muted-foreground">Finance records the payment.</p>}
-            {contractors > 1 && perms.pay && <p className="text-[11.5px] text-muted-foreground">All ticked bills get the same reference. For separate transfers, tick one contractor at a time.</p>}
-          </div>
+          ))}
         </div>
-      )}
-    </div>
+        <Button size="sm" variant="outline" className="h-8 mt-4" onClick={() => bankFile(chosen)}><Download className="h-3.5 w-3.5 mr-1.5" /> Download bank file</Button>
+      </Section>
+
+      {perms.pay ? (
+        <Section title="Payment details">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Paid on" required><Input type="date" value={paidOn} max={todayIST()} onChange={e => setPaidOn(e.target.value)} className="erp-input" /></Field>
+            <Field label="How it was paid" required>
+              <select value={mode} onChange={e => setMode(e.target.value as PayMode)} className="erp-input w-full">
+                {PAY_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </select>
+            </Field>
+            <Field label={mode === "cheque" ? "Cheque number" : "UTR / reference"} required={mode !== "cash"}>
+              <Input value={reference} onChange={e => setReference(e.target.value)} className="erp-input" />
+            </Field>
+            <Field label="Notes"><Input value={notes} onChange={e => setNotes(e.target.value)} className="erp-input" /></Field>
+          </div>
+          {groups.length > 1 && <p className="text-[12.5px] text-muted-foreground mt-3">All these bills get the same reference. For separate transfers, pay one contractor at a time.</p>}
+          <div className="flex justify-end gap-2 mt-5">
+            <Button size="sm" variant="ghost" className="h-9" onClick={() => navigate("/dtc/payments")}>Cancel</Button>
+            <Button size="sm" className="h-9" disabled={!paidOn || (mode !== "cash" && !reference.trim()) || pay.isPending} onClick={() => pay.mutate()}>
+              {pay.isPending ? "Saving…" : `Record ₹${rs(total)} as paid`}
+            </Button>
+          </div>
+        </Section>
+      ) : <p className="text-[13px] text-muted-foreground">Finance records payments.</p>}
+    </>
   );
 }
 
@@ -234,7 +239,7 @@ function PaidTab() {
   });
   const live = rows.filter(r => !r.reversedAt);
   return (
-    <div className="space-y-3 mt-3">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-2">
         <Field label="Bill month"><MonthInput value={month} onChange={setMonth} className="w-40" /></Field>
         {month && <Button size="sm" variant="ghost" className="h-8" onClick={() => setMonth("")}>All months</Button>}
@@ -299,9 +304,9 @@ function AdvancesTab() {
   });
   const outstanding = rows.filter(r => !r.cancelledAt && r.recoveredRunStatus !== "approved").reduce((s, r) => s + r.amount, 0);
   return (
-    <div className="space-y-3 mt-3">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[12.5px]">Not yet recovered on an approved bill: <b>₹{rs2(outstanding)}</b></span>
+        <span className="text-[14px]"><b>₹{rs2(outstanding)}</b> in advances still to recover</span>
         <div className="flex-1" />
         {perms.pay && (
           <Button size="sm" className="h-8" asChild>

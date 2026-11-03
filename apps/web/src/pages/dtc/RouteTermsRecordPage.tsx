@@ -10,7 +10,7 @@
 //   Recent bills  the last 12 months billed on this route
 // ════════════════════════════════════════════════════════════════════
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Field } from "@/components/PageHeader";
@@ -25,8 +25,8 @@ import {
   deleteRouteTerms, fetchRouteRecord, saveRouteTerms,
   type BillingType, type RouteTerms, type RouteTermsInput,
 } from "@/services/dtc";
-import { BILLING_TYPE_LABEL, RATE_UNIT, RunStatusBadge, errMsg, fmtDMY, fmtStamp, monthLabel, qtyFmt, rs, rs2, useDtcPerms } from "./shared";
-import { FieldList, RecordHeader, Section, SectionTabs } from "./ui";
+import { BASIS_LABEL, BILLING_TYPE_LABEL, RATE_UNIT, RunStatusBadge, errMsg, fmtDMY, fmtStamp, monthLabel, nice, rs, rs2, useDtcPerms } from "./shared";
+import { FieldList, RecordBody, RecordHeader, Section } from "./ui";
 
 const daysUntil = (iso: string, today: string) => Math.round((Date.parse(iso) - Date.parse(today)) / 86400000);
 
@@ -42,126 +42,127 @@ export default function RouteTermsRecordPage() {
   const { data, isLoading } = useQuery({ queryKey: ["dtc-route-record", routeId], queryFn: () => fetchRouteRecord(routeId) });
 
   if (isLoading || !data) {
-    return <div className="p-4 space-y-2">{Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>;
+    return <div className="p-6 space-y-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>;
   }
-  const { route, current: c, upcoming, history, bills, today } = data;
+  const { route, current: c, history, bills, today } = data;
   const billed = !!c && c.active;
   const ending = c?.contractEnd ? daysUntil(c.contractEnd, today) : null;
   const perDay = billed ? (c!.billingType === "km" ? c!.kmPerDay * c!.rate : c!.billingType === "trip" ? c!.rate : null) : null;
+  const base = `/dtc/setup/routes/${route.id}`;
 
   return (
     <div className="h-full overflow-auto">
       <RecordHeader
-        back={{ to: "/dtc/setup/routes", label: "Route Billing Setup" }}
+        back={{ to: "/dtc/setup/routes", label: "All routes" }}
         code={route.code}
         title={route.name}
-        status={
-          billed
-            ? <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-success/15 text-success">Billed</span>
-            : <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground">Not billed</span>
-        }
-        subtitle={<>Contractor: <b className="text-foreground">{route.contractorName ?? "none assigned"}</b>{route.contractorPhone ? ` · ${route.contractorPhone}` : ""}</>}
+        status={billed
+          ? <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-success/15 text-success">Billed</span>
+          : <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground">Not billed</span>}
+        subtitle={route.contractorName ?? "No contractor assigned"}
         facts={billed ? [
-          { label: "Billing", value: BILLING_TYPE_LABEL[c!.billingType] },
+          { label: "Basis", value: BASIS_LABEL[c!.billingType] },
           { label: "Rate", value: `₹${rs2(c!.rate)}`, hint: RATE_UNIT[c!.billingType] },
-          { label: "Km per day", value: c!.billingType === "km" ? rs2(c!.kmPerDay) : "—" },
-          { label: "Pay per day", value: perDay != null ? `₹${rs2(perDay)}` : "by litres", hint: "when the route runs" },
-          { label: "Vehicle capacity", value: c!.vehicleCapacityMt != null ? `${rs2(c!.vehicleCapacityMt)} MT` : "—", hint: c!.vehicleNumber ?? undefined },
-          {
-            label: "Contract ends", value: c!.contractEnd ? fmtDMY(c!.contractEnd) : "—",
-            hint: ending != null ? (ending < 0 ? "ended" : `in ${ending} days`) : undefined,
-            tone: ending != null && ending <= 30 ? "danger" : "default",
-          },
+          { label: "A day's pay", value: perDay != null ? `₹${rs(perDay)}` : "by litres" },
+          { label: "Contract ends", value: c!.contractEnd ? fmtDMY(c!.contractEnd) : "—", hint: ending != null ? (ending < 0 ? "already ended" : `in ${ending} days`) : undefined, tone: ending != null && ending <= 30 ? "danger" : "default" },
         ] : undefined}
+        tabs={[
+          { to: base, label: "Overview", end: true },
+          ...(perms.setup ? [{ to: `${base}/edit`, label: c ? "Change terms" : "Set up" }] : []),
+          { to: `${base}/history`, label: "Rate history", count: history.length },
+          { to: `${base}/bills`, label: "Bills", count: bills.length },
+        ]}
       />
-      <SectionTabs sections={[
-        { id: "terms", label: "Terms in force" },
-        ...(perms.setup ? [{ id: "change", label: "Change terms" }] : []),
-        { id: "history", label: "Rate history", count: history.length },
-        { id: "bills", label: "Recent bills", count: bills.length },
-      ]} />
-
-      <div className="p-3 sm:p-5 space-y-4 max-w-6xl">
-        {!route.contractorId && (
-          <div className="erp-panel p-3 border-l-4 border-l-warning text-[12.5px] flex gap-2">
-            <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
-            No contractor is assigned to this route. Assign one in Masters → Contractors, or the bill has no one to pay.
-          </div>
-        )}
-
-        <Section id="terms" title="Terms in force" description={c ? `Since ${fmtDMY(c.effectiveFrom)}` : "This route has no billing terms yet."}>
-          {c ? (
-            <div className="space-y-3">
-              {c.notes?.startsWith("Imported") && (
-                <div className="text-[12.5px] text-warning flex gap-2"><AlertTriangle className="h-4 w-4 shrink-0" />Copied from the old route master. Check the billing type and rate, then save them under Change terms.</div>
-              )}
-              <FieldList items={[
-                { label: "Billed", value: c.active ? "Yes" : `No, from ${fmtDMY(c.effectiveFrom)}` },
-                { label: "Billing type", value: c.active ? `${TYPE_HELP[c.billingType].title} (${TYPE_HELP[c.billingType].text})` : "—" },
-                { label: "Rate", value: c.active ? `₹${rs2(c.rate)} ${RATE_UNIT[c.billingType]}` : "—" },
-                { label: "Km per day", value: c.active && c.billingType === "km" ? rs2(c.kmPerDay) : "—" },
-                { label: "Vehicle", value: [c.vehicleNumber, c.vehicleCapacityMt != null ? `${rs2(c.vehicleCapacityMt)} MT` : null].filter(Boolean).join(" · ") || "—" },
-                { label: "Vehicle type", value: [c.insulated ? "Insulated" : null, c.cashCollection ? "Collects cash from dealers" : null].filter(Boolean).join(" · ") || "—" },
-                { label: "Agreement / tender no.", value: c.agreementNo ?? "—" },
-                { label: "Contract period", value: c.contractStart || c.contractEnd ? `${fmtDMY(c.contractStart) || "…"} to ${fmtDMY(c.contractEnd) || "…"}` : "—" },
-                { label: "Entered by", value: c.createdByName ? `${c.createdByName}, ${fmtStamp(c.createdAt)}` : "—" },
-                ...(c.notes && !c.notes.startsWith("Imported") ? [{ label: "Notes", value: c.notes, wide: true }] : []),
-              ]} />
-              {upcoming && (
-                <div className="rounded border border-info/40 bg-info/5 p-2.5 text-[12.5px]">
-                  <b>Scheduled change from {fmtDMY(upcoming.effectiveFrom)}:</b>{" "}
-                  {upcoming.active ? `${BILLING_TYPE_LABEL[upcoming.billingType]} at ₹${rs2(upcoming.rate)} ${RATE_UNIT[upcoming.billingType]}${upcoming.billingType === "km" ? `, ${rs2(upcoming.kmPerDay)} km/day` : ""}` : "billing stops"}.
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="text-[12.5px] text-muted-foreground">Until terms are entered, the route gets no DTC bill.</p>
-          )}
-        </Section>
-
-        {perms.setup && <ChangeTerms data={data} />}
-
-        <Section id="history" title="Rate history" description="Every version of the terms. Bills keep the version they were prepared with." flush>
-          <HistoryTable routeId={route.id} history={history} canEdit={perms.setup} today={today} />
-        </Section>
-
-        <Section id="bills" title="Recent bills" description="The last 12 months billed on this route" flush>
-          {bills.length === 0 ? <p className="p-4 text-[12.5px] text-muted-foreground">No bills yet.</p> : (
-            <table className="erp-table text-[12.5px]">
-              <thead>
-                <tr>
-                  <th>Month</th><th>Status</th><th>Contractor</th><th className="text-right">Days</th><th className="text-right">Qty L/Kg</th>
-                  <th className="text-right">Gross</th><th className="text-right">Earnings</th><th className="text-right">Deductions</th>
-                  <th className="text-right">Net</th><th className="text-right">Cost/Ltr</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bills.map(b => (
-                  <tr key={b.id}>
-                    <td><Link to={`/dtc/bills/${b.month}/${b.id}`} className="text-primary underline-offset-2 hover:underline">{monthLabel(b.month)}</Link></td>
-                    <td><RunStatusBadge status={b.runStatus} /></td>
-                    <td>{b.contractorName ?? ""}</td>
-                    <td className="text-right num">{b.days}</td>
-                    <td className="text-right num">{qtyFmt(b.qty)}</td>
-                    <td className="text-right num">{rs(b.gross)}</td>
-                    <td className="text-right num">{rs(b.totalEarnings)}</td>
-                    <td className="text-right num">{rs(b.totalDeductions)}</td>
-                    <td className={cn("text-right num font-medium", b.net < 0 && "text-destructive")}>{rs(b.net)}</td>
-                    <td className="text-right num">{rs2(b.costPerLitre)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Section>
-      </div>
+      <RecordBody>
+        <Routes>
+          <Route index element={<Overview data={data} canEdit={perms.setup} />} />
+          {perms.setup && <Route path="edit" element={<ChangeTerms data={data} />} />}
+          <Route path="history" element={
+            <Section title="Rate history" description="Each bill keeps the rate it was made with." flush>
+              <HistoryTable routeId={route.id} history={history} canEdit={perms.setup} today={today} />
+            </Section>} />
+          <Route path="bills" element={<BillsTable bills={bills} />} />
+        </Routes>
+      </RecordBody>
     </div>
+  );
+}
+
+function Overview({ data, canEdit }: { data: NonNullable<Awaited<ReturnType<typeof fetchRouteRecord>>>; canEdit: boolean }) {
+  const { route, current: c, upcoming } = data;
+  if (!c) {
+    return (
+      <Section title="Not set up yet">
+        <p className="text-[13.5px]">This route gets no DTC bill until its terms are entered.</p>
+        {canEdit && <Button size="sm" className="h-9 mt-4" asChild><Link to="edit">Set up this route</Link></Button>}
+      </Section>
+    );
+  }
+  return (
+    <>
+      {!route.contractorId && (
+        <div className="rounded-md bg-warning/10 px-4 py-3 text-[13px]">No contractor is assigned to this route. Assign one in Masters → Contractors.</div>
+      )}
+      {c.notes?.startsWith("Imported") && (
+        <div className="rounded-md bg-warning/10 px-4 py-3 text-[13px]">
+          These terms were copied from the old route master. Check them{canEdit ? <> and <Link to="edit" className="underline">save them again</Link></> : ""}.
+        </div>
+      )}
+      <Section title="Terms in force" description={`Since ${fmtDMY(c.effectiveFrom)}`}>
+        {c.active ? (
+          <FieldList cols={2} items={[
+            { label: "How it's paid", value: TYPE_HELP[c.billingType].text },
+            { label: "Rate", value: `₹${rs2(c.rate)} ${RATE_UNIT[c.billingType]}${c.billingType === "km" ? `, ${nice(c.kmPerDay)} km a day` : ""}` },
+            { label: "Vehicle", value: [c.vehicleNumber, c.vehicleCapacityMt != null ? `${nice(c.vehicleCapacityMt)} MT` : null, c.insulated ? "insulated" : null].filter(Boolean).join(", ") || "—" },
+            { label: "Collects cash from dealers", value: c.cashCollection ? "Yes" : "No" },
+            { label: "Agreement", value: c.agreementNo ?? "—" },
+            { label: "Contract", value: c.contractStart && c.contractEnd ? `${fmtDMY(c.contractStart)} to ${fmtDMY(c.contractEnd)}` : c.contractEnd ? `Ends ${fmtDMY(c.contractEnd)}` : c.contractStart ? `From ${fmtDMY(c.contractStart)}` : "—" },
+            ...(c.notes && !c.notes.startsWith("Imported") ? [{ label: "Notes", value: c.notes, wide: true }] : []),
+          ]} />
+        ) : <p className="text-[13.5px]">Not billed from {fmtDMY(c.effectiveFrom)}.</p>}
+        {c.createdByName && <p className="text-[12px] text-muted-foreground mt-4">Entered by {c.createdByName}, {fmtStamp(c.createdAt)}</p>}
+      </Section>
+      {upcoming && (
+        <Section title={`Changes on ${fmtDMY(upcoming.effectiveFrom)}`}>
+          <p className="text-[13.5px]">
+            {upcoming.active
+              ? `${TYPE_HELP[upcoming.billingType].title}, ₹${rs2(upcoming.rate)} ${RATE_UNIT[upcoming.billingType]}${upcoming.billingType === "km" ? `, ${nice(upcoming.kmPerDay)} km a day` : ""}.`
+              : "Billing stops."}
+          </p>
+        </Section>
+      )}
+    </>
+  );
+}
+
+function BillsTable({ bills }: { bills: NonNullable<Awaited<ReturnType<typeof fetchRouteRecord>>>["bills"] }) {
+  return (
+    <Section title="Bills" description="The last 12 months" flush>
+      {bills.length === 0 ? <p className="px-5 py-4 text-[13px] text-muted-foreground">No bills yet.</p> : (
+        <table className="erp-table text-[13px]">
+          <thead><tr><th>Month</th><th className="text-right">Days</th><th className="text-right">Gross</th><th className="text-right">Deductions</th><th className="text-right">Net</th><th /></tr></thead>
+          <tbody>
+            {bills.map(b => (
+              <tr key={b.id}>
+                <td><Link to={`/dtc/bills/${b.month}/${b.id}`} className="hover:underline">{monthLabel(b.month)}</Link></td>
+                <td className="text-right num">{b.days}</td>
+                <td className="text-right num">₹{rs(b.gross)}</td>
+                <td className="text-right num">₹{rs(b.totalDeductions)}</td>
+                <td className={cn("text-right num font-medium", b.net < 0 && "text-destructive")}>₹{rs(b.net)}</td>
+                <td><RunStatusBadge status={b.runStatus} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Section>
   );
 }
 
 // ─── Change terms (form on the page) ────────────────────────────────
 function ChangeTerms({ data }: { data: NonNullable<Awaited<ReturnType<typeof fetchRouteRecord>>> }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const { route, current, upcoming, today } = data;
   const base = upcoming ?? current;
   const blank = useMemo(() => ({
@@ -201,6 +202,7 @@ function ChangeTerms({ data }: { data: NonNullable<Awaited<ReturnType<typeof fet
       toast.success(r.message);
       qc.invalidateQueries({ queryKey: ["dtc-route-record", route.id] });
       qc.invalidateQueries({ queryKey: ["dtc-route-terms"] });
+      navigate(`/dtc/setup/routes/${route.id}`);
     },
     onError: (e) => toast.error(errMsg(e)),
   });
@@ -209,8 +211,7 @@ function ChangeTerms({ data }: { data: NonNullable<Awaited<ReturnType<typeof fet
 
   return (
     <Section
-      id="change"
-      title="Change terms"
+      title={current ? "Change terms" : "Set up this route"}
       description={current
         ? correcting
           ? `Correcting the terms in force since ${fmtDMY(current.effectiveFrom)}.`

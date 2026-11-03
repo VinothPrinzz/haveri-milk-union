@@ -9,7 +9,7 @@
 //   Refund        recorded when the contractor leaves; closes the plan
 // ════════════════════════════════════════════════════════════════════
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Field } from "@/components/PageHeader";
@@ -20,8 +20,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { todayIST } from "@/lib/istDate";
 import { fetchDeposits, fetchDepositRecord, fetchDtcLookups, refundDeposit, saveDeposit, type DepositPlan } from "@/services/dtc";
-import { RunStatusBadge, errMsg, fmtDMY, fmtStamp, monthLabel, rs2, useDtcPerms } from "./shared";
-import { Progress, RecordHeader, Section, SectionTabs } from "./ui";
+import { RunStatusBadge, errMsg, fmtDMY, fmtStamp, monthLabel, rs, rs2, useDtcPerms } from "./shared";
+import { Progress, RecordBody, RecordHeader, Section, Summary } from "./ui";
 
 export default function DepositRecordPage() {
   const { contractorId = "" } = useParams();
@@ -61,69 +61,99 @@ function DepositRecord({ contractorId }: { contractorId: string }) {
     qc.invalidateQueries({ queryKey: ["dtc-deposit-record", contractorId] });
     qc.invalidateQueries({ queryKey: ["dtc-deposits"] });
   };
-  if (isLoading || !data) return <div className="p-4 space-y-2">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>;
+  if (isLoading || !data) return <div className="p-6 space-y-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}</div>;
   const { contractor, plan } = data;
   const closed = plan?.status === "closed";
+  const base = `/dtc/setup/deposits/${contractorId}`;
 
   return (
     <div className="h-full overflow-auto">
       <RecordHeader
-        back={{ to: "/dtc/setup/deposits", label: "Security Deposits" }}
+        back={{ to: "/dtc/setup/deposits", label: "All deposits" }}
         code={contractor.code ?? undefined}
         title={contractor.name}
-        subtitle={`Security deposit · ${contractor.phone}`}
+        subtitle="Security deposit"
         status={plan
           ? <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium capitalize ${plan.status === "active" ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"}`}>{plan.status}</span>
-          : <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground">No plan</span>}
+          : undefined}
         facts={plan ? [
-          { label: "Target", value: `₹${rs2(plan.targetAmount)}` },
-          { label: "Per month", value: `₹${rs2(plan.monthlyInstalment)}` },
-          { label: "Collected", value: `₹${rs2(data.collected)}`, tone: "info", hint: data.collectedPending ? `+ ₹${rs2(data.collectedPending)} on draft bills` : "on approved bills" },
-          { label: "Balance due", value: `₹${rs2(data.balanceDue)}`, tone: data.balanceDue > 0 ? "warning" : "success" },
-          { label: "Months to go", value: plan.monthlyInstalment > 0 ? Math.ceil(data.balanceDue / plan.monthlyInstalment) : "—" },
-          { label: "Refunded", value: plan.refundedAmount ? `₹${rs2(plan.refundedAmount)}` : "—", hint: plan.refundedOn ? fmtDMY(plan.refundedOn) : undefined },
+          { label: "Target", value: `₹${rs(plan.targetAmount)}` },
+          { label: "Collected", value: `₹${rs(data.collected)}`, tone: "info" },
+          { label: "Still to collect", value: `₹${rs(data.balanceDue)}` },
         ] : undefined}
-      >
-        {plan && <div className="mt-3 max-w-xl"><Progress value={data.collected} max={plan.targetAmount} tone={data.balanceDue === 0 ? "success" : "primary"} /></div>}
-      </RecordHeader>
-      <SectionTabs sections={[
-        { id: "plan", label: "Plan" },
-        { id: "collections", label: "Collections", count: data.collections.length },
-        ...(plan ? [{ id: "refund", label: "Refund" }] : []),
-      ]} />
-
-      <div className="p-3 sm:p-5 space-y-4 max-w-5xl">
-        <PlanSection contractorId={contractorId} plan={plan} canEdit={perms.setup && !closed} onSaved={refresh} />
-
-        <Section id="collections" title="Collections" description="Instalments taken from the contractor's bills (the first route bill of each month)" flush>
-          {data.collections.length === 0 ? <p className="p-4 text-[12.5px] text-muted-foreground">Nothing collected yet.</p> : (
-            <table className="erp-table text-[12.5px]">
-              <thead><tr><th>Month</th><th>Status</th><th>Route bill</th><th className="text-right">Amount</th><th>Remarks</th></tr></thead>
-              <tbody>
-                {data.collections.map(c => (
-                  <tr key={c.id}>
-                    <td>{monthLabel(c.month)}</td>
-                    <td><RunStatusBadge status={c.runStatus} /></td>
-                    <td><span className="font-mono text-[11px] text-muted-foreground mr-1">{c.routeCode}</span>{c.routeName}</td>
-                    <td className="text-right num">{rs2(c.amount)}</td>
-                    <td className="text-[12px]">{c.remarks ?? ""}{c.source === "manual" && <span className="ml-1 text-muted-foreground">(entered by hand)</span>}</td>
-                  </tr>
-                ))}
-                {plan && plan.openingCollected > 0 && (
-                  <tr><td colSpan={3} className="text-muted-foreground">Collected before this system</td><td className="text-right num">{rs2(plan.openingCollected)}</td><td /></tr>
-                )}
-              </tbody>
-            </table>
-          )}
-        </Section>
-
-        {plan && <RefundSection plan={plan} collected={data.collected} canEdit={perms.pay && !closed} onSaved={refresh} />}
-      </div>
+        tabs={plan ? [
+          { to: base, label: "Overview", end: true },
+          ...(perms.setup && !closed ? [{ to: `${base}/edit`, label: "Edit plan" }] : []),
+          { to: `${base}/collections`, label: "Collections", count: data.collections.length },
+          { to: `${base}/refund`, label: "Refund" },
+        ] : undefined}
+      />
+      <RecordBody>
+        {!plan ? (
+          perms.setup ? <PlanSection contractorId={contractorId} plan={null} canEdit onSaved={refresh} />
+            : <p className="text-[13.5px] text-muted-foreground">No deposit plan for this contractor.</p>
+        ) : (
+          <Routes>
+            <Route index element={<DepositOverview data={data} />} />
+            {perms.setup && !closed && <Route path="edit" element={<PlanSection contractorId={contractorId} plan={plan} canEdit onSaved={refresh} />} />}
+            <Route path="collections" element={<Collections data={data} />} />
+            <Route path="refund" element={<RefundSection plan={plan} collected={data.collected} canEdit={perms.pay && !closed} onSaved={refresh} />} />
+          </Routes>
+        )}
+      </RecordBody>
     </div>
   );
 }
 
-function PlanSection({ contractorId, plan, canEdit, onSaved }: {
+function DepositOverview({ data }: { data: NonNullable<Awaited<ReturnType<typeof fetchDepositRecord>>> }) {
+  const plan = data.plan!;
+  const months = plan.monthlyInstalment > 0 ? Math.ceil(data.balanceDue / plan.monthlyInstalment) : 0;
+  return (
+    <Section title="Progress">
+      <Progress value={data.collected} max={plan.targetAmount} tone={data.balanceDue === 0 ? "success" : "primary"} />
+      <Summary>
+        <span className="block mt-3">
+          ₹{rs(data.collected)} of ₹{rs(plan.targetAmount)} collected.
+          {plan.status === "closed"
+            ? ` Refunded ₹${rs(plan.refundedAmount)} on ${fmtDMY(plan.refundedOn)}; the plan is closed.`
+            : data.balanceDue > 0
+              ? ` ₹${rs(plan.monthlyInstalment)} is taken from the bill each month, so about ${months} more month${months === 1 ? "" : "s"}.`
+              : " The full deposit has been collected."}
+          {plan.status === "paused" && " The plan is paused: nothing is taken until it is made active again."}
+        </span>
+      </Summary>
+      {data.collectedPending > 0 && <p className="text-[12.5px] text-muted-foreground mt-2">₹{rs2(data.collectedPending)} more is on bills that are not approved yet.</p>}
+      {plan.notes && <p className="text-[13px] mt-3">{plan.notes}</p>}
+    </Section>
+  );
+}
+
+function Collections({ data }: { data: NonNullable<Awaited<ReturnType<typeof fetchDepositRecord>>> }) {
+  return (
+    <Section title="Collections" description="Taken from the contractor's first route bill each month" flush>
+      {data.collections.length === 0 ? <p className="px-5 py-4 text-[13px] text-muted-foreground">Nothing collected yet.</p> : (
+        <table className="erp-table text-[13px]">
+          <thead><tr><th>Month</th><th>Route</th><th className="text-right">Amount</th><th /></tr></thead>
+          <tbody>
+            {data.collections.map(c => (
+              <tr key={c.id}>
+                <td>{monthLabel(c.month)}</td>
+                <td>{c.routeName}</td>
+                <td className="text-right num">₹{rs2(c.amount)}</td>
+                <td><RunStatusBadge status={c.runStatus} /></td>
+              </tr>
+            ))}
+            {data.plan && data.plan.openingCollected > 0 && (
+              <tr><td colSpan={2} className="text-muted-foreground">Collected before this system</td><td className="text-right num">₹{rs2(data.plan.openingCollected)}</td><td /></tr>
+            )}
+          </tbody>
+        </table>
+      )}
+    </Section>
+  );
+}
+
+function PlanSection({ contractorId, plan, canEdit, onSaved: onSavedProp }: {
   contractorId: string; plan: NonNullable<Awaited<ReturnType<typeof fetchDepositRecord>>>["plan"]; canEdit: boolean; onSaved: () => void;
 }) {
   const blank = useMemo(() => ({
@@ -135,6 +165,8 @@ function PlanSection({ contractorId, plan, canEdit, onSaved }: {
   }), [plan]);
   const [f, setF] = useState(blank);
   useEffect(() => setF(blank), [blank]);
+  const navigate = useNavigate();
+  const onSaved = () => { onSavedProp(); navigate(`/dtc/setup/deposits/${contractorId}`); };
   const dirty = JSON.stringify(f) !== JSON.stringify(blank);
   const mut = useMutation({
     mutationFn: () => saveDeposit({
@@ -147,8 +179,8 @@ function PlanSection({ contractorId, plan, canEdit, onSaved }: {
   const valid = Number(f.target) > 0 && Number(f.instalment) > 0;
   const months = valid ? Math.ceil(Math.max(0, Number(f.target) - (Number(f.opening) || 0)) / Number(f.instalment)) : 0;
   return (
-    <Section id="plan" title="Plan"
-      description={plan ? `Last changed ${fmtStamp(plan.updatedAt)}` : "No plan yet. Fill in the target and the monthly instalment."}>
+    <Section title={plan ? "Edit plan" : "Start a deposit plan"}
+      description={plan ? `Last changed ${fmtStamp(plan.updatedAt)}` : "Fill in the target and how much to take each month."}>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <Field label="Target deposit (₹)" required><Input type="number" min="0" disabled={!canEdit} value={f.target} onChange={e => setF({ ...f, target: e.target.value })} className="erp-input num" /></Field>
         <Field label="Instalment per month (₹)" required><Input type="number" min="0" disabled={!canEdit} value={f.instalment} onChange={e => setF({ ...f, instalment: e.target.value })} className="erp-input num" /></Field>
@@ -191,13 +223,13 @@ function RefundSection({ plan, collected, canEdit, onSaved }: {
   });
   if (plan.status === "closed") {
     return (
-      <Section id="refund" title="Refund">
+      <Section title="Refund">
         <p className="text-[13px]">Refunded <b>₹{rs2(plan.refundedAmount)}</b> on {fmtDMY(plan.refundedOn)}{plan.refundReference ? ` (${plan.refundReference})` : ""}. The plan is closed.</p>
       </Section>
     );
   }
   return (
-    <Section id="refund" title="Refund" description="When the contractor leaves. Recording the refund closes the plan.">
+    <Section title="Refund" description="When the contractor leaves. Recording the refund closes the plan.">
       {!canEdit ? <p className="text-[12.5px] text-muted-foreground">Finance records the refund.</p> : (
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
           <Field label="Amount refunded (₹)" required><Input type="number" min="0" value={amount} onChange={e => setAmount(e.target.value)} className="erp-input num" /></Field>

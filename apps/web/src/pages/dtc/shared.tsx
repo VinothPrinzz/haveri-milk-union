@@ -103,6 +103,12 @@ export const fmtStamp = (ts?: string | null) =>
 export const rs = (n: number | null | undefined) => fmtNum(Math.round(Number(n) || 0), 0);
 /** Two decimals, no symbol. */
 export const rs2 = (n: number | null | undefined) => fmtNum(Number(n) || 0, 2);
+/** A number without trailing ".00": 300 → "300", 1.5 → "1.5", 12.79 → "12.79". */
+export const nice = (n: number | null | undefined) => {
+  const v = Number(n) || 0;
+  return v.toLocaleString("en-IN", { maximumFractionDigits: 2 });
+};
+export const BASIS_LABEL: Record<BillingType, string> = { km: "Per km", trip: "Per trip", litre: "Per litre" };
 export const qtyFmt = (n: number | null | undefined) => fmtNum(Math.round(Number(n) || 0), 0);
 /** 'YYYY-MM' of the month before `iso`'s month. */
 export function prevMonth(iso: string): string {
