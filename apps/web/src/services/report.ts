@@ -560,6 +560,7 @@ export interface AgentSalesLine {
   qtyVol: number;
   unit: string;
   amount: number;
+  margin: number;     // (MRP - rate) x packets
 }
 
 export interface AgentSalesVolumes {
@@ -569,6 +570,10 @@ export interface AgentSalesVolumes {
   curdAmount: number;
   otherQty: number;
   otherAmount: number;
+  milkMargin: number;
+  curdMargin: number;
+  otherMargin: number;
+  margin: number;
 }
 
 export interface AgentSalesAgent extends AgentSalesVolumes {
@@ -611,8 +616,17 @@ export interface AdhocResponse {
   totalPages?: number;
 }
 
-export const fetchAdhocSales = (params: { from: string; to: string; page?: number; limit?: number }) =>
-  get<AdhocResponse>("/reports/sales-reports/adhoc", { page: 1, limit: 100, ...params });
+// Fetches every page for the range, so a busy period can't cut rows off the
+// report while the grand total (computed server-side) still counts them.
+export const fetchAdhocSales = async (params: { from: string; to: string; limit?: number }) => {
+  const first = await get<AdhocResponse>("/reports/sales-reports/adhoc", { limit: 100, ...params, page: 1 });
+  const rows = [...first.rows];
+  for (let page = 2; page <= (first.totalPages ?? 1); page++) {
+    const next = await get<AdhocResponse>("/reports/sales-reports/adhoc", { limit: 100, ...params, page });
+    rows.push(...next.rows);
+  }
+  return { ...first, rows, page: 1, totalPages: 1 };
+};
 
 // ═══════════════════════════════════════════════════════════════
 // B9. GST Sales Statement
@@ -688,6 +702,19 @@ export interface EmployeeSubsidyReportResponse {
     perProduct: Record<string, number>;
     grandTotal: number;
   };
+  /** Per-employee dues: opening, supplied, recovered from salary, closing. */
+  recovery: EmployeeSubsidyRecoveryRow[];
+  recoveryTotals: { openingDue: number; supplied: number; recovered: number; closingDue: number };
+}
+
+export interface EmployeeSubsidyRecoveryRow {
+  employeeId: string;
+  employeeCode: string | null;
+  employeeName: string;
+  openingDue: number;
+  supplied: number;
+  recovered: number;
+  closingDue: number;
 }
 
 export const fetchEmployeeSubsidyReport = (params: { from: string; to: string }) =>
@@ -720,6 +747,52 @@ export interface VipSalesResponse {
 
 export const fetchVipSales = (params: { from: string; to: string }) =>
   get<VipSalesResponse>("/reports/sales-reports/vip-sales", params);
+
+// ═══════════════════════════════════════════════════════════════
+// B12. City / Village Wise Sales — agent sales by the customer's
+// City / Village inside its taluka.
+// ═══════════════════════════════════════════════════════════════
+export interface VillageWiseCustomer {
+  id: string; code: string; name: string;
+  milk: number; curd: number; amount: number;
+}
+export interface VillageWiseGroup {
+  taluka: string;
+  village: string;          // "NOT SET" when the customer has none
+  villageSet: boolean;
+  customers: VillageWiseCustomer[];
+  totals: { customers: number; milk: number; curd: number; amount: number };
+}
+export interface VillageWiseResponse {
+  from: string; to: string;
+  villages: VillageWiseGroup[];
+  totals: { villages: number; customers: number; milk: number; curd: number; amount: number };
+}
+export const fetchVillageWise = (params: { from: string; to: string; zoneId?: string }) =>
+  get<VillageWiseResponse>("/reports/sales-reports/village-wise", params);
+
+// ═══════════════════════════════════════════════════════════════
+// B13. Agency Report — when each agency started, and how many
+// started in the period.
+// ═══════════════════════════════════════════════════════════════
+export interface AgencyRow {
+  id: string; code: string; name: string; phone: string;
+  customerType: string; taluka: string; village: string; routeCode: string;
+  startDate: string;        // YYYY-MM-DD
+  active: boolean;
+}
+export interface AgencyReportResponse {
+  from: string; to: string;
+  summary: {
+    total: number; active: number; startedInPeriod: number;
+    talukas: Array<{ taluka: string; total: number; active: number; started: number }>;
+  };
+  months: Array<{ month: string; started: number }>; // YYYY-MM
+  newAgencies: AgencyRow[];
+  register: AgencyRow[];
+}
+export const fetchAgencyReport = (params: { from: string; to: string; zoneId?: string }) =>
+  get<AgencyReportResponse>("/reports/sales-reports/agency", params);
 
 // ═══════════════════════════════════════════════════════════════
 // Daily Sales Report — "MILK & CURD SALES REPORT"

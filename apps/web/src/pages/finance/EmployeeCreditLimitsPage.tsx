@@ -2,7 +2,7 @@
 // Finance → Employee Credit  (/finance/employee-credit-limits, finance.view/manage)
 //
 // The employee mirror of CreditLimitsPage. Two jobs:
-//   1. Set employee credit limits (finance.manage — accountant / super_admin).
+//   1. Set employee credit limits (finance.manage — accountant / manager / super_admin).
 //   2. Release held indents — auto-placed employee indents that went over the
 //      credit limit are parked as 'payment_required'; finance releases them
 //      here (employees have no app / payment flow).
@@ -22,7 +22,7 @@ import {
   type EmployeeCreditRow,
 } from "@/services/api";
 
-const CAN_EDIT = new Set(["accountant", "super_admin", "call_desk"]);
+const CAN_EDIT = new Set(["accountant", "manager", "super_admin", "call_desk"]);
 
 export default function EmployeeCreditLimitsPage() {
   const { user } = useAuth();

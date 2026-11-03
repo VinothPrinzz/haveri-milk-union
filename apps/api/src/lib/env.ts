@@ -33,6 +33,20 @@ const envSchema = z.object({
   FIREBASE_PROJECT_ID: z.string().optional(),
   FIREBASE_PRIVATE_KEY: z.string().optional(),
   FIREBASE_CLIENT_EMAIL: z.string().optional(),
+
+  // SMS gateway (dealer OTP) — see lib/sms.ts for the URL template format.
+  // Defaults to "console" (log only) outside production.
+  SMS_PROVIDER: z.enum(["console", "http"]).optional(),
+  SMS_API_URL: z.string().optional(),
+  SMS_API_METHOD: z.enum(["GET", "POST"]).default("GET"),
+  SMS_API_BODY: z.string().optional(),
+  SMS_SUCCESS_PATTERN: z.string().optional(),
+  // Must match the DLT-approved template text exactly; {otp} is substituted.
+  SMS_OTP_MESSAGE: z
+    .string()
+    .default(
+      "Your Havemul OTP for password change is {otp}. Valid for 5 minutes. Do not share it with anyone. - Haveri Milk Union"
+    ),
 });
 
 const parsed = envSchema.safeParse(process.env);

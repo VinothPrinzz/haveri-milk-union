@@ -8,6 +8,10 @@
 //   POST  /api/v1/finance/employee-orders/:id/release        — release a held
 //                                                               (payment_required)
 //                                                               employee indent
+//   GET   /api/v1/finance/employee-recoveries/due            — who owes, per month
+//   GET   /api/v1/finance/employee-recoveries                — recoveries in a month
+//   POST  /api/v1/finance/employee-recoveries                — record salary deductions
+//   POST  /api/v1/finance/employee-recoveries/:id/reverse    — undo one keyed in error
 //
 // The employee mirror of finance-credit-control.ts. Employees have their own
 // credit_limit / opening_balance (0048) and employee_ledger. Same closing-
@@ -22,6 +26,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pgClient } from "../lib/db.js";
+import { assertEmployeeOrderNoOversell } from "../lib/stock-check.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 
@@ -246,6 +251,9 @@ export async function financeEmployeeCreditRoutes(app: FastifyInstance) {
                  confirmed_at = COALESCE(confirmed_at, now()), updated_at = now()
            WHERE id = ${id}::uuid
         `;
+        // A draft commits its stock right here (migration 0072) — refuse if
+        // the sheet can't cover it. A payment_required indent already holds it.
+        if (order.status === "draft") await assertEmployeeOrderNoOversell(tx, id);
 
         const [bal] = await tx`
           SELECT
@@ -278,4 +286,272 @@ export async function financeEmployeeCreditRoutes(app: FastifyInstance) {
       return reply.send({ orderId: id, status: "confirmed", released: true });
     }
   );
+
+  // ════════════════════════════════════════════════════════════════════
+  // Salary recovery
+  //
+  // Employee subsidy goods (the ghee sachet, HTM 1000ML sub …) are supplied
+  // on credit: confirming the indent writes an employee_ledger DEBIT. The
+  // money comes back by deduction from the employee's salary. Finance
+  // records each deduction here as a CREDIT on the same ledger, so the
+  // employee's outstanding falls as and when it is recovered.
+  //
+  //   reference_type 'salary_recovery'           — the recovery (credit)
+  //   reference_type 'salary_recovery_reversal'  — undoing one keyed in
+  //                                                error (a debit that
+  //                                                points back at it)
+  //
+  // The ledger is append-only, so a mistake is reversed, never deleted.
+  // ════════════════════════════════════════════════════════════════════
+
+  // Closing balance of one employee (opening + credits − debits, the same
+  // maths as the credit-control list above). Negative = the employee owes.
+  const balanceOf = async (tx: typeof pgClient, employeeId: string) => {
+    const [b] = await tx`
+      SELECT
+        COALESCE(e.opening_balance, 0)
+        + COALESCE((SELECT SUM(CASE WHEN el.type = 'credit' THEN el.amount
+                                    WHEN el.type = 'debit'  THEN -el.amount END)
+                      FROM employee_ledger el
+                     WHERE el.employee_id = e.id
+                       AND COALESCE(el.voucher_type, '') <> 'Opening'), 0) AS bal
+      FROM employees e WHERE e.id = ${employeeId}::uuid
+    `;
+    return b ? parseFloat(b.bal) : null;
+  };
+
+  // ┌─────────────────────────────────────────────────────────────────┐
+  // │  GET /api/v1/finance/employee-recoveries/due                      │
+  // │  Every active employee who owes money, with what is outstanding   │
+  // │  and what has already been recovered in the given month.          │
+  // └─────────────────────────────────────────────────────────────────┘
+  app.get(
+    "/api/v1/finance/employee-recoveries/due",
+    { preHandler: [adminAuth, requireRole("finance.view")] },
+    async (request, reply) => {
+      const q = z.object({
+        month: z.string().regex(/^\d{4}-\d{2}$/),
+        search: z.string().optional(),
+      }).parse(request.query);
+      const monthStart = `${q.month}-01`;
+      const search = q.search ? `%${q.search}%` : null;
+
+      const rows = await pgClient`
+        WITH bal AS (
+          SELECT e.id, e.employee_code AS code, e.name, e.department,
+                 r.name AS route_name,
+                 (COALESCE(e.opening_balance, 0)
+                  + COALESCE((SELECT SUM(CASE WHEN el.type = 'credit' THEN el.amount
+                                              WHEN el.type = 'debit'  THEN -el.amount END)
+                                FROM employee_ledger el
+                               WHERE el.employee_id = e.id
+                                 AND COALESCE(el.voucher_type, '') <> 'Opening'), 0))::numeric AS closing,
+                 COALESCE((SELECT SUM(CASE WHEN el.reference_type = 'salary_recovery' THEN el.amount
+                                           ELSE -el.amount END)
+                             FROM employee_ledger el
+                            WHERE el.employee_id = e.id
+                              AND el.reference_type IN ('salary_recovery', 'salary_recovery_reversal')
+                              AND el.voucher_date >= ${monthStart}::date
+                              AND el.voucher_date <  ${monthStart}::date + interval '1 month'), 0)::numeric
+                   AS recovered_in_month
+          FROM employees e
+          LEFT JOIN routes r ON r.id = e.route_id AND r.deleted_at IS NULL
+          WHERE e.deleted_at IS NULL
+            AND (${search}::text IS NULL OR e.name ILIKE ${search}::text OR e.employee_code ILIKE ${search}::text)
+        )
+        SELECT id, code, name, department, route_name AS "routeName",
+               GREATEST(0, -closing)::float8   AS outstanding,
+               recovered_in_month::float8      AS "recoveredInMonth"
+          FROM bal
+         WHERE closing < 0 OR recovered_in_month <> 0
+         ORDER BY code NULLS LAST, name
+      `;
+      return reply.send({ month: q.month, data: rows });
+    }
+  );
+
+  // ┌─────────────────────────────────────────────────────────────────┐
+  // │  POST /api/v1/finance/employee-recoveries                         │
+  // │  Record one or more salary deductions in a single transaction.    │
+  // │  Each line is capped at what the employee owes, so a typo cannot  │
+  // │  push an employee into credit.                                    │
+  // └─────────────────────────────────────────────────────────────────┘
+  app.post(
+    "/api/v1/finance/employee-recoveries",
+    { preHandler: [adminAuth, requireRole("finance.manage")] },
+    async (request, reply) => {
+      const body = z.object({
+        recoveryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        salaryMonth: z.string().regex(/^\d{4}-\d{2}$/),
+        note: z.string().max(200).optional(),
+        items: z.array(z.object({
+          employeeId: z.string().uuid(),
+          amount: z.number().positive().max(10_000_000),
+        })).min(1).max(1000),
+      }).parse(request.body);
+
+      const ids = body.items.map(i => i.employeeId);
+      if (new Set(ids).size !== ids.length) {
+        return reply.status(400).send({ error: "Duplicate employee", message: "Each employee may appear once per batch." });
+      }
+
+      const performedBy = (request as any).admin?.userId ?? null;
+      const [y, m] = body.salaryMonth.split("-").map(Number);
+      const monthLabel = new Date(Date.UTC(y!, m! - 1, 1))
+        .toLocaleString("en-IN", { month: "short", year: "numeric", timeZone: "UTC" });
+      const note = body.note?.trim();
+
+      type Problem = { employeeId: string; name: string; amount: number; outstanding: number };
+      const problems: Problem[] = [];
+      const posted: Array<{ employeeId: string; ledgerId: string; amount: number; balanceAfter: number }> = [];
+
+      await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        // Lock the employees in a fixed order so two finance users posting
+        // overlapping batches serialise instead of deadlocking, and neither
+        // can recover the same rupee twice.
+        const emps = await tx`
+          SELECT id, name FROM employees
+           WHERE id = ANY(${ids}::uuid[]) AND deleted_at IS NULL
+           ORDER BY id
+           FOR UPDATE
+        `;
+        const nameById = new Map((emps as any[]).map(e => [e.id, e.name]));
+
+        for (const item of body.items) {
+          const name = nameById.get(item.employeeId);
+          const bal = name === undefined ? null : await balanceOf(tx, item.employeeId);
+          const outstanding = bal == null ? 0 : Math.max(0, Math.round(-bal * 100) / 100);
+          const amount = Math.round(item.amount * 100) / 100;
+          if (bal == null || amount > outstanding + 0.001) {
+            problems.push({ employeeId: item.employeeId, name: name ?? "Unknown employee", amount, outstanding });
+            continue;
+          }
+          const balanceAfter = Math.round((bal + amount) * 100) / 100;
+          const [row] = await tx`
+            INSERT INTO employee_ledger
+              (employee_id, type, amount, reference_type, voucher_type, voucher_date,
+               description, balance_after, performed_by)
+            VALUES
+              (${item.employeeId}::uuid, 'credit', ${amount.toFixed(2)}::numeric,
+               'salary_recovery', 'Salary Recovery', ${body.recoveryDate}::date,
+               ${`Salary recovery ${monthLabel}${note ? ` - ${note}` : ""}`},
+               ${balanceAfter.toFixed(2)}::numeric, ${performedBy})
+            RETURNING id
+          `;
+          posted.push({ employeeId: item.employeeId, ledgerId: row!.id, amount, balanceAfter });
+        }
+
+        // All or nothing: one bad line rolls the batch back, so finance
+        // fixes it and posts again rather than chasing a half-posted run.
+        if (problems.length > 0) throw new RecoveryRejected();
+      }).catch((e: unknown) => {
+        if (!(e instanceof RecoveryRejected)) throw e;
+      });
+
+      if (problems.length > 0) {
+        return reply.status(409).send({
+          error: "Recovery exceeds outstanding",
+          message: problems
+            .map(p => `${p.name}: ₹${p.amount.toFixed(2)} entered, ₹${p.outstanding.toFixed(2)} outstanding`)
+            .join("; "),
+          problems,
+        });
+      }
+      return reply.status(201).send({
+        posted: posted.length,
+        total: Math.round(posted.reduce((s, p) => s + p.amount, 0) * 100) / 100,
+        entries: posted,
+      });
+    }
+  );
+
+  // ┌─────────────────────────────────────────────────────────────────┐
+  // │  GET /api/v1/finance/employee-recoveries?month=YYYY-MM            │
+  // │  Recoveries posted in the month (by recovery date).               │
+  // └─────────────────────────────────────────────────────────────────┘
+  app.get(
+    "/api/v1/finance/employee-recoveries",
+    { preHandler: [adminAuth, requireRole("finance.view")] },
+    async (request, reply) => {
+      const q = z.object({ month: z.string().regex(/^\d{4}-\d{2}$/) }).parse(request.query);
+      const monthStart = `${q.month}-01`;
+      const rows = await pgClient`
+        SELECT el.id,
+               el.voucher_date::text AS "recoveryDate",
+               el.amount::float8     AS amount,
+               el.description,
+               el.created_at         AS "createdAt",
+               e.id                  AS "employeeId",
+               e.employee_code       AS "employeeCode",
+               e.name                AS "employeeName",
+               u.name                AS "postedBy",
+               rv.voucher_date::text AS "reversedOn"
+          FROM employee_ledger el
+          JOIN employees e ON e.id = el.employee_id
+          LEFT JOIN users u ON u.id = el.performed_by
+          LEFT JOIN employee_ledger rv
+                 ON rv.reference_id = el.id AND rv.reference_type = 'salary_recovery_reversal'
+         WHERE el.reference_type = 'salary_recovery'
+           AND el.voucher_date >= ${monthStart}::date
+           AND el.voucher_date <  ${monthStart}::date + interval '1 month'
+         ORDER BY el.voucher_date DESC, el.created_at DESC
+      `;
+      return reply.send({ month: q.month, data: rows });
+    }
+  );
+
+  // ┌─────────────────────────────────────────────────────────────────┐
+  // │  POST /api/v1/finance/employee-recoveries/:id/reverse             │
+  // │  Undo a recovery keyed in error: a matching debit that points     │
+  // │  back at it. Each recovery can be reversed once.                  │
+  // └─────────────────────────────────────────────────────────────────┘
+  app.post(
+    "/api/v1/finance/employee-recoveries/:id/reverse",
+    { preHandler: [adminAuth, requireRole("finance.manage")] },
+    async (request, reply) => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      const performedBy = (request as any).admin?.userId ?? null;
+
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        const [orig] = await tx`
+          SELECT id, employee_id, amount::numeric AS amount
+            FROM employee_ledger
+           WHERE id = ${id}::uuid AND reference_type = 'salary_recovery'
+           FOR UPDATE
+        `;
+        if (!orig) return { status: 404 as const };
+        await tx`SELECT id FROM employees WHERE id = ${orig.employee_id} FOR UPDATE`;
+        const [done] = await tx`
+          SELECT 1 FROM employee_ledger
+           WHERE reference_id = ${id}::uuid AND reference_type = 'salary_recovery_reversal'
+           LIMIT 1
+        `;
+        if (done) return { status: 409 as const };
+
+        const amount = parseFloat(orig.amount);
+        const bal = (await balanceOf(tx, orig.employee_id)) ?? 0;
+        await tx`
+          INSERT INTO employee_ledger
+            (employee_id, type, amount, reference_id, reference_type, voucher_type,
+             voucher_date, description, balance_after, performed_by)
+          VALUES
+            (${orig.employee_id}, 'debit', ${amount.toFixed(2)}::numeric,
+             ${id}::uuid, 'salary_recovery_reversal', 'Salary Recovery Reversal',
+             (now() AT TIME ZONE 'Asia/Kolkata')::date,
+             ${"Reversal of salary recovery " + id},
+             ${(bal - amount).toFixed(2)}::numeric, ${performedBy})
+        `;
+        return { status: 200 as const };
+      });
+
+      if (result.status === 404) return reply.status(404).send({ error: "Recovery not found" });
+      if (result.status === 409) return reply.status(409).send({ error: "Already reversed", message: "This recovery has already been reversed." });
+      return reply.send({ id, reversed: true });
+    }
+  );
 }
+
+/** Thrown inside the recovery transaction to roll back a batch with a bad line. */
+class RecoveryRejected extends Error {}

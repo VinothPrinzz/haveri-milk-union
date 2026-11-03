@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pgClient } from "../lib/db.js";
-import { adminAuth, requireRole } from "../middleware/admin-auth.js";
+import { adminAuth, requireRole, requireExactRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
@@ -10,8 +10,148 @@ import {
   minQtyErrorMessage,
 } from "../lib/min-order-qty.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
+import {
+  assertOrderNoOversell,
+  describeShortfalls,
+  getDemandShortfalls,
+} from "../lib/stock-check.js";
 import { resolveUnitPrice } from "../lib/rate-price.js";
 import { istToday } from "../lib/ist-date.js";
+import { dealerBalance, rollbackInvoiceAllocations } from "./finance-cheques.js";
+
+type ReceiptAllocation = { invoiceId: string; invoiceNumber: string; amount: number };
+
+// Apply a receipt across the given invoices, oldest due first. Each invoice
+// is locked and takes at most its outstanding; the remainder stays on account
+// (the ledger credit is the full amount).
+async function allocateReceipt(
+  tx: typeof pgClient,
+  paymentId: string,
+  invoiceIds: string[],
+  amount: number,
+): Promise<{ allocations: ReceiptAllocation[]; unallocated: number }> {
+  const invoices: any[] = [];
+  for (const invoiceId of invoiceIds) {
+    const [row] = await tx`
+      SELECT id, invoice_number, due_date, invoice_date,
+             total_amount, paid_amount
+      FROM invoices WHERE id = ${invoiceId}::uuid
+      FOR UPDATE
+    `;
+    if (row) invoices.push(row);
+  }
+  const ts = (d: unknown) => (d ? new Date(d as string).getTime() : 0);
+  invoices.sort((a, b) =>
+    ts(a.due_date ?? a.invoice_date) - ts(b.due_date ?? b.invoice_date)
+    || ts(a.invoice_date) - ts(b.invoice_date));
+
+  let remaining = Math.round(amount * 100);   // paise
+  const allocations: ReceiptAllocation[] = [];
+  for (const inv of invoices) {
+    if (remaining <= 0) break;
+    const outstanding = Math.round(parseFloat(inv.total_amount) * 100)
+                      - Math.round(parseFloat(inv.paid_amount) * 100);
+    const applied = Math.min(outstanding, remaining);
+    if (applied <= 0) continue;
+    remaining -= applied;
+    const amt = (applied / 100).toFixed(2);
+
+    await tx`
+      INSERT INTO payment_allocations (payment_id, invoice_id, amount)
+      VALUES (${paymentId}::uuid, ${inv.id}::uuid, ${amt}::numeric)
+    `;
+    await tx`
+      UPDATE invoices SET
+        paid_amount    = paid_amount + ${amt}::numeric,
+        payment_status = CASE
+          WHEN paid_amount + ${amt}::numeric >= total_amount THEN 'paid'
+          ELSE 'partial'
+        END
+      WHERE id = ${inv.id}::uuid
+    `;
+    allocations.push({ invoiceId: inv.id, invoiceNumber: inv.invoice_number, amount: applied / 100 });
+  }
+  return { allocations, unallocated: remaining / 100 };
+}
+
+function receiptParticulars(mode: string, allocations: ReceiptAllocation[], unallocated: number): string {
+  return allocations.length > 0
+    ? `Payment against ${allocations.map(a => a.invoiceNumber).join(", ")} (${mode.toUpperCase()})`
+      + (unallocated > 0 ? ` + ₹${unallocated.toFixed(2)} on account` : "")
+    : `On-account receipt (${mode.toUpperCase()})`;
+}
+
+// ── Correcting a recorded receipt (PATCH / DELETE /payments/:id) ──
+// `payments` is shared by every receipts rail — Razorpay captures, counter
+// cash, subsidy indents — and only the rows Record Payment wrote may be
+// corrected by hand. Those are the ones with an RC- ledger credit keyed to the
+// payment id; the gateway rail writes RP- and the counter rails write none.
+// Cheques are left to the Cheque Register, which owns their lifecycle.
+async function lockManualReceipt(tx: typeof pgClient, id: string) {
+  const [payment] = await tx`
+    SELECT id, dealer_id, amount, mode, reference, notes, invoice_id,
+           to_char(received_date, 'YYYY-MM-DD') AS received_date
+      FROM payments WHERE id = ${id}::uuid
+       FOR UPDATE
+  `;
+  if (!payment) return { status: 404, error: "Payment not found" } as const;
+
+  const [credit] = await tx`
+    SELECT voucher_no FROM dealer_ledger
+     WHERE reference_id = ${id}::uuid AND type = 'credit'
+       AND voucher_type = 'Receipt' AND voucher_no LIKE 'RC-%'
+     ORDER BY created_at
+     LIMIT 1
+  `;
+  if (!credit) {
+    return {
+      status: 400,
+      error: "Only receipts entered through Record Payment can be edited or deleted",
+    } as const;
+  }
+
+  const [cheque] = await tx`SELECT 1 FROM cheques WHERE payment_id = ${id}::uuid LIMIT 1`;
+  if (payment.mode === "cheque" || cheque) {
+    return {
+      status: 400,
+      error: "Cheque receipts are managed from the Cheque Register — cancel the cheque there instead",
+    } as const;
+  }
+
+  return { payment, voucherNo: credit.voucher_no as string } as const;
+}
+
+// dealer_ledger is append-only, so a receipt is never updated or removed
+// there: its credit is cancelled by a matching debit. The reversal is dated
+// on the receipt's own day so the two net off in any date-ranged view, and it
+// keeps voucher_type 'Receipt' so the Day Book and refund accounting — which
+// skip receipts when reading 'adjustment' rows — skip it as well.
+// Returns the dealer's balance after the reversal.
+async function reverseReceiptLedger(
+  tx: typeof pgClient,
+  args: {
+    dealerId: string; paymentId: string; amount: number; voucherNo: string;
+    voucherDate: string; reason: string; performedBy: string;
+  },
+): Promise<number> {
+  const balanceAfter = (await dealerBalance(tx, args.dealerId)) - args.amount;
+  const particulars = `Receipt ${args.voucherNo} ${args.reason}`;
+  await tx`
+    INSERT INTO dealer_ledger (
+      dealer_id, type, amount,
+      reference_id, reference_type,
+      description, balance_after, performed_by,
+      voucher_no, voucher_type, particulars, voucher_date
+    ) VALUES (
+      ${args.dealerId}::uuid, 'debit', ${args.amount.toFixed(2)}::numeric,
+      ${args.paymentId}::uuid, 'adjustment'::ledger_ref_type,
+      ${particulars}, ${balanceAfter.toFixed(2)}::numeric, ${args.performedBy}::uuid,
+      ${`RV-${args.voucherNo.slice(3)}`}, 'Receipt', ${particulars},
+      ${args.voucherDate}::date
+    )
+  `;
+  return balanceAfter;
+}
 
 export async function financeRoutes(app: FastifyInstance) {
   // ═══ INVOICES ═══
@@ -660,6 +800,17 @@ export async function financeRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "paymentReference is required for UPI" });
       }
 
+      // Stock pre-check (advisory) — refuse early, before the wallet moves.
+      // assertOrderNoOversell inside the transaction is the authority.
+      const preShortfalls = await getDemandShortfalls(pgClient, body.items, istToday());
+      if (preShortfalls.length > 0) {
+        return reply.status(409).send({
+          error: "Insufficient stock",
+          message: `Not enough stock for: ${describeShortfalls(preShortfalls)}`,
+          shortfalls: preShortfalls,
+        });
+      }
+
       // Wallet deduction if applicable
       if (body.paymentMode === "wallet") {
         const result = await pgClient`UPDATE dealer_wallets SET balance = balance - ${grandTotal.toFixed(2)}::numeric, updated_at = now() WHERE dealer_id = ${body.dealerId} AND balance >= ${grandTotal.toFixed(2)}::numeric RETURNING balance`;
@@ -723,6 +874,10 @@ export async function financeRoutes(app: FastifyInstance) {
           // placed order, so cancel any stranded twin (draft / unpaid) for the
           // same date.
           await cancelSupersededSiblings(tx, order!.id as string);
+
+          // Authoritative, race-safe stock gate — after the supersede above, so
+          // a freed sibling's reservation doesn't count against this order.
+          await assertOrderNoOversell(tx, order!.id as string);
 
           if (body.paymentMode === "wallet") {
             const [w] = await tx`SELECT balance FROM dealer_wallets WHERE dealer_id = ${body.dealerId}`;
@@ -921,7 +1076,14 @@ export async function financeRoutes(app: FastifyInstance) {
           COALESCE(alloc.numbers, i.invoice_number) AS "invoiceNumber",
           p.notes,
           u.name                             AS "receivedByName",
-          p.created_at                       AS "createdAt"
+          p.created_at                       AS "createdAt",
+          -- A Record Payment receipt that can still be corrected by hand;
+          -- same test as lockManualReceipt.
+          (p.mode <> 'cheque' AND ch.id IS NULL AND EXISTS (
+            SELECT 1 FROM dealer_ledger rl
+             WHERE rl.reference_id = p.id AND rl.type = 'credit'
+               AND rl.voucher_type = 'Receipt' AND rl.voucher_no LIKE 'RC-%'
+          ))                                 AS "editable"
         FROM payments p
         JOIN dealers d        ON d.id = p.dealer_id
         -- Play Store demo route: a reviewer's test activity is not the union's
@@ -1120,50 +1282,8 @@ export async function financeRoutes(app: FastifyInstance) {
           }
 
           // (a.2) Allocate across the selected invoices, oldest due first.
-          // Each invoice is locked and takes at most its outstanding; the
-          // remainder stays on account (the ledger credit is the full amount).
-          const invoices: any[] = [];
-          for (const invoiceId of invoiceIds) {
-            const [row] = await tx`
-              SELECT id, invoice_number, due_date, invoice_date,
-                     total_amount, paid_amount
-              FROM invoices WHERE id = ${invoiceId}::uuid
-              FOR UPDATE
-            `;
-            if (row) invoices.push(row);
-          }
-          const ts = (d: unknown) => (d ? new Date(d as string).getTime() : 0);
-          invoices.sort((a, b) =>
-            ts(a.due_date ?? a.invoice_date) - ts(b.due_date ?? b.invoice_date)
-            || ts(a.invoice_date) - ts(b.invoice_date));
-
-          let remaining = Math.round(body.amount * 100);   // paise
-          const allocations: { invoiceId: string; invoiceNumber: string; amount: number }[] = [];
-          for (const inv of invoices) {
-            if (remaining <= 0) break;
-            const outstanding = Math.round(parseFloat(inv.total_amount) * 100)
-                              - Math.round(parseFloat(inv.paid_amount) * 100);
-            const applied = Math.min(outstanding, remaining);
-            if (applied <= 0) continue;
-            remaining -= applied;
-            const amt = (applied / 100).toFixed(2);
-
-            await tx`
-              INSERT INTO payment_allocations (payment_id, invoice_id, amount)
-              VALUES (${payment.id}::uuid, ${inv.id}::uuid, ${amt}::numeric)
-            `;
-            await tx`
-              UPDATE invoices SET
-                paid_amount    = paid_amount + ${amt}::numeric,
-                payment_status = CASE
-                  WHEN paid_amount + ${amt}::numeric >= total_amount THEN 'paid'
-                  ELSE 'partial'
-                END
-              WHERE id = ${inv.id}::uuid
-            `;
-            allocations.push({ invoiceId: inv.id, invoiceNumber: inv.invoice_number, amount: applied / 100 });
-          }
-          const unallocated = remaining / 100;
+          const { allocations, unallocated } =
+            await allocateReceipt(tx, payment.id, invoiceIds, body.amount);
 
           // (b) Append to dealer_ledger. voucher_type='Receipt'.
           // reference_type must be a ledger_ref_type enum value —
@@ -1201,10 +1321,7 @@ export async function financeRoutes(app: FastifyInstance) {
             ? `RC-${allocations[0]!.invoiceNumber}-${new Date(receivedDate).getTime().toString().slice(-6)}`
             : `RC-${payment.id.slice(0, 8).toUpperCase()}`;
   
-          const particulars = allocations.length > 0
-            ? `Payment against ${allocations.map(a => a.invoiceNumber).join(", ")} (${body.mode.toUpperCase()})`
-              + (unallocated > 0 ? ` + ₹${unallocated.toFixed(2)} on account` : "")
-            : `On-account receipt (${body.mode.toUpperCase()})`;
+          const particulars = receiptParticulars(body.mode, allocations, unallocated);
   
           await tx`
             INSERT INTO dealer_ledger (
@@ -1240,6 +1357,197 @@ export async function financeRoutes(app: FastifyInstance) {
         request.log.error(err, "Record payment failed");
         throw err;
       }
+    }
+  );
+
+  // ┌─────────────────────────────────────────────────┐
+  // │   PATCH /api/v1/payments/:id                      │
+  // │   Correct a Record Payment receipt                │
+  // └─────────────────────────────────────────────────┘
+  // Manager / super_admin only. Customer and invoices are fixed — a changed
+  // amount is re-applied to the same invoices; to move a receipt elsewhere,
+  // delete it and record it again.
+  app.patch(
+    "/api/v1/payments/:id",
+    { preHandler: [adminAuth, requireExactRole("super_admin", "manager")] },
+    async (request, reply) => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      const body = z.object({
+        amount:       z.number().positive().optional(),
+        mode:         z.enum(["cash","upi","neft","rtgs","credit","wallet"]).optional(),
+        receivedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        reference:    z.string().nullable().optional(),
+        notes:        z.string().nullable().optional(),
+      }).parse(request.body);
+
+      return await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        const locked = await lockManualReceipt(tx, id);
+        if (!locked.payment) return reply.status(locked.status).send({ error: locked.error });
+        const { payment: p, voucherNo } = locked;
+
+        const oldAmount = parseFloat(p.amount);
+        const newAmount = body.amount ?? oldAmount;
+        const newMode   = body.mode ?? (p.mode as string);
+        const newDate   = body.receivedDate ?? (p.received_date as string);
+        const reference = body.reference === undefined ? p.reference : (body.reference?.trim() || null);
+        const notes     = body.notes === undefined ? p.notes : (body.notes?.trim() || null);
+
+        // A wallet receipt credits dealer_wallets and posts as a top-up; the
+        // other modes do neither, so the two can't be swapped by an edit.
+        if (newMode !== p.mode && (newMode === "wallet" || p.mode === "wallet")) {
+          return reply.status(400).send({
+            error: "A receipt can't be switched to or from Wallet — delete it and record it again",
+          });
+        }
+
+        const deltaPaise = Math.round(newAmount * 100) - Math.round(oldAmount * 100);
+        const amountChanged = deltaPaise !== 0;
+
+        if (amountChanged || newMode !== p.mode || newDate !== p.received_date) {
+          if (amountChanged && p.mode === "wallet") {
+            const delta = (deltaPaise / 100).toFixed(2);
+            const [w] = await tx`
+              UPDATE dealer_wallets SET
+                balance = balance + ${delta}::numeric,
+                updated_at = now()
+              WHERE dealer_id = ${p.dealer_id}::uuid
+                AND balance + ${delta}::numeric >= 0
+              RETURNING balance
+            `;
+            // Reducing a top-up the dealer has already spent.
+            if (!w && deltaPaise < 0) {
+              return reply.status(400).send({
+                error: "The dealer has already spent this wallet top-up — it can't be reduced that far",
+              });
+            }
+          }
+
+          let allocations: ReceiptAllocation[];
+          if (amountChanged) {
+            const linked = await tx`
+              SELECT invoice_id FROM payment_allocations WHERE payment_id = ${id}::uuid
+            `;
+            const invoiceIds = [...new Set([
+              ...linked.map((r: any) => r.invoice_id as string),
+              ...(p.invoice_id ? [p.invoice_id as string] : []),
+            ])];
+            await rollbackInvoiceAllocations(tx, id);
+            await tx`DELETE FROM payment_allocations WHERE payment_id = ${id}::uuid`;
+            ({ allocations } = await allocateReceipt(tx, id, invoiceIds, newAmount));
+          } else {
+            const rows = await tx`
+              SELECT pa.invoice_id AS "invoiceId", i.invoice_number AS "invoiceNumber",
+                     pa.amount::float8 AS amount
+                FROM payment_allocations pa
+                JOIN invoices i ON i.id = pa.invoice_id
+               WHERE pa.payment_id = ${id}::uuid
+               ORDER BY COALESCE(i.due_date, i.invoice_date), i.invoice_date
+            `;
+            allocations = rows as unknown as ReceiptAllocation[];
+          }
+          const allocatedPaise = allocations.reduce((s, a) => s + Math.round(a.amount * 100), 0);
+          const unallocated = (Math.round(newAmount * 100) - allocatedPaise) / 100;
+
+          // Ledger: cancel the old credit, post the corrected one under the
+          // same voucher number.
+          const balance = await reverseReceiptLedger(tx, {
+            dealerId: p.dealer_id, paymentId: id, amount: oldAmount, voucherNo,
+            voucherDate: p.received_date, reason: "corrected",
+            performedBy: request.admin!.userId,
+          });
+          const particulars = receiptParticulars(newMode, allocations, unallocated);
+          await tx`
+            INSERT INTO dealer_ledger (
+              dealer_id, type, amount,
+              reference_id, reference_type,
+              description, balance_after, performed_by,
+              voucher_no, voucher_type, particulars, voucher_date
+            ) VALUES (
+              ${p.dealer_id}::uuid, 'credit', ${newAmount.toFixed(2)}::numeric,
+              ${id}::uuid,
+              ${newMode === "wallet" ? "wallet_topup" : "adjustment"}::ledger_ref_type,
+              ${particulars}, ${(balance + newAmount).toFixed(2)}::numeric,
+              ${request.admin!.userId}::uuid,
+              ${voucherNo}, 'Receipt', ${particulars}, ${newDate}::date
+            )
+          `;
+        }
+
+        const [updated] = await tx`
+          UPDATE payments SET
+            amount        = ${newAmount.toFixed(2)}::numeric,
+            mode          = ${newMode},
+            received_date = ${newDate}::date,
+            reference     = ${reference},
+            notes         = ${notes},
+            updated_at    = now()
+          WHERE id = ${id}::uuid
+          RETURNING id, received_date, amount, mode, reference, notes
+        `;
+
+        request.log.info(
+          { paymentId: id, by: request.admin!.userId, from: { amount: p.amount, mode: p.mode, receivedDate: p.received_date } },
+          "Payment edited"
+        );
+        return reply.send({ message: "Payment updated", payment: updated });
+      });
+    }
+  );
+
+  // ┌─────────────────────────────────────────────────┐
+  // │   DELETE /api/v1/payments/:id                     │
+  // │   Remove a Record Payment receipt                 │
+  // └─────────────────────────────────────────────────┘
+  // Manager / super_admin only. Everything the receipt did comes back out:
+  // the invoices it settled are reopened, a wallet top-up is taken back, and
+  // the ledger credit is reversed. The payments row itself is removed — it is
+  // the one receipts rail the Day Book, Dealer Statements and AR Aging read,
+  // and it has no reversal concept of its own.
+  app.delete(
+    "/api/v1/payments/:id",
+    { preHandler: [adminAuth, requireExactRole("super_admin", "manager")] },
+    async (request, reply) => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+
+      return await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        const locked = await lockManualReceipt(tx, id);
+        if (!locked.payment) return reply.status(locked.status).send({ error: locked.error });
+        const { payment: p, voucherNo } = locked;
+        const amount = parseFloat(p.amount);
+
+        if (p.mode === "wallet") {
+          const [w] = await tx`
+            UPDATE dealer_wallets SET
+              balance = balance - ${amount.toFixed(2)}::numeric,
+              updated_at = now()
+            WHERE dealer_id = ${p.dealer_id}::uuid
+              AND balance >= ${amount.toFixed(2)}::numeric
+            RETURNING balance
+          `;
+          if (!w) {
+            return reply.status(400).send({
+              error: "The dealer has already spent this wallet top-up — it can't be deleted",
+            });
+          }
+        }
+
+        await rollbackInvoiceAllocations(tx, id);
+        await reverseReceiptLedger(tx, {
+          dealerId: p.dealer_id, paymentId: id, amount, voucherNo,
+          voucherDate: p.received_date, reason: "deleted",
+          performedBy: request.admin!.userId,
+        });
+        // payment_allocations rows go with it (ON DELETE CASCADE).
+        await tx`DELETE FROM payments WHERE id = ${id}::uuid`;
+
+        request.log.info(
+          { paymentId: id, by: request.admin!.userId, dealerId: p.dealer_id, amount: p.amount, mode: p.mode, voucherNo },
+          "Payment deleted"
+        );
+        return reply.send({ message: "Payment deleted", id });
+      });
     }
   );
 

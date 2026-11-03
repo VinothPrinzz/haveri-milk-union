@@ -26,6 +26,7 @@ import { z } from "zod";
 import { pgClient } from "../lib/db.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { checkEmployeeCredit } from "../lib/credit-check.js";
+import { assertEmployeeOrderNoOversell } from "../lib/stock-check.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -596,12 +597,23 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
       const grandTotal = parseFloat(order.grand_total);
       const credit = await checkEmployeeCredit(employeeId, grandTotal);
 
+      // Leaving draft is what commits an indent's stock (migration 0072), so
+      // every transition out of draft is gated — 'payment_required' included.
+      // An indent already parked as payment_required holds its stock and is
+      // not re-checked. Throws StockConflictError (→ 409) and rolls back,
+      // leaving the draft editable.
+      const fromDraft = order.status === "draft";
+
       if (!credit.sufficient && !body.force) {
-        await pgClient`
-          UPDATE employee_orders
-             SET status = 'payment_required', updated_at = now()
-           WHERE id = ${order.id}::uuid
-        `;
+        await pgClient.begin(async (_tx) => {
+          const tx = _tx as unknown as typeof pgClient;
+          await tx`
+            UPDATE employee_orders
+               SET status = 'payment_required', updated_at = now()
+             WHERE id = ${order.id}::uuid
+          `;
+          if (fromDraft) await assertEmployeeOrderNoOversell(tx, order.id);
+        });
         return reply.status(402).send({
           error: "Credit limit exceeded",
           message: `Draft is over the employee's available credit by ₹${credit.shortfall.toFixed(
@@ -623,6 +635,7 @@ export async function employeeIndentsRoutes(app: FastifyInstance) {
                  updated_at   = now()
            WHERE id = ${order.id}::uuid
         `;
+        if (fromDraft) await assertEmployeeOrderNoOversell(tx, order.id);
 
         const [bal] = await tx`
           SELECT

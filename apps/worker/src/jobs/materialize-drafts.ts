@@ -155,6 +155,7 @@ export async function processMaterializeDrafts() {
            WHERE dealer_id = ${dealer.id}::uuid
              AND delivery_date = ${deliveryDate}::date
              AND status IN ('draft', 'pending', 'payment_required', 'confirmed')
+             AND NOT is_subsidy -- standalone subsidy orders are not the day's indent (0079)
              AND COALESCE(route_id, ${dealer.route_id}::uuid) = ${routeId}::uuid
            LIMIT 1
         `;

@@ -8,18 +8,16 @@
 // and mints a GST invoice — but is locked to a single product resolved
 // server-side (products.code = 'PD0191S', seeded by migration 0056).
 //
-// One-order-per-date invariant
-// ─────────────────────────────
-// uq_orders_dealer_delivery_active (migration 0034) allows AT MOST ONE
-// non-cancelled order per (dealer_id, delivery_date). A subsidy indent
-// therefore cannot be a second standalone order when the customer already
-// has a regular indent that day. So this endpoint is CREATE-OR-APPEND:
-//   • no order for the date  → create a new 'confirmed' order with the
-//                              subsidy line;
-//   • an editable order exists → replace/set the subsidy line on it and
-//                                re-total (other lines untouched).
-// Either way the invariant holds and the line lands on the customer's
-// order for that delivery date, so it shows in the route-sheet column.
+// Always a NEW order
+// ──────────────────
+// Each subsidy indent is its own 'confirmed' order (orders.is_subsidy =
+// true, migration 0079), charged in full when placed. It used to be
+// written onto the customer's draft or placed order for the day, which
+// changed indents the desk never meant to touch. The regular indent is now
+// left alone, and the "dealer's order for the day" lookups (dealer app,
+// Record Indents, auto-confirm, nightly drafts) skip is_subsidy orders, so
+// a subsidy order never stands in for the real indent. Both orders show
+// on the route sheet; the subsidy line lands in its own column.
 //
 //   • reads  → requireRole("orders.view")
 //   • writes → requireRole("orders.create")
@@ -34,6 +32,7 @@ import { enqueuePDFInvoice, enqueuePushNotification } from "../lib/queue.js";
 import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { refreshInvoiceSettlement } from "../lib/invoice-settlement.js";
+import { assertOrderNoOversell } from "../lib/stock-check.js";
 
 // The subsidy SKU seeded by migration 0056 (half-price HTM 1000ML).
 const SUBSIDY_PRODUCT_CODE = "PD0191S";
@@ -197,7 +196,7 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
 
   // ┌───────────────────────────────────────────────────────────────────┐
   // │  POST /api/v1/orders/subsidy-place                                 │
-  // │  Record a subsidy indent (create-or-append onto the day's order).  │
+  // │  Record a subsidy indent as its own new confirmed order.          │
   // └───────────────────────────────────────────────────────────────────┘
   app.post(
     "/api/v1/orders/subsidy-place",
@@ -260,13 +259,6 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "HTM 1000ML (sub) is currently unavailable" });
       }
 
-      // ── Line maths (priced at the subsidy base_price) ──
-      const price = parseFloat(product.base_price);
-      const gstPct = parseFloat(product.gst_percent);
-      const lineSub = round2(price * body.quantity);
-      const lineGst = round2(lineSub * (gstPct / 100));
-      const lineTotal = round2(lineSub + lineGst);
-
       // ── Delivery date (default: today, IST) ──
       // to_char keeps it a 'YYYY-MM-DD' string so the ::date casts below
       // don't have to round-trip a JS Date through the driver.
@@ -275,199 +267,88 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
       `;
       const deliveryDate = body.deliveryDate ?? String(d!.today);
 
-      // ── Existing non-cancelled order for this customer + delivery date? ──
-      // window_open = now() is still before (delivery_date + route close_time),
-      // in IST — the same rule the admin-cancel path uses. Running a route's
-      // dispatch sheet cascades confirmed→dispatched, so gating on status alone
-      // would wrongly lock out subsidy edits while the window is still open.
-      const [existing] = await pgClient`
-        SELECT o.id, o.status::text AS status,
-               COALESCE(oi.line_total, 0)::numeric AS existing_sub_total,
-               (COALESCE(
-                  (o.delivery_date + tw.close_time) AT TIME ZONE 'Asia/Kolkata',
-                  ((o.delivery_date + 1)::timestamp) AT TIME ZONE 'Asia/Kolkata'
-                ) > now()) AS window_open
-          FROM orders o
-          JOIN dealers d ON d.id = o.dealer_id
-          LEFT JOIN order_items oi
-                 ON oi.order_id = o.id AND oi.product_id = ${product.id}::uuid
-          LEFT JOIN LATERAL (
-            SELECT close_time FROM time_windows tw
-             WHERE tw.route_id = COALESCE(o.route_id, d.route_id)
-             ORDER BY close_time DESC LIMIT 1
-          ) tw ON true
-         WHERE o.dealer_id = ${body.customerId}
-           AND o.delivery_date = ${deliveryDate}::date
-           AND o.status <> 'cancelled'
-         ORDER BY o.created_at DESC
-         LIMIT 1
-      `;
+      // ── Line maths (priced at the subsidy base_price) ──
+      const quantity = body.quantity;
+      const price = parseFloat(product.base_price);
+      const gstPct = parseFloat(product.gst_percent);
+      const lineSub = round2(price * quantity);
+      const lineGst = round2(lineSub * (gstPct / 100));
+      const lineTotal = round2(lineSub + lineGst);
 
-      if (existing) {
-        // A delivered order is final — nothing more can be loaded onto it.
-        if (existing.status === "delivered") {
-          return reply.status(409).send({
-            error: "Order already delivered",
-            message: `This customer's indent for ${deliveryDate} is already delivered and can no longer be changed.`,
-          });
-        }
-        // Otherwise the delivery window governs: a dispatched-but-still-in-window
-        // order can still take a subsidy line (the route sheet re-reads it).
-        if (!existing.window_open) {
-          return reply.status(409).send({
-            error: "Delivery window closed",
-            message: `The delivery window for ${deliveryDate} has closed, so this indent can no longer be changed.`,
-          });
-        }
-      }
-
-      const oldSubTotal = existing ? parseFloat(existing.existing_sub_total) : 0;
-      // What this action actually charges to credit: the DELTA over any
-      // subsidy line already on the order (set-not-add semantics).
-      const chargeDelta = round2(lineTotal - oldSubTotal);
-
-      // Is the order this line lands on already PLACED (booked to the
-      // ledger)? A fresh order is created 'confirmed' below, so yes. An
-      // existing confirmed/dispatched order is booked, so yes. But an
-      // existing DRAFT / payment_required order has NOT been charged yet
-      // — its eventual confirm (auto-confirm at close, or pay-now) debits
-      // the FULL grand total, which will include the line set here. Posting
-      // the delta debit now would charge the subsidy TWICE. So for a
-      // not-yet-placed target: set the line, skip the money movement.
-      const targetPlaced =
-        !existing || ["confirmed", "dispatched"].includes(existing.status);
-
-      // ── Credit gate (only when this action debits credit right now) ──
-      if (body.paymentMode === "credit" && targetPlaced && chargeDelta > 0) {
-        const credit = await checkDealerCredit(body.customerId, chargeDelta);
+      // ── Credit gate: the whole order is charged now ──
+      if (body.paymentMode === "credit") {
+        const credit = await checkDealerCredit(body.customerId, lineTotal);
         if (!credit.sufficient) {
           return reply.status(402).send({
-            error: "Credit limit exceeded",
+            error: "Insufficient balance",
             message: `Available balance ₹${credit.available.toFixed(2)} is short of this subsidy indent by ₹${credit.shortfall.toFixed(2)}.`,
             credit,
           });
         }
       }
 
-      // ── Persist: create a new order, or append onto the day's order ──
+      // ── Persist: always a NEW confirmed order, flagged is_subsidy ──
+      // Never written onto the customer's draft or placed indent, and it does
+      // not supersede them: the regular indent carries on untouched, and the
+      // day's-order lookups skip is_subsidy orders (migration 0079).
       const orderId: string = await pgClient.begin(async (_tx) => {
         const tx = _tx as unknown as typeof pgClient;
 
-        let id: string;
-        let notesForOrder = body.notes ?? null;
+        const [order] = await tx`
+          INSERT INTO orders (
+            dealer_id, zone_id, route_id, status, payment_mode, payment_reference,
+            subtotal, total_gst, grand_total, item_count, notes, is_subsidy,
+            delivery_date, placed_by, confirmed_at, cancel_window_ends_at, created_at, updated_at
+          ) VALUES (
+            ${body.customerId}, ${dealer.zone_id}, ${orderRouteId}::uuid, 'confirmed', ${body.paymentMode},
+            ${body.paymentMode === "upi" ? body.paymentReference!.trim() : null},
+            ${lineSub.toFixed(2)}::numeric, ${lineGst.toFixed(2)}::numeric,
+            ${lineTotal.toFixed(2)}::numeric, 1, ${body.notes ?? null}, true,
+            ${deliveryDate}::date, ${adminUserId(request)}, now(), now(), now(), now()
+          )
+          RETURNING id
+        `;
+        const id: string = order!.id;
 
-        if (!existing) {
-          // Fresh confirmed order carrying just the subsidy line.
-          const [order] = await tx`
-            INSERT INTO orders (
-              dealer_id, zone_id, route_id, status, payment_mode, payment_reference,
-              subtotal, total_gst, grand_total, item_count, notes,
-              delivery_date, placed_by, confirmed_at, created_at, updated_at
-            ) VALUES (
-              ${body.customerId}, ${dealer.zone_id}, ${orderRouteId}::uuid, 'confirmed', ${body.paymentMode},
-              ${body.paymentReference ?? null},
-              ${lineSub.toFixed(2)}::numeric, ${lineGst.toFixed(2)}::numeric,
-              ${lineTotal.toFixed(2)}::numeric, 1, ${notesForOrder},
-              ${deliveryDate}::date, ${adminUserId(request)}, now(), now(), now()
-            )
-            RETURNING id
-          `;
-          id = order!.id;
+        await tx`
+          INSERT INTO order_items (
+            order_id, product_id, product_name, quantity,
+            unit_price, gst_percent, gst_amount, line_total
+          ) VALUES (
+            ${id}::uuid, ${product.id}::uuid, ${product.name}, ${quantity},
+            ${price.toFixed(2)}::numeric, ${gstPct.toFixed(2)}::numeric,
+            ${lineGst.toFixed(2)}::numeric, ${lineTotal.toFixed(2)}::numeric
+          )
+        `;
 
-          await tx`
-            INSERT INTO order_items (
-              order_id, product_id, product_name, quantity,
-              unit_price, gst_percent, gst_amount, line_total
-            ) VALUES (
-              ${id}::uuid, ${product.id}::uuid, ${product.name}, ${body.quantity},
-              ${price.toFixed(2)}::numeric, ${gstPct.toFixed(2)}::numeric,
-              ${lineGst.toFixed(2)}::numeric, ${lineTotal.toFixed(2)}::numeric
-            )
-          `;
-        } else {
-          // Set the subsidy line on the existing order, then re-total from
-          // ALL its items so the other lines are left exactly as they were.
-          id = existing.id;
-          await tx`
-            DELETE FROM order_items
-             WHERE order_id = ${id}::uuid AND product_id = ${product.id}::uuid
-          `;
-          await tx`
-            INSERT INTO order_items (
-              order_id, product_id, product_name, quantity,
-              unit_price, gst_percent, gst_amount, line_total
-            ) VALUES (
-              ${id}::uuid, ${product.id}::uuid, ${product.name}, ${body.quantity},
-              ${price.toFixed(2)}::numeric, ${gstPct.toFixed(2)}::numeric,
-              ${lineGst.toFixed(2)}::numeric, ${lineTotal.toFixed(2)}::numeric
-            )
-          `;
+        // ── Stock: a confirmed order holds stock from now on ──
+        // Latch it, then refuse if the subsidy line oversells its base SKU.
+        await tx`UPDATE orders SET stock_deducted = true WHERE id = ${id}::uuid`;
+        const [sp] = await tx`
+          SELECT COALESCE(stock_source_product_id, id)::text AS id
+            FROM products WHERE id = ${product.id}::uuid
+        `;
+        await assertOrderNoOversell(tx, id, [sp!.id as string]);
 
-          const [tot] = await tx`
-            SELECT
-              COALESCE(SUM(line_total), 0)::numeric                     AS grand_total,
-              COALESCE(SUM(gst_amount), 0)::numeric                     AS total_gst,
-              COALESCE(SUM(line_total) - SUM(gst_amount), 0)::numeric   AS subtotal,
-              COUNT(*)::int                                            AS item_count
-            FROM order_items WHERE order_id = ${id}::uuid
-          `;
-          await tx`
-            UPDATE orders SET
-              subtotal    = ${tot!.subtotal}::numeric,
-              total_gst   = ${tot!.total_gst}::numeric,
-              grand_total = ${tot!.grand_total}::numeric,
-              item_count  = ${tot!.item_count},
-              notes       = COALESCE(${body.notes ?? null}, notes),
-              updated_at  = now()
-            WHERE id = ${id}::uuid
-          `;
-        }
-
-        // ── Money for the delta (subsidy portion only) ──
-        // Every mode has to leave settlement evidence behind, because
-        // invoice-settlement.ts reads evidence and never the payment mode: a
-        // gateway reference on the order, a ledger debit against it, or a
-        // receipt keyed to its invoice. Credit posts the ledger movement
-        // below; cash posts a receipt (it used to post nothing at all, which
-        // is what left A4 and M61 ageing in AR Aging for money they had
-        // already handed over); UPI already carries its gateway reference.
-        //
-        // Only when the target order is already placed — see targetPlaced
-        // above: a draft's confirm debits the full total later, so posting
-        // the delta now would charge the subsidy twice.
-        if (body.paymentMode === "credit" && targetPlaced && chargeDelta !== 0) {
+        // ── Money ──
+        // Settlement evidence per mode (invoice-settlement.ts reads evidence,
+        // not the payment mode): credit → ledger debit against the order;
+        // cash → a counter receipt; UPI → the gateway reference stamped on
+        // the order above.
+        if (body.paymentMode === "credit") {
           const bal = await currentBalance(tx, body.customerId);
-          if (chargeDelta > 0) {
-            await tx`
-              INSERT INTO dealer_ledger
-                (dealer_id, type, amount, reference_id, reference_type,
-                 voucher_type, voucher_date, description, balance_after, performed_by)
-              VALUES
-                (${body.customerId}, 'debit', ${chargeDelta.toFixed(2)}::numeric,
-                 ${id}, 'order', 'Invoice', now()::date,
-                 ${"Subsidy indent " + id}, ${(bal - chargeDelta).toFixed(2)}::numeric,
-                 ${adminUserId(request)})
-            `;
-          } else {
-            const refund = Math.abs(chargeDelta);
-            await tx`
-              INSERT INTO dealer_ledger
-                (dealer_id, type, amount, reference_id, reference_type,
-                 voucher_type, voucher_date, description, balance_after, performed_by)
-              VALUES
-                (${body.customerId}, 'credit', ${refund.toFixed(2)}::numeric,
-                 ${id}, 'adjustment', 'Adjustment', now()::date,
-                 ${"Subsidy indent revised " + id}, ${(bal + refund).toFixed(2)}::numeric,
-                 ${adminUserId(request)})
-            `;
-          }
+          await tx`
+            INSERT INTO dealer_ledger
+              (dealer_id, type, amount, reference_id, reference_type,
+               voucher_type, voucher_date, description, balance_after, performed_by)
+            VALUES
+              (${body.customerId}, 'debit', ${lineTotal.toFixed(2)}::numeric,
+               ${id}, 'order', 'Invoice', now()::date,
+               ${"Subsidy indent " + id}, ${(bal - lineTotal).toFixed(2)}::numeric,
+               ${adminUserId(request)})
+          `;
         }
-
-        // Cash taken at the counter, recorded as a receipt so the Day Book's
-        // cash position and the invoice's paid_amount can both see it. Written
-        // for the LINE TOTAL rather than the delta because the helper replaces
-        // our previous row, which keeps a revised quantity exact.
-        if (body.paymentMode === "cash" && targetPlaced) {
+        if (body.paymentMode === "cash") {
           await setSubsidyCounterReceipt(tx, {
             dealerId: body.customerId,
             orderId: id,
@@ -478,122 +359,49 @@ export async function subsidyIndentsRoutes(app: FastifyInstance) {
           });
         }
 
-        // UPI onto an order that ALREADY carries a different gateway reference.
-        // A fresh order stamps ours on the order itself, so rail 1 matches it
-        // and nothing is needed here; an append cannot, because overwriting the
-        // reference would strand the payment covering the rest of the order.
-        // Attaching the delta's own receipt to the invoice settles it through
-        // rail 3 instead, and the existence check is what stops a gateway row
-        // the capture flow already wrote from being counted a second time.
-        if (
-          body.paymentMode === "upi" &&
-          targetPlaced &&
-          existing &&
-          body.paymentReference?.trim()
-        ) {
-          const ref = body.paymentReference.trim();
-          const [captured] = await tx`
-            SELECT id FROM payments
-             WHERE reference = ${ref} AND invoice_id IS NULL
-             LIMIT 1
-          `;
-          if (captured) {
-            await tx`
-              UPDATE payments
-                 SET invoice_id = (SELECT i.id FROM invoices i
-                                    WHERE i.order_id = ${id}::uuid LIMIT 1),
-                     updated_at = now()
-               WHERE id = ${captured.id}
-            `;
-          } else {
-            const [any] = await tx`
-              SELECT 1 AS ok FROM payments WHERE reference = ${ref} LIMIT 1
-            `;
-            if (!any) {
-              await setSubsidyCounterReceipt(tx, {
-                dealerId: body.customerId,
-                orderId: id,
-                amount: lineTotal,
-                mode: "upi",
-                receivedDate: deliveryDate,
-                performedBy: adminUserId(request),
-              });
-            }
-          }
-        }
-
-        // If this order is placed (fresh 'confirmed', or an already-placed
-        // existing order), it is THE order for the date — cancel stranded
-        // twins (e.g. the dealer-app draft that carries the same subsidy
-        // line). A draft target isn't placed yet, so nothing to supersede.
-        if (targetPlaced) {
-          await cancelSupersededSiblings(tx, id);
-        }
-
         return id;
       });
 
-      // ── Invoice (re)generation + push (best-effort, outside the tx) ──
-      // Only for a PLACED order — an invoice for a still-draft order would
-      // be a tax document for an unplaced indent (the confirm generates it).
+      // ── Invoice + push (best-effort, outside the tx) ──
       let invoiceNumber: string | null = null;
       let invoicePdfUrl: string | null = null;
-      if (targetPlaced) {
-        try {
-          await enqueuePDFInvoice(orderId);
-        } catch (err) {
-          console.warn("[subsidy] PDF enqueue failed:", err);
-        }
-        if (!existing) {
-          try {
-            await enqueuePushNotification({
-              event: "order.confirmed",
-              dealerId: body.customerId,
-              orderId,
-            });
-          } catch (err) {
-            console.warn("[subsidy] Push enqueue failed:", err);
-          }
-        }
+      try {
+        await enqueuePushNotification({
+          event: "order.confirmed",
+          dealerId: body.customerId,
+          orderId,
+        });
+      } catch (err) {
+        console.warn("[subsidy] Push enqueue failed:", err);
+      }
+      try {
+        const pdf = await generateInvoicePdfSync(orderId);
+        invoicePdfUrl = pdf?.pdfUrl ?? null;
+        const [inv] = await pgClient`
+          SELECT invoice_number FROM invoices WHERE order_id = ${orderId} LIMIT 1
+        `;
+        invoiceNumber = inv?.invoice_number ?? null;
+      } catch (err) {
+        console.error("[subsidy] Invoice generation failed:", err);
+        try { await enqueuePDFInvoice(orderId); } catch { /* worker retries */ }
+      }
 
-        try {
-          const pdf = await generateInvoicePdfSync(orderId);
-          invoicePdfUrl = pdf?.pdfUrl ?? null;
-          const [inv] = await pgClient`
-            SELECT invoice_number FROM invoices WHERE order_id = ${orderId} LIMIT 1
-          `;
-          invoiceNumber = inv?.invoice_number ?? null;
-        } catch (err) {
-          console.error("[subsidy] Invoice generation failed:", err);
-        }
-
-        // A counter receipt written above for a FRESH order had no invoice to
-        // point at yet, since the mint only just ran. Link it, then re-derive
-        // paid_amount so the indent does not spend even a moment reading as an
-        // unpaid receivable. Both steps are idempotent and neither may fail the
-        // request: the money is already committed, and an unlinked receipt is
-        // recoverable where a failed response is not.
-        try {
-          await linkSubsidyReceipts(orderId);
-          await refreshInvoiceSettlement(orderId);
-        } catch (err) {
-          console.warn("[subsidy] Receipt link / settlement refresh failed:", err);
-        }
+      // A cash receipt written above had no invoice to point at yet. Link it,
+      // then re-derive paid_amount. Idempotent; never fails the request.
+      try {
+        await linkSubsidyReceipts(orderId);
+        await refreshInvoiceSettlement(orderId);
+      } catch (err) {
+        console.warn("[subsidy] Receipt link / settlement refresh failed:", err);
       }
 
       return reply.status(201).send({
-        message: existing
-          ? targetPlaced
-            ? "Subsidy indent added to the customer's indent for this date"
-            : "Subsidy line set on the customer's draft. It is charged when the draft is placed"
-          : "Subsidy indent placed successfully",
+        message: "Subsidy indent placed as a new confirmed order",
         orderId,
-        // Honest status: an append onto a draft/payment_required order does
-        // NOT place it — reporting 'confirmed' here misled the admin UI.
-        status: existing ? existing.status : "confirmed",
+        status: "confirmed",
         deliveryDate,
-        appended: !!existing,
-        quantity: body.quantity,
+        appended: false,
+        quantity,
         lineTotal: lineTotal.toFixed(2),
         invoiceNumber,
         invoicePdfUrl,

@@ -630,8 +630,22 @@ const nKg   = (n: number) => {
   return Number.isInteger(v) ? v.toFixed(1) : String(Math.round(v * 100) / 100);
 };
 
-function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
-  // Only days that carry at least one sale appear on the paper bill.
+// Product columns per bill page. At the bill's normal font size a product
+// column is ~98 px, so 8 + Date + Total fits a landscape A4 (~1032 px).
+// Customers with more products continue on the next page (same rows); the
+// Total Amount column + grand totals print only on the last part.
+const CB_COLS_PER_PAGE = 8;
+
+function renderCreditBillPage(
+  b: CreditBillCustomer,
+  pageNo: number,
+  cols: { p: CreditBillCustomer["products"][number]; i: number }[],
+  part: number,
+  parts: number,
+) {
+  const isLast = part === parts;
+  // Only days that carry at least one sale (any product) appear on the bill;
+  // every part shows the same rows so the pages line up side by side.
   const activeRows = b.dailyRows.filter(row => row.qty.some(q => q > 0));
   // Cell classes: product columns, the row-label column, the total column.
   const th = "cb-cell cb-prod align-bottom";
@@ -646,7 +660,7 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
       <div className="flex items-center justify-between mb-1">
         <span className="tracking-[0.25em]">[ H A V E M U L ]</span>
         <span className="font-bold tracking-wide">HAVERI MILK UNION LTD - HAVERI</span>
-        <span>Page {pageNo}</span>
+        <span>Page {pageNo}{parts > 1 ? ` (Part ${part}/${parts})` : ""}</span>
       </div>
 
       {/* Two-column header: buyer block | union GST declaration */}
@@ -674,75 +688,75 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
         <thead>
           <tr>
             <th className={thLabel}></th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-center`}>{p.session}</th>)}
-            <th className={thTotal}></th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} text-center`}>{p.session}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Pkt</th>
-            {b.products.map(p => <th key={p.key} className={`${th} cb-name text-center`}>{p.reportAlias}</th>)}
-            <th className={thTotal}></th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} cb-name text-center`}>{p.reportAlias}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>HSN</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>{p.hsn}</th>)}
-            <th className={thTotal}></th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} text-right`}>{p.hsn}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Rate</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>{nRate(p.rate)}</th>)}
-            <th className={thTotal}></th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} text-right`}>{nRate(p.rate)}</th>)}
+            {isLast && <th className={thTotal}></th>}
           </tr>
           <tr>
             <th className={thLabel}>Date</th>
-            {b.products.map(p => <th key={p.key} className={`${th} text-right`}>Qty</th>)}
-            <th className={`${thTotal} text-right`}>Total Amount</th>
+            {cols.map(({ p }) => <th key={p.key} className={`${th} text-right`}>Qty</th>)}
+            {isLast && <th className={`${thTotal} text-right`}>Total Amount</th>}
           </tr>
         </thead>
         <tbody>
           {activeRows.map((row, ri) => (
             <tr key={ri}>
               <td className={tdLabel}>{row.day}</td>
-              {b.products.map((p, pi) => <td key={p.key} className={`${td} text-right`}>{nPk(row.qty[pi] ?? 0)}</td>)}
-              <td className={`${tdTotal} text-right`}>{row.dayTotal ? nAmt(row.dayTotal) : ""}</td>
+              {cols.map(({ p, i: pi }) => <td key={p.key} className={`${td} text-right`}>{nPk(row.qty[pi] ?? 0)}</td>)}
+              {isLast && <td className={`${tdTotal} text-right`}>{row.dayTotal ? nAmt(row.dayTotal) : ""}</td>}
             </tr>
           ))}
         </tbody>
         <tfoot>
           <tr className="font-semibold">
             <td className={tdLabel}>Pkts</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nPk(b.totals.pkts[i] ?? 0)}</td>)}
-            <td className={tdTotal}></td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nPk(b.totals.pkts[i] ?? 0)}</td>)}
+            {isLast && <td className={tdTotal}></td>}
           </tr>
           <tr>
             <td className={tdLabel}>Kg\ltr</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nKg(b.totals.kgLtr[i] ?? 0)}</td>)}
-            <td className={tdTotal}></td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nKg(b.totals.kgLtr[i] ?? 0)}</td>)}
+            {isLast && <td className={tdTotal}></td>}
           </tr>
           <tr>
             <td className={tdLabel}>BASIC</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nRaw(b.totals.basic[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nAmt(b.totals.basicGrand)}</td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nRaw(b.totals.basic[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nAmt(b.totals.basicGrand)}</td>}
           </tr>
           <tr>
             <td className={tdLabel}>CGST</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.cgst[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nTax(b.totals.cgstGrand)}</td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.cgst[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nTax(b.totals.cgstGrand)}</td>}
           </tr>
           <tr>
             <td className={tdLabel}>SGST</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.sgst[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nTax(b.totals.sgstGrand)}</td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nTax(b.totals.sgst[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nTax(b.totals.sgstGrand)}</td>}
           </tr>
           <tr className="font-semibold">
             <td className={tdLabel}>Amount</td>
-            {b.products.map((p, i) => <td key={p.key} className={`${td} text-right`}>{nAmt(b.totals.amount[i] ?? 0)}</td>)}
-            <td className={`${tdTotal} text-right`}>{nAmt(b.totals.amountGrand)}</td>
+            {cols.map(({ p, i }) => <td key={p.key} className={`${td} text-right`}>{nAmt(b.totals.amount[i] ?? 0)}</td>)}
+            {isLast && <td className={`${tdTotal} text-right`}>{nAmt(b.totals.amountGrand)}</td>}
           </tr>
         </tfoot>
       </table>
 
       {/* Notes + signature */}
-      <div className="cb-notes flex justify-between mt-2 text-[12px]">
+      {isLast && <div className="cb-notes flex justify-between mt-2 text-[12px]">
         <div>
           <div>NOTE: - Kindly acknowledge receipt of this bill immediately.</div>
           <div className="pl-10">- Variation in the above bill if any may be intimated within 15 days.</div>
@@ -750,7 +764,7 @@ function renderCreditBillPage(b: CreditBillCustomer, pageNo: number) {
           <div className="pl-14">CO-OP MILK PRODUCERS SOCIETIES UNION LTD., HAVERI".</div>
         </div>
         <div className="self-end whitespace-nowrap">AUTHORISED SIGNATURE.</div>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -795,14 +809,23 @@ export const CreditSalesReport = () => (
     title="Credit Sales"
     description="Monthly credit bill: credit institutions only"
     printMeta={null}
+    printOrientation="landscape"
     fetcher={(from, to) => fetchCreditSales({ from, to })}
     renderPages={(_from, _to, apiData) => {
       if (!apiData || apiData.customers.length === 0) return [];
-      const pages: ReactNode[] = apiData.customers.map((b, i) => (
-        <div key={b.id}>{renderCreditBillPage(b, i + 1)}</div>
-      ));
+      const pages: ReactNode[] = [];
+      apiData.customers.forEach(b => {
+        const chunks = paginateColumns(b.products.map((p, i) => ({ p, i })), CB_COLS_PER_PAGE);
+        chunks.forEach((cols, ci) => {
+          pages.push(
+            <div key={`${b.id}-${ci}`}>
+              {renderCreditBillPage(b, pages.length + 1, cols, ci + 1, chunks.length)}
+            </div>
+          );
+        });
+      });
       pages.push(
-        <div key="summary">{renderCreditSummaryPage(apiData, apiData.customers.length + 1)}</div>
+        <div key="summary">{renderCreditSummaryPage(apiData, pages.length + 1)}</div>
       );
       return pages;
     }}
@@ -1164,6 +1187,14 @@ const volumeLines = (v: AgentSalesResponse["totals"] | AgentSalesResponse["agent
   { label: "Total Other Products Amount",   vol: null,       amt: v.otherAmount },
 ];
 
+// Margin = (MRP - Dealer Price) x packets, per bucket and in total.
+const marginLines = (v: AgentSalesResponse["totals"] | AgentSalesResponse["agents"][number]) => [
+  { label: "Milk Margin",           amt: v.milkMargin,  bold: false },
+  { label: "Curd Margin",           amt: v.curdMargin,  bold: false },
+  { label: "Other Products Margin", amt: v.otherMargin, bold: false },
+  { label: "Total Margin:",         amt: v.margin,      bold: true },
+];
+
 function renderAgentBlock(a: AgentSalesResponse["agents"][number]) {
   const td = "border border-border px-2 py-0.5";
   return (
@@ -1209,6 +1240,12 @@ function renderAgentBlock(a: AgentSalesResponse["agents"][number]) {
               <td className={`${td} text-right num`}>{r.amt === null ? "" : nAmt(r.amt)}</td>
             </tr>
           ))}
+          {marginLines(a).map(r => (
+            <tr key={r.label} className={r.bold ? "font-bold bg-muted/40" : undefined}>
+              <td className={td} colSpan={6}>{r.label}</td>
+              <td className={`${td} text-right num`}>{nAmt(r.amt)}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -1217,14 +1254,7 @@ function renderAgentBlock(a: AgentSalesResponse["agents"][number]) {
 
 function renderAgentGrandTotal(d: AgentSalesResponse) {
   const td = "border border-border px-2 py-0.5";
-  const rows = [
-    { label: "Total Milk (Ltrs)",             vol: d.totals.milkLtr,  amt: null },
-    { label: "Total Milk Amount",             vol: null,              amt: d.totals.milkAmount },
-    { label: "Total Curd (Kgs)",              vol: d.totals.curdKg,   amt: null },
-    { label: "Total Curd Amount",             vol: null,              amt: d.totals.curdAmount },
-    { label: "Total Other Products (Kg/Ltr)", vol: d.totals.otherQty, amt: null },
-    { label: "Total Other Products Amount",   vol: null,              amt: d.totals.otherAmount },
-  ];
+  const rows = volumeLines(d.totals);
   return (
     <div className="text-[11px] leading-tight">
       <div className="font-bold mb-1">Grand Total: {d.agents.length} agents</div>
@@ -1248,6 +1278,12 @@ function renderAgentGrandTotal(d: AgentSalesResponse) {
             <td className={td} colSpan={2}>Total:</td>
             <td className={`${td} text-right num`}>{nAmt(d.totals.total)}</td>
           </tr>
+          {marginLines(d.totals).map(r => (
+            <tr key={r.label} className={r.bold ? "font-bold bg-muted/40" : undefined}>
+              <td className={td} colSpan={2}>{r.label}</td>
+              <td className={`${td} text-right num`}>{nAmt(r.amt)}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -1276,12 +1312,14 @@ export const AgentSalesReport = () => (
         ]));
         out.push(["", "", "Total:", "", "", "", a.total]);
         volumeLines(a).forEach(r => out.push(["", "", r.label, "", "", r.vol ?? "", r.amt ?? ""]));
+        marginLines(a).forEach(r => out.push(["", "", r.label, "", "", "", r.amt]));
       });
       out.push([]);
       out.push(["GRAND TOTAL", "", "", "", "", "", d.totals.total]);
       out.push(["Total Milk (Ltrs)", "", "", "", "", d.totals.milkLtr, d.totals.milkAmount]);
       out.push(["Total Curd (Kgs)", "", "", "", "", d.totals.curdKg, d.totals.curdAmount]);
       out.push(["Total Other Products (Kg/Ltr)", "", "", "", "", d.totals.otherQty, d.totals.otherAmount]);
+      marginLines(d.totals).forEach(r => out.push([r.label, "", "", "", "", "", r.amt]));
       return out;
     }}
   />
@@ -1292,7 +1330,7 @@ export const AdhocSalesReport = () => (
   <SalesReportShell<AdhocResponse>
     title="Adhoc Sales"
     description="One-off direct sales not tied to a route"
-    fetcher={(from, to) => fetchAdhocSales({ from, to, limit: 500 })}
+    fetcher={(from, to) => fetchAdhocSales({ from, to, limit: 1000 })}
     renderPages={(_from, _to, apiData) => {
       if (!apiData) return [];
       return [(

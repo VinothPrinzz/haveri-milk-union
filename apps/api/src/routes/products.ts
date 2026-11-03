@@ -6,7 +6,8 @@ import { db, pgClient } from "../lib/db.js";
 import { categories } from "@hmu/db/schema";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
-import { deriveBasePriceFromDealerPrice, recordPriceRevision } from "../lib/price-revisions.js";
+import { deriveBasePriceFromDealerPrice, recordPriceRevision, syncSubsidyPrice } from "../lib/price-revisions.js";
+import { repriceOpenDrafts } from "../lib/reprice-drafts.js";
 
 // Constants — single source of truth referenced by both API and web.
 export const REPORT_ALIAS_MAX: Record<"Across" | "Down", number> = {
@@ -325,6 +326,11 @@ export async function productRoutes(app: FastifyInstance) {
           changedBy: request.admin!.userId,
           source: "product_edit",
         });
+        // Open drafts were built at the old price; bring them up to date.
+        // Runs on every save, so re-saving a product also fixes drafts
+        // left behind by an earlier change.
+        await repriceOpenDrafts(tx, id);
+        await syncSubsidyPrice(tx, id, request.admin!.userId);
 
         return row;
       });

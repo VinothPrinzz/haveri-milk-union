@@ -230,6 +230,12 @@ export async function financeDayBookRoutes(app: FastifyInstance) {
               = ${date}::date
           AND (dl.reference_id IS NULL
                OR NOT EXISTS (SELECT 1 FROM payments p WHERE p.id = dl.reference_id))
+          -- A wallet receipt deleted from Payments Overview: its payments row
+          -- is gone and its credit was reversed (RV-), so it is not a top-up
+          -- without a receipt — it is a top-up that never happened.
+          AND NOT EXISTS (SELECT 1 FROM dealer_ledger rv
+                           WHERE rv.reference_id = dl.reference_id
+                             AND rv.voucher_no LIKE 'RV-%')
           AND ( ${route}::text IS NULL
                 OR (${route}::text = 'unassigned' AND d.route_id IS NULL)
                 OR d.route_id::text = ${route}::text )

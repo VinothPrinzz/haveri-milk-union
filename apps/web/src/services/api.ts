@@ -59,6 +59,8 @@ function normalizeCustomer(d: Record<string, unknown>) {
     area:        (d.area ?? "") as string,
     houseNo:     (d.house_no ?? d.houseNo ?? "") as string,
     street:      (d.street ?? "") as string,
+    village:     (d.village ?? "") as string,
+    agencyStartDate: String(d.agency_start_date ?? d.agencyStartDate ?? "").slice(0, 10),
     pinCode:     (d.pin_code ?? d.pinCode ?? "") as string,
     lastIndentAt: (d.last_indent_at ?? d.lastIndentAt ?? null) as string | null,
 
@@ -491,6 +493,8 @@ export const createCustomer = async (body: Record<string, unknown>) => {
     area: body.area || undefined,
     houseNo: body.houseNo || undefined,
     street: body.street || undefined,
+    village: body.village || undefined,
+    agencyStartDate: body.agencyStartDate || undefined,
     pinCode: body.pinCode || undefined,
     address: body.address || undefined,
     code: body.code,
@@ -512,6 +516,9 @@ export const updateCustomer = async (id: string, body: Record<string, unknown>) 
     addressType: body.addressType || undefined, state: body.state || undefined,
     city: body.city || undefined, area: body.area || undefined,
     houseNo: body.houseNo || undefined, street: body.street || undefined,
+    // Always sent (blank clears it), like the GST no. below.
+    village: body.village ?? "",
+    agencyStartDate: body.agencyStartDate || undefined,
     pinCode: body.pinCode || undefined,
     address: body.address || undefined,
     // Always sent (blank clears it) so removing a GST no. actually saves.
@@ -733,6 +740,12 @@ export const fetchRoutes = async () => {
   return (data.routes ?? []).map(normalizeRoute);
 };
 
+// Distinct City / Village names already on the customer master, A→Z.
+export const fetchCustomerVillages = async (): Promise<string[]> => {
+  const data = await get<{ villages: string[] }>("/dealers/villages");
+  return data.villages ?? [];
+};
+
 export const fetchZones = async () => {
   const data = await get<{ zones?: Record<string, unknown>[] }>("/zones");
   if (data.zones) {
@@ -803,10 +816,17 @@ export const updateOfficer = async (id: string, body: {
   return data.officer;
 };
 
+/** Code the server will give the next new route (counts deleted routes too). */
+export const fetchNextRouteCode = async () => {
+  const data = await get<{ code: string }>("/routes/next-code");
+  return data.code;
+};
+
 export const createRoute = async (body: Record<string, unknown>) => {
+  // No code sent: the field is read-only "Auto", and only the server can see
+  // the deleted routes that still hold their codes.
   const data = await post<{ route: Record<string, unknown> }>("/routes", {
     name:           body.name,
-    code:           body.code,
     contractorId:   body.contractorId || undefined,
     primaryBatchId: body.primaryBatchId || undefined,
     dispatchTime:   body.dispatchTime || null,
@@ -978,11 +998,17 @@ export const fetchIndents = async (filters?: {
   if (filters?.from) params.from = filters.from; // YYYY-MM-DD (delivery_date >= from)
   if (filters?.to) params.to = filters.to;       // YYYY-MM-DD (delivery_date <= to)
   if (filters?.dealerId) params.dealerId = filters.dealerId;
-  const data = await get<{ data: Record<string, unknown>[] }>(
-    "/orders",
-    params,
-  );
-  return (data.data ?? []).map(normalizeIndent);
+  // The API caps a page at 100 rows; fetch every page so nothing is dropped.
+  const rows: Record<string, unknown>[] = [];
+  for (let page = 1; ; page++) {
+    const data = await get<{ data: Record<string, unknown>[]; totalPages?: number }>(
+      "/orders",
+      { ...params, page },
+    );
+    rows.push(...(data.data ?? []));
+    if (page >= (data.totalPages ?? 1)) break;
+  }
+  return rows.map(normalizeIndent);
 };
 
 // Paginated + server-searched variant for the All-Indents page. Unlike
@@ -1110,6 +1136,8 @@ export const placeSubsidyIndent = async (b: {
     message: string;
     orderId: string;
     appended: boolean;
+    /** Packets on the new subsidy order. */
+    quantity: number;
     lineTotal: string;
     invoiceNumber: string | null;
     invoicePdfUrl: string | null;
@@ -1163,16 +1191,30 @@ export const fetchDirectSales = async (filters?: {
   return (data.data ?? []).map(normalizeDirectSale);
 };
 
-export const fetchRecentDirectSales = async (customerType?: string) => {
-  const params: Record<string, string | number | boolean | undefined> = { limit: 100 };
+// The API caps a page at 100 rows, so the date range is filtered server-side
+// and every page is fetched; otherwise a busy week pushes older sales out.
+export const fetchRecentDirectSales = async (
+  customerType?: string,
+  range?: { dateFrom?: string; dateTo?: string },
+) => {
+  const params: Record<string, string | number | boolean | undefined> = {
+    limit: 100,
+    dateFrom: range?.dateFrom || undefined,
+    dateTo: range?.dateTo || undefined,
+  };
   if (customerType) {
     params.customerType = customerType.toLowerCase();
   }
-  const data = await get<{ data: Record<string, unknown>[] }>(
-    "/direct-sales",
-    params,
-  );
-  return (data.data ?? []).map(normalizeDirectSale);
+  const rows: Record<string, unknown>[] = [];
+  for (let page = 1; ; page++) {
+    const data = await get<{ data: Record<string, unknown>[]; totalPages?: number }>(
+      "/direct-sales",
+      { ...params, page },
+    );
+    rows.push(...(data.data ?? []));
+    if (page >= (data.totalPages ?? 1)) break;
+  }
+  return rows.map(normalizeDirectSale);
 };
 
 export const fetchGatePassReport = async (
@@ -2222,8 +2264,9 @@ export interface PaymentRow {
   notes:           string | null;
   receivedByName:  string | null;
   createdAt:       string;
+  editable:        boolean;          // a Record Payment receipt (not cheque) — can be edited / deleted
 }
- 
+
 export interface PaymentsResponse {
   data: PaymentRow[];
   summary: {
@@ -2272,6 +2315,21 @@ export const recordPayment = async (body: {
     allocations: { invoiceId: string; invoiceNumber: string; amount: number }[];
     unallocated: number;
   }>("/payments", body);
+};
+
+// Correct / remove a Record Payment receipt — manager and super_admin only.
+export const updatePayment = async (id: string, body: {
+  amount?:       number;
+  mode?:         PaymentMode;
+  receivedDate?: string;
+  reference?:    string | null;
+  notes?:        string | null;
+}) => {
+  return await patch<{ message: string; payment: Record<string, unknown> }>(`/payments/${id}`, body);
+};
+
+export const deletePayment = async (id: string) => {
+  await del<{ message: string; id: string }>(`/payments/${id}`);
 };
 
 
@@ -2907,6 +2965,29 @@ export const releaseEmployeeOrder = async (orderId: string) =>
   post<{ orderId: string; status: string; released: boolean }>(
     `/finance/employee-orders/${orderId}/release`, {},
   );
+
+// ── Employee salary recovery (subsidy goods recovered from salary) ──
+export interface EmployeeRecoveryDueRow {
+  id: string; code: string | null; name: string;
+  department: string | null; routeName: string | null;
+  outstanding: number;        // owed right now
+  recoveredInMonth: number;   // already recovered in the selected month
+}
+export interface EmployeeRecoveryRow {
+  id: string; recoveryDate: string; amount: number; description: string | null;
+  createdAt: string; employeeId: string; employeeCode: string | null;
+  employeeName: string; postedBy: string | null; reversedOn: string | null;
+}
+export const fetchEmployeeRecoveryDue = async (params: { month: string; search?: string }) =>
+  (await get<{ data: EmployeeRecoveryDueRow[] }>("/finance/employee-recoveries/due", params)).data;
+export const fetchEmployeeRecoveries = async (month: string) =>
+  (await get<{ data: EmployeeRecoveryRow[] }>("/finance/employee-recoveries", { month })).data;
+export const postEmployeeRecoveries = async (body: {
+  recoveryDate: string; salaryMonth: string; note?: string;
+  items: Array<{ employeeId: string; amount: number }>;
+}) => post<{ posted: number; total: number }>("/finance/employee-recoveries", body);
+export const reverseEmployeeRecovery = async (id: string) =>
+  post<{ id: string; reversed: boolean }>(`/finance/employee-recoveries/${id}/reverse`, {});
 
 // ── Refunds ──
 export interface RefundRow {

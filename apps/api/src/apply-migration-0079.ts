@@ -1,54 +1,37 @@
-// Applies packages/db/src/migrations/0079_dtc_billing.sql (DTC Billing).
+// Applies packages/db/src/migrations/0079_orders_is_subsidy.sql.
 //
 // See apply-migration-0063.ts for why the repo migration runner is never
 // pointed at prod (the _migrations table is stale there).
 //
-// Additive: five new contractor columns (IFSC, PAN, TDS details), ten new
-// dtc_* tables, three system_settings rows (ON CONFLICT DO NOTHING), and a
-// first billing-terms version per route copied from routes.rate_per_trip /
-// total_km_per_day. No existing row is rewritten. The file is idempotent, so
-// re-running is safe.
+// Additive: one NOT NULL column with a constant default on orders — no row
+// is read or rewritten. The API's subsidy-place and the day's-order lookups
+// read it, so apply it BEFORE deploying the API (and the worker).
 //
-// Apply BEFORE deploying the API: the /dtc endpoints and the contractor
-// create / update endpoints (new IFSC / PAN / TDS columns) depend on it.
-//
-// USAGE (from apps/api):  npx tsx src/apply-migration-0079.ts
+// USAGE (from apps/api):  npx tsx --env-file=.env src/apply-migration-0079.ts
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { pgClient } from "./lib/db.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const file = join(here, "../../../packages/db/src/migrations/0079_dtc_billing.sql");
+const sqlPath = join(here, "../../../packages/db/src/migrations/0079_orders_is_subsidy.sql");
 
 async function main() {
-  const body = readFileSync(file, "utf8");
+  const body = readFileSync(sqlPath, "utf8");
   await pgClient.begin(async (_tx) => {
     const tx = _tx as unknown as typeof pgClient;
     await tx.unsafe(body);
   });
-  console.log("0079_dtc_billing.sql applied");
+  console.log("migration 0079 applied");
 
-  const [check] = (await pgClient`
-    SELECT
-      (SELECT count(*)::int FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name LIKE 'dtc\\_%') AS tables,
-      (SELECT count(*)::int FROM information_schema.columns
-        WHERE table_name = 'contractors'
-          AND column_name IN ('ifsc_code', 'pan_number', 'tds_entity_type', 'tds_declaration_fy')) AS contractor_cols,
-      (SELECT count(*)::int FROM system_settings WHERE category = 'dtc') AS settings,
-      (SELECT count(*)::int FROM dtc_route_terms) AS terms
+  const [col] = (await pgClient`
+    SELECT data_type AS t, is_nullable AS n, column_default AS d
+      FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'is_subsidy'
   `) as any[];
-  console.log(`  dtc tables: ${check.tables} (expect 10)`);
-  console.log(`  new contractor columns: ${check.contractor_cols} (expect 4)`);
-  console.log(`  dtc settings rows: ${check.settings} (expect 3)`);
-  console.log(`  route terms rows: ${check.terms} (one per route that had a rate)`);
-
-  await pgClient.end();
+  console.log(col ? `  orders.is_subsidy  ${col.t}  nullable=${col.n}  default=${col.d}` : "  COLUMN MISSING");
 }
 
-main().catch(async (e) => {
-  console.error(e);
-  await pgClient.end();
-  process.exit(1);
-});
+main()
+  .catch((e) => { console.error(e); process.exitCode = 1; })
+  .finally(() => pgClient.end());

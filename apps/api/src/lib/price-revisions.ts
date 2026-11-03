@@ -24,6 +24,7 @@
 // ════════════════════════════════════════════════════════════════════
 import { pgClient } from "./db.js";
 import { istToday } from "./ist-date.js";
+import { repriceOpenDrafts } from "./reprice-drafts.js";
 
 // Helper to derive base_price ("Basic Price", excluding GST) from the
 // Dealer-Price (gross, inclusive of GST).
@@ -128,6 +129,74 @@ export async function recordPriceRevision(
   return true;
 }
 
+// ── Subsidy milk follows HTM 1000ML ──────────────────────────────────
+// HTM 1000ML (Subsidy) is the same pouch sold at half price (migration
+// 0056). It was seeded at half of HTM 1000ML once, so a later price change
+// on HTM 1000ML left the subsidy rate behind. Every price save on HTM 1000ML
+// now re-sets the subsidy SKU to half, in the same transaction.
+export const SUBSIDY_SOURCE_CODE = "PD0191";   // HTM 1000ML
+export const SUBSIDY_PRODUCT_CODE = "PD0191S"; // HTM 1000ML (Subsidy)
+
+const half = (v: number | string) => Math.round(Number(v) * 50) / 100;
+
+/**
+ * If productId is HTM 1000ML, set HTM 1000ML (Subsidy) to half its Dealer
+ * Price and MRP (and the rate-category prices that follow them), and log it.
+ * No-op for any other product. Run inside the caller's transaction, after
+ * the HTM 1000ML row has been written.
+ */
+export async function syncSubsidyPrice(
+  tx: typeof pgClient,
+  productId: string,
+  changedBy: string,
+): Promise<void> {
+  const [src] = await tx`
+    SELECT dealer_price, mrp FROM products
+    WHERE id = ${productId} AND code = ${SUBSIDY_SOURCE_CODE} AND deleted_at IS NULL
+  `;
+  if (!src) return;
+
+  const [sub] = await tx`
+    SELECT id, base_price, dealer_price, mrp, gst_percent FROM products
+    WHERE code = ${SUBSIDY_PRODUCT_CODE} AND deleted_at IS NULL
+    FOR UPDATE
+  `;
+  if (!sub) return;
+
+  const dealer = half(src.dealer_price);
+  const mrp = half(src.mrp);
+  const base = deriveBasePriceFromDealerPrice(dealer, Number(sub.gst_percent));
+
+  const [row] = await tx`
+    UPDATE products SET
+      dealer_price             = ${dealer}::numeric,
+      mrp                      = ${mrp}::numeric,
+      base_price               = ${base}::numeric,
+      retail_dealer_price      = ${dealer}::numeric,
+      credit_inst_dealer_price = ${dealer}::numeric,
+      parlour_dealer_price     = ${dealer}::numeric,
+      credit_inst_mrp_price    = ${mrp}::numeric,
+      updated_at               = now()
+    WHERE id = ${sub.id}
+    RETURNING base_price, dealer_price, mrp, gst_percent
+  `;
+  await recordPriceRevision(tx, {
+    productId: sub.id,
+    before: {
+      basePrice: sub.base_price, dealerPrice: sub.dealer_price,
+      mrp: sub.mrp, gstPercent: sub.gst_percent,
+    },
+    after: {
+      basePrice: row!.base_price, dealerPrice: row!.dealer_price,
+      mrp: row!.mrp, gstPercent: row!.gst_percent,
+    },
+    changedBy,
+    source: "price_revision",
+    reason: "Half of HTM 1000ML (subsidy scheme)",
+  });
+  await repriceOpenDrafts(tx, sub.id);
+}
+
 export interface AppliedPriceRevision {
   productId:      string;
   code:           string | null;
@@ -210,6 +279,8 @@ export async function applyPriceRevision(
     source: "price_revision",
     reason: rev.reason ?? null,
   });
+  await repriceOpenDrafts(tx, p.id);
+  await syncSubsidyPrice(tx, p.id, rev.changedBy);
 
   return {
     productId: p.id, code: p.code, name: p.name,

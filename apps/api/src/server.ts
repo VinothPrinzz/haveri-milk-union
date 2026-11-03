@@ -5,6 +5,7 @@ import sensible from "@fastify/sensible";
 import compress from "@fastify/compress";
 import { env } from "./lib/env.js";
 import { isRazorpayConfigured, isWebhookConfigured } from "./lib/razorpay-client.js";
+import { StockConflictError, describeShortfalls } from "./lib/stock-check.js";
 
 // ── Route Modules ─────────────────────────────────────
 import { authRoutes } from "./routes/auth.js";
@@ -135,6 +136,15 @@ app.setErrorHandler((error, request, reply) => {
     return reply.status(400).send({
       error: "Validation Error",
       message: error.message,
+    });
+  }
+  // Thrown from inside a transaction by the stock gates (lib/stock-check.ts).
+  // The message names the products, so it is safe — and needed — in production.
+  if (error instanceof StockConflictError) {
+    return reply.status(409).send({
+      error: "Insufficient stock",
+      message: `Not enough stock for: ${describeShortfalls(error.shortfalls)}`,
+      shortfalls: error.shortfalls,
     });
   }
   request.log.error(error);

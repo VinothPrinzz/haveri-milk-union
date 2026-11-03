@@ -79,6 +79,114 @@ export async function propagateOpeningsForward(
   return rewritten;
 }
 
+export interface StockEntryOversell {
+  productId: string;
+  productName: string;
+  /** The day the edit would push lowest. */
+  date: string;
+  /** That day's closing after the edit. */
+  wouldBe: number;
+  /** How far received/wastage could move without going negative. */
+  maxReduction: number;
+}
+
+/**
+ * Would saving these received/wastage figures for `date` push any day below
+ * zero? Read-only, so it can vet a whole sheet before any of it is written.
+ *
+ * The incident: on 2026-10-14 09:59 the 13th's MUFFIN VANILLA receipt was
+ * re-saved as 0, after a dealer had already bought the 1 unit it covered, and
+ * the 13th went to −1. Nothing stopped a save from taking away sold stock.
+ *
+ * Only an entry that LOWERS stock (received down / wastage up versus what is
+ * stored) is checked — raising stock, or saving unchanged figures on a SKU
+ * that is already short for another reason, is always allowed. The chain is
+ * linear, so a reduction of r moves every closing from `date` up to the next
+ * physical re-count (opening_manual row) down by exactly r. Each segment
+ * between stored rows only loses stock day to day, so its lowest point is a
+ * row date, the day before the next row, or the last day — those are the only
+ * dates evaluated, with fgs_available (cheap, per product).
+ */
+export async function findStockEntryOversells(
+  date: string,
+  entries: { productId: string; received: number; wastage: number }[],
+): Promise<StockEntryOversell[]> {
+  const out: StockEntryOversell[] = [];
+  // Pre-cutover days are frozen legacy display (migration 0064) and feed
+  // nothing forward, so an edit there can't oversell anything.
+  const [c] = (await pgClient`
+    SELECT ${date}::date < COALESCE((SELECT MIN(date) FROM fgs_stock_log WHERE opening_manual),
+                                    '-infinity'::date) AS legacy
+  `) as any[];
+  if (c?.legacy) return out;
+  for (const e of entries) {
+    const [row] = (await pgClient`
+      SELECT p.name,
+             COALESCE(f.received, 0)::int AS received,
+             COALESCE(f.wastage, 0)::int  AS wastage
+        FROM products p
+        LEFT JOIN fgs_stock_log f ON f.product_id = p.id AND f.date = ${date}::date
+       WHERE p.id = ${e.productId}::uuid
+    `) as any[];
+    if (!row) continue;
+    const reduction =
+      (Number(row.received) - e.received) + (e.wastage - Number(row.wastage));
+    if (reduction <= 0) continue;
+
+    const days = (await pgClient`
+      WITH bound AS (
+        SELECT COALESCE(MIN(date), 'infinity'::date) AS d
+          FROM fgs_stock_log
+         WHERE product_id = ${e.productId}::uuid AND date > ${date}::date AND opening_manual
+      ),
+      later AS (
+        SELECT date FROM fgs_stock_log
+         WHERE product_id = ${e.productId}::uuid
+           AND date > ${date}::date AND date < (SELECT d FROM bound)
+      ),
+      last_day AS (
+        SELECT LEAST(
+                 (SELECT d FROM bound) - 1,
+                 GREATEST((now() AT TIME ZONE 'Asia/Kolkata')::date,
+                          (SELECT MAX(date) FROM later),
+                          ${date}::date)
+               ) AS d
+      )
+      SELECT DISTINCT x::text AS d FROM (
+        SELECT ${date}::date AS x
+        UNION SELECT date FROM later
+        UNION SELECT date - 1 FROM later
+        UNION SELECT d FROM last_day
+      ) s
+       WHERE x >= ${date}::date AND x < (SELECT d FROM bound)
+       ORDER BY 1
+    `) as any[];
+
+    let worst = Infinity;
+    let worstDate = date;
+    for (const { d } of days) {
+      const [a] = (await pgClient`
+        SELECT fgs_available(${e.productId}::uuid, ${d}::date) AS n
+      `) as any[];
+      const n = Number(a?.n ?? 0);
+      if (n < worst) {
+        worst = n;
+        worstDate = d;
+      }
+    }
+    if (worst - reduction < 0) {
+      out.push({
+        productId: e.productId,
+        productName: row.name,
+        date: worstDate,
+        wouldBe: worst - reduction,
+        maxReduction: Math.max(0, worst),
+      });
+    }
+  }
+  return out;
+}
+
 export async function inventoryRoutes(app: FastifyInstance) {
   // GET /api/v1/fgs/overview — current stock for all products
   app.get(
@@ -292,16 +400,47 @@ export async function inventoryRoutes(app: FastifyInstance) {
         }
       }
 
+      // When the client sent receipt lines, the received total is their sum
+      // (the lines are the source of truth); otherwise fall back to the
+      // aggregate `received` the client typed.
+      const receivedOf = (entry: (typeof body.entries)[number]) =>
+        entry.receipts !== undefined
+          ? entry.receipts.reduce((sum, r) => sum + r.quantity, 0)
+          : entry.received;
+
+      // Refuse an edit that takes away stock already sold. Validated for the
+      // WHOLE save before anything is written (each product commits on its
+      // own below), so a refused sheet leaves nothing half-saved.
+      const oversold = await findStockEntryOversells(
+        body.date,
+        body.entries.map((e) => ({
+          productId: e.productId,
+          received: receivedOf(e),
+          wastage: e.wastage,
+        })),
+      );
+      if (oversold.length > 0) {
+        return reply.status(409).send({
+          error: "Insufficient stock",
+          message:
+            "This change would take away stock that is already sold or committed to orders. " +
+            oversold
+              .map(
+                (o) =>
+                  `${o.productName}: ${o.date} would go to ${o.wouldBe}` +
+                  ` (you can lower received / raise wastage by at most ${o.maxReduction}).`,
+              )
+              .join(" ") +
+            " If the physical count really is lower, record a stock recount instead.",
+          oversold,
+        });
+      }
+
       const results = [];
 
       for (const entry of body.entries) {
-        // When the client sent receipt lines, the received total is their sum
-        // (the lines are the source of truth); otherwise fall back to the
-        // aggregate `received` the client typed.
         const hasReceipts = entry.receipts !== undefined;
-        const received = hasReceipts
-          ? entry.receipts!.reduce((sum, r) => sum + r.quantity, 0)
-          : entry.received;
+        const received = receivedOf(entry);
 
         // entry.opening / entry.dispatched are ignored (see the schema note).
         const derived = derivedByProduct.get(entry.productId);

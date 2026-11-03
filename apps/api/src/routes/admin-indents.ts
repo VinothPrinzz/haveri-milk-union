@@ -336,6 +336,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${date}::date
            AND status <> 'cancelled'
+           AND NOT is_subsidy -- standalone subsidy orders are not the day's indent (0079)
            AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
          ORDER BY created_at DESC
          LIMIT 1
@@ -495,6 +496,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${date}::date
            AND status <> 'cancelled'
+           AND NOT is_subsidy -- standalone subsidy orders are not the day's indent (0079)
            AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
          ORDER BY created_at DESC
          LIMIT 1
@@ -688,6 +690,7 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
          WHERE dealer_id = ${dealerId}
            AND delivery_date = ${date}::date
            AND status <> 'cancelled'
+           AND NOT is_subsidy -- standalone subsidy orders are not the day's indent (0079)
            AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
          ORDER BY created_at DESC
          LIMIT 1

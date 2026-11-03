@@ -34,7 +34,7 @@ import {
 } from "@/services/api";
 
 // finance.manage (call_desk is a super role on the API).
-const CAN_EDIT = new Set(["accountant", "super_admin", "call_desk"]);
+const CAN_EDIT = new Set(["accountant", "manager", "super_admin", "call_desk"]);
 
 const fmtDMY = (iso: string) => {
   const [y, m, d] = (iso ?? "").split("-");

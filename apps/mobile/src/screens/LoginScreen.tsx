@@ -188,7 +188,7 @@ export default function LoginScreen({ onSuccess, onBack, onChangePassword }: Log
           </Text>
         )}
 
-        {/* Change Password — verify current password to set a new one */}
+        {/* Change Password — verify via SMS OTP to set a new one */}
         <TouchableOpacity
           style={styles.forgotContainer}
           activeOpacity={0.7}

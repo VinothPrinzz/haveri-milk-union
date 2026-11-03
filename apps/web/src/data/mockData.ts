@@ -28,6 +28,8 @@ export interface Customer {
   area?: string;             // Marketing v1.4
   houseNo?: string;          // Marketing v1.4
   street?: string;           // Marketing v1.4
+  village?: string;          // City / Village (migration 0080)
+  agencyStartDate?: string;  // YYYY-MM-DD (migration 0080)
   bank?: string;
   creditBalance?: number;    // wallet balance (kept as-is)
   lastIndentAt?: string | null;  // Marketing v1.4

@@ -110,35 +110,101 @@ async function workerCreditCheck(
 }
 
 // ── Stock check / deduction (in-worker copy of apps/api/src/lib/stock-check.ts) ─
+// Gates on the SAME day-aware FGS availability the API, the dealer app and the
+// Stock Entry sheet use (the fgs_available SQL function, migrations 0063/0072)
+// — NOT products.stock. That counter drifts (stock-check.ts: the SAMRUDHI
+// incident, 16 on the counter vs 3580 real), so gating on it let this job
+// confirm standing indents the sheet could not cover whenever the counter read
+// high. products.stock is still kept roughly maintained, floored and ungated,
+// for legacy readers only.
 interface WorkerStockShortfall {
   productName: string;
   ordered: number;
   available: number;
 }
 
-/** Pure read — order lines whose quantity exceeds current product stock. */
+/** Day-aware FGS availability for one STOCK product (raw; may be negative). */
+async function workerFgsAvailable(
+  client: typeof sql,
+  stockProductId: string,
+  dateISO: string
+): Promise<number> {
+  const [row] = await client`
+    SELECT fgs_available(${stockProductId}::uuid, ${dateISO}::date) AS n
+  `;
+  return Number((row as any)?.n ?? 0);
+}
+
+/**
+ * Lowest availability across the dates a delivery has to fit on: its own day
+ * and, if back-dated, today too (opening carries forward). Mirror of
+ * datesToCheck in stock-check.ts.
+ */
+async function workerWorstAvailable(
+  client: typeof sql,
+  stockProductId: string,
+  dateISO: string
+): Promise<number> {
+  const today = istTodayIso();
+  const dates = dateISO < today ? [dateISO, today] : [dateISO];
+  let worst = Infinity;
+  for (const d of dates) {
+    const n = await workerFgsAvailable(client, stockProductId, d);
+    if (n < worst) worst = n;
+  }
+  return worst;
+}
+
+/**
+ * Same advisory lock keys as lockStockProducts in the API, so a worker confirm
+ * and an API confirm on the same SKU serialize against each other. Sorted to
+ * avoid deadlocks; scalar param per product (the pooler can't bind arrays).
+ */
+async function workerLockStockProducts(tx: typeof sql, ids: string[]): Promise<void> {
+  for (const id of [...new Set(ids)].sort()) {
+    await tx`SELECT pg_advisory_xact_lock(hashtext('order-stock'), hashtext(${id}))`;
+  }
+}
+
+/** An order's demand per STOCK product (variants fold onto their base, migration 0059). */
+async function workerOrderDemand(
+  client: typeof sql,
+  orderId: string
+): Promise<{ stockProductId: string; productName: string; ordered: number }[]> {
+  const rows = await client`
+    SELECT COALESCE(p.stock_source_product_id, p.id)::text AS stock_product_id,
+           MIN(oi.product_name)                            AS product_name,
+           SUM(oi.quantity)::int                           AS ordered
+      FROM order_items oi
+      JOIN products p ON p.id = oi.product_id
+     WHERE oi.order_id = ${orderId}::uuid
+     GROUP BY 1
+  `;
+  return rows.map((r: any) => ({
+    stockProductId: r.stock_product_id,
+    productName: r.product_name,
+    ordered: Number(r.ordered),
+  }));
+}
+
+/**
+ * Pure read — lines of a not-yet-latched draft that exceed what the FGS sheet
+ * can cover on its delivery date. Advisory: deductOrderStockWorker re-checks
+ * under a lock inside the confirm transaction.
+ */
 async function workerStockShortfalls(
   orderId: string
 ): Promise<WorkerStockShortfall[]> {
-  // A variant SKU (the HTM 1000ML subsidy line) draws its stock from a base
-  // SKU via products.stock_source_product_id — resolve to that row's stock,
-  // not the variant's own (which stays 0). Mirror of stock-check.ts in the
-  // API package; see migration 0059.
-  const rows = await sql`
-    SELECT oi.product_name AS product_name,
-           oi.quantity     AS ordered,
-           sp.stock        AS available
-      FROM order_items oi
-      JOIN products p  ON p.id = oi.product_id
-      JOIN products sp ON sp.id = COALESCE(p.stock_source_product_id, p.id)
-     WHERE oi.order_id = ${orderId}::uuid
-       AND oi.quantity > sp.stock
-  `;
-  return rows.map((r: any) => ({
-    productName: r.product_name,
-    ordered: Number(r.ordered),
-    available: Number(r.available),
-  }));
+  const [o] = await sql`SELECT delivery_date::text AS d FROM orders WHERE id = ${orderId}::uuid`;
+  const date = String((o as any)?.d ?? istTodayIso());
+  const out: WorkerStockShortfall[] = [];
+  for (const l of await workerOrderDemand(sql, orderId)) {
+    const available = await workerWorstAvailable(sql, l.stockProductId, date);
+    if (l.ordered > available) {
+      out.push({ productName: l.productName, ordered: l.ordered, available: Math.max(0, available) });
+    }
+  }
+  return out;
 }
 
 // Order-level Milk + Curd minimum (mirror of apps/api/src/lib/min-order-qty.ts
@@ -385,9 +451,11 @@ async function cancelSupersededSiblingsWorker(
   });
 }
 
-/** Guarded, idempotent deduction inside the confirm tx — stock can never
- *  go negative. Claims the orders.stock_deducted latch first (mirror of
- *  apps/api/src/lib/stock-check.ts) so a re-run never double-deducts. */
+/** Guarded, idempotent deduction inside the confirm tx — the FGS sheet can
+ *  never go negative. Claims the orders.stock_deducted latch first (mirror
+ *  of deductOrderStock in apps/api/src/lib/stock-check.ts) so a re-run never
+ *  double-deducts; once latched, fgs_available counts this order, so a
+ *  negative remainder under the lock IS the oversell → rollback. */
 async function deductOrderStockWorker(
   tx: typeof sql,
   orderId: string
@@ -395,26 +463,52 @@ async function deductOrderStockWorker(
   const claimed = await tx`
     UPDATE orders SET stock_deducted = true, updated_at = now()
      WHERE id = ${orderId}::uuid AND stock_deducted = false
-    RETURNING id
+    RETURNING delivery_date::text AS d
   `;
   if (claimed.count === 0) return; // already deducted
-  // Variant SKUs draw from their base SKU's stock row (migration 0059).
-  const items = await tx`
-    SELECT COALESCE(p.stock_source_product_id, p.id)::text AS product_id,
-           oi.quantity AS quantity
-      FROM order_items oi
-      JOIN products p ON p.id = oi.product_id
-     WHERE oi.order_id = ${orderId}::uuid
-  `;
-  for (const it of items as any[]) {
-    const updated = await tx`
+  const date = String((claimed[0] as any).d);
+  const demand = await workerOrderDemand(tx, orderId);
+  await workerLockStockProducts(tx, demand.map((l) => l.stockProductId));
+  for (const l of demand) {
+    if ((await workerWorstAvailable(tx, l.stockProductId, date)) < 0) {
+      throw new WorkerStockConflict();
+    }
+  }
+  // Legacy bookkeeping only — floored and ungated (the FGS check is the gate).
+  for (const l of demand) {
+    await tx`
       UPDATE products
-         SET stock = stock - ${it.quantity}, updated_at = now()
-       WHERE id = ${it.product_id}::uuid
-         AND stock >= ${it.quantity}
-      RETURNING id
+         SET stock = GREATEST(stock - ${l.ordered}, 0), updated_at = now()
+       WHERE id = ${l.stockProductId}::uuid
     `;
-    if (updated.count === 0) throw new WorkerStockConflict();
+  }
+}
+
+/** Employee indents carry no latch: leaving draft is what commits their stock
+ *  (migration 0072), 'payment_required' included. Call AFTER the status
+ *  UPDATE in the same tx; throws WorkerStockConflict if the sheet can't cover
+ *  it. Mirror of assertEmployeeOrderNoOversell in the API. */
+async function assertEmployeeOrderNoOversellWorker(
+  tx: typeof sql,
+  employeeOrderId: string
+): Promise<void> {
+  const [eo] = await tx`
+    SELECT delivery_date::text AS d FROM employee_orders WHERE id = ${employeeOrderId}::uuid
+  `;
+  if (!eo) return;
+  const demand = await tx`
+    SELECT COALESCE(p.stock_source_product_id, p.id)::text AS stock_product_id
+      FROM employee_order_items ei
+      JOIN products p ON p.id = ei.product_id
+     WHERE ei.employee_order_id = ${employeeOrderId}::uuid
+     GROUP BY 1
+  `;
+  const ids = demand.map((r: any) => r.stock_product_id as string);
+  await workerLockStockProducts(tx, ids);
+  for (const id of ids) {
+    if ((await workerWorstAvailable(tx, id, String((eo as any).d))) < 0) {
+      throw new WorkerStockConflict();
+    }
   }
 }
 
@@ -849,6 +943,7 @@ export async function processAutoConfirmDrafts() {
          WHERE o2.dealer_id = d.id
            AND o2.delivery_date = ${todayIso}::date
            AND COALESCE(o2.route_id, d.route_id) = ${route.id}::uuid
+           AND NOT o2.is_subsidy -- standalone subsidy orders are not the day's indent (0079)
          ORDER BY o2.created_at DESC
          LIMIT 1
       ) o ON true
@@ -1026,6 +1121,7 @@ export async function processAutoConfirmDrafts() {
   // pricing. Over-limit → 'payment_required' (finance releases later).
   let empConfirmed = 0;
   let empPaymentRequired = 0;
+  let empStockBlocked = 0;
   let empMaterialized = 0;
   let empCancelledEmpty = 0;
   let empSkipped = 0;
@@ -1116,15 +1212,38 @@ export async function processAutoConfirmDrafts() {
     employeeId: string,
     orderId: string,
     grandTotal: number
-  ): Promise<"confirmed" | "payment_required"> {
+  ): Promise<"confirmed" | "payment_required" | "stock_blocked"> {
+    // Leaving draft commits the indent's stock, so both transitions are gated
+    // on the FGS sheet; a short indent stays a draft for manual resolution,
+    // exactly like a stock-blocked dealer order.
     const credit = await workerEmployeeCreditCheck(employeeId, grandTotal);
-    if (!credit.sufficient) {
-      await sql`
-        UPDATE employee_orders SET status = 'payment_required', updated_at = now()
-         WHERE id = ${orderId}::uuid AND status = 'draft'
-      `;
-      return "payment_required";
+    try {
+      if (!credit.sufficient) {
+        await sql.begin(async (tx) => {
+          const upd = await tx`
+            UPDATE employee_orders SET status = 'payment_required', updated_at = now()
+             WHERE id = ${orderId}::uuid AND status = 'draft'
+          `;
+          if (upd.count > 0) await assertEmployeeOrderNoOversellWorker(tx as unknown as typeof sql, orderId);
+        });
+        return "payment_required";
+      }
+      await confirmEmployeeTx(employeeId, orderId, grandTotal);
+      return "confirmed";
+    } catch (err) {
+      if (err instanceof WorkerStockConflict) {
+        console.warn(`[AutoConfirm] employee indent ${orderId} stock-blocked — left as draft`);
+        return "stock_blocked";
+      }
+      throw err;
     }
+  }
+
+  async function confirmEmployeeTx(
+    employeeId: string,
+    orderId: string,
+    grandTotal: number
+  ): Promise<void> {
     await sql.begin(async (tx) => {
       const upd = await tx`
         UPDATE employee_orders
@@ -1133,6 +1252,7 @@ export async function processAutoConfirmDrafts() {
          WHERE id = ${orderId}::uuid AND status = 'draft'
       `;
       if (upd.count === 0) return;
+      await assertEmployeeOrderNoOversellWorker(tx as unknown as typeof sql, orderId);
       const [bal] = await tx`
         SELECT
           COALESCE(e.opening_balance, 0)
@@ -1159,7 +1279,6 @@ export async function processAutoConfirmDrafts() {
            ${balanceAfter.toFixed(2)}::numeric)
       `;
     });
-    return "confirmed";
   }
 
   for (const route of dueRoutes) {
@@ -1206,7 +1325,9 @@ export async function processAutoConfirmDrafts() {
             continue;
           }
           const outcome = await confirmEmployeeOnCredit(emp.employee_id, emp.order_id, grandTotal);
-          outcome === "confirmed" ? empConfirmed++ : empPaymentRequired++;
+          if (outcome === "confirmed") empConfirmed++;
+          else if (outcome === "payment_required") empPaymentRequired++;
+          else empStockBlocked++;
           continue;
         }
         if (status !== null) {
@@ -1224,7 +1345,9 @@ export async function processAutoConfirmDrafts() {
         }
         empMaterialized++;
         const outcome = await confirmEmployeeOnCredit(emp.employee_id, built.orderId, built.grandTotal);
-        outcome === "confirmed" ? empConfirmed++ : empPaymentRequired++;
+        if (outcome === "confirmed") empConfirmed++;
+        else if (outcome === "payment_required") empPaymentRequired++;
+        else empStockBlocked++;
       } catch (err: any) {
         empFailed++;
         console.error(`[AutoConfirm] employee=${emp.employee_id} failed:`, err?.message ?? err);
@@ -1249,6 +1372,7 @@ export async function processAutoConfirmDrafts() {
     employees: {
       confirmed: empConfirmed,
       paymentRequired: empPaymentRequired,
+      stockBlocked: empStockBlocked,
       materialized: empMaterialized,
       cancelledEmpty: empCancelledEmpty,
       skipped: empSkipped,

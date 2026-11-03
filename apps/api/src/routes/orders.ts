@@ -32,7 +32,14 @@ import { resolveUnitPrice } from "../lib/rate-price.js";
 import { calcLine, sumLines, round2, type LineTotals } from "../lib/line-totals.js";
 import { getDealerRouteId, NO_ROUTE_RESPONSE } from "../lib/dealer-route.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
-import { fgsAvailable, lockStockProducts } from "../lib/stock-check.js";
+import {
+  assertOrderNoOversell,
+  demandIncrease,
+  describeShortfalls,
+  fgsAvailable,
+  getDemandShortfalls,
+  lockStockProducts,
+} from "../lib/stock-check.js";
 import { PDFDocument } from "pdf-lib";
 import { istToday } from "../lib/ist-date.js";
 import jwt from "jsonwebtoken"
@@ -197,6 +204,7 @@ export async function orderRoutes(app: FastifyInstance) {
            WHERE dealer_id = ${dealer.dealerId}
              AND delivery_date = (now() AT TIME ZONE 'Asia/Kolkata')::date
              AND status <> 'cancelled'
+             AND NOT is_subsidy -- standalone subsidy orders are not the day's indent (0079)
              AND COALESCE(route_id, ${routeId}::uuid) = ${routeId}::uuid
            ORDER BY created_at DESC
            LIMIT 1
@@ -1150,14 +1158,26 @@ export async function orderRoutes(app: FastifyInstance) {
 
       const field = timestampField[body.status]!;
 
-      const result = await pgClient`
-        UPDATE orders
-        SET status = ${body.status}::order_status,
-            ${pgClient(field)} = now(),
-            updated_at = now()
-        WHERE id = ${id}
-        RETURNING id, status
-      `;
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        const [prev] = await tx`SELECT status::text AS status FROM orders WHERE id = ${id} FOR UPDATE`;
+        if (!prev) return [];
+        const rows = await tx`
+          UPDATE orders
+          SET status = ${body.status}::order_status,
+              ${tx(field)} = now(),
+              updated_at = now()
+          WHERE id = ${id}
+          RETURNING id, status
+        `;
+        // Bringing a cancelled order back puts its goods back on the run, so it
+        // must hold stock again — and only if the sheet can still cover it.
+        if (prev.status === "cancelled" && body.status !== "cancelled") {
+          await tx`UPDATE orders SET stock_deducted = true WHERE id = ${id}`;
+          await assertOrderNoOversell(tx, id);
+        }
+        return rows;
+      });
 
       if (result.length === 0) {
         return reply.status(404).send({ error: "Order not found" });
@@ -1457,6 +1477,32 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
+      // ── Stock gate ───────────────────────────────────────────────────
+      // An edit may only ask the floor for MORE of a SKU if the FGS sheet can
+      // still cover the increase; cutting a line is never refused. Checked
+      // here by delta (advisory) BEFORE any bank refund leaves, then again
+      // authoritatively inside the transaction (assertOrderNoOversell).
+      const oldItems = await pgClient`SELECT product_id, quantity FROM order_items WHERE order_id = ${id}`;
+      const increase = await demandIncrease(
+        pgClient,
+        oldItems.map((oi: any) => ({ productId: oi.product_id, quantity: Number(oi.quantity) })),
+        newLines.map((l: any) => ({ productId: l.productId, productName: l.productName, quantity: l.quantity })),
+      );
+      if (increase.length > 0) {
+        const editShortfalls = await getDemandShortfalls(
+          pgClient,
+          increase,
+          (existing.delivery_date as string | null) ?? istToday(),
+        );
+        if (editShortfalls.length > 0) {
+          return reply.status(409).send({
+            error: "Insufficient stock",
+            message: `Not enough stock to add: ${describeShortfalls(editShortfalls)}`,
+            shortfalls: editShortfalls,
+          });
+        }
+      }
+
       // ── Refund routing (downward, non-wallet) ────────────────────────
       // A downward edit refunds `refundAmount` to the dealer. Wallet orders
       // always refund to the wallet (handled in-tx). Credit orders always go
@@ -1486,8 +1532,6 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      const oldItems = await pgClient`SELECT product_id, quantity FROM order_items WHERE order_id = ${id}`;
-
       // Same TransactionSql cast as in the POST handler — Omit<Sql,...> drops call signatures.                                                 
       await pgClient.begin(async (_tx) => {                                 
         const tx = _tx as unknown as typeof pgClient; 
@@ -1508,6 +1552,12 @@ export async function orderRoutes(app: FastifyInstance) {
                                     item_count = ${newLines.length},
                                     updated_at = now()
                   WHERE id = ${id}`;
+
+        // The new lines are written, so fgs_available counts them — refuse
+        // (rolling everything back) if an increased SKU now oversells.
+        if (increase.length > 0) {
+          await assertOrderNoOversell(tx, id, increase.map((i) => i.productId));
+        }
 
         if (existing.payment_mode === "wallet" && delta !== 0) {
           if (delta > 0) {

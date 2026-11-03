@@ -26,6 +26,7 @@ import {
   type EmployeeSubsidyReportResponse,
   type EmployeeSubsidyProductRow,
   type EmployeeSubsidyCombinedRow,
+  type EmployeeSubsidyReportResponse as Resp,
 } from "@/services/report";
 import { todayIST } from "@/lib/istDate";
 
@@ -76,7 +77,8 @@ export default function EmployeeSubsidyReportPage() {
   const combinedRows = data?.combined ?? [];
   const grandTotal   = data?.totals.grandTotal ?? 0;
 
-  const pages: ReactNode[] = generated && data && products.length > 0
+  const hasProducts = products.length > 0;
+  const pages: ReactNode[] = generated && data && (hasProducts || (data.recovery ?? []).length > 0)
     ? [
         ...perProductData.map(pd => (
           <ProductPage
@@ -87,7 +89,7 @@ export default function EmployeeSubsidyReportPage() {
             totalAmount={pd.totalAmount}
           />
         )),
-        <CombinedPage
+        ...(hasProducts ? [<CombinedPage
           key="combined"
           products={products}
           rows={combinedRows}
@@ -97,12 +99,14 @@ export default function EmployeeSubsidyReportPage() {
             totalAmount: pd.totalAmount,
           }))}
           grandTotal={grandTotal}
-        />,
+        />] : []),
+        <RecoveryPage key="recovery" rows={data.recovery ?? []} totals={data.recoveryTotals} />,
       ]
     : [];
 
   const pageLabel = (idx: number) =>
-    idx < products.length ? products[idx].label : "Combined";
+    idx < products.length ? products[idx].label
+      : hasProducts && idx === products.length ? "Combined" : "Salary Recovery";
 
   // ── CSV export ───────────────────────────────────────────────────
   const exporters: Exporter[] = data ? [{
@@ -144,6 +148,16 @@ export default function EmployeeSubsidyReportPage() {
       totalRow.push(grandTotal);
       out.push(totalRow);
 
+      // Salary recovery statement.
+      out.push([]);
+      out.push([`Employee Subsidy: Salary Recovery (${fmtPeriod(from, to)})`]);
+      out.push(["Sl", "PF NO", "Employee Name", "Opening Due", "Supplied", "Recovered", "Closing Due"]);
+      (data.recovery ?? []).forEach((r, i) => out.push([
+        i + 1, r.employeeCode ?? "", r.employeeName, r.openingDue, r.supplied, r.recovered, r.closingDue,
+      ]));
+      const rt = data.recoveryTotals;
+      if (rt) out.push(["", "", "TOTAL", rt.openingDue, rt.supplied, rt.recovered, rt.closingDue]);
+
       return toCsv(out);
     },
   }] : [];
@@ -151,7 +165,7 @@ export default function EmployeeSubsidyReportPage() {
   return (
     <ReportShell
       title="Employee Subsidy Statement"
-      subtitle="Subsidised goods supplied to employees: one page per product, plus a combined view"
+      subtitle="Subsidised goods supplied to employees: one page per product, a combined view and the salary recovery statement"
       printOrientation="portrait"
       filters={
         <>
@@ -359,5 +373,65 @@ function FragmentCells({ qty, amount }: { qty: number; amount: number }) {
       <td className="border border-border py-1 px-2 text-right num">{fmtQty(qty)}</td>
       <td className="border border-border py-1 px-2 text-right num">{fmtINR(amount)}</td>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Salary recovery page — what each employee owed at the start of the
+// period, was supplied in it, had recovered from salary, and still owes.
+// Recoveries are entered on Finance → Employee Salary Recovery.
+// ─────────────────────────────────────────────────────────────────────
+function RecoveryPage({ rows, totals }: { rows: Resp["recovery"]; totals?: Resp["recoveryTotals"] }) {
+  const cell = "border border-border py-1 px-2";
+  return (
+    <div>
+      <div className="text-center mb-2">
+        <p className="text-[12px] font-bold">Employee Subsidy Dues and Salary Recovery</p>
+        <p className="text-[11px] text-muted-foreground mt-0.5">
+          Due = amount the employee owes. Recovered = deducted from salary in this period.
+        </p>
+      </div>
+      <table className="w-full text-[11px] border-collapse">
+        <thead>
+          <tr className="bg-muted/50">
+            <th className={`${cell} text-right font-bold w-12`}>Sl</th>
+            <th className={`${cell} text-left font-bold w-24`}>PF NO</th>
+            <th className={`${cell} text-left font-bold`}>Employee Name</th>
+            <th className={`${cell} text-right font-bold w-28 num`}>Opening Due</th>
+            <th className={`${cell} text-right font-bold w-28 num`}>Supplied</th>
+            <th className={`${cell} text-right font-bold w-28 num`}>Recovered</th>
+            <th className={`${cell} text-right font-bold w-28 num`}>Closing Due</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={7} className={`${cell} py-3 text-center text-muted-foreground`}>
+                No employee dues or recoveries in this period.
+              </td>
+            </tr>
+          ) : rows.map((r, i) => (
+            <tr key={r.employeeId}>
+              <td className={`${cell} text-right num`}>{i + 1}</td>
+              <td className={`${cell} font-mono`}>{r.employeeCode ?? ""}</td>
+              <td className={cell}>{r.employeeName}</td>
+              <td className={`${cell} text-right num`}>{fmtINR(r.openingDue)}</td>
+              <td className={`${cell} text-right num`}>{fmtINR(r.supplied)}</td>
+              <td className={`${cell} text-right num`}>{fmtINR(r.recovered)}</td>
+              <td className={`${cell} text-right num font-semibold`}>{fmtINR(r.closingDue)}</td>
+            </tr>
+          ))}
+          {rows.length > 0 && totals && (
+            <tr className="font-bold bg-muted/40">
+              <td colSpan={3} className={`${cell} text-right`}>TOTAL</td>
+              <td className={`${cell} text-right num`}>{fmtINR(totals.openingDue)}</td>
+              <td className={`${cell} text-right num`}>{fmtINR(totals.supplied)}</td>
+              <td className={`${cell} text-right num`}>{fmtINR(totals.recovered)}</td>
+              <td className={`${cell} text-right num`}>{fmtINR(totals.closingDue)}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }

@@ -163,8 +163,10 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "dealers.wallet": ["super_admin", "call_desk"],
 
   // Finance
-  "finance.view":   ["super_admin", "accountant", "viewer"],
-  "finance.manage": ["super_admin", "accountant"],
+  // Finance. Editing / deleting a recorded receipt is narrower than
+  // finance.manage — manager / super_admin only, see requireExactRole.
+  "finance.view":   ["super_admin", "manager", "accountant", "viewer"],
+  "finance.manage": ["super_admin", "manager", "accountant"],
 
   // Reports (Route Sheet + Gate Pass report pages). Route officers are scoped
   // to reports-only in the admin UI, so they need read access here.
@@ -281,6 +283,34 @@ export function requireRole(permission: string) {
       return reply.status(403).send({
         error: "Forbidden",
         message: `Role '${request.admin.role}' does not have '${permission}' access`,
+      });
+    }
+  };
+}
+
+/**
+ * Strict role guard — only the roles named here pass. Unlike requireRole it
+ * has NO super-user bypass, so `call_desk` is not let through on the back of
+ * SUPER_ROLES. For the few actions that must stay with named roles.
+ *
+ * Usage: { preHandler: [adminAuth, requireExactRole("super_admin", "manager")] }
+ */
+export function requireExactRole(...roles: UserRole[]) {
+  return async function exactRoleGuard(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> {
+    if (!request.admin) {
+      return reply.status(401).send({
+        error: "Unauthorized",
+        message: "Not authenticated",
+      });
+    }
+
+    if (!roles.includes(request.admin.role)) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: `Role '${request.admin.role}' is not allowed to do this`,
       });
     }
   };

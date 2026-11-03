@@ -35,8 +35,11 @@ export const customerSchema = z.object({
   area: z.string().default(""),
   houseNo: z.string().default(""),
   street: z.string().default(""),
+  village: z.string().max(120, "Too long").default(""),   // City / Village
   pinCode: z.string().default(""),
   address: z.string().default(""),            // free-form full address (optional)
+  // Day the agency started (YYYY-MM-DD); blank on create means today.
+  agencyStartDate: z.string().default(""),
 
   // Assignment
   routeId: z.string().optional().default(""),

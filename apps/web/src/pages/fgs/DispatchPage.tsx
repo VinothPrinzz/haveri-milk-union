@@ -8,9 +8,16 @@ import PageHeader, {
 import { Button } from "@/components/ui/button";
 import { Download, Truck, Package } from "lucide-react";
 import { fetchIndents, fetchRoutes } from "@/services/api";
+import { todayIST } from "@/lib/istDate";
 
 export default function DispatchPage() {
-  const { data: indents = [], isLoading: lInd } = useQuery({ queryKey: ["indents"], queryFn: () => fetchIndents() });
+  // Filter on the server (today's deliveries, dispatched) so the list isn't
+  // limited to whatever the newest rows happen to be.
+  const today = todayIST();
+  const { data: indents = [], isLoading: lInd } = useQuery({
+    queryKey: ["indents", "dispatch", today],
+    queryFn: () => fetchIndents({ status: "dispatched", date: today }),
+  });
   const { data: routes = [], isLoading: lRt } = useQuery({ queryKey: ["routes"], queryFn: fetchRoutes });
 
   const posted = (indents as any[]).filter((i: any) => i.status === "Posted" || i.status === "Dispatched");
