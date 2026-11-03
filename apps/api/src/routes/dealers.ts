@@ -28,6 +28,13 @@ const DEFAULT_DEALER_PASSWORD = process.env.DEFAULT_DEALER_PASSWORD || "password
 // See migration 0073_district_haveri_only.sql.
 const DISTRICT = "Haveri";
 
+// City / village is free text. Collapse runs of spaces and upper-case it so
+// "Byadgi", "BYADGI " and "byadgi" are one place on the City/Village report.
+function cleanVillage(v: string | null | undefined): string | null {
+  const t = (v ?? "").replace(/\s+/g, " ").trim().toUpperCase();
+  return t || null;
+}
+
 export async function dealerRoutes(app: FastifyInstance) {
   // ═══════════════════════════════════════════════════════════════
   // GET /api/v1/dealers — paginated dealer list with marketing fields
@@ -93,6 +100,7 @@ export async function dealerRoutes(app: FastifyInstance) {
           d.route_id,
           d.bank, d.officer_name,
           d.account_no, d.address_type, d.state, d.area, d.house_no, d.street,
+          d.village, d.agency_start_date::text AS agency_start_date,
           d.zone_id,
           d.last_indent_at,
           z.name AS zone_name, z.slug AS zone_slug,
@@ -135,7 +143,7 @@ export async function dealerRoutes(app: FastifyInstance) {
         LEFT JOIN routes r       ON r.id = d.route_id AND r.deleted_at IS NULL
         LEFT JOIN ledger_totals lt ON lt.dealer_id = d.id
         WHERE (d.deleted_at IS NOT NULL) = ${onlyDeleted}::boolean
-          AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""})
+          AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""} OR d.village ILIKE ${searchTerm ?? ""})
           AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId ?? "00000000-0000-0000-0000-000000000000"}::uuid)
           AND (${customerType}::text IS NULL OR d.customer_type::text = ${customerType ?? ""})
           AND (${payMode}::text IS NULL OR d.pay_mode::text = ${payMode ?? ""})
@@ -157,7 +165,7 @@ export async function dealerRoutes(app: FastifyInstance) {
       const [countRow] = await pgClient`
         SELECT count(*)::int AS count FROM dealers d
         WHERE (d.deleted_at IS NOT NULL) = ${onlyDeleted}::boolean
-          AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""})
+          AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""} OR d.village ILIKE ${searchTerm ?? ""})
           AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId ?? "00000000-0000-0000-0000-000000000000"}::uuid)
           AND (${query.customerType ?? null}::text IS NULL OR d.customer_type::text = ${query.customerType ?? ""})
           AND (${query.routeId ?? null}::uuid IS NULL OR EXISTS (SELECT 1 FROM dealer_routes dr WHERE dr.dealer_id = d.id AND dr.route_id = ${query.routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid))
@@ -168,6 +176,22 @@ export async function dealerRoutes(app: FastifyInstance) {
         data: dataRows,
         ...paginationMeta(countRow?.count ?? 0, query.page, query.limit),
       });
+    },
+  );
+
+  // GET /api/v1/dealers/villages — distinct City / Village names on file,
+  // suggested by the customer form so one place is spelt one way.
+  // Registered before /:id so "villages" is never read as an id.
+  app.get(
+    "/api/v1/dealers/villages",
+    { preHandler: [adminAuth, requireRole("dealers.view")] },
+    async (_request, reply) => {
+      const rows = await pgClient`
+        SELECT DISTINCT village FROM dealers
+         WHERE deleted_at IS NULL AND village IS NOT NULL AND village <> ''
+         ORDER BY village
+      `;
+      return reply.send({ villages: (rows as any[]).map(r => r.village) });
     },
   );
 
@@ -192,6 +216,7 @@ export async function dealerRoutes(app: FastifyInstance) {
         SELECT
           d.*,
           d.account_no, d.address_type, d.state, d.area, d.house_no, d.street,
+          d.village, d.agency_start_date::text AS agency_start_date,
           d.zone_id,
           d.last_indent_at,
           z.name AS zone_name, z.slug AS zone_slug,
@@ -270,6 +295,8 @@ export async function dealerRoutes(app: FastifyInstance) {
         area: z.string().optional().nullable(),
         houseNo: z.string().optional().nullable(),
         street: z.string().optional().nullable(),
+        village: z.string().max(120).optional().nullable(),
+        agencyStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
       });
 
       const body = schema.parse(request.body);
@@ -298,7 +325,8 @@ export async function dealerRoutes(app: FastifyInstance) {
         INSERT INTO dealers (
           name, phone, username, password_hash, email, gst_number, zone_id, address, city, pin_code, location_label,
           code, customer_type, rate_category, pay_mode, route_id, bank, active,
-          account_no, address_type, state, area, house_no, street
+          account_no, address_type, state, area, house_no, street,
+          village, agency_start_date
         )
         VALUES (
           ${body.name}, ${body.phone}, ${body.phone}, ${passwordHash}, ${body.email || null}, ${body.gstNumber || null},
@@ -309,7 +337,9 @@ export async function dealerRoutes(app: FastifyInstance) {
           ${body.routeId || null}, ${body.bank || null},
           ${body.active !== false},
           ${body.accountNo || null}, ${body.addressType || null}, ${body.state || null},
-          ${body.area || null}, ${body.houseNo || null}, ${body.street || null}
+          ${body.area || null}, ${body.houseNo || null}, ${body.street || null},
+          ${cleanVillage(body.village)},
+          COALESCE(${body.agencyStartDate || null}::date, (now() AT TIME ZONE 'Asia/Kolkata')::date)
         )
         RETURNING *
       `;
@@ -355,6 +385,8 @@ export async function dealerRoutes(app: FastifyInstance) {
         area: z.string().optional().nullable(),
         houseNo: z.string().optional().nullable(),
         street: z.string().optional().nullable(),
+        village: z.string().max(120).optional().nullable(),
+        agencyStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
       });
 
       const body = schema.parse(request.body);
@@ -390,6 +422,8 @@ export async function dealerRoutes(app: FastifyInstance) {
             area = CASE WHEN ${body.area !== undefined} THEN ${body.area ?? null} ELSE area END,
             house_no = CASE WHEN ${body.houseNo !== undefined} THEN ${body.houseNo ?? null} ELSE house_no END,
             street = CASE WHEN ${body.street !== undefined} THEN ${body.street ?? null} ELSE street END,
+            village = CASE WHEN ${body.village !== undefined} THEN ${cleanVillage(body.village)} ELSE village END,
+            agency_start_date = COALESCE(${body.agencyStartDate || null}::date, agency_start_date),
             updated_at = now()
           WHERE id = ${id} AND deleted_at IS NULL
           RETURNING *

@@ -15,7 +15,7 @@ import {
   fetchCustomers, fetchCustomersPage, fetchRoutes, fetchZones, createCustomer,
   removeCustomerFromRoute, assignCustomerToRoute,
   fetchEmployees, assignEmployeeToRoute, removeEmployeeFromRoute,
-  getRateCategories, getOfficers
+  getRateCategories, getOfficers, fetchCustomerVillages,
 } from "@/services/api";
 import { customerSchema, type CustomerFormData } from "@/lib/validations";
 import { useSaveShortcut } from "@/lib/useKeyboardNav";
@@ -41,6 +41,12 @@ const statusParams = (f: StatusFilter) => ({
   activeFilter: f === "true" || f === "false" ? f : undefined,
   deleted: f === "deleted" ? true : undefined,
 });
+
+// YYYY-MM-DD → dd-mm-yyyy; blank stays blank.
+const fmtIsoDMY = (iso?: string | null) => {
+  const [y, m, d] = String(iso ?? "").slice(0, 10).split("-");
+  return y && m && d ? `${d}-${m}-${y}` : "";
+};
 
 const statusPill = (status: Customer["status"]) =>
   status === "Active" ? "active" : status === "Deleted" ? "deleted" : "draft";
@@ -305,11 +311,11 @@ export default function CustomersPage({ tab = "list" }: Props) {
         rest.forEach((r) => allRows.push(...r.rows));
       }
 
-      const header = ["Code", "Name", "Type", "Routes", "Phone", "Pay Mode", "Taluka", "Status"];
+      const header = ["Code", "Name", "Type", "Routes", "Phone", "Pay Mode", "Taluka", "City / Village", "Agency Started", "Status"];
       const data = allRows.map((c: any) => [
         c.code, c.name, c.type,
         (c.routes ?? []).map((r: any) => r.routeCode).join(" | "),
-        c.phone, c.payMode, c.zoneName,
+        c.phone, c.payMode, c.zoneName, c.village ?? "", fmtIsoDMY(c.agencyStartDate),
         c.status,
       ]);
       const csv = toCsv([header, ...data]);
@@ -775,6 +781,7 @@ function CustomerViewDialog({
           <Row label="Email" value={(customer as any).email} />
           <Row label="GST" value={(customer as any).gstNumber || (customer as any).gst} />
           <Row label="Type" value={customer.type} />
+          <Row label="Agency Started" value={fmtIsoDMY((customer as any).agencyStartDate)} />
           <Row label="Pay Mode" value={customer.payMode} />
           <Row label="Rate Category" value={customer.rateCategory} />
           <Row label="Officer" value={(customer as any).officerName} />
@@ -789,6 +796,7 @@ function CustomerViewDialog({
           <Row label="Address Type" value={(customer as any).addressType} />
           <Row label="State" value={(customer as any).state} />
           <Row label="Taluka" value={(customer as any).zoneName} />
+          <Row label="City / Village" value={(customer as any).village} />
           <Row label="District" value={(customer as any).city} />
           <Row label="Area" value={(customer as any).area} />
           <Row label="House No." value={(customer as any).houseNo} />
@@ -871,6 +879,8 @@ function CustomerFormBody({
       area: initial?.area ?? "",
       houseNo: initial?.houseNo ?? "",
       street: initial?.street ?? "",
+      village: initial?.village ?? "",
+      agencyStartDate: initial?.agencyStartDate ?? "",
       pinCode: (initial as any)?.pinCode ?? "",
       address: initial?.address ?? "",
       routeId: initial?.routeId ?? (initial?.routes?.find((r: any) => r.isPrimary)?.routeId ?? ""),
@@ -912,6 +922,14 @@ function CustomerFormBody({
       onSaved();
     },
     onError: (e: any) => toast.error(e?.message || "Failed to delete customer"),
+  });
+
+  // City / Village names already on file, suggested while typing so one
+  // place is not keyed three ways (the City/Village report groups on it).
+  const { data: villages = [] } = useQuery({
+    queryKey: ["customer-villages"],
+    queryFn: fetchCustomerVillages,
+    staleTime: 5 * 60_000,
   });
 
   // F9 option lists
@@ -1007,6 +1025,9 @@ function CustomerFormBody({
         <Field label="Account No.">
           <Input className="erp-input" {...form.register("accountNo")} />
         </Field>
+        <Field label="Agency Start Date" hint={mode === "new" ? "blank = today" : undefined}>
+          <Input type="date" className="erp-input" {...form.register("agencyStartDate")} />
+        </Field>
         <Field label="Primary Route" hint="F9">
           <F9SearchSelect
             value={form.watch("routeId") || null}
@@ -1040,6 +1061,18 @@ function CustomerFormBody({
         </Field>
         <Field label="District" hint="fixed">
           <Input className="erp-input bg-muted" value={FIXED_CITY} readOnly />
+        </Field>
+        <Field label="City / Village">
+          <Input
+            className="erp-input"
+            {...form.register("village")}
+            list="customer-village-options"
+            autoComplete="off"
+            placeholder="City or village"
+          />
+          <datalist id="customer-village-options">
+            {villages.map(v => <option key={v} value={v} />)}
+          </datalist>
         </Field>
         <Field label="Area">
           <Input className="erp-input" {...form.register("area")} />

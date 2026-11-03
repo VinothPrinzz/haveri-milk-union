@@ -149,11 +149,26 @@ export async function loadReportConfig(): Promise<ReportConfig> {
   };
 }
 
-// Fixed milk / curd / lassi SKU map shared by the Daily Sales Report and the
-// Taluka/Agent milk-sales summary. `bucket` + `qtyToUnit` give the per-packet
-// Ltr (milk) / Kg (curd) factor, so volume totals are derived straight from
-// packet counts — always consistent regardless of how pack_size is stored.
-const DSR_COLUMNS = [
+// Fixed milk / curd / lassi SKU map. `bucket` + `qtyToUnit` give the
+// per-packet Ltr (milk) / Kg (curd) factor, so volume totals are derived
+// straight from packet counts — always consistent regardless of how
+// pack_size is stored.
+//
+// `match` is an optional last-resort name test for a SKU whose code is not
+// known up front (CURD 130GM was introduced after the product import, so it
+// has no fixed code here): it runs on the normalised (A-Z0-9 only) name.
+//
+// `onSheet: false` keeps a SKU OUT of the Daily / Monthly Sales Report grid
+// ("MILK & CURD SALES REPORT") while it still counts on the Taluka/Agent
+// milk-sales overview, which reads this same list through VOLUME_COLS.
+// HCM 160ML and CURD 140GM were taken off the sheet at the union's request
+// (2026-11-03) and CURD 130GM added in place of the 140GM pack.
+type SkuCol = {
+  key: string; code: string; name: string; header: string; group: string;
+  bucket: "milk" | "curd" | "other"; qtyToUnit: number;
+  match?: RegExp; onSheet?: boolean;
+};
+const SKU_COLUMNS: readonly SkuCol[] = [
   { key: "htm1000",     code: "PD0191", name: "HTM 1000ML",         header: "HTM 1000ml",         group: "HTM MILK", bucket: "milk", qtyToUnit: 1.0 },
   // Subsidised HTM 1000ML (PD0191S, migration 0056) — the same physical pouch
   // sold under the 50 % scheme. It gets its own column so the union can read
@@ -161,13 +176,14 @@ const DSR_COLUMNS = [
   // litres roll into TOTAL MILK like every other milk column.
   { key: "htm1000sub",  code: "PD0191S", name: "HTM 1000ML (Subsidy)", header: "HTM 1000ml (Sub)", group: "HTM MILK", bucket: "milk", qtyToUnit: 1.0 },
   { key: "htm500",      code: "PD0193", name: "HTM 500ML",          header: "HTM 500ML",          group: "HTM MILK", bucket: "milk", qtyToUnit: 0.5 },
-  { key: "hcm160",      code: "PD0187", name: "HCM 160ML",          header: "HCM 160ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.16 },
+  { key: "hcm160",      code: "PD0187", name: "HCM 160ML",          header: "HCM 160ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.16, onSheet: false },
   { key: "hcm500",      code: "PD0188", name: "HCM 500ML",          header: "HCM 500ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.5 },
   { key: "sbm1000",     code: "PD0274", name: "SHUBHAM 1000ML",     header: "SBM 1000ML",         group: "SBM MILK", bucket: "milk", qtyToUnit: 1.0 },
   { key: "sbm500",      code: "PD0277", name: "SHUBHAM 500ML",      header: "SBM 500ML",          group: "SBM MILK", bucket: "milk", qtyToUnit: 0.5 },
   { key: "sbm200",      code: "PD0276", name: "SHUBHAM 200ML",      header: "SBM 200ML",          group: "SBM MILK", bucket: "milk", qtyToUnit: 0.2 },
   { key: "samrudhi500", code: "PD0248", name: "SAMRUDHI 500ML",     header: "SAMRUDHI 500ML",     group: "SAMRUDHI", bucket: "milk", qtyToUnit: 0.5 },
-  { key: "curd140",     code: "PD0122", name: "CURD 140GM",         header: "CURD 140GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.14 },
+  { key: "curd130",     code: "",       name: "CURD 130GM",         header: "CURD 130GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.13, match: /^CURD130G/ },
+  { key: "curd140",     code: "PD0122", name: "CURD 140GM",         header: "CURD 140GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.14, onSheet: false },
   { key: "curd200",     code: "PD0124", name: "CURD 200 GM",        header: "CURD 200GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.2 },
   { key: "curd500",     code: "PD0126", name: "CURD 500GM",         header: "CURD 500GM",         group: "CURD", bucket: "curd", qtyToUnit: 0.5 },
   { key: "curd10kg",    code: "PD0127", name: "CURD BUCKET 10KG",   header: "CURD 10KG (B)",      group: "CURD", bucket: "curd", qtyToUnit: 10 },
@@ -175,9 +191,53 @@ const DSR_COLUMNS = [
   // 200ml lassi / buttermilk — 0.2 L per packet so they read in litres too.
   { key: "sl200",       code: "PD0288", name: "SWEET LASSI -200ML", header: "SL 200 ML",          group: "", bucket: "other", qtyToUnit: 0.2 },
   { key: "majjige",     code: "PD0217", name: "MASALA MAJJIGE 200ML", header: "MASAL MAJJIGE 200ML", group: "", bucket: "other", qtyToUnit: 0.2 },
-] as const;
+];
+/** Every SKU, on the sheet or not — the Taluka/Agent milk-sales overview. */
+const VOLUME_COLS = SKU_COLUMNS;
+const VOLUME_MILK_COLS = VOLUME_COLS.filter(c => c.bucket === "milk");
+const VOLUME_CURD_COLS = VOLUME_COLS.filter(c => c.bucket === "curd");
+/** The columns the Daily / Monthly "MILK & CURD SALES REPORT" prints. */
+const DSR_COLUMNS = SKU_COLUMNS.filter(c => c.onSheet !== false);
 const MILK_COLS = DSR_COLUMNS.filter(c => c.bucket === "milk");
 const CURD_COLS = DSR_COLUMNS.filter(c => c.bucket === "curd");
+
+/** Normalised match key: uppercase, A-Z0-9 only. */
+const normKey = (s: unknown) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/**
+ * Resolve each SKU column to a product id: code → name → report alias →
+ * the column's `match` test on the product name. Shared by the sales sheet
+ * and the taluka overview so they can never pick different products.
+ */
+function resolveSkuProducts(
+  cols: readonly SkuCol[],
+  products: Array<{ id: string; code: string | null; name: string | null; report_alias: string | null }>,
+): Map<string, string> {
+  const byCode = new Map<string, string>();
+  const byName = new Map<string, string>();
+  const byAlias = new Map<string, string>();
+  for (const p of products) {
+    const kc = normKey(p.code), kn = normKey(p.name), ka = normKey(p.report_alias);
+    if (kc && !byCode.has(kc)) byCode.set(kc, p.id);
+    if (kn && !byName.has(kn)) byName.set(kn, p.id);
+    if (ka && !byAlias.has(ka)) byAlias.set(ka, p.id);
+  }
+  const out = new Map<string, string>(); // column key → product id
+  const taken = new Set<string>();
+  for (const col of cols) {
+    let pid =
+      (col.code ? byCode.get(normKey(col.code)) : undefined) ??
+      byName.get(normKey(col.name)) ??
+      byAlias.get(normKey(col.name));
+    if (!pid && col.match) {
+      pid = products.find(p => !taken.has(p.id) && col.match!.test(normKey(p.name)))?.id;
+    }
+    if (!pid || taken.has(pid)) continue;
+    taken.add(pid);
+    out.set(col.key, pid);
+  }
+  return out;
+}
 
 export async function salesReportRoutes(app: FastifyInstance) {
   // ════════════════════════════════════════════
@@ -1119,7 +1179,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
         )
         SELECT z.name AS taluka,
                d.id AS dealer_id, d.code AS dealer_code, d.name AS dealer_name,
-               cb.product_id,
+               cb.product_id, p.name AS product_name,
                p.category_id, c.name AS category_name,
                COALESCE(p.pack_size, 0)::numeric AS pack_size, p.unit,
                SUM(cb.qty)::int       AS qty,
@@ -1129,15 +1189,26 @@ export async function salesReportRoutes(app: FastifyInstance) {
         JOIN zones z ON z.id = d.zone_id
         JOIN products p ON p.id = cb.product_id
         JOIN categories c ON c.id = p.category_id
-        GROUP BY z.name, d.id, d.code, d.name, cb.product_id, p.category_id, c.name,
+        GROUP BY z.name, d.id, d.code, d.name, cb.product_id, p.name, p.category_id, c.name,
                  p.pack_size, p.unit
         ORDER BY z.name, d.code, d.name
       `;
 
       // Case-insensitive: config uses capitalized names, DB stores lowercase.
-      const milkCatSet = new Set(cfg.milkCategoryGroup.map(c => c.toLowerCase()));
+      //
+      // Milk Total reads the MILK category group only (category_groups.milk),
+      // not milk_category_group. The latter is the money split used by the
+      // cash grids ("milk amount" vs "product amount") and also holds Lassi
+      // and Buttermilk, so reading it here added buttermilk litres into the
+      // Milk Total column.
+      const milkCatSet = new Set(cfg.categoryGroups.milk.map(c => c.toLowerCase()));
       const curdCatSet = new Set(cfg.categoryGroups.curd.map(c => c.toLowerCase()));
       const catOf = (name: string) => (name ?? "").toLowerCase();
+      // Drinks filed under a milk or curd category in the product master
+      // (buttermilk / masala majjige / lassi PETs sit under Curd today) are
+      // not milk or curd, so they stay out of both volume totals. They are
+      // still in the Total Amount column like every other product.
+      const isDrinkProduct = (name: string) => /BUTTER\s*MILK|MAJJIGE|LASSI/i.test(name ?? "");
 
       // Index rows by (taluka → dealer → {products})
       const talukaMap = new Map<string, any>();
@@ -1172,10 +1243,11 @@ export async function salesReportRoutes(app: FastifyInstance) {
         // milk / curd category buckets, in Ltr / Kg (packets x pack_size),
         // the same unit the detailed matrix now prints.
         const vol = toKgLtr(qty, parseFloat(r.pack_size) || 0, r.unit ?? "");
-        if (milkCatSet.has(catOf(r.category_name)) && !curdCatSet.has(catOf(r.category_name))) {
+        const drink = isDrinkProduct(r.product_name);
+        if (!drink && milkCatSet.has(catOf(r.category_name)) && !curdCatSet.has(catOf(r.category_name))) {
           cust.summary.milkTotalQty = round2(cust.summary.milkTotalQty + vol);
         }
-        if (curdCatSet.has(catOf(r.category_name))) {
+        if (!drink && curdCatSet.has(catOf(r.category_name))) {
           cust.summary.curdTotalQty = round2(cust.summary.curdTotalQty + vol);
         }
         // fixed cookie columns (resolved by product_id)
@@ -1231,14 +1303,16 @@ export async function salesReportRoutes(app: FastifyInstance) {
       const milkFactorById = new Map<string, number>();
       const curdFactorById = new Map<string, number>();
       {
-        const milkByCode = new Map(MILK_COLS.map(c => [c.code, c.qtyToUnit]));
-        const curdByCode = new Map(CURD_COLS.map(c => [c.code, c.qtyToUnit]));
-        for (const p of products as any[]) {
-          const dbPerPack = toKgLtr(1, parseFloat(p.pack_size) || 0, p.unit ?? "");
-          if (milkByCode.has(p.code))
-            milkFactorById.set(p.id, dbPerPack > 0 ? dbPerPack : milkByCode.get(p.code)!);
-          if (curdByCode.has(p.code))
-            curdFactorById.set(p.id, dbPerPack > 0 ? dbPerPack : curdByCode.get(p.code)!);
+        const pidByCol = resolveSkuProducts(VOLUME_COLS, products as any[]);
+        const prodById = new Map((products as any[]).map(p => [p.id, p]));
+        for (const [cols, target] of [[VOLUME_MILK_COLS, milkFactorById], [VOLUME_CURD_COLS, curdFactorById]] as const) {
+          for (const c of cols) {
+            const pid = pidByCol.get(c.key);
+            const p = pid ? prodById.get(pid) : undefined;
+            if (!p) continue;
+            const dbPerPack = toKgLtr(1, parseFloat(p.pack_size) || 0, p.unit ?? "");
+            target.set(p.id, dbPerPack > 0 ? dbPerPack : c.qtyToUnit);
+          }
         }
       }
       const volByTaluka = new Map<string, { milk: number; curd: number }>();
@@ -2370,6 +2444,64 @@ export async function salesReportRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const q = dateRangeSchema.parse(request.query);
 
+      const loadRecovery = async () => {
+        // Recovery statement — what each employee owed, was supplied, had
+        // recovered from salary and still owes, read straight off
+        // employee_ledger by voucher date (see the Salary Recovery routes in
+        // finance-employee-credit.ts). A positive "due" is money the employee
+        // owes. Recoveries are net of any reversal, and every other ledger
+        // line (subsidy invoices, revisions) is "supplied". Built before the
+        // product lookup so it prints even when no subsidy rule is set up.
+        const recoveryRows = await pgClient`
+          WITH lines AS (
+            SELECT el.employee_id,
+                   el.voucher_date,
+                   el.reference_type IN ('salary_recovery', 'salary_recovery_reversal') AS is_recovery,
+                   CASE WHEN el.type = 'credit' THEN el.amount ELSE -el.amount END AS signed
+            FROM employee_ledger el
+            WHERE COALESCE(el.voucher_type, '') <> 'Opening'
+              AND el.voucher_date <= ${q.to}::date
+          )
+          SELECT e.id AS employee_id, e.employee_code, e.name,
+                 (-(COALESCE(e.opening_balance, 0)
+                    + COALESCE(SUM(l.signed) FILTER (WHERE l.voucher_date < ${q.from}::date), 0)))::numeric AS opening_due,
+                 (-COALESCE(SUM(l.signed) FILTER (WHERE l.voucher_date >= ${q.from}::date AND NOT l.is_recovery), 0))::numeric AS supplied,
+                 COALESCE(SUM(l.signed) FILTER (WHERE l.voucher_date >= ${q.from}::date AND l.is_recovery), 0)::numeric AS recovered
+          FROM employees e
+          LEFT JOIN lines l ON l.employee_id = e.id
+          WHERE e.deleted_at IS NULL
+          GROUP BY e.id, e.employee_code, e.name, e.opening_balance
+        `;
+        const recovery = (recoveryRows as any[])
+          .map(r => {
+            const openingDue = round2(parseFloat(r.opening_due) || 0);
+            const supplied   = round2(parseFloat(r.supplied) || 0);
+            const recovered  = round2(parseFloat(r.recovered) || 0);
+            return {
+              employeeId:   r.employee_id,
+              employeeCode: r.employee_code,
+              employeeName: r.name,
+              openingDue, supplied, recovered,
+              closingDue: round2(openingDue + supplied - recovered),
+            };
+          })
+          .filter(r => r.openingDue || r.supplied || r.recovered || r.closingDue)
+          .sort((a, b) => {
+            const ac = a.employeeCode ?? "";
+            const bc = b.employeeCode ?? "";
+            if (ac !== bc) return ac.localeCompare(bc, undefined, { numeric: true });
+            return a.employeeName.localeCompare(b.employeeName);
+          });
+        const recoveryTotals = {
+          openingDue: round2(recovery.reduce((s, r) => s + r.openingDue, 0)),
+          supplied:   round2(recovery.reduce((s, r) => s + r.supplied, 0)),
+          recovered:  round2(recovery.reduce((s, r) => s + r.recovered, 0)),
+          closingDue: round2(recovery.reduce((s, r) => s + r.closingDue, 0)),
+        };
+        return { recovery, recoveryTotals };
+      };
+      const { recovery, recoveryTotals } = await loadRecovery();
+
       // 1. Resolve eligible products from employee_subsidy_rules.
       //    Even if a rule is inactive now, we still include it so
       //    historical sales aren't omitted (active filter applies
@@ -2396,6 +2528,8 @@ export async function salesReportRoutes(app: FastifyInstance) {
           products: [], employees: [],
           perProduct: {}, combined: [],
           totals: { perProduct: {}, grandTotal: 0 },
+          recovery,
+          recoveryTotals,
         });
       }
 
@@ -2515,6 +2649,8 @@ export async function salesReportRoutes(app: FastifyInstance) {
       return reply.send({
         from: q.from,
         to:   q.to,
+        recovery,
+        recoveryTotals,
         products: productsOut,
         employees: combined.map(e => ({
           id:   e.employeeId,
@@ -2689,7 +2825,7 @@ export async function salesReportRoutes(app: FastifyInstance) {
   // ═══════════════════════════════════════════════════════════════
   // Daily Sales Report (MD) — the one-page day summary the MD reads.
   //
-  // Nine lines, one per production line, in the order the union's own sheet
+  // Eleven lines, one per production line, in the order the union's own sheet
   // prints them. It replaces a sheet typed by hand each morning, so it is
   // built to reproduce that sheet exactly rather than to be a general report:
   //
@@ -2713,9 +2849,9 @@ export async function salesReportRoutes(app: FastifyInstance) {
   //   (31 L milk, 6 kg curd) are counted back in. Direct sales move the lines
   //   off that sheet on purpose (that day the counter added 10.8 L of UHT).
   //
-  // Categories outside the nine lines (flavoured milk, sweets, bakery, cheese,
+  // Categories outside the eleven lines (flavoured milk, sweets, bakery, cheese,
   // milk powder, shrikhand …) are deliberately absent: this is the union's
-  // fixed nine-line format, not a complete sales report.
+  // fixed eleven-line format, not a complete sales report.
   // ═══════════════════════════════════════════════════════════════
   app.get(
     "/api/v1/reports/sales-reports/daily-md",
@@ -2723,13 +2859,18 @@ export async function salesReportRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const q = z.object({ date: z.string() }).parse(request.query);
 
-      // The sheet's nine lines, in its own order. `unit` is the label the
+      // The sheet's eleven lines, in its own order. `unit` is the label the
       // sheet prints, not a conversion: ghee reads LTRS even though the 15 kg
       // tin is stocked by weight, exactly as the union writes it.
       const LINES = [
         { key: "milk",       label: "TOTAL MILK",        unit: "LTRS" },
         { key: "uht",        label: "TOTAL UHT",         unit: "LTRS" },
         { key: "curd",       label: "TOTAL CURD",        unit: "KGS"  },
+        // Added at the union's request (2026-11-03). Both drinks are filed
+        // under the Curd category in the product master, so they are pulled
+        // out of TOTAL CURD below rather than counted twice.
+        { key: "majjige",    label: "TOTAL MASALA MAJJIGE", unit: "LTRS" },
+        { key: "lassi",      label: "TOTAL SWEET LASSI", unit: "LTRS" },
         { key: "paneer",     label: "TOTAL PANEER",      unit: "KGS"  },
         { key: "butter",     label: "TOTAL BUTTER",      unit: "KGS"  },
         { key: "ghee",       label: "TOTAL GHEE",        unit: "LTRS" },
@@ -2765,6 +2906,10 @@ export async function salesReportRoutes(app: FastifyInstance) {
             AND ds.customer_type::text NOT IN ('vip_sample', 'employee_subsidy')
         )
         SELECT CASE
+                 -- Name tests first: a drink is its own line whatever
+                 -- category the master files it under.
+                 WHEN p.name ILIKE '%MAJJIGE%'      THEN 'majjige'
+                 WHEN p.name ILIKE '%SWEET LASSI%'  THEN 'lassi'
                  WHEN c.name = 'milk'          THEN 'milk'
                  WHEN c.name = 'goodlife milk' THEN 'uht'
                  WHEN c.name = 'curd'          THEN 'curd'
@@ -2775,12 +2920,18 @@ export async function salesReportRoutes(app: FastifyInstance) {
                  WHEN c.name = 'peda' AND p.name ILIKE 'PEDA DWD%' THEN 'dwd_peda'
                  WHEN c.name = 'peda'          THEN 'white_peda'
                END AS line_key,
-               SUM(s.quantity * COALESCE(p.pack_size, 0))::numeric AS qty
+               -- Unit-aware like toKgLtr(): a pack size kept in ml / g
+               -- converts to L / kg.
+               SUM(s.quantity * COALESCE(p.pack_size, 0)
+                   / CASE WHEN lower(trim(COALESCE(p.unit, ''))) IN ('ml', 'g', 'gm', 'gram', 'grams')
+                          THEN 1000 ELSE 1 END)::numeric AS qty
         FROM sold s
         JOIN products p   ON p.id = s.product_id
         JOIN categories c ON c.id = p.category_id
         WHERE c.name IN ('milk', 'goodlife milk', 'curd', 'paneer',
                          'butter', 'ghee', 'khova', 'peda')
+           OR p.name ILIKE '%MAJJIGE%'
+           OR p.name ILIKE '%SWEET LASSI%'
         GROUP BY 1
       `;
 
@@ -2794,6 +2945,226 @@ export async function salesReportRoutes(app: FastifyInstance) {
       return reply.send({
         date: q.date,
         lines: LINES.map(l => ({ ...l, qty: round3(byKey.get(l.key) ?? 0) })),
+      });
+    }
+  );
+
+  // ════════════════════════════════════════════════════════════════
+  // B12. City / Village Wise Sales
+  //   Agent sales grouped by the customer's City / Village (dealers.village,
+  //   migration 0080), inside its taluka. Same rails and the same customer
+  //   set as Agent Wise Taluka Sales (B7): dealer orders on their delivery
+  //   date plus gate passes raised for an agent. Counter / VIP / employee
+  //   sales have no customer record and so no village; they stay out.
+  //
+  //   The village comes from the dealer's CURRENT master record, for the
+  //   same reason B7 reads the taluka that way: it describes the customer,
+  //   so correcting it moves their history with them.
+  //
+  //   Milk / curd volumes use the same rule as B7's summary: the milk and
+  //   curd category groups, with buttermilk / majjige / lassi left out.
+  //   Customers with no village set are listed under "NOT SET" so the
+  //   totals still foot to every agent sale.
+  // ════════════════════════════════════════════════════════════════
+  app.get(
+    "/api/v1/reports/sales-reports/village-wise",
+    { preHandler: [adminAuth, requireRole("sales_reports.view")] },
+    async (request, reply) => {
+      const q = dateRangeSchema.extend({ zoneId: z.string().uuid().optional() }).parse(request.query);
+      const cfg = await loadReportConfig();
+      const zoneId = q.zoneId ?? null;
+
+      const rows = await pgClient`
+        WITH combined AS (
+          SELECT o.dealer_id, oi.product_id, oi.quantity::int AS qty,
+                 oi.line_total::numeric AS amount
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.delivery_date >= ${q.from}::date
+            AND o.delivery_date <= ${q.to}::date
+            AND o.created_at >= ${q.from}::date - interval '31 days'
+            AND o.created_at <  ${q.to}::date + interval '2 days'
+            AND o.status IN ('confirmed', 'dispatched', 'delivered')
+            AND NOT EXISTS (SELECT 1 FROM routes dr WHERE dr.code = 'DEMO'
+                             AND dr.id = COALESCE(o.route_id,
+                                   (SELECT dd.route_id FROM dealers dd WHERE dd.id = o.dealer_id)))
+          UNION ALL
+          SELECT ds.customer_id, dsi.product_id, dsi.quantity::int, dsi.line_total::numeric
+          FROM direct_sales ds
+          JOIN direct_sale_items dsi ON dsi.direct_sale_id = ds.id
+          WHERE ds.customer_type = 'agent'
+            AND ds.sale_date >= ${q.from}::date
+            AND ds.sale_date <= ${q.to}::date
+            AND ds.status = 'confirmed'
+            AND NOT EXISTS (SELECT 1 FROM routes dr WHERE dr.code = 'DEMO' AND dr.id = ds.route_id)
+        )
+        SELECT z.name AS taluka,
+               COALESCE(NULLIF(trim(d.village), ''), '') AS village,
+               d.id AS dealer_id, d.code AS dealer_code, d.name AS dealer_name,
+               p.name AS product_name, c.name AS category_name,
+               COALESCE(p.pack_size, 0)::numeric AS pack_size, p.unit,
+               SUM(cb.qty)::int        AS qty,
+               SUM(cb.amount)::numeric AS amount
+        FROM combined cb
+        JOIN dealers d    ON d.id = cb.dealer_id
+        JOIN zones z      ON z.id = d.zone_id
+        JOIN products p   ON p.id = cb.product_id
+        JOIN categories c ON c.id = p.category_id
+        WHERE (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId}::uuid)
+        GROUP BY z.name, d.village, d.id, d.code, d.name, p.id, p.name, c.name, p.pack_size, p.unit
+      `;
+
+      const milkCatSet = new Set(cfg.categoryGroups.milk.map(c => c.toLowerCase()));
+      const curdCatSet = new Set(cfg.categoryGroups.curd.map(c => c.toLowerCase()));
+      const isDrink = (name: string) => /BUTTER\s*MILK|MAJJIGE|LASSI/i.test(name ?? "");
+
+      type Cust = { id: string; code: string; name: string; milk: number; curd: number; amount: number };
+      const groups = new Map<string, { taluka: string; village: string; customers: Map<string, Cust> }>();
+      for (const r of rows as any[]) {
+        // Upper-case so a village keyed before 0080's normalising (or by
+        // hand in the DB) still lands in one group.
+        const village = String(r.village ?? "").replace(/\s+/g, " ").trim().toUpperCase();
+        const key = `${r.taluka}|${village}`;
+        let g = groups.get(key);
+        if (!g) groups.set(key, (g = { taluka: r.taluka, village, customers: new Map() }));
+        let cust = g.customers.get(r.dealer_id);
+        if (!cust) {
+          cust = { id: r.dealer_id, code: r.dealer_code ?? "", name: r.dealer_name, milk: 0, curd: 0, amount: 0 };
+          g.customers.set(r.dealer_id, cust);
+        }
+        const qty = Number(r.qty) || 0;
+        const vol = toKgLtr(qty, parseFloat(r.pack_size) || 0, r.unit ?? "");
+        const cat = String(r.category_name ?? "").toLowerCase();
+        if (!isDrink(r.product_name)) {
+          if (milkCatSet.has(cat) && !curdCatSet.has(cat)) cust.milk += vol;
+          if (curdCatSet.has(cat)) cust.curd += vol;
+        }
+        cust.amount += parseFloat(r.amount) || 0;
+      }
+
+      const villages = Array.from(groups.values())
+        .map(g => {
+          const customers = Array.from(g.customers.values())
+            .map(c => ({ ...c, milk: round2(c.milk), curd: round2(c.curd), amount: round2(c.amount) }))
+            .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }) || a.name.localeCompare(b.name));
+          return {
+            taluka: g.taluka,
+            village: g.village || "NOT SET",
+            villageSet: Boolean(g.village),
+            customers,
+            totals: {
+              customers: customers.length,
+              milk: round2(customers.reduce((s, c) => s + c.milk, 0)),
+              curd: round2(customers.reduce((s, c) => s + c.curd, 0)),
+              amount: round2(customers.reduce((s, c) => s + c.amount, 0)),
+            },
+          };
+        })
+        // Taluka A→Z, then village A→Z with "NOT SET" last in its taluka.
+        .sort((a, b) =>
+          a.taluka.localeCompare(b.taluka) ||
+          Number(!a.villageSet) - Number(!b.villageSet) ||
+          a.village.localeCompare(b.village));
+
+      const totals = {
+        villages: villages.filter(v => v.villageSet).length,
+        customers: villages.reduce((s, v) => s + v.totals.customers, 0),
+        milk: round2(villages.reduce((s, v) => s + v.totals.milk, 0)),
+        curd: round2(villages.reduce((s, v) => s + v.totals.curd, 0)),
+        amount: round2(villages.reduce((s, v) => s + v.totals.amount, 0)),
+      };
+
+      return reply.send({ from: q.from, to: q.to, villages, totals });
+    }
+  );
+
+  // ════════════════════════════════════════════════════════════════
+  // B13. Agency Report
+  //   When each agency (customer) started, and how many started in the
+  //   chosen period. The start date is dealers.agency_start_date (0080),
+  //   editable in the customer master. Soft-deleted customers are left out;
+  //   inactive ones are listed with their status.
+  //
+  //   • summary    — agencies on the books at the end of the period, and
+  //                  how many of them started inside it, per taluka.
+  //   • months     — agencies started in each of the 12 months ending with
+  //                  the period's last month.
+  //   • newAgencies — every agency that started inside the period.
+  //   • register   — every agency with its start date, oldest first.
+  // ════════════════════════════════════════════════════════════════
+  app.get(
+    "/api/v1/reports/sales-reports/agency",
+    { preHandler: [adminAuth, requireRole("sales_reports.view")] },
+    async (request, reply) => {
+      const q = dateRangeSchema.extend({ zoneId: z.string().uuid().optional() }).parse(request.query);
+      const zoneId = q.zoneId ?? null;
+
+      const dealers = await pgClient`
+        SELECT d.id, d.code, d.name, split_part(d.phone, ':deleted:', 1) AS phone,
+               d.customer_type::text AS customer_type, d.active,
+               d.agency_start_date::text AS start_date,
+               COALESCE(d.village, '') AS village,
+               z.name AS taluka,
+               r.code AS route_code
+        FROM dealers d
+        JOIN zones z ON z.id = d.zone_id
+        LEFT JOIN routes r ON r.id = d.route_id AND r.deleted_at IS NULL
+        WHERE d.deleted_at IS NULL
+          AND d.agency_start_date <= ${q.to}::date
+          AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId}::uuid)
+        ORDER BY d.agency_start_date, d.code NULLS LAST, d.name
+      `;
+
+      const toRow = (d: any) => ({
+        id: d.id,
+        code: d.code ?? "",
+        name: d.name,
+        phone: d.phone ?? "",
+        customerType: d.customer_type,
+        taluka: d.taluka,
+        village: d.village,
+        routeCode: d.route_code ? displayRouteCode(d.route_code) : "",
+        startDate: d.start_date,
+        active: d.active !== false,
+      });
+      const register = (dealers as any[]).map(toRow);
+      const newAgencies = register.filter(r => r.startDate >= q.from);
+
+      const byTaluka = new Map<string, { taluka: string; total: number; active: number; started: number }>();
+      for (const r of register) {
+        let t = byTaluka.get(r.taluka);
+        if (!t) byTaluka.set(r.taluka, (t = { taluka: r.taluka, total: 0, active: 0, started: 0 }));
+        t.total += 1;
+        if (r.active) t.active += 1;
+        if (r.startDate >= q.from) t.started += 1;
+      }
+      const talukas = Array.from(byTaluka.values()).sort((a, b) => a.taluka.localeCompare(b.taluka));
+
+      // 12 calendar months ending with the month of `to`.
+      const [ty, tm] = q.to.split("-").map(Number);
+      const months: Array<{ month: string; started: number }> = [];
+      for (let i = 11; i >= 0; i--) {
+        const dt = new Date(Date.UTC(ty!, tm! - 1 - i, 1));
+        months.push({ month: dt.toISOString().slice(0, 7), started: 0 });
+      }
+      const monthIdx = new Map(months.map((m, i) => [m.month, i]));
+      for (const r of register) {
+        const i = monthIdx.get(String(r.startDate).slice(0, 7));
+        if (i !== undefined) months[i]!.started += 1;
+      }
+
+      return reply.send({
+        from: q.from,
+        to: q.to,
+        summary: {
+          total: register.length,
+          active: register.filter(r => r.active).length,
+          startedInPeriod: newAgencies.length,
+          talukas,
+        },
+        months,
+        newAgencies,
+        register,
       });
     }
   );
@@ -3270,52 +3641,32 @@ async function buildMilkCurdCrossTab(
   `;
   const prodById = new Map((products as any[]).map(p => [p.id, p]));
 
-  // Loose key: uppercase + strip every non-alphanumeric char, so
-  // "HTM 1000ML" / "HTM-1000ML" / "htm1000ml" all collapse to the same
-  // token. Makes column matching resilient to spacing/punctuation drift.
-  const norm = (s: unknown) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-
   // TOTAL G/L set: the "goodlife milk" product CATEGORY, in Ltr. Keyed on the
   // category and not on a "G/L " name prefix, because that prefix also carries
   // the Good Life bakery lines (G/L CREAMBUN 50GM, a kg item) which have no
   // business inside a litre total. Each member's Ltr-per-packet factor comes
   // from its own pack_size + unit, exactly like the fixed columns.
   const glPerPack = new Map<string, number>();
-  // Separate indexes so an authoritative code/name never loses to a
-  // (often messy) report_alias collision.
-  const byCode = new Map<string, string>();
-  const byName = new Map<string, string>();
-  const byAlias = new Map<string, string>();
-
   for (const p of products as any[]) {
-    if (norm(p.category_name) === "GOODLIFEMILK") {
+    if (normKey(p.category_name) === "GOODLIFEMILK") {
       glPerPack.set(p.id, toKgLtr(1, parseFloat(p.pack_size) || 0, p.unit ?? ""));
     }
-    const kc = norm(p.code);
-    const kn = norm(p.name);
-    const ka = norm(p.report_alias);
-    if (kc && !byCode.has(kc)) byCode.set(kc, p.id);
-    if (kn && !byName.has(kn)) byName.set(kn, p.id);
-    if (ka && !byAlias.has(ka)) byAlias.set(ka, p.id);
   }
 
-  // productId → column key (code → name → alias fallback), plus each column's
-  // Ltr/Kg-per-packet factor read live from the matched product's pack_size +
-  // unit. The DB is the source of truth so editing a product's pack_size flows
-  // straight through to the report; the hardcoded qtyToUnit is only a fallback
-  // for when the column's product (or its pack_size) can't be resolved.
+  // productId → column key (code → name → alias → `match` fallback; see
+  // resolveSkuProducts), plus each column's Ltr/Kg-per-packet factor read
+  // live from the matched product's pack_size + unit. The DB is the source of
+  // truth so editing a product's pack_size flows straight through to the
+  // report; the hardcoded qtyToUnit is only a fallback for when the column's
+  // product (or its pack_size) can't be resolved.
   const colKeyByProductId = new Map<string, string>();
   const perPackByColKey = new Map<string, number>();
-  for (const col of DSR_COLUMNS) {
-    const pid =
-      byCode.get(norm(col.code)) ??
-      byName.get(norm(col.name)) ??
-      byAlias.get(norm(col.name));
-    if (!pid) continue;
-    colKeyByProductId.set(pid, col.key);
+  for (const [colKey, pid] of resolveSkuProducts(DSR_COLUMNS, products as any[])) {
+    colKeyByProductId.set(pid, colKey);
     const p = prodById.get(pid);
+    const col = DSR_COLUMNS.find(c => c.key === colKey)!;
     const dbPerPack = p ? toKgLtr(1, parseFloat(p.pack_size) || 0, p.unit ?? "") : 0;
-    perPackByColKey.set(col.key, dbPerPack > 0 ? dbPerPack : col.qtyToUnit);
+    perPackByColKey.set(colKey, dbPerPack > 0 ? dbPerPack : col.qtyToUnit);
   }
 
   // ── 2. Routes + their session (Night / Afternoon) ──
@@ -3392,7 +3743,7 @@ async function buildMilkCurdCrossTab(
 
   // Each column's Ltr/Kg-per-packet factor: DB pack_size+unit, hardcoded
   // qtyToUnit only as a last resort.
-  const unitPer = (c: (typeof DSR_COLUMNS)[number]) => perPackByColKey.get(c.key) ?? c.qtyToUnit;
+  const unitPer = (c: SkuCol) => perPackByColKey.get(c.key) ?? c.qtyToUnit;
   const milkLtr = (cmap: Record<string, number>) =>
     MILK_COLS.reduce((s, c) => s + (cmap[c.key] ?? 0) * unitPer(c), 0);
   const curdKg = (cmap: Record<string, number>) =>
@@ -3450,7 +3801,8 @@ async function buildMilkCurdCrossTab(
   };
 
   return {
-    columns: DSR_COLUMNS,
+    // Column metadata for the client; the internal match/onSheet flags stay here.
+    columns: DSR_COLUMNS.map(({ match: _m, onSheet: _o, ...c }) => c),
     groups: [
       { key: "night", label: "Night Sales", rows: nightRows, subtotal: sumRows(nightRows, "Total Night Sales") },
       { key: "afternoon", label: "Afternoon Sales", rows: afternoonRows, subtotal: sumRows(afternoonRows, "Total Afternoon Sales") },

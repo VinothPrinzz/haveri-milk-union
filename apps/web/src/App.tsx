@@ -45,6 +45,7 @@ import RazorpayReconciliationPage from "@/pages/finance/RazorpayReconciliationPa
 import FinanceDashboardPage       from "@/pages/finance/FinanceDashboardPage";
 import CreditControlPage          from "@/pages/finance/CreditControlPage";
 import EmployeeCreditLimitsPage   from "@/pages/finance/EmployeeCreditLimitsPage";
+import EmployeeRecoveryPage       from "@/pages/finance/EmployeeRecoveryPage";
 import RefundsPage                from "@/pages/finance/RefundsPage";
 import ARAgingPage                from "@/pages/finance/ARAgingPage";
 import DealerStatementsPage       from "@/pages/finance/DealerStatementsPage";
@@ -65,6 +66,7 @@ import DailySalesReport from "@/pages/sales-reports/DailySalesReport";
 import DailyMdReport from "@/pages/sales-reports/DailyMdReport";
 import MonthlySalesReport from "@/pages/sales-reports/MonthlySalesReport";
 import ProductTalukaReport from "@/pages/sales-reports/ProductTalukaReport";
+import { VillageWiseSalesReport, AgencyReport } from "@/pages/sales-reports/VillageAgencyReports";
 import {
   TimeWindowsPage, NotificationsPage, DealerNotificationsPage,
   BannerManagementPage, RolesPage, UserManagementPage,
@@ -199,6 +201,7 @@ function AppInner() {
           <Route path="/finance/reconciliation"  element={<RazorpayReconciliationPage />} />
           <Route path="/finance/credit-control" element={<CreditControlPage />} />
           <Route path="/finance/employee-credit-limits" element={<EmployeeCreditLimitsPage />} />
+          <Route path="/finance/employee-recoveries" element={<EmployeeRecoveryPage />} />
           <Route path="/finance/refunds" element={<RefundsPage />} />
           <Route path="/finance/ar-aging" element={<ARAgingPage />} />
           <Route path="/finance/dealer-statements" element={<DealerStatementsPage />} />
@@ -223,6 +226,8 @@ function AppInner() {
           <Route path="/sales-reports/taluka-agent" element={<TalukaAgentSales />} />
           <Route path="/sales-reports/taluka-wise" element={<TalukaWiseReport />} />
           <Route path="/sales-reports/product-taluka" element={<ProductTalukaReport />} />
+          <Route path="/sales-reports/village-wise" element={<VillageWiseSalesReport />} />
+          <Route path="/sales-reports/agency" element={<AgencyReport />} />
           <Route path="/sales-reports/agent-sales" element={<AgentSalesReport />} />
           <Route path="/sales-reports/adhoc" element={<AdhocSalesReport />} />
           <Route path="/sales-reports/gst" element={<GSTStatement />} />

@@ -3,7 +3,7 @@
 // Daily Sales Report MD: "HAVEMUL Sales Report of dd-mm-yyyy"
 //
 // The one-page summary the MD reads every morning: nine fixed lines
-// (total milk, UHT, curd, paneer, butter, ghee, khova, Dharwad peda,
+// (total milk, UHT, curd, masala majjige, sweet lassi, paneer, butter, ghee, khova, Dharwad peda,
 // white peda) with the day's volume in Ltr / Kg. Replaces the Word
 // sheet the union typed by hand; the layout mirrors it (see .md-sheet
 // in index.css).
@@ -90,7 +90,7 @@ export default function DailyMdReport() {
   return (
     <ReportShell
       title="Daily Sales Report MD"
-      subtitle="Day totals by production line: milk, UHT, curd, paneer, butter, ghee, khova, peda"
+      subtitle="Day totals by production line: milk, UHT, curd, masala majjige, sweet lassi, paneer, butter, ghee, khova, peda"
       filters={
         <div>
           <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
