@@ -46,6 +46,7 @@ export const SLOTS: Slot[] = [
   { header: "HTM 1000ml",           group: "HTM MILK", col: "htm1000" },
   { header: "HTM 1000ml (Sub)",     group: "HTM MILK", col: "htm1000sub" },
   { header: "HTM 500ML",            group: "HTM MILK", col: "htm500" },
+  { header: "HCM 140ML",            group: "HCM MILK", col: "hcm140" },
   { header: "HCM 500ML",            group: "HCM MILK", col: "hcm500" },
   { header: "SBM 1000ML",           group: "SBM MILK", col: "sbm1000" },
   { header: "SBM 500ML",            group: "SBM MILK", col: "sbm500" },

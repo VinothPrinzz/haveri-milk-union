@@ -162,7 +162,8 @@ export async function loadReportConfig(): Promise<ReportConfig> {
 // ("MILK & CURD SALES REPORT") while it still counts on the Taluka/Agent
 // milk-sales overview, which reads this same list through VOLUME_COLS.
 // HCM 160ML and CURD 140GM were taken off the sheet at the union's request
-// (2026-11-03) and CURD 130GM added in place of the 140GM pack.
+// (2026-11-03) and CURD 130GM added in place of the 140GM pack. HCM 140ML
+// was added to the sheet on 2026-11-05.
 type SkuCol = {
   key: string; code: string; name: string; header: string; group: string;
   bucket: "milk" | "curd" | "other"; qtyToUnit: number;
@@ -177,6 +178,9 @@ const SKU_COLUMNS: readonly SkuCol[] = [
   { key: "htm1000sub",  code: "PD0191S", name: "HTM 1000ML (Subsidy)", header: "HTM 1000ml (Sub)", group: "HTM MILK", bucket: "milk", qtyToUnit: 1.0 },
   { key: "htm500",      code: "PD0193", name: "HTM 500ML",          header: "HTM 500ML",          group: "HTM MILK", bucket: "milk", qtyToUnit: 0.5 },
   { key: "hcm160",      code: "PD0187", name: "HCM 160ML",          header: "HCM 160ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.16, onSheet: false },
+  // HCM 140ML is a newer pack sold alongside HCM 160ML; its code is not
+  // known up front, so it resolves by name like CURD 130GM below.
+  { key: "hcm140",      code: "",       name: "HCM 140ML",          header: "HCM 140ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.14, match: /^HCM140M/ },
   { key: "hcm500",      code: "PD0188", name: "HCM 500ML",          header: "HCM 500ML",          group: "HCM MILK", bucket: "milk", qtyToUnit: 0.5 },
   { key: "sbm1000",     code: "PD0274", name: "SHUBHAM 1000ML",     header: "SBM 1000ML",         group: "SBM MILK", bucket: "milk", qtyToUnit: 1.0 },
   { key: "sbm500",      code: "PD0277", name: "SHUBHAM 500ML",      header: "SBM 500ML",          group: "SBM MILK", bucket: "milk", qtyToUnit: 0.5 },
