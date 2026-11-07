@@ -1807,7 +1807,8 @@ export const createUser = async (body: {
     | "manager"
     | "dispatch_officer"
     | "accountant"
-    | "call_desk";
+    | "call_desk"
+    | "pre_auditor";
   phone?: string;
   zoneId?: string;
 }) => {
@@ -1881,6 +1882,7 @@ export const fetchRoles = async () => [
     permissions: ["dashboard", "fgs.stock.others"],
   },
   { role: "Accountant", permissions: ["dashboard", "reports", "sales.view"] },
+  { role: "Pre-Auditor", permissions: ["dtc.view", "dtc.pre-audit"] },
   {
     role: "Call Desk",
     permissions: [

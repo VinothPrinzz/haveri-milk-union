@@ -40,14 +40,22 @@ export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType
 // restricted; every other role sees the full module set.
 //
 //   • officer (route officer) → Route Sheets + Sales Reports only.
+//   • pre_auditor             → DTC Billing only.
 const ROLE_MODULES: Partial<Record<string, ModuleKey[]>> = {
   officer: ["reports", "sales-reports"],
+  pre_auditor: ["dtc"],
+};
+
+// Where a role lands after login, when not its first module's usual page.
+//   • pre_auditor → the Approvals queue, where its "Pre-audit OK" button is.
+const ROLE_HOME: Partial<Record<string, string>> = {
+  pre_auditor: "/dtc/approvals",
 };
 
 // Modules shown only to the roles listed (mirrors the API's *.view permission).
 //   • DTC Billing → dtc.view (call_desk is a super role on the API).
 const MODULE_ROLES: Partial<Record<ModuleKey, string[]>> = {
-  dtc: ["super_admin", "call_desk", "manager", "accountant", "viewer"],
+  dtc: ["super_admin", "call_desk", "manager", "accountant", "viewer", "pre_auditor"],
 };
 
 /** Module keys the given role may see, in MODULES order. */
@@ -61,6 +69,8 @@ export function allowedModulesForRole(role: string | null | undefined): ModuleKe
 
 /** Landing path for a role: its first allowed module (or Dashboard). */
 export function defaultModulePathForRole(role: string | null | undefined): string {
+  const home = role ? ROLE_HOME[role] : undefined;
+  if (home) return home;
   const allowed = new Set(allowedModulesForRole(role));
   return MODULES.find(m => allowed.has(m.key))?.path ?? "/";
 }
