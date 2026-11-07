@@ -12,6 +12,7 @@
  *   FGS            (2)        → dispatch_officer  stock entry + dispatch
  *   Route officer  (6)        → officer          direct sales / gate pass
  *   Finance        (2)        → accountant       finance incl. credit limits
+ *   Pre-Auditor    (1)        → pre_auditor      DTC Billing: pre-audit step only
  *
  * Idempotent: re-running upserts on username (refreshes name/role/password).
  *
@@ -45,7 +46,7 @@ const EMAIL_DOMAIN = "haverimilkunion.coop";
 type Role =
   | "super_admin" | "manager" | "dispatch_officer"
   | "accountant" | "call_desk" | "officer" | "viewer"
-  | "fgs_milk_curd" | "fgs_others";
+  | "fgs_milk_curd" | "fgs_others" | "pre_auditor";
 
 interface SeedUser {
   name: string;
@@ -56,9 +57,10 @@ interface SeedUser {
 }
 
 // ── The staff roster ────────────────────────────────────────────────────
-// NOTE: All non-FGS accounts are already seeded. They're commented out so a
-// re-run only upserts the two FGS logins (whose roles changed to the bucket-
-// scoped fgs_milk_curd / fgs_others). Un-comment to re-seed the full roster.
+// NOTE: Every account below except the Pre-Auditor is already seeded. They're
+// commented out so a re-run only creates the new Pre-Auditor login — a re-run
+// resets the password of every active entry, so don't un-comment accounts that
+// people already use. Un-comment only to re-seed the full roster.
 const USERS: SeedUser[] = [
   // // Managers (2)
   // { name: "Prashant",            username: "prashant",  role: "manager" },
@@ -71,8 +73,8 @@ const USERS: SeedUser[] = [
 
   // FGS — Finished Goods Store (2): one per product line. Bucket-scoped roles
   // limit each operator's stock view/entry to their own SK diary.
-  { name: "SKA Dairy (FGS)",         username: "fgs_ska",    role: "fgs_milk_curd" },
-  { name: "Other Products (FGS)",    username: "fgs_others", role: "fgs_others" },
+  // { name: "SKA Dairy (FGS)",         username: "fgs_ska",    role: "fgs_milk_curd" },
+  // { name: "Other Products (FGS)",    username: "fgs_others", role: "fgs_others" },
 
   // // Route officers (6) — direct sales / gate pass
   // { name: "Route Officer 1",     username: "route1",    role: "officer" },
@@ -85,6 +87,10 @@ const USERS: SeedUser[] = [
   // // Finance (2) — accountants; only role that may edit credit limits
   // { name: "Finance Officer 1",   username: "finance1",  role: "accountant" },
   // { name: "Finance Officer 2",   username: "finance2",  role: "accountant" },
+
+  // Pre-Auditor (1) — DTC Billing only; passes or sends back months waiting
+  // for pre-audit. Their name prints as the Pre-Auditor on the bill sheet.
+  { name: "Pre-Auditor",         username: "preaudit",  role: "pre_auditor" },
 ];
 
 const sql = postgres(DATABASE_URL, { max: 1 });

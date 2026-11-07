@@ -12,7 +12,7 @@ const SUPER = ["super_admin", "call_desk"];
 const PERMS = {
   setup:          ["manager", "accountant"],
   prepare:        ["manager"],
-  audit:          ["accountant"],
+  audit:          ["accountant", "pre_auditor"],
   approveMktg:    ["manager"],
   approveFinance: ["accountant"],
   pay:            ["accountant"],

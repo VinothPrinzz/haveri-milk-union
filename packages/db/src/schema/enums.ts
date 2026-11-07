@@ -7,6 +7,7 @@ import { pgEnum } from "drizzle-orm/pg-core";
 // 'fgs_milk_curd' / 'fgs_others' are bucket-scoped FGS roles: same capabilities
 // as dispatch_officer, but stock view/entry is limited to one product bucket
 // (see bucketsForRole() in apps/api/src/routes/inventory.ts).
+// 'pre_auditor' does the pre-audit step of DTC Billing and sees nothing else.
 export const userRoleEnum = pgEnum("user_role", [
   "super_admin",
   "manager",
@@ -17,6 +18,7 @@ export const userRoleEnum = pgEnum("user_role", [
   "viewer",
   "fgs_milk_curd",
   "fgs_others",
+  "pre_auditor",
 ]);
 
 // ── Order lifecycle ──

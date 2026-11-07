@@ -27,6 +27,7 @@ Logins use **username + password** (see `auth.ts` → `/auth/admin/login`).
 | 8–13 | Route Officer 1–6 | `route1`…`route6` | `officer` | Route officer |
 | 14 | Finance Officer 1 | `finance1` | `accountant` | Finance |
 | 15 | Finance Officer 2 | `finance2` | `accountant` | Finance |
+| 16 | Pre-Auditor | `preaudit` | `pre_auditor` | DTC Billing pre-audit |
 
 The seed is idempotent (upsert on username).
 
@@ -43,6 +44,13 @@ business groups:
 | FGS — Other Products | `fgs_others` | inventory (stock entry/update) **& dispatch sheet scoped to Other Products**, dispatch, batches, route sheets |
 | Route officer | `officer` | gate pass, **route sheets**, **dispatch sheets**, direct sales, cash customers, create orders |
 | Finance | `accountant` | finance view + manage, **credit limits**, reports |
+| Pre-Auditor | `pre_auditor` | **DTC Billing only**: view bills & reports, pre-audit (or send back) months waiting for pre-audit |
+
+> The Pre-Auditor login sees only the DTC Billing module and lands on
+> DTC Billing → Approvals. It holds `dtc.view` + `dtc.audit`; it cannot
+> prepare, edit, approve for Marketing/Finance, or pay bills. Finance
+> (`accountant`) can still pre-audit too. The role comes from migration
+> `0082_pre_auditor_role.sql`.
 
 > The two FGS accounts carry the same FGS capabilities, but the stock
 > view/entry endpoints (`/fgs/overview`, `/fgs/update`) **and the dispatch

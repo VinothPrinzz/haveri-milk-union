@@ -10,7 +10,7 @@ import { userRoleEnum } from "./enums.js";
 import { zones } from "./zones.js";
 
 // ── Admin ERP Users ──
-// Roles: super_admin, manager, dispatch_officer, accountant, call_desk
+// Roles: super_admin, manager, dispatch_officer, accountant, call_desk, officer, viewer, fgs_milk_curd, fgs_others, pre_auditor
 // zone_id null = access to all zones
 export const users = pgTable("users", {
   id:           uuid("id").defaultRandom().primaryKey(),

@@ -10,7 +10,7 @@ import { adminSessions, users } from "@hmu/db/schema";
  * Usage in route: { preHandler: [adminAuth] }
  */
 
-type UserRole = "super_admin" | "manager" | "dispatch_officer" | "accountant" | "call_desk" | "officer" | "viewer" | "fgs_milk_curd" | "fgs_others";
+type UserRole = "super_admin" | "manager" | "dispatch_officer" | "accountant" | "call_desk" | "officer" | "viewer" | "fgs_milk_curd" | "fgs_others" | "pre_auditor";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -230,11 +230,12 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // DTC Billing (transport contractor monthly bills). Marketing (manager)
   // prepares the bill and gives the Marketing approval; Finance (accountant)
   // pre-audits, gives the final approval and pays. Each step records who
-  // did it, so the printed sheet carries the right names.
-  "dtc.view":            ["super_admin", "manager", "accountant", "viewer"],
+  // did it, so the printed sheet carries the right names. The Pre-Auditor
+  // login (pre_auditor) reads DTC Billing and does the pre-audit step only.
+  "dtc.view":            ["super_admin", "manager", "accountant", "viewer", "pre_auditor"],
   "dtc.setup":           ["super_admin", "manager", "accountant"],
   "dtc.prepare":         ["super_admin", "manager"],
-  "dtc.audit":           ["super_admin", "accountant"],
+  "dtc.audit":           ["super_admin", "accountant", "pre_auditor"],
   "dtc.approve_mktg":    ["super_admin", "manager"],
   "dtc.approve_finance": ["super_admin", "accountant"],
   "dtc.pay":             ["super_admin", "accountant"],
