@@ -2797,10 +2797,18 @@ export interface OpenInvoice {
 
 // Unpaid / part-paid invoices for one dealer — the Record Payment picker.
 export const fetchInvoicesForCustomer = async (customerId: string): Promise<OpenInvoice[]> => {
-  const data = await get<{ data: Record<string, unknown>[] }>("/invoices", {
-    dealerId: customerId, openOnly: "true", limit: 100,
-  });
-  return (data.data ?? [])
+  // Every open invoice, not just the newest page: the API caps a page at 100
+  // and sorts newest first, so a busy dealer's older dues (e.g. anything
+  // before late September) silently fell off the picker.
+  const rows: Record<string, unknown>[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const data = await get<{ data: Record<string, unknown>[]; totalPages?: number }>("/invoices", {
+      dealerId: customerId, openOnly: "true", limit: 100, page,
+    });
+    rows.push(...(data.data ?? []));
+    if (page >= (data.totalPages ?? 1) || (data.data ?? []).length < 100) break;
+  }
+  return rows
     .map((i) => {
       const totalAmount = Number(i.totalAmount ?? 0);
       const paidAmount  = Number(i.paidAmount ?? 0);
