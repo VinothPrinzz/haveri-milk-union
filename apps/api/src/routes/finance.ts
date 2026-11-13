@@ -246,7 +246,19 @@ export async function financeRoutes(app: FastifyInstance) {
           AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
           AND (${routeId}::uuid IS NULL OR COALESCE(o.route_id, ds.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
-          AND (NOT ${openOnly}::boolean OR (i.payment_status <> 'paid' AND i.total_amount > i.paid_amount))
+          -- Open = still receivable: unpaid, AND its order / sale was not
+          -- cancelled (deleted). A cancelled document keeps its invoice row,
+          -- so without this the Record Payment picker offered dead invoices.
+          -- Same rule as AR Aging (finance-ar-aging.ts).
+          AND (NOT ${openOnly}::boolean OR (
+                i.payment_status <> 'paid' AND i.total_amount > i.paid_amount
+            AND NOT EXISTS (SELECT 1 FROM direct_sales ds_x
+                             WHERE ds_x.id = i.order_id AND ds_x.status = 'cancelled')
+            AND NOT EXISTS (SELECT 1 FROM orders o_x
+                             WHERE o_x.id = i.order_id AND o_x.status IN ('cancelled', 'draft'))
+            AND NOT EXISTS (SELECT 1 FROM employee_orders eo_x
+                             WHERE eo_x.id = i.order_id AND eo_x.status IN ('cancelled', 'draft'))
+          ))
         ORDER BY i.invoice_date DESC
         LIMIT ${q.limit} OFFSET ${offset}
       `;
@@ -271,7 +283,19 @@ export async function financeRoutes(app: FastifyInstance) {
           AND (${dateTo}::timestamptz   IS NULL OR i.invoice_date <= ${dateTo   ?? '2099-12-31'}::timestamptz)
           AND (${routeId}::uuid IS NULL OR COALESCE(o.route_id, ds.route_id, d.route_id) = ${routeId ?? '00000000-0000-0000-0000-000000000000'}::uuid)
           AND (${status}::text  IS NULL OR i.payment_status = ${status ?? 'unpaid'})
-          AND (NOT ${openOnly}::boolean OR (i.payment_status <> 'paid' AND i.total_amount > i.paid_amount))
+          -- Open = still receivable: unpaid, AND its order / sale was not
+          -- cancelled (deleted). A cancelled document keeps its invoice row,
+          -- so without this the Record Payment picker offered dead invoices.
+          -- Same rule as AR Aging (finance-ar-aging.ts).
+          AND (NOT ${openOnly}::boolean OR (
+                i.payment_status <> 'paid' AND i.total_amount > i.paid_amount
+            AND NOT EXISTS (SELECT 1 FROM direct_sales ds_x
+                             WHERE ds_x.id = i.order_id AND ds_x.status = 'cancelled')
+            AND NOT EXISTS (SELECT 1 FROM orders o_x
+                             WHERE o_x.id = i.order_id AND o_x.status IN ('cancelled', 'draft'))
+            AND NOT EXISTS (SELECT 1 FROM employee_orders eo_x
+                             WHERE eo_x.id = i.order_id AND eo_x.status IN ('cancelled', 'draft'))
+          ))
       `;
    
       return reply.send({
@@ -1189,7 +1213,7 @@ export async function financeRoutes(app: FastifyInstance) {
         // Invoices this receipt settles. The amount is applied oldest-due
         // first, capped at each invoice's outstanding; anything left over
         // stays on account. `invoiceId` is the legacy single-invoice form.
-        invoiceIds:   z.array(z.string().uuid()).max(100).optional(),
+        invoiceIds:   z.array(z.string().uuid()).max(1000).optional(),
         reference:    z.string().optional(),
         notes:        z.string().optional(),
         // Cheque lifecycle details (0041). When mode='cheque' a row is
@@ -1224,10 +1248,20 @@ export async function financeRoutes(app: FastifyInstance) {
       // Re-read under lock inside the transaction before allocating.
       for (const invoiceId of invoiceIds) {
         const [row] = await pgClient`
-          SELECT dealer_id, invoice_number, total_amount, paid_amount
-          FROM invoices WHERE id = ${invoiceId} LIMIT 1
+          SELECT i.dealer_id, i.invoice_number, i.total_amount, i.paid_amount,
+                 (EXISTS (SELECT 1 FROM direct_sales ds
+                           WHERE ds.id = i.order_id AND ds.status = 'cancelled')
+                  OR EXISTS (SELECT 1 FROM orders o
+                              WHERE o.id = i.order_id AND o.status IN ('cancelled', 'draft'))
+                  OR EXISTS (SELECT 1 FROM employee_orders eo
+                              WHERE eo.id = i.order_id AND eo.status IN ('cancelled', 'draft'))
+                 ) AS cancelled
+          FROM invoices i WHERE i.id = ${invoiceId} LIMIT 1
         `;
         if (!row) return reply.status(404).send({ error: "Invoice not found" });
+        if (row.cancelled) {
+          return reply.status(400).send({ error: `Invoice ${row.invoice_number} belongs to a cancelled order and cannot be settled` });
+        }
         if (row.dealer_id !== body.dealerId) {
           return reply.status(400).send({ error: `Invoice ${row.invoice_number} does not belong to this dealer` });
         }
