@@ -414,11 +414,30 @@ export async function creditDealerBalance(
 }
 
 /**
+ * Ledger description for a gate pass whose total was edited after issue.
+ * ledgerPostedForSale matches on this text, so the writer and the reader
+ * must share it — change it here or not at all.
+ */
+export function gatePassRevisionDescription(gpLabel: string, direction: "up" | "down"): string {
+  return `Gate pass ${gpLabel} revised ${direction}`;
+}
+const GATE_PASS_REVISION_LIKE = "Gate pass % revised %";
+
+/**
  * What this sale still has posted against the dealer's ledger: debits
  * placed for it, less anything already credited back. Reversing this rather
  * than the sale total is what keeps a cancel idempotent and stops a
  * re-run inventing money — the phantom-credit trap the wallet order cancel
  * fell into (it credited grand_total unconditionally).
+ *
+ * A "revised down" credit is written by creditDealerBalance, which stamps
+ * reference_type 'adjustment', so it has to be picked out by its description
+ * (see gatePassRevisionDescription). Without it a pass edited down TWICE
+ * re-credited the first cut on the second edit: GP-0532 (₹2,062.50) and
+ * GP-0531 (₹1,339.27) handed their dealers balance that was never theirs.
+ * Other adjustment rows on a sale ("Modify credit…", "Cancellation credit…")
+ * return money the counter QR collected, not a ledger posting, so they stay
+ * out of this figure.
  */
 export async function ledgerPostedForSale(
   tx: typeof pgClient,
@@ -431,7 +450,9 @@ export async function ledgerPostedForSale(
              ELSE 0 END), 0)::float8 AS net
       FROM dealer_ledger dl
      WHERE dl.reference_id = ${saleId}::uuid
-       AND dl.reference_type IN ('order', 'refund')
+       AND (    dl.reference_type IN ('order', 'refund')
+             OR (    dl.reference_type = 'adjustment'
+                 AND dl.description LIKE ${GATE_PASS_REVISION_LIKE}) )
   `) as any[];
   return Math.max(0, Number(row?.net ?? 0));
 }
