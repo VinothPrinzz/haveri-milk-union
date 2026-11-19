@@ -27,6 +27,7 @@ import {
   reverseGatePassLedgerPosting,
   reverseCounterCashReceipt,
   ledgerPostedForSale,
+  gatePassRevisionDescription,
   LEDGER_SETTLED_MODES,
   DirectSaleCancelError,
 } from "../lib/direct-sale-money.js";
@@ -1961,13 +1962,13 @@ export async function directSalesRoutes(app: FastifyInstance) {
         if (ledgerDelta > 0.001) {
           await debitDealerBalance(
             tx, sale.customer_id, ledgerDelta, id,
-            `Gate pass ${sale.gp_no ?? id} revised up`,
+            gatePassRevisionDescription(sale.gp_no ?? id, "up"),
             request.admin!.userId,
           );
         } else if (ledgerDelta < -0.001) {
           await creditDealerBalance(
             tx, sale.customer_id, Math.abs(ledgerDelta), id,
-            `Gate pass ${sale.gp_no ?? id} revised down`,
+            gatePassRevisionDescription(sale.gp_no ?? id, "down"),
             request.admin!.userId,
           );
         }
