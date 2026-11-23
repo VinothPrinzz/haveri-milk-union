@@ -33,6 +33,7 @@ import { generateInvoicePdfSync } from "../lib/invoice-pdf.js";
 import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { refreshInvoiceSettlement } from "../lib/invoice-settlement.js";
 import { assertOrderNoOversell } from "../lib/stock-check.js";
+import { subsidyReceiptNote } from "../lib/subsidy-receipt.js";
 
 // The subsidy SKU seeded by migration 0056 (half-price HTM 1000ML).
 const SUBSIDY_PRODUCT_CODE = "PD0191S";
@@ -85,11 +86,6 @@ async function currentBalance(tx: typeof pgClient, dealerId: string): Promise<nu
     FROM dealers d WHERE d.id = ${dealerId}
   `;
   return parseFloat(bal!.bal);
-}
-
-/** Identifies the receipt THIS route wrote, so a revision only touches its own. */
-function subsidyReceiptNote(orderId: string): string {
-  return `Counter receipt for subsidy indent ${orderId}`;
 }
 
 /**

@@ -2,6 +2,7 @@ import { pgClient } from "./db.js";
 import { restoreOrderStock } from "./stock-check.js";
 import { isRazorpayConfigured, createRazorpayRefund } from "./razorpay-client.js";
 import { refreshInvoiceSettlement } from "./invoice-settlement.js";
+import { subsidyReceiptNote } from "./subsidy-receipt.js";
 import {
   balanceRefundedForOrder,
   refundableToBank,
@@ -78,6 +79,15 @@ export async function cancelOrderWithReversal(
 
   // Put physical stock back for every line.
   await restoreOrderStock(tx, orderId);
+
+  // A cash subsidy indent books its counter cash as a real `payments` receipt
+  // (routes/subsidy-indents.ts). A cancel treats a cash order as never
+  // collected and refunds nothing, so that receipt has to go with the order:
+  // left behind, the Dealer Statement drops the cancelled invoice but keeps
+  // the receipt and over-reports the dealer's balance by the full amount.
+  // Order 1ff48971 (RAKESH G HARKAMANI, 2026-11-23) stranded Rs 106.40 this
+  // way. No-op for every other order.
+  await tx`DELETE FROM payments WHERE notes = ${subsidyReceiptNote(orderId)}`;
 
   const [order] = await tx`
     SELECT payment_mode, grand_total, dealer_id
