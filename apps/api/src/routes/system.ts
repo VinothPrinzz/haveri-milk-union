@@ -360,6 +360,7 @@ export async function systemRoutes(app: FastifyInstance) {
         LEFT JOIN time_windows tw ON tw.route_id = r.id
         WHERE r.deleted_at IS NULL
           AND r.active = true
+          AND r.code <> 'DEMO'   -- app-store review route: its 24h window is fixed
         ORDER BY r.code
       `;
       return reply.send({ windows });

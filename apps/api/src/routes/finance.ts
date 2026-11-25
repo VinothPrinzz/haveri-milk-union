@@ -648,8 +648,9 @@ export async function financeRoutes(app: FastifyInstance) {
         -- A deleted route keeps its line for as long as it has trips behind
         -- it: this is a record of dispatches that happened, not of routes that
         -- still run. It drops off once it never dispatched anything.
-        WHERE r.deleted_at IS NULL
-           OR EXISTS (SELECT 1 FROM route_assignments ra2 WHERE ra2.route_id = r.id)
+        WHERE r.code <> 'DEMO'
+          AND (r.deleted_at IS NULL
+           OR EXISTS (SELECT 1 FROM route_assignments ra2 WHERE ra2.route_id = r.id))
         GROUP BY r.id, r.name ORDER BY r.name
       `;
       return reply.send({ data: rows });

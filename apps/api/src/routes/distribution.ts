@@ -49,6 +49,7 @@ export async function distributionRoutes(app: FastifyInstance) {
         LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
         LEFT JOIN batches b ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
         WHERE r.deleted_at IS NULL
+          AND r.code <> 'DEMO'   -- app-store review route: kept out of the admin UI
         ORDER BY
           CASE WHEN r.code ~ '^R[0-9]+$'
                THEN CAST(SUBSTRING(r.code FROM 2) AS integer)

@@ -146,7 +146,8 @@ export async function reportsRoutes(app: FastifyInstance) {
           FROM routes r
           LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
           LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
-         WHERE (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)
+         WHERE r.code <> 'DEMO'   -- Play Store / App Store review route
+           AND (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)
            AND (${batchId}::uuid IS NULL
                 OR EXISTS (SELECT 1 FROM batch_routes br
                             WHERE br.route_id = r.id
@@ -1027,7 +1028,8 @@ export async function reportsRoutes(app: FastifyInstance) {
           FROM routes r
           LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
           LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
-         WHERE (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)
+         WHERE r.code <> 'DEMO'   -- Play Store / App Store review route
+           AND (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)
            AND EXISTS (
              SELECT 1
                FROM direct_sales ds
