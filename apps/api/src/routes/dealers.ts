@@ -143,6 +143,7 @@ export async function dealerRoutes(app: FastifyInstance) {
         LEFT JOIN routes r       ON r.id = d.route_id AND r.deleted_at IS NULL
         LEFT JOIN ledger_totals lt ON lt.dealer_id = d.id
         WHERE (d.deleted_at IS NOT NULL) = ${onlyDeleted}::boolean
+          AND d.code IS DISTINCT FROM 'DEMO'   -- app-store review account: kept out of the admin UI
           AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""} OR d.village ILIKE ${searchTerm ?? ""})
           AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId ?? "00000000-0000-0000-0000-000000000000"}::uuid)
           AND (${customerType}::text IS NULL OR d.customer_type::text = ${customerType ?? ""})
@@ -165,6 +166,7 @@ export async function dealerRoutes(app: FastifyInstance) {
       const [countRow] = await pgClient`
         SELECT count(*)::int AS count FROM dealers d
         WHERE (d.deleted_at IS NOT NULL) = ${onlyDeleted}::boolean
+          AND d.code IS DISTINCT FROM 'DEMO'   -- app-store review account: kept out of the admin UI
           AND (${searchTerm}::text IS NULL OR d.name ILIKE ${searchTerm ?? ""} OR d.phone ILIKE ${searchTerm ?? ""} OR d.code ILIKE ${searchTerm ?? ""} OR d.village ILIKE ${searchTerm ?? ""})
           AND (${zoneId}::uuid IS NULL OR d.zone_id = ${zoneId ?? "00000000-0000-0000-0000-000000000000"}::uuid)
           AND (${query.customerType ?? null}::text IS NULL OR d.customer_type::text = ${query.customerType ?? ""})
