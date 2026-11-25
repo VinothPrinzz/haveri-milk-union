@@ -95,11 +95,11 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
       "Choose how you'd like to reach us:",
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Call", onPress: () => Linking.openURL("tel:+918375000000") },
+        { text: "Call", onPress: () => Linking.openURL("tel:+918904968132") },
         {
           text: "WhatsApp",
           onPress: () =>
-            Linking.openURL("https://wa.me/918375000000").catch(() => {}),
+            Linking.openURL("https://wa.me/918904968132").catch(() => {}),
         },
       ]
     );
