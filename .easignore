@@ -7,3 +7,18 @@ node_modules/
 
 # pnpm virtual store – never upload, always rebuild on the server
 .pnpm-store/
+
+# Secrets — never upload to the build server (.easignore replaces .gitignore for EAS)
+.env
+.env.local
+.env.*.local
+**/.env
+**/.env.local
+**/.env.*.local
+**/google-play-key.json
+*.p8
+*.p12
+
+# Local-only tooling
+.claude/
+install.cmd

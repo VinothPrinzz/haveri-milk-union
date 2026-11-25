@@ -26,6 +26,10 @@ import { useDealerRoutes, useSwitchRoute } from "../hooks/useDealerRoutes";
 import ProfileFinanceCard from "../components/ProfileFinanceCard";
 import PaymentHistoryList from "../components/PaymentHistoryList";
 import BackButton from "../components/BackButton";
+import appConfig from "../../app.json";
+
+const APP_VERSION = appConfig.expo.version;
+const PRIVACY_POLICY_URL = "https://havemul.in/privacy";
 
 interface ProfileScreenProps {
   onBack: () => void;
@@ -42,9 +46,6 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
   const switchRoute = useSwitchRoute();
   const [notifEnabled, setNotifEnabled] = useState(
     dealer?.notificationsEnabled ?? false
-  );
-  const [bioEnabled, setBioEnabled] = useState(
-    dealer?.biometricEnabled ?? false
   );
 
   const stats = useMemo(() => {
@@ -88,10 +89,6 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
     setNotifEnabled(v);
     patchDealer({ notificationsEnabled: v });
   };
-  const handleBioToggle = (v: boolean) => {
-    setBioEnabled(v);
-    patchDealer({ biometricEnabled: v });
-  };
   const handleContact = () => {
     Alert.alert(
       "Contact Havemul",
@@ -107,14 +104,19 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
       ]
     );
   };
-  const handleHelp = () => {
-    Alert.alert("Help & FAQs", "FAQ section coming soon.");
+  const handlePrivacy = () => {
+    Linking.openURL(PRIVACY_POLICY_URL).catch(() => {
+      Alert.alert("Privacy Policy", `Please visit ${PRIVACY_POLICY_URL}`);
+    });
   };
   const handleAppInfo = () => {
     Alert.alert(
       "App Information",
-      "Havemul Dealer App v2.1.4\n\nLicensed to Haveri District Co-operative Milk Producers' Union",
-      [{ text: "OK" }]
+      `Havemul Dealer App v${APP_VERSION}\n\nLicensed to Haveri District Co-operative Milk Producers' Union`,
+      [
+        { text: "Privacy Policy", onPress: handlePrivacy },
+        { text: "OK" },
+      ]
     );
   };
   const handleEditField = (field: string) => {
@@ -307,35 +309,12 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
                   ios_backgroundColor={colors.ink5}
                 />
               }
-            />
-            <ProfileItem
-              icon="🔐"
-              tint="blue"
-              title="Biometric Login"
-              sub="Fingerprint / Face ID"
-              right={
-                <Switch
-                  value={bioEnabled}
-                  onValueChange={handleBioToggle}
-                  trackColor={{ false: colors.ink5, true: colors.success }}
-                  thumbColor={colors.card}
-                  ios_backgroundColor={colors.ink5}
-                />
-              }
               isLast
             />
           </View>
 
           {/* Group 3: Support */}
           <View style={styles.group}>
-            <ProfileItem
-              icon="❓"
-              tint="green"
-              title="Help & FAQs"
-              sub="Common questions"
-              onPress={handleHelp}
-              showArrow
-            />
             <ProfileItem
               icon="📞"
               tint="green"
@@ -345,10 +324,18 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
               showArrow
             />
             <ProfileItem
+              icon="🔒"
+              tint="gray"
+              title="Privacy Policy"
+              sub="havemul.in/privacy"
+              onPress={handlePrivacy}
+              showArrow
+            />
+            <ProfileItem
               icon="ℹ️"
               tint="gray"
-              title="App Version 2.1.4"
-              sub="Terms · Privacy Policy"
+              title={`App Version ${APP_VERSION}`}
+              sub="About this app"
               onPress={handleAppInfo}
               showArrow
               isLast
