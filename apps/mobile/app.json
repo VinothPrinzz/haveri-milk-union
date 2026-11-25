@@ -23,7 +23,7 @@
         "NSPhotoLibraryUsageDescription": "Havemul uses your photo library only when you choose to pick an image during payment, such as a UPI QR code.",
         "NSCameraUsageDescription": "Havemul uses the camera only when you choose to scan a UPI QR code during payment."
       },
-      "buildNumber": "3"
+      "buildNumber": "4"
     },
     "android": {
       "adaptiveIcon": {
