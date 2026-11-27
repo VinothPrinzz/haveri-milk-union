@@ -137,7 +137,10 @@ export async function reportsRoutes(app: FastifyInstance) {
       // on delete (see lib/route-code.ts), so it prints by name.
       const routes = await pgClient`
         SELECT r.id, r.code, r.name,
-               ct.id AS contractor_id, r.dispatch_time,
+               ct.id AS contractor_id,
+               -- Same as the Dispatch Sheet: the time set on the day's
+               -- dispatch (route_assignments), else the route's usual time.
+               COALESCE(ra.departure_time::text, r.dispatch_time::text) AS dispatch_time,
                (r.deleted_at IS NOT NULL) AS retired,
                ct.name           AS contractor_name,
                ct.vehicle_number AS vehicle_number,
@@ -147,6 +150,11 @@ export async function reportsRoutes(app: FastifyInstance) {
           -- The contractor who held the route on the sheet's date (0084),
           -- even if they have since been replaced or deleted.
           LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${q.date}::date)
+          LEFT JOIN LATERAL (
+            SELECT a.departure_time FROM route_assignments a
+             WHERE a.route_id = r.id AND a.date = ${q.date}::date AND a.departure_time IS NOT NULL
+             ORDER BY a.updated_at DESC NULLS LAST LIMIT 1
+          ) ra ON true
           LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
          WHERE r.code <> 'DEMO'   -- Play Store / App Store review route
            AND (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)
@@ -1021,7 +1029,10 @@ export async function reportsRoutes(app: FastifyInstance) {
       // the date, and deleting the route later does not unissue the pass.
       const routes = await pgClient`
         SELECT r.id, r.code, r.name,
-               ct.id AS contractor_id, r.dispatch_time,
+               ct.id AS contractor_id,
+               -- Same as the Dispatch Sheet: the time set on the day's
+               -- dispatch (route_assignments), else the route's usual time.
+               COALESCE(ra.departure_time::text, r.dispatch_time::text) AS dispatch_time,
                (r.deleted_at IS NOT NULL) AS retired,
                ct.name           AS contractor_name,
                ct.vehicle_number AS vehicle_number,
@@ -1031,6 +1042,11 @@ export async function reportsRoutes(app: FastifyInstance) {
           -- The contractor who held the route on the sheet's date (0084),
           -- even if they have since been replaced or deleted.
           LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${q.date}::date)
+          LEFT JOIN LATERAL (
+            SELECT a.departure_time FROM route_assignments a
+             WHERE a.route_id = r.id AND a.date = ${q.date}::date AND a.departure_time IS NOT NULL
+             ORDER BY a.updated_at DESC NULLS LAST LIMIT 1
+          ) ra ON true
           LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
          WHERE r.code <> 'DEMO'   -- Play Store / App Store review route
            AND (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)
