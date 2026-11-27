@@ -107,6 +107,8 @@ export interface BillLine {
 export interface Bill {
   id: string; runId: string; routeId: string; routeCode: string; routeName: string;
   contractorId: string | null; contractorName: string | null;
+  /** Days this bill covers: the whole month, or one contractor's part of it. */
+  periodFrom?: string; periodTo?: string;
   vehicleNumber: string | null; vehicleCapacityMt: number | null;
   billingType: BillingType; rate: number; kmPerDay: number;
   segments: BillSegment[]; days: number; qtyLitres: number;

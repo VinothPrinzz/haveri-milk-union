@@ -18,7 +18,7 @@ import { toCsv } from "@/lib/exporters";
 import { todayIST } from "@/lib/istDate";
 import { fetchRun, type Bill, type BillLine, type RunDetail } from "@/services/dtc";
 import {
-  BILLING_TYPE_LABEL, FilterLabel, HEAD_LABEL, MonthInput, RUN_STATUS_LABEL, SHEET_DEDUCTION_COLUMNS,
+  BILLING_TYPE_LABEL, FilterLabel, billPeriodNote, HEAD_LABEL, MonthInput, RUN_STATUS_LABEL, SHEET_DEDUCTION_COLUMNS,
   errMsg, fmtStamp, monthLong, prevMonth, qtyFmt, rs, rs2,
 } from "./shared";
 
@@ -133,7 +133,7 @@ function SheetPage({ report }: { report: RunDetail }) {
             <tr key={b.id}>
               <td className={`${td} text-right num`}>{i + 1}</td>
               <td className={td}>{b.routeName}</td>
-              <td className={td}>{b.contractorName ?? ""}</td>
+              <td className={td}>{b.contractorName ?? ""}{billPeriodNote(b)}</td>
               <td className={`${td} text-center whitespace-nowrap`}>{BILLING_TYPE_LABEL[b.billingType]}</td>
               <td className={`${td} text-right num`}>{b.vehicleCapacityMt != null ? rs2(b.vehicleCapacityMt) : ""}</td>
               <td className={`${td} text-right num`}>{b.days}</td>
@@ -220,7 +220,7 @@ function LinesPage({ report, kind }: { report: RunDetail; kind: "earning" | "ded
             <tr key={l.id}>
               <td className={`${td} text-right num`}>{i + 1}</td>
               <td className={td}>{b.routeName}</td>
-              <td className={td}>{b.contractorName ?? ""}</td>
+              <td className={td}>{b.contractorName ?? ""}{billPeriodNote(b)}</td>
               <td className={td}>{HEAD_LABEL[l.head] ?? l.head}</td>
               <td className={`${td} text-right num`}>{lineQty(l)}</td>
               <td className={`${td} text-right num`}>{rs2(l.amount)}</td>
@@ -249,7 +249,7 @@ function sheetHeader() {
 }
 function sheetRow(b: Bill, i: number): (string | number)[] {
   return [
-    i + 1, b.routeName, b.contractorName ?? "", BILLING_TYPE_LABEL[b.billingType], b.vehicleCapacityMt ?? "",
+    i + 1, b.routeName, (b.contractorName ?? "") + billPeriodNote(b), BILLING_TYPE_LABEL[b.billingType], b.vehicleCapacityMt ?? "",
     b.days, b.billingType === "km" ? b.kmPerDay : 0, b.rate, Math.round(b.qtyLitres), b.gross,
     Math.round(otherQty(b) * 100) / 100, b.otherEarnings, b.totalEarnings,
     ...SHEET_DEDUCTION_COLUMNS.map(c => Math.round(dedFor(b, c.heads))),
@@ -258,7 +258,7 @@ function sheetRow(b: Bill, i: number): (string | number)[] {
 }
 function lineRows(report: RunDetail, kind: "earning" | "deduction"): (string | number)[][] {
   return report.bills.flatMap(b => b.lines.filter(l => l.kind === kind).map(l => [
-    b.routeName, b.contractorName ?? "", HEAD_LABEL[l.head] ?? l.head, l.qty ?? "", l.rate ?? "", l.amount, l.remarks ?? "",
+    b.routeName, (b.contractorName ?? "") + billPeriodNote(b), HEAD_LABEL[l.head] ?? l.head, l.qty ?? "", l.rate ?? "", l.amount, l.remarks ?? "",
   ]));
 }
 function sheetRows(report: RunDetail): (string | number)[][] {

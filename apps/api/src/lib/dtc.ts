@@ -388,15 +388,84 @@ export async function recomputeBill(sql: Sql, billId: string) {
   return t;
 }
 
+// ── Who ran a route when (route_contractor_history, 0084) ───────────────
+export interface ContractorSpell {
+  contractorId: string | null;
+  contractorName: string | null;
+  contractorVehicle: string | null;
+  from: string;
+  to: string;
+}
+
+/**
+ * Per route: the contractors who held it during [start, end], as date
+ * ranges clipped to the window, adjacent same-contractor ranges merged.
+ * Days before a route's first history row belong to its current
+ * contractor (same rule as route_contractor_on in SQL).
+ */
+export async function loadContractorSpells(sql: Sql, start: string, end: string) {
+  const rows = await sql`
+    SELECT h.route_id, h.contractor_id,
+           COALESCE(c.name, h.contractor_name) AS contractor_name, c.vehicle_number AS contractor_vehicle,
+           GREATEST(h.from_date, ${start}::date)::text AS "from",
+           LEAST(COALESCE(h.to_date, ${end}::date), ${end}::date)::text AS "to"
+      FROM route_contractor_history h
+      LEFT JOIN contractors c ON c.id = h.contractor_id
+     WHERE h.from_date <= ${end}::date AND (h.to_date IS NULL OR h.to_date >= ${start}::date)
+     ORDER BY h.route_id, h.from_date
+  ` as any[];
+  const map = new Map<string, ContractorSpell[]>();
+  for (const r of rows) {
+    const list = map.get(r.route_id) ?? [];
+    const prev = list[list.length - 1];
+    if (prev && prev.contractorId === r.contractor_id && addDays(prev.to, 1) >= r.from) {
+      prev.to = r.to > prev.to ? r.to : prev.to;
+    } else {
+      list.push({
+        contractorId: r.contractor_id ?? null, contractorName: r.contractor_name ?? null,
+        contractorVehicle: r.contractor_vehicle ?? null, from: r.from, to: r.to,
+      });
+    }
+    map.set(r.route_id, list);
+  }
+  return map;
+}
+
+/** A route's spells for the month, falling back to its current contractor where history is silent. */
+function spellsFor(
+  route: { id: string; contractor_id: string | null; contractor_name: string | null; contractor_vehicle: string | null },
+  spells: Map<string, ContractorSpell[]>, start: string, end: string,
+): ContractorSpell[] {
+  const current = {
+    contractorId: route.contractor_id ?? null, contractorName: route.contractor_name ?? null,
+    contractorVehicle: route.contractor_vehicle ?? null,
+  };
+  const list = (spells.get(route.id) ?? []).map(s => ({ ...s }));
+  if (list.length === 0) return [{ ...current, from: start, to: end }];
+  if (list[0]!.from > start) {
+    const head = { ...current, from: start, to: addDays(list[0]!.from, -1) };
+    if (head.contractorId === list[0]!.contractorId) list[0]!.from = start;
+    else list.unshift(head);
+  }
+  return list;
+}
+
 // ── Generate / refresh a month's run ────────────────────────────────────
 /**
  * Creates or refreshes every bill of a draft run: terms, days, litres and
  * the automatic lines (recurring charges, security deposit instalment,
  * advances, carry-forward recoveries, route officer entries, TDS). Manual lines and the clerk's
  * day overrides are kept. Must run inside a transaction holding the run row.
+ *
+ * A route whose contractor changed during the month gets one bill per
+ * contractor, each covering only that contractor's days (period_from /
+ * period_to). A contractor spell with no run days and no litres gets no
+ * bill of its own, unless it is the route's only spell.
  */
 export async function generateRunBills(sql: Sql, runId: string, monthStart: string) {
   const { start, end } = monthBounds(monthStart);
+  // Bills may trade periods during a refresh; check uniqueness at commit.
+  await sql`SET CONSTRAINTS dtc_bills_run_route_period_key DEFERRED`;
 
   const routes = await sql`
     SELECT r.id, r.code, r.name, r.contractor_id,
@@ -405,6 +474,7 @@ export async function generateRunBills(sql: Sql, runId: string, monthStart: stri
       LEFT JOIN contractors c ON c.id = r.contractor_id AND c.deleted_at IS NULL
      WHERE r.deleted_at IS NULL AND r.code <> 'DEMO'
   ` as any[];
+  const spellsByRoute = await loadContractorSpells(sql, start, end);
   const termRows = await sql`
     SELECT t.id, t.route_id, t.effective_from::text AS effective_from, t.active, t.billing_type,
            t.rate::float8 AS rate, t.km_per_day::float8 AS km_per_day,
@@ -423,68 +493,104 @@ export async function generateRunBills(sql: Sql, runId: string, monthStart: stri
   const dispatch = await loadDispatchDates(sql, start, end);
 
   const existing = await sql`
-    SELECT id, route_id, segments FROM dtc_bills WHERE run_id = ${runId}::uuid
+    SELECT id, route_id, contractor_id, period_from::text AS period_from, segments
+      FROM dtc_bills WHERE run_id = ${runId}::uuid
   ` as any[];
-  const existingByRoute = new Map(existing.map(b => [b.route_id as string, b]));
-  const keepRouteIds = new Set<string>();
+  const existingByRoute = new Map<string, any[]>();
+  for (const b of existing) {
+    if (!existingByRoute.has(b.route_id)) existingByRoute.set(b.route_id, []);
+    existingByRoute.get(b.route_id)!.push(b);
+  }
+  const keepBillIds = new Set<string>();
 
   for (const route of routes) {
-    const ranges = termsRanges(termsByRoute.get(route.id) ?? [], start, end);
-    if (ranges.length === 0) continue;
-    keepRouteIds.add(route.id);
+    const versions = termsByRoute.get(route.id) ?? [];
+    if (termsRanges(versions, start, end).length === 0) continue;
 
-    const prev = existingByRoute.get(route.id);
-    const prevOverrides = new Map<string, number | null>(
-      ((prev?.segments ?? []) as Segment[]).map(s => [s.key, s.daysOverride]),
-    );
-    const segments: Segment[] = ranges.map(({ terms, from, to }) => {
-      const dates = runDates(route.id, from, to, qty, dispatch);
-      const litres = Array.from(qty.get(route.id) ?? [])
-        .filter(([d]) => d >= from && d <= to)
-        .reduce((s, [, l]) => s + l, 0);
-      const key = `${terms.id}:${from}`;
-      const seg: Segment = {
-        key, termsId: terms.id, from, to,
-        billingType: terms.billing_type, rate: Number(terms.rate), kmPerDay: Number(terms.km_per_day),
-        autoDays: dates.length, daysOverride: prevOverrides.get(key) ?? null,
-        qty: round3(litres), amount: 0,
-      };
-      seg.amount = segmentAmount(seg);
-      return seg;
+    // One candidate bill per contractor spell that has terms in force.
+    const candidates = spellsFor(route, spellsByRoute, start, end).flatMap(spell => {
+      const ranges = termsRanges(versions, spell.from, spell.to);
+      if (ranges.length === 0) return [];
+      const busy = ranges.some(({ from, to }) =>
+        runDates(route.id, from, to, qty, dispatch).length > 0
+        || Array.from(qty.get(route.id) ?? []).some(([d, l]) => d >= from && d <= to && l > 0));
+      return [{ spell, ranges, busy }];
     });
-    const last = ranges[ranges.length - 1]!.terms;
-    const vehicle = last.vehicle_number || route.contractor_vehicle || null;
+    if (candidates.length === 0) continue;
+    // Several contractors: bill only the ones who ran it (or the last, if none did).
+    const billed = candidates.length === 1 ? candidates
+      : candidates.some(c => c.busy) ? candidates.filter(c => c.busy)
+      : [candidates[candidates.length - 1]!];
 
-    if (prev) {
-      await sql`
-        UPDATE dtc_bills SET
-          route_code = ${route.code}, route_name = ${route.name},
-          contractor_id = ${route.contractor_id ?? null}::uuid, contractor_name = ${route.contractor_name ?? null},
-          vehicle_number = ${vehicle}, vehicle_capacity_mt = ${last.vehicle_capacity_mt}::numeric,
-          billing_type = ${last.billing_type}, rate = ${String(last.rate)}::numeric,
-          km_per_day = ${String(last.km_per_day)}::numeric, cash_collection = ${last.cash_collection},
-          segments = ${JSON.stringify(segments)}::jsonb, updated_at = now()
-        WHERE id = ${prev.id}::uuid
-      `;
-    } else {
-      await sql`
-        INSERT INTO dtc_bills (
-          run_id, route_id, route_code, route_name, contractor_id, contractor_name,
-          vehicle_number, vehicle_capacity_mt, billing_type, rate, km_per_day, cash_collection, segments
-        ) VALUES (
-          ${runId}::uuid, ${route.id}::uuid, ${route.code}, ${route.name},
-          ${route.contractor_id ?? null}::uuid, ${route.contractor_name ?? null},
-          ${vehicle}, ${last.vehicle_capacity_mt}::numeric, ${last.billing_type},
-          ${String(last.rate)}::numeric, ${String(last.km_per_day)}::numeric, ${last.cash_collection},
-          ${JSON.stringify(segments)}::jsonb
-        )
-      `;
+    // Match existing bills so manual lines and day overrides survive a
+    // refresh: same period start, else same contractor, else a lone bill.
+    const pool = [...(existingByRoute.get(route.id) ?? [])];
+    const take = (pred: (b: any) => boolean) => {
+      const i = pool.findIndex(pred);
+      return i >= 0 ? pool.splice(i, 1)[0] : undefined;
+    };
+    const matched = billed.map(c => take(b => b.period_from === c.spell.from));
+    billed.forEach((c, i) => { if (!matched[i]) matched[i] = take(b => b.contractor_id === c.spell.contractorId); });
+    if (billed.length === 1 && !matched[0]) matched[0] = take(() => true);
+
+    for (const [i, { spell, ranges }] of billed.entries()) {
+      const prev = matched[i];
+      const prevOverrides = new Map<string, number | null>(
+        ((prev?.segments ?? []) as Segment[]).map(s => [s.key, s.daysOverride]),
+      );
+      const segments: Segment[] = ranges.map(({ terms, from, to }) => {
+        const dates = runDates(route.id, from, to, qty, dispatch);
+        const litres = Array.from(qty.get(route.id) ?? [])
+          .filter(([d]) => d >= from && d <= to)
+          .reduce((s, [, l]) => s + l, 0);
+        const key = `${terms.id}:${from}`;
+        const seg: Segment = {
+          key, termsId: terms.id, from, to,
+          billingType: terms.billing_type, rate: Number(terms.rate), kmPerDay: Number(terms.km_per_day),
+          autoDays: dates.length, daysOverride: prevOverrides.get(key) ?? null,
+          qty: round3(litres), amount: 0,
+        };
+        seg.amount = segmentAmount(seg);
+        return seg;
+      });
+      const last = ranges[ranges.length - 1]!.terms;
+      const vehicle = last.vehicle_number || spell.contractorVehicle || null;
+
+      if (prev) {
+        keepBillIds.add(prev.id);
+        await sql`
+          UPDATE dtc_bills SET
+            route_code = ${route.code}, route_name = ${route.name},
+            contractor_id = ${spell.contractorId}::uuid, contractor_name = ${spell.contractorName},
+            period_from = ${spell.from}::date, period_to = ${spell.to}::date,
+            vehicle_number = ${vehicle}, vehicle_capacity_mt = ${last.vehicle_capacity_mt}::numeric,
+            billing_type = ${last.billing_type}, rate = ${String(last.rate)}::numeric,
+            km_per_day = ${String(last.km_per_day)}::numeric, cash_collection = ${last.cash_collection},
+            segments = ${JSON.stringify(segments)}::jsonb, updated_at = now()
+          WHERE id = ${prev.id}::uuid
+        `;
+      } else {
+        const [row] = await sql`
+          INSERT INTO dtc_bills (
+            run_id, route_id, route_code, route_name, contractor_id, contractor_name, period_from, period_to,
+            vehicle_number, vehicle_capacity_mt, billing_type, rate, km_per_day, cash_collection, segments
+          ) VALUES (
+            ${runId}::uuid, ${route.id}::uuid, ${route.code}, ${route.name},
+            ${spell.contractorId}::uuid, ${spell.contractorName}, ${spell.from}::date, ${spell.to}::date,
+            ${vehicle}, ${last.vehicle_capacity_mt}::numeric, ${last.billing_type},
+            ${String(last.rate)}::numeric, ${String(last.km_per_day)}::numeric, ${last.cash_collection},
+            ${JSON.stringify(segments)}::jsonb
+          ) RETURNING id
+        ` as any[];
+        keepBillIds.add(row.id);
+      }
     }
   }
 
-  // Routes that are no longer billed this month (terms removed / inactive).
+  // Bills no longer needed: terms removed / inactive, or a contractor
+  // spell that went away.
   for (const b of existing) {
-    if (!keepRouteIds.has(b.route_id)) {
+    if (!keepBillIds.has(b.id)) {
       await sql`DELETE FROM dtc_bills WHERE id = ${b.id}::uuid`;
     }
   }
@@ -515,25 +621,39 @@ async function refreshAutoLines(sql: Sql, runId: string, start: string) {
      WHERE l.bill_id = b.id AND b.run_id = ${runId}::uuid AND l.source = 'auto'
   `;
   const bills = await sql`
-    SELECT id, route_id, route_code, contractor_id, suppressed_auto
-      FROM dtc_bills WHERE run_id = ${runId}::uuid ORDER BY route_code
+    SELECT id, route_id, route_code, contractor_id, suppressed_auto,
+           period_from::text AS period_from, period_to::text AS period_to
+      FROM dtc_bills WHERE run_id = ${runId}::uuid ORDER BY route_code, period_from
   ` as any[];
   if (bills.length === 0) return;
 
   const lines: AutoLine[] = [];
-  const billByRoute = new Map(bills.map(b => [b.route_id as string, b]));
+  // A route has one bill per contractor spell in the month (usually one).
+  const billsByRoute = new Map<string, any[]>();
+  for (const b of bills) {
+    if (!billsByRoute.has(b.route_id)) billsByRoute.set(b.route_id, []);
+    billsByRoute.get(b.route_id)!.push(b);
+  }
+  /** The route's bill covering `date`. */
+  const billOn = (routeId: string, date: string) =>
+    (billsByRoute.get(routeId) ?? []).find(b => b.period_from <= date && date <= b.period_to);
+  /** The route's month-end bill (whoever holds the route at the end of the month). */
+  const lastBillOf = (routeId: string) => {
+    const list = billsByRoute.get(routeId) ?? [];
+    return list[list.length - 1];
+  };
   // A contractor's contractor-level deductions go on their first bill (by route code).
   const firstBillOf = new Map<string, any>();
   for (const b of bills) if (b.contractor_id && !firstBillOf.has(b.contractor_id)) firstBillOf.set(b.contractor_id, b);
 
-  // 1. Recurring monthly charges (GPS rent, …)
+  // 1. Recurring monthly charges (GPS rent, …): on the month-end contractor's bill.
   const charges = await sql`
     SELECT id, route_id, head, description, monthly_amount::float8 AS amount
       FROM dtc_recurring_charges
      WHERE active AND from_month <= ${start}::date AND (to_month IS NULL OR to_month >= ${start}::date)
   ` as any[];
   for (const c of charges) {
-    const b = billByRoute.get(c.route_id);
+    const b = lastBillOf(c.route_id);
     if (!b) continue;
     lines.push({ billId: b.id, kind: "deduction", head: c.head, amount: round2(c.amount), remarks: c.description, sourceRef: c.id });
   }
@@ -565,8 +685,10 @@ async function refreshAutoLines(sql: Sql, runId: string, start: string) {
           WHERE l.head = 'advance' AND l.source_ref = a.id AND b.run_id <> ${runId}::uuid)
   ` as any[];
   for (const a of advances) {
-    const onRoute = a.route_id ? billByRoute.get(a.route_id) : null;
-    const b = onRoute && onRoute.contractor_id === a.contractor_id ? onRoute : firstBillOf.get(a.contractor_id);
+    const onRoute = a.route_id
+      ? (billsByRoute.get(a.route_id) ?? []).find(x => x.contractor_id === a.contractor_id)
+      : null;
+    const b = onRoute ?? firstBillOf.get(a.contractor_id);
     if (!b) continue;
     lines.push({
       billId: b.id, kind: "deduction", head: "advance", amount: round2(a.amount),
@@ -596,10 +718,10 @@ async function refreshAutoLines(sql: Sql, runId: string, start: string) {
 
   // 5. Route officer entries dated in the month (short supply, crate /
   //    product shortage, short km, extra km / trips, penalties), one line
-  //    each on the bill of the entry's route.
+  //    each on the bill of the entry's route covering the entry's date.
   const { end } = monthBounds(start);
   for (const e of await loadEntryLineRows(sql, start, end)) {
-    const b = billByRoute.get(e.route_id);
+    const b = billOn(e.route_id, e.entry_date);
     if (!b) continue;
     const l = entryLine(e);
     if (!(l.amount > 0)) continue;

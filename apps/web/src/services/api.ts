@@ -581,6 +581,14 @@ export const fetchContractors = async () => {
   return (data.data ?? []).map(normalizeContractor);
 };
 
+/** Routes a contractor has held, with dates (current spells first). */
+export interface ContractorRouteSpell {
+  id: string; routeId: string; routeCode: string; routeName: string;
+  fromDate: string; toDate: string | null; nextContractor: string | null;
+}
+export const fetchContractorRouteHistory = async (id: string) =>
+  (await get<{ data: ContractorRouteSpell[] }>(`/contractors/${id}/route-history`)).data;
+
 export const createContractor = async (body: Record<string, unknown>) => {
   const data = await post<{ contractor: Record<string, unknown> }>("/contractors", {
     name: body.name,

@@ -317,7 +317,8 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
         -- cannot unmake the load it carried on a past date. Filtering it out
         -- here took the whole page off the sheet, order counts and all.
         LEFT JOIN routes r      ON r.id = ro.route_id
-        LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
+        -- Contractor on the sheet's date (0084), not today's.
+        LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${targetDate}::date)
         LEFT JOIN route_assignments ra
                ON ra.route_id = r.id AND ra.date = ${targetDate}::date
         -- One unconditional row (aggregate, no GROUP BY), read only by the
@@ -604,7 +605,7 @@ export async function dispatchSheetRoutes(app: FastifyInstance) {
                r.dispatch_time AS route_dispatch_time,
                ct.vehicle_number AS contractor_vehicle
         FROM routes r
-        LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
+        LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${body.date}::date)
         -- A soft-deleted route is still accepted here. Its indents keep showing
         -- on the sheet for the dates they were placed for, and goods already
         -- booked have to be marked out; refusing would strand them as pending

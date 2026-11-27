@@ -137,14 +137,16 @@ export async function reportsRoutes(app: FastifyInstance) {
       // on delete (see lib/route-code.ts), so it prints by name.
       const routes = await pgClient`
         SELECT r.id, r.code, r.name,
-               r.contractor_id, r.dispatch_time,
+               ct.id AS contractor_id, r.dispatch_time,
                (r.deleted_at IS NOT NULL) AS retired,
                ct.name           AS contractor_name,
                ct.vehicle_number AS vehicle_number,
                b.name            AS batch_name,
                b.batch_number    AS batch_code
           FROM routes r
-          LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
+          -- The contractor who held the route on the sheet's date (0084),
+          -- even if they have since been replaced or deleted.
+          LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${q.date}::date)
           LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
          WHERE r.code <> 'DEMO'   -- Play Store / App Store review route
            AND (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)
@@ -1019,14 +1021,16 @@ export async function reportsRoutes(app: FastifyInstance) {
       // the date, and deleting the route later does not unissue the pass.
       const routes = await pgClient`
         SELECT r.id, r.code, r.name,
-               r.contractor_id, r.dispatch_time,
+               ct.id AS contractor_id, r.dispatch_time,
                (r.deleted_at IS NOT NULL) AS retired,
                ct.name           AS contractor_name,
                ct.vehicle_number AS vehicle_number,
                b.name            AS batch_name,
                b.batch_number    AS batch_code
           FROM routes r
-          LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
+          -- The contractor who held the route on the sheet's date (0084),
+          -- even if they have since been replaced or deleted.
+          LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${q.date}::date)
           LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
          WHERE r.code <> 'DEMO'   -- Play Store / App Store review route
            AND (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)

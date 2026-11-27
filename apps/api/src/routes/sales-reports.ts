@@ -3301,7 +3301,20 @@ export async function buildSalesGrid(opts: {
   // R17 (retired, still delivering) took ₹2,91,225.05 of July-August 2026 out
   // of the register that way.
   const allRoutes = await pgClient`
-    SELECT r.id, r.code, r.name, ct.name AS contractor_name,
+    SELECT r.id, r.code, r.name,
+           -- Every contractor who held the route inside the range, oldest
+           -- first ("A / B" after a change), so a replaced contractor's days
+           -- stay credited to them (0084). Falls back to today's contractor.
+           COALESCE(
+             (SELECT string_agg(x.name, ' / ' ORDER BY x.first_from)
+                FROM (SELECT COALESCE(hc.name, h.contractor_name) AS name, min(h.from_date) AS first_from
+                        FROM route_contractor_history h
+                        LEFT JOIN contractors hc ON hc.id = h.contractor_id
+                       WHERE h.route_id = r.id AND h.contractor_id IS NOT NULL
+                         AND h.from_date <= ${q.to}::date
+                         AND (h.to_date IS NULL OR h.to_date >= ${q.from}::date)
+                       GROUP BY 1) x),
+             ct.name) AS contractor_name,
            (r.deleted_at IS NULL AND r.active = true) AS is_current
     FROM routes r
     LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL

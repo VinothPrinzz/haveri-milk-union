@@ -121,6 +121,32 @@ export async function contractorRoutes(app: FastifyInstance) {
     }
   );
 
+  // GET /api/v1/contractors/:id/route-history — every route this contractor
+  // has held and when (route_contractor_history, 0084), including routes
+  // since handed to someone else. Newest first.
+  app.get(
+    "/api/v1/contractors/:id/route-history",
+    { preHandler: [adminAuth, requireRole("contractors.view")] },
+    async (request, reply) => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      const rows = await pgClient`
+        SELECT h.id, h.route_id AS "routeId", r.code AS "routeCode", r.name AS "routeName",
+               h.from_date::text AS "fromDate", h.to_date::text AS "toDate",
+               -- Who took over when this spell ended
+               (SELECT COALESCE(nc.name, n.contractor_name)
+                  FROM route_contractor_history n
+                  LEFT JOIN contractors nc ON nc.id = n.contractor_id
+                 WHERE n.route_id = h.route_id AND n.from_date > h.from_date
+                 ORDER BY n.from_date LIMIT 1) AS "nextContractor"
+          FROM route_contractor_history h
+          JOIN routes r ON r.id = h.route_id
+         WHERE h.contractor_id = ${id}::uuid
+         ORDER BY (h.to_date IS NULL) DESC, h.from_date DESC
+      `;
+      return reply.send({ data: rows });
+    }
+  );
+
   // POST /api/v1/contractors — create + assign routes atomically
   app.post(
     "/api/v1/contractors",

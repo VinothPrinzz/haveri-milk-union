@@ -22,7 +22,7 @@ import { ApiError } from "@/lib/apiClient";
 import { createRun, deleteRun, fetchRun, regenerateRun, updateBill, type Bill, type RunDetail } from "@/services/dtc";
 import { RunActionArea, RunPipeline, RunTimeline } from "./RunActions";
 import { RecordBody, RecordHeader, Section, Timeline } from "./ui";
-import { RunStatusBadge, errMsg, fmtStamp, monthLong, rs, rs2, useDtcPerms } from "./shared";
+import { RunStatusBadge, billPeriodNote, errMsg, fmtStamp, monthLong, rs, rs2, useDtcPerms } from "./shared";
 
 export default function MonthlyBillSheetPage() {
   const { month = "" } = useParams();
@@ -179,7 +179,10 @@ function RouteBills({ data, editable, onSaved }: { data: RunDetail; editable: bo
               {bills.map(b => (
                 <tr key={b.id} className="cursor-pointer" onClick={() => navigate(`/dtc/bills/${run.month}/${b.id}`)}>
                   <td className="whitespace-nowrap"><span className="text-muted-foreground mr-1.5 text-[12px]">{b.routeCode}</span>{b.routeName}</td>
-                  <td>{b.contractorName ?? <span className="text-warning">none</span>}</td>
+                  <td>
+                    {b.contractorName ?? <span className="text-warning">none</span>}
+                    {billPeriodNote(b) && <span className="ml-1 text-[11px] text-muted-foreground">{billPeriodNote(b)}</span>}
+                  </td>
                   <td className="text-right" onClick={e => editable && b.segments.length === 1 && e.stopPropagation()}>
                     <DaysCell bill={b} editable={editable} onSaved={onSaved} />
                   </td>

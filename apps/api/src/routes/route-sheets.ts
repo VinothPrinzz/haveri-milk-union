@@ -126,9 +126,11 @@ export async function routeSheetRoutes(app: FastifyInstance) {
 
       // Get route + contractor info
       const [route] = await pgClient`
-        SELECT r.id, r.code, r.name, r.contractor_id,
+        SELECT r.id, r.code, r.name, ct.id AS contractor_id,
               ct.name AS contractor_name, ct.vehicle_number
-        FROM routes r LEFT JOIN contractors ct ON ct.id = r.contractor_id
+        FROM routes r
+        -- Contractor on the sheet's date (0084), not today's.
+        LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${body.date}::date)
         WHERE r.id = ${body.routeId}
       `;
       if (!route) return reply.status(404).send({ error: "Route not found" });
