@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db, pgClient } from "../lib/db.js";
+import { recordOrderModification } from "../lib/order-modifications.js";
 import {
   orderItems,
   dealerWallets,
@@ -1552,6 +1553,16 @@ export async function orderRoutes(app: FastifyInstance) {
                                     item_count = ${newLines.length},
                                     updated_at = now()
                   WHERE id = ${id}`;
+
+        // Shown on the dealer statement (0085): the invoice line is net of
+        // this change, so the statement lists it as information.
+        await recordOrderModification(tx, {
+          source: "order", orderId: id, dealerId: existing.dealer_id,
+          oldTotal: oldGrandTotal, newTotal: newGrandTotal,
+          oldItems: oldItems.map((oi: any) => ({ productId: oi.product_id, qty: Number(oi.quantity) })),
+          newItems: newLines.map((l: any) => ({ productId: l.productId, qty: Number(l.quantity) })),
+          userId: request.admin!.userId,
+        });
 
         // The new lines are written, so fgs_available counts them — refuse
         // (rolling everything back) if an increased SKU now oversells.

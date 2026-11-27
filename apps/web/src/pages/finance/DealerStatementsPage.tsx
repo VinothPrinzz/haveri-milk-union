@@ -23,7 +23,7 @@ import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/Report
 import { toCsv } from "@/lib/exporters";
 import {
   fetchStatementDealers, fetchDealerStatement,
-  type StatementResponse, type StatementRow, type StatementKind,
+  type StatementResponse, type StatementRow, type StatementKind, type StatementModification,
 } from "@/services/api";
 
 // IST-local calendar date (toISOString would flip to UTC's date overnight).
@@ -61,7 +61,21 @@ const ROWS_PER_PAGE = 30;
 type Line =
   | { t: "opening"; balance: number }
   | { t: "txn"; row: StatementRow }
+  | { t: "mod"; mod: StatementModification }
   | { t: "day"; date: string; dr: number; cr: number; closing: number };
+
+/** "Modified 26-11-2026 10:42 by Ravi: ₹1,200.00 → ₹1,450.00 (+₹250.00). Toned 500ml 24 → 30" */
+function modText(m: StatementModification): string {
+  const at = new Date(m.modifiedAt).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata", day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).replace(/\//g, "-").replace(",", "");
+  const sign = m.delta >= 0 ? "+" : "−";
+  const amounts = m.oldTotal != null && m.newTotal != null
+    ? `${fmtINR(m.oldTotal)} → ${fmtINR(m.newTotal)} (${sign}${fmtINR(Math.abs(m.delta))})`
+    : `change ${sign}${fmtINR(Math.abs(m.delta))}`;
+  return `Modified ${at}${m.byName ? ` by ${m.byName}` : ""}: ${amounts}${m.changes ? `. ${m.changes}` : ""}`;
+}
 
 function buildLines(stmt: StatementResponse): Line[] {
   // rows arrive sorted by voucherDate, so one pass closes each day as the
@@ -78,6 +92,7 @@ function buildLines(stmt: StatementResponse): Line[] {
     if (current !== null && row.voucherDate !== current) closeDay(current);
     current = row.voucherDate;
     lines.push({ t: "txn", row });
+    for (const mod of row.modifications ?? []) lines.push({ t: "mod", mod });
   }
   if (current !== null) closeDay(current);
   return lines;
@@ -161,6 +176,8 @@ export default function DealerStatementsPage() {
             r.type === "credit" ? r.amount : "",
             r.balanceAfter,
           ]);
+        } else if (l.t === "mod") {
+          out.push(["", "Modified", "", modText(l.mod), "", "", ""]);
         } else if (l.t === "day") {
           out.push([l.date, "", "", `Total for ${l.date}`, l.dr, l.cr, l.closing]);
         }
@@ -296,6 +313,15 @@ function StatementPage({
                 </tr>
               );
             }
+            if (l.t === "mod") {
+              return (
+                <tr key={`m${l.mod.id}`} className="text-muted-foreground italic">
+                  <td className="border border-border py-0.5 px-2" />
+                  <td className="border border-border py-0.5 px-2">Modified</td>
+                  <td className="border border-border py-0.5 px-2 text-[10.5px]" colSpan={5}>{modText(l.mod)}</td>
+                </tr>
+              );
+            }
             if (l.t === "day") {
               return (
                 <tr key={`d${i}`} className="font-bold bg-muted/20">
@@ -364,7 +390,8 @@ function StatementPage({
             Dr = dealer owes the union · Cr = the union holds the dealer's money.
             Invoices are booked on their delivery date; receipts on the day the money arrived.
             Order modifications and cancellations are already reflected in the invoice amount,
-            so they do not appear as separate adjustments.
+            so they do not appear as separate adjustments; each modification is listed under
+            its invoice as a "Modified" line for information.
           </p>
         </>
       )}

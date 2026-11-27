@@ -24,6 +24,7 @@ import {
   fetchRoutes,
   createContractor,
   updateContractor,
+  fetchContractorRouteHistory,
   type Contractor,
 } from "@/services/api";
 import { ContractorForm } from "@/components/contractors/ContractorForm";
@@ -399,11 +400,48 @@ function ContractorListTab({
               </div>
             );
           })()}
+          {viewing && <RouteHistory contractorId={viewing.id} />}
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setViewing(null)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// Every route this contractor has run, with dates. Sales, route sheets and
+// DTC bills for those dates stay with them after a route changes hands.
+const dmy = (iso: string | null) => (iso ? iso.split("-").reverse().join("-") : "");
+function RouteHistory({ contractorId }: { contractorId: string }) {
+  const { data = [], isLoading } = useQuery({
+    queryKey: ["contractor-route-history", contractorId],
+    queryFn: () => fetchContractorRouteHistory(contractorId),
+  });
+  return (
+    <div className="mt-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Route history</div>
+      {isLoading ? (
+        <Skeleton className="h-10 w-full" />
+      ) : data.length === 0 ? (
+        <p className="text-[12.5px] text-muted-foreground">No routes recorded.</p>
+      ) : (
+        <table className="erp-table w-full text-[12.5px]">
+          <thead>
+            <tr><th>Route</th><th>From</th><th>To</th><th>Handed to</th></tr>
+          </thead>
+          <tbody>
+            {data.map(h => (
+              <tr key={h.id}>
+                <td><span className="font-mono mr-1.5">{h.routeCode}</span>{h.routeName}</td>
+                <td className="num">{h.fromDate <= "2000-01-01" ? "Before records" : dmy(h.fromDate)}</td>
+                <td className="num">{h.toDate ? dmy(h.toDate) : <span className="text-success">Current</span>}</td>
+                <td>{h.toDate ? (h.nextContractor ?? "No contractor") : ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

@@ -45,7 +45,14 @@ export async function dtcReportRoutes(app: FastifyInstance) {
         qty: 0, amount: 0,
       };
       const amount = r.costBasis === "gross" ? r.gross : r.totalEarnings;
-      cur.months[r.month] = { qty: r.qty, amount, costPerLitre: r.costPerLitre };
+      // A month whose contractor changed has two bills for the route: add them up.
+      const m = cur.months[r.month];
+      if (m) {
+        const q = m.qty + r.qty, a = m.amount + amount;
+        cur.months[r.month] = { qty: round3(q), amount: round2(a), costPerLitre: q > 0 ? round2(a / q) : 0 };
+      } else {
+        cur.months[r.month] = { qty: r.qty, amount, costPerLitre: r.costPerLitre };
+      }
       cur.qty += r.qty;
       cur.amount += amount;
       cur.contractorName = r.contractorName;
@@ -83,6 +90,7 @@ export async function dtcReportRoutes(app: FastifyInstance) {
 
     const bills = await pgClient`
       SELECT b.id, to_char(r.bill_month, 'YYYY-MM') AS month, r.status AS "runStatus",
+             b.period_from::text AS "periodFrom", b.period_to::text AS "periodTo",
              b.route_code AS "routeCode", b.route_name AS "routeName", b.billing_type AS "billingType",
              b.days, b.qty_litres::float8 AS qty, b.gross_amount::float8 AS gross,
              b.other_earnings::float8 AS "otherEarnings", b.total_earnings::float8 AS "totalEarnings",
@@ -98,7 +106,7 @@ export async function dtcReportRoutes(app: FastifyInstance) {
         LEFT JOIN dtc_payments pm ON pm.bill_id = b.id AND pm.reversed_at IS NULL
        WHERE b.contractor_id = ${q.contractorId}::uuid
          AND r.bill_month >= ${from}::date AND r.bill_month <= ${to}::date
-       ORDER BY r.bill_month, b.route_code
+       ORDER BY r.bill_month, b.route_code, b.period_from
     ` as any[];
 
     const advances = await pgClient`

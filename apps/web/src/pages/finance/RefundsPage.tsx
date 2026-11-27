@@ -14,6 +14,7 @@ import { Search, RotateCcw, AlertTriangle, XCircle, CheckCircle2 } from "lucide-
 import {
   fetchRefunds, fetchRefundsSummary, resyncRefund, type RefundRow,
 } from "@/services/api";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
 const STATUS_OPTIONS: F9Option[] = [
   { value: "pending", label: "Pending" },
@@ -30,6 +31,7 @@ function StatusBadge({ status }: { status: RefundRow["status"] }) {
 }
 
 export default function RefundsPage() {
+  const canEdit = useCanEditFinance();
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string | null>(null);
@@ -130,7 +132,7 @@ export default function RefundsPage() {
                       {r.ledgerEntryId ? <CheckCircle2 className="h-4 w-4 text-success inline" /> : <AlertTriangle className="h-4 w-4 text-warning inline" />}
                     </td>
                     <td>
-                      {r.status === "pending" && (
+                      {canEdit && r.status === "pending" && (
                         <Button variant="outline" size="sm" className="h-6 text-[11px]" disabled={resync.isPending} onClick={() => resync.mutate(r.id)}>
                           Resync
                         </Button>

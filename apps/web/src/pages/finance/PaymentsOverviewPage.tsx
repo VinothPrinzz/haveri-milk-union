@@ -30,10 +30,11 @@ import {
 } from "@/services/api";
 import { todayIST } from "@/lib/istDate";
 import { useAuth } from "@/lib/auth";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
-// Roles that may edit / delete a recorded receipt. Mirrors the API's
-// requireExactRole("super_admin", "manager") on PATCH / DELETE /payments/:id.
-const CAN_EDIT = new Set(["manager", "super_admin"]);
+// Record / edit / delete a receipt: Finance and super_admin only (see
+// lib/financeAccess; the API checks finance.manage and
+// requireExactRole("super_admin", "accountant")).
 
 // Everything a receipt feeds — refetched after a record, edit or delete.
 const PAYMENT_QUERY_KEYS = [
@@ -91,8 +92,7 @@ export default function PaymentsOverviewPage() {
   const [editing, setEditing] = useState<PaymentRow | null>(null);
   const [deleting, setDeleting] = useState<PaymentRow | null>(null);
 
-  const { user } = useAuth();
-  const canEdit = CAN_EDIT.has(user?.role ?? "");
+  const canEdit = useCanEditFinance();
 
   useEffect(() => { setPage(1); }, [search, dateFrom, dateTo, mode, dealerId]);
 
@@ -128,11 +128,11 @@ export default function PaymentsOverviewPage() {
       <PageHeader
         title="Payments Overview"
         subtitle="All payments received from dealers"
-        actions={
+        actions={canEdit ? (
           <Button size="sm" className="h-8" onClick={() => setRecordOpen(true)}>
             <Plus className="h-3.5 w-3.5 mr-1.5" /> Record Payment
           </Button>
-        }
+        ) : undefined}
       />
 
       <FilterBar>

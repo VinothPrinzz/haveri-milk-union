@@ -307,6 +307,8 @@ function normalizeIndent(d: Record<string, unknown>) {
     batchId: (d.batch_id ?? d.batchId ?? "") as string,
     date: formattedDate,
     rawDate: String(rawDate).split("T")[0],
+    /** When the indent was placed (timestamp), for the "Ordered at" column. */
+    createdAt: (d.created_at ?? d.createdAt ?? null) as string | null,
     agentCode: (d.agent_code ?? d.agentCode ?? "") as string,
     status: statusLabel,
     rawStatus,
@@ -580,6 +582,14 @@ export const fetchContractors = async () => {
   });
   return (data.data ?? []).map(normalizeContractor);
 };
+
+/** Routes a contractor has held, with dates (current spells first). */
+export interface ContractorRouteSpell {
+  id: string; routeId: string; routeCode: string; routeName: string;
+  fromDate: string; toDate: string | null; nextContractor: string | null;
+}
+export const fetchContractorRouteHistory = async (id: string) =>
+  (await get<{ data: ContractorRouteSpell[] }>(`/contractors/${id}/route-history`)).data;
 
 export const createContractor = async (body: Record<string, unknown>) => {
   const data = await post<{ contractor: Record<string, unknown> }>("/contractors", {
@@ -2629,7 +2639,7 @@ export const saveDealerStandingIndents = (
     items: { productId: string; defaultQty: number; active: boolean }[];
     routeId?: string | null;
   },
-) => put<{ updated: number; routeId: string | null }>(
+) => put<{ updated: number; routeId: string | null; resyncedDrafts?: number }>(
   `/admin/dealers/${dealerId}/standing-indents`, body,
 );
 
@@ -2640,6 +2650,9 @@ export const fetchDealerDraft = (dealerId: string, date: string, routeId?: strin
     exists: boolean;
     paused: boolean;
     pausedReason?: string | null;
+    /** The day's draft was deleted from Dealer Indents (restorable while not past). */
+    deleted?: boolean;
+    restorable?: boolean;
     orderId?: string;
     status: string;
     editable: boolean;
@@ -2657,6 +2670,18 @@ export const patchDealerDraft = (
              itemCount: number }>(
   `/admin/dealers/${dealerId}/drafts/${date}`, body,
 );
+
+/** Delete the day's draft (built or still a standing-indent preview) on a route. */
+export const deleteDealerDraft = (dealerId: string, date: string, routeId?: string | null) =>
+  del<{ deleted: boolean; orderId: string; deliveryDate: string }>(
+    `/admin/dealers/${dealerId}/drafts/${date}${routeId ? `?routeId=${routeId}` : ""}`,
+  );
+
+/** Undo deleteDealerDraft: the standing indent applies to the day again. */
+export const restoreDealerDraft = (dealerId: string, date: string, routeId?: string | null) =>
+  post<{ restored: boolean; deliveryDate: string }>(
+    `/admin/dealers/${dealerId}/drafts/${date}/restore${routeId ? `?routeId=${routeId}` : ""}`, {},
+  );
 
 export const confirmDealerDraft = (
   dealerId: string,
@@ -3068,6 +3093,14 @@ export interface StatementRow {
   id: string; voucherDate: string; voucherNo: string | null; voucherType: string | null;
   particulars: string | null; type: "credit" | "debit"; amount: number; balanceAfter: number;
   kind: StatementKind; mode: string | null; orderId: string | null;
+  /** Changes made to the indent / gate pass behind an invoice line (information only). */
+  modifications?: StatementModification[];
+}
+export interface StatementModification {
+  id: string; modifiedAt: string; byName: string | null;
+  oldTotal: number | null; newTotal: number | null; delta: number;
+  /** "Toned 500ml 24 → 30, Curd 200g 12 → removed" ('' when unknown) */
+  changes: string;
 }
 export interface StatementDay {
   date: string; opening: number;

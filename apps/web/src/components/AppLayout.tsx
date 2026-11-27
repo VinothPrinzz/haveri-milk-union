@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, Outlet } from "react-router-dom";
 import {
   LayoutDashboard, Database, ShoppingCart, Truck, Boxes,
-  BookOpenCheck, FileBarChart2, ShieldCheck, Search, Bell,
+  BookOpenCheck, FileBarChart2, ShieldCheck, Search,
   ChevronDown, LogOut, Keyboard, Wallet, KeyRound, Menu, Route as RouteIcon, ClipboardPen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { NavLink } from "react-router-dom";
 import { AppSidebar } from "@/components/AppSidebar";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
+import { NotificationBell } from "@/components/NotificationBell";
 import { useKeyboardNav } from "@/lib/useKeyboardNav";
 
 // ─── Module taxonomy (10-module spec, but we expose only the modules
@@ -348,10 +349,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           <span className="kbd !text-white/70 !border-white/20 !bg-white/10">Ctrl+K</span>
         </button>
 
-        <button className="relative p-1.5 hover:bg-white/10 rounded-sm" title="Notifications">
-          <Bell className="w-4 h-4" />
-          <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-warning rounded-full" />
-        </button>
+        <NotificationBell />
 
         {/* User menu */}
         <div className="relative">

@@ -111,7 +111,19 @@ type RawTxn = {
   orderId: string | null;
 };
 
-export type StatementTxn = RawTxn & { balanceAfter: number };
+/** A modify of the order / gate pass behind an invoice line (0085). Information only. */
+export type StatementModification = {
+  id: string;
+  modifiedAt: string;
+  byName: string | null;
+  oldTotal: number | null;
+  newTotal: number | null;
+  delta: number;
+  /** "Toned 500ml 24 → 30, Curd 200g 12 → removed" ('' when unknown) */
+  changes: string;
+};
+
+export type StatementTxn = RawTxn & { balanceAfter: number; modifications?: StatementModification[] };
 
 export type StatementDay = {
   date: string;
@@ -356,6 +368,35 @@ async function loadTxns(dealerId: string, to: string): Promise<RawTxn[]> {
   }));
 }
 
+/** Line-by-line difference between a modify's before and after. */
+function itemChanges(
+  before: { productId: string; name: string; qty: number }[] | null,
+  after: { productId: string; name: string; qty: number }[] | null,
+): string {
+  if (!before || !after) return "";
+  const a = new Map(after.map((i) => [i.productId, i]));
+  const b = new Map(before.map((i) => [i.productId, i]));
+  const out: string[] = [];
+  for (const i of before) {
+    const n = a.get(i.productId)?.qty ?? 0;
+    if (n !== i.qty) out.push(`${i.name} ${i.qty} → ${n || "removed"}`);
+  }
+  for (const i of after) if (!b.has(i.productId)) out.push(`${i.name} added ${i.qty}`);
+  return out.join(", ");
+}
+
+/** "Modified 26-11-2026 10:42 by Ravi: ₹1,200.00 → ₹1,450.00 (+₹250.00). Toned 500ml 24 → 30" */
+export function modificationText(m: StatementModification): string {
+  const at = new Date(m.modifiedAt).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).replace(/\//g, "-").replace(",", "");
+  const sign = m.delta >= 0 ? "+" : "−";
+  const amounts = m.oldTotal != null && m.newTotal != null
+    ? `${inr(m.oldTotal)} → ${inr(m.newTotal)} (${sign}${inr(Math.abs(m.delta))})`
+    : `change ${sign}${inr(Math.abs(m.delta))}`;
+  return `Modified ${at}${m.byName ? ` by ${m.byName}` : ""}: ${amounts}${m.changes ? `. ${m.changes}` : ""}`;
+}
+
 /** Fold the running balance and roll the period up day by day. */
 function buildStatement(
   txns: RawTxn[],
@@ -471,6 +512,37 @@ export async function loadStatement(dealerId: string, from: string, to: string) 
     from,
     to
   );
+
+  // Modifications of the indents / gate passes on this statement, attached
+  // to their invoice line. The invoice amount is already the modified one,
+  // so these are shown for information and never move the balance.
+  const invoiceIds = built.rows.filter((r) => r.kind === "invoice" && r.orderId).map((r) => r.orderId!);
+  if (invoiceIds.length) {
+    const mods = await pgClient`
+      SELECT m.id, m.order_id::text AS "orderId", m.modified_at AS "modifiedAt", u.name AS "byName",
+             m.old_total::float8 AS "oldTotal", m.new_total::float8 AS "newTotal", m.delta::float8 AS delta,
+             m.old_items AS "oldItems", m.new_items AS "newItems"
+        FROM order_modifications m
+        LEFT JOIN users u ON u.id = m.modified_by
+       WHERE m.dealer_id = ${dealerId}::uuid
+         AND m.order_id = ANY(string_to_array(${invoiceIds.join(",")}, ',')::uuid[])
+       ORDER BY m.modified_at
+    ` as any[];
+    const byOrder = new Map<string, StatementModification[]>();
+    for (const m of mods) {
+      const list = byOrder.get(m.orderId) ?? [];
+      list.push({
+        id: m.id, modifiedAt: m.modifiedAt, byName: m.byName ?? null,
+        oldTotal: m.oldTotal ?? null, newTotal: m.newTotal ?? null, delta: Number(m.delta) || 0,
+        changes: itemChanges(m.oldItems, m.newItems),
+      });
+      byOrder.set(m.orderId, list);
+    }
+    for (const r of built.rows) {
+      const list = r.kind === "invoice" && r.orderId ? byOrder.get(r.orderId) : undefined;
+      if (list) r.modifications = list;
+    }
+  }
 
   return {
     dealer,
@@ -715,7 +787,11 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
           <td class="num">${r.type === "debit" ? inr(r.amount) : ""}</td>
           <td class="num">${r.type === "credit" ? inr(r.amount) : ""}</td>
           <td class="num">${drcrLabel(r.balanceAfter)}</td>
-        </tr>`).join("");
+        </tr>${(r.modifications ?? []).map((m) => `
+        <tr class="mod">
+          <td></td><td></td><td>Modified</td>
+          <td colspan="4">${esc(modificationText(m))}</td>
+        </tr>`).join("")}`).join("");
 
       const dailyBlock = `
         <h2>Daily activity</h2>
@@ -788,6 +864,7 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
           .empty{text-align:center;color:#777;padding:14px;}
           tfoot td{font-weight:bold;background:#fafafa;}
           .totrow td{font-weight:bold;}
+          tr.mod td{color:#555;font-style:italic;font-size:11px;border-top:none;}
           @media print{button{display:none;}}
         </style></head><body>
         <div class="hdr">
@@ -810,7 +887,8 @@ export async function financeDealerStatementsRoutes(app: FastifyInstance) {
         ${view === "detail" ? "" : dailyBlock}
         ${view === "daily"  ? "" : detailBlock}
         <p class="sub">* Dr = dealer owes the union; Cr = the union holds the dealer's money.
-           Invoices are booked on their delivery date; receipts on the day the money arrived.</p>
+           Invoices are booked on their delivery date; receipts on the day the money arrived.
+           "Modified" lines show changes to an indent or gate pass; its invoice amount is already the modified one.</p>
         <button onclick="window.print()">Print</button>
       </body></html>`;
 

@@ -41,6 +41,29 @@ import {
   type EntryItem, type EntryLineRow, type EntryType,
 } from "../lib/dtc-officer-entries.js";
 import { dtcRoute, parseWith } from "../lib/dtc-http.js";
+import { NOTIFY_ROLES, notifyStaffSafe } from "../lib/admin-notifications.js";
+
+// Entries that are shortages: staff are notified when one is saved or changed.
+const SHORTAGE_TYPES = new Set<EntryType>(["short_supply", "crate_shortage", "product_shortage", "km_short"]);
+
+/** "Shortage recorded: R12 · Ramesh Transport · Product shortage ₹432.00 (by Route Officer 3)" */
+async function notifyShortage(
+  request: FastifyRequest,
+  entry: Awaited<ReturnType<typeof loadEntries>>[number] | undefined,
+  verb: "recorded" | "changed",
+) {
+  if (!entry || !SHORTAGE_TYPES.has(entry.type)) return;
+  const by = request.admin?.name;
+  const [, m, d] = entry.entryDate.split("-");
+  await notifyStaffSafe(request.log, {
+    kind: "officer_shortage",
+    title: `Shortage ${verb}: ${entry.routeCode}${entry.contractorName ? ` · ${entry.contractorName}` : ""}`,
+    body: `${entry.headLabel} ${inr(entry.amount)} on ${d}-${m}: ${entry.detail}${by ? ` (by ${by})` : ""}`,
+    link: `/contractor-entries/${entry.id}`,
+    roles: [...NOTIFY_ROLES.officerShortage],
+    refId: entry.id,
+  });
+}
 
 const uuidParam = z.object({ id: z.string().uuid() });
 const inr = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -59,9 +82,16 @@ const routeInScope = (sql: Sql, col: string, zoneId: string | null) => sql`
       WHERE dz.route_id = ${sql.unsafe(col)} AND dz.deleted_at IS NULL AND dz.zone_id = ${zoneId}::uuid))
 `;
 
-async function assertRouteInScope(sql: Sql, routeId: string, zoneId: string | null) {
+/**
+ * Throws unless the route is one of the officer's. `onDate` picks whose
+ * contractor_id comes back: the contractor on that date (0084), else today's.
+ */
+async function assertRouteInScope(sql: Sql, routeId: string, zoneId: string | null, onDate?: string) {
   const [r] = await sql`
-    SELECT r.id, r.contractor_id FROM routes r
+    SELECT r.id,
+           CASE WHEN ${onDate ?? null}::date IS NULL THEN r.contractor_id
+                ELSE route_contractor_on(r.id, ${onDate ?? null}::date) END AS contractor_id
+      FROM routes r
      WHERE r.id = ${routeId}::uuid AND r.deleted_at IS NULL AND r.code <> 'DEMO'
        AND ${routeInScope(sql, "r.id", zoneId)}
   ` as any[];
@@ -193,9 +223,15 @@ async function computeEntry(sql: Sql, b: Body) {
       break;
     }
     case "product_shortage": {
+      if (!b.dealerId) throw bad("Pick the agent who was short.");
+      const [d] = await sql`
+        SELECT id FROM dealers WHERE id = ${b.dealerId}::uuid AND route_id = ${b.routeId}::uuid AND deleted_at IS NULL
+      `;
+      if (!d) throw bad("That agent is not on this route.");
       if (!b.reportSource || !["dispatch_check", "return_check", "on_route"].includes(b.reportSource)) {
         throw bad("Say where the shortage was found.");
       }
+      out.dealerId = b.dealerId;
       out.reportSource = b.reportSource;
       await priceItems();
       break;
@@ -303,7 +339,9 @@ async function refreshEntryLine(
   const [row] = await loadEntryLineRows(tx, start, end, entryId);
   if (row) {
     const [bill] = await tx`
-      SELECT id, suppressed_auto FROM dtc_bills WHERE run_id = ${run.id}::uuid AND route_id = ${row.route_id}::uuid
+      SELECT id, suppressed_auto FROM dtc_bills
+       WHERE run_id = ${run.id}::uuid AND route_id = ${row.route_id}::uuid
+         AND ${row.entry_date}::date BETWEEN period_from AND period_to
     ` as any[];
     const suppressed = ((bill?.suppressed_auto ?? []) as string[]).some(k => k.endsWith(`:${entryId}`));
     const l = entryLine(row);
@@ -346,6 +384,7 @@ async function loadEntries(sql: Sql, where: { id?: string; from?: string; to?: s
       LEFT JOIN users uu ON uu.id = e.updated_by
       LEFT JOIN dtc_bill_runs run ON run.bill_month = date_trunc('month', e.entry_date)::date
       LEFT JOIN dtc_bills b ON b.run_id = run.id AND b.route_id = e.route_id
+                           AND e.entry_date BETWEEN b.period_from AND b.period_to
       LEFT JOIN LATERAL (
         SELECT l.id FROM dtc_bill_lines l WHERE l.bill_id = b.id AND l.source_ref = e.id LIMIT 1
       ) ln ON true
@@ -424,11 +463,12 @@ export async function officerEntryRoutes(app: FastifyInstance) {
   dtcRoute(app, "get", "/api/v1/officer-entries/lookups", "officer_entries.view", async (request) => {
     const { date = istToday() } = parseWith(z.object({ date: isoDate.optional() }), request.query);
     const zoneId = scopeZone(request);
+    // The contractor who held each route on the entry date (0084), not today's.
     const routes = await pgClient`
-      SELECT r.id, r.code, r.name, r.contractor_id AS "contractorId", c.name AS "contractorName",
+      SELECT r.id, r.code, r.name, c.id AS "contractorId", c.name AS "contractorName",
              c.phone AS "contractorPhone", c.vehicle_number AS "contractorVehicle"
         FROM routes r
-        LEFT JOIN contractors c ON c.id = r.contractor_id AND c.deleted_at IS NULL
+        LEFT JOIN contractors c ON c.id = route_contractor_on(r.id, ${date}::date) AND c.deleted_at IS NULL
        WHERE r.deleted_at IS NULL AND r.active AND r.code <> 'DEMO'
          AND ${routeInScope(pgClient, "r.id", zoneId)}
        ORDER BY r.code
@@ -514,7 +554,7 @@ export async function officerEntryRoutes(app: FastifyInstance) {
     const zoneId = scopeZone(request);
     const id = await pgClient.begin(async (_tx) => {
       const tx = _tx as unknown as Sql;
-      const route = await assertRouteInScope(tx, body.routeId, zoneId);
+      const route = await assertRouteInScope(tx, body.routeId, zoneId, body.entryDate);
       const month = await lockMonth(tx, body.entryDate, "added");
       const v = await computeEntry(tx, body);
       const [row] = await tx`
@@ -535,6 +575,7 @@ export async function officerEntryRoutes(app: FastifyInstance) {
       return row.id as string;
     });
     const [entry] = await loadEntries(pgClient, { id, zoneId });
+    await notifyShortage(request, entry, "recorded");
     return reply.status(201).send({ message: `Saved: ${entry?.headLabel ?? "entry"} ${inr(entry?.amount ?? 0)}`, entry });
   });
 
@@ -553,7 +594,7 @@ export async function officerEntryRoutes(app: FastifyInstance) {
       ` as any[];
       if (!old) throw new HttpError(404, "Not found", "Entry not found.");
       await assertRouteInScope(tx, old.route_id, zoneId);
-      const route = await assertRouteInScope(tx, body.routeId, zoneId);
+      const route = await assertRouteInScope(tx, body.routeId, zoneId, body.entryDate);
       // Both months must be open: the line leaves the old month's bill and joins the new one's.
       const oldMonth = await lockMonth(tx, old.entry_date, "changed");
       const newMonth = old.entry_date.slice(0, 7) === body.entryDate.slice(0, 7)
@@ -575,6 +616,7 @@ export async function officerEntryRoutes(app: FastifyInstance) {
       if (newMonth !== oldMonth) await refreshEntryLine(tx, id, oldMonth, userId, "moved to another month");
     });
     const [entry] = await loadEntries(pgClient, { id, zoneId });
+    await notifyShortage(request, entry, "changed");
     return { message: `Updated: ${entry?.headLabel ?? "entry"} ${inr(entry?.amount ?? 0)}`, entry };
   });
 

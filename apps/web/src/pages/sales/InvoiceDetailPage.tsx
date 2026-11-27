@@ -19,6 +19,7 @@ import {
   sendInvoice,
   cancelInvoice,
 } from "@/services/api";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
 // ── Company info — mirrors RouteLetterhead in RouteSheetPage.tsx ────
 const COMPANY = {
@@ -110,6 +111,8 @@ const modeLabel = (m: string | null | undefined): string => {
 export default function InvoiceDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const qc = useQueryClient();
+  // Voiding an invoice is a finance change: Finance and super_admin only.
+  const canEditFinance = useCanEditFinance();
 
   const { data: invData, isLoading } = useQuery({
     queryKey: ["invoice", id],
@@ -212,7 +215,7 @@ export default function InvoiceDetailPage() {
                 <Send className="h-3.5 w-3.5 mr-1" /> Issue
               </Button>
             )}
-            {inv?.paymentStatus !== "paid" && (
+            {canEditFinance && inv?.paymentStatus !== "paid" && (
               <Button
                 size="sm"
                 variant="outline"

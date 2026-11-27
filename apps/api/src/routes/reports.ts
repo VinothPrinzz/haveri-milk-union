@@ -111,6 +111,37 @@ export async function reportsRoutes(app: FastifyInstance) {
           category: p.category_name ?? "",
         });
       }
+
+      // ── 2b. Price on the sheet's date, and the price before it ──
+      // The latest revision in force on the date (Masters → Price Revisions
+      // or an edit on All Products): new = the dealer price from that
+      // revision (what this sheet bills), old = the dealer price before it.
+      // Rows logged before 0075 carry only the net price: grossed up with GST.
+      const revRows = await pgClient`
+        SELECT DISTINCT ON (pr.product_id)
+               pr.product_id::text AS product_id,
+               pr.effective_from::text AS effective_from,
+               COALESCE(pr.old_dealer_price, round(pr.old_price * (1 + pr.old_gst_percent / 100), 2))::float8 AS old_price,
+               COALESCE(pr.new_dealer_price, round(pr.new_price * (1 + pr.new_gst_percent / 100), 2))::float8 AS new_price
+          FROM price_revisions pr
+         WHERE pr.effective_from <= ${q.date}::date
+         ORDER BY pr.product_id, pr.effective_from DESC, pr.created_at DESC
+      `;
+      const priceRevision = new Map<string, { oldPrice: number; newPrice: number; revisedOn: string }>();
+      for (const r of revRows as any[]) {
+        if (Number(r.old_price) !== Number(r.new_price)) {
+          priceRevision.set(r.product_id, {
+            oldPrice: Number(r.old_price), newPrice: Number(r.new_price), revisedOn: r.effective_from,
+          });
+        }
+      }
+      // Current dealer price, for products with no revision on or before the date.
+      const currentPrice = new Map<string, number>(
+        (await pgClient`
+          SELECT id::text AS id, COALESCE(dealer_price, round(base_price * (1 + gst_percent / 100), 2))::float8 AS price
+            FROM products
+        ` as any[]).map(r => [r.id as string, Number(r.price)]),
+      );
  
       // ── 3. Batch metadata (if any) ──
       let batch: any = null;
@@ -137,14 +168,24 @@ export async function reportsRoutes(app: FastifyInstance) {
       // on delete (see lib/route-code.ts), so it prints by name.
       const routes = await pgClient`
         SELECT r.id, r.code, r.name,
-               r.contractor_id, r.dispatch_time,
+               ct.id AS contractor_id,
+               -- Same as the Dispatch Sheet: the time set on the day's
+               -- dispatch (route_assignments), else the route's usual time.
+               COALESCE(ra.departure_time::text, r.dispatch_time::text) AS dispatch_time,
                (r.deleted_at IS NOT NULL) AS retired,
                ct.name           AS contractor_name,
                ct.vehicle_number AS vehicle_number,
                b.name            AS batch_name,
                b.batch_number    AS batch_code
           FROM routes r
-          LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
+          -- The contractor who held the route on the sheet's date (0084),
+          -- even if they have since been replaced or deleted.
+          LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${q.date}::date)
+          LEFT JOIN LATERAL (
+            SELECT a.departure_time FROM route_assignments a
+             WHERE a.route_id = r.id AND a.date = ${q.date}::date AND a.departure_time IS NOT NULL
+             ORDER BY a.updated_at DESC NULLS LAST LIMIT 1
+          ) ra ON true
           LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
          WHERE r.code <> 'DEMO'   -- Play Store / App Store review route
            AND (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)
@@ -861,6 +902,11 @@ export async function reportsRoutes(app: FastifyInstance) {
             amount:       agg.amount,
             pktPlus,
             pktMinus,
+            // Old / new dealer price (see 2b). Not for "(Sub)" lines, which
+            // are billed at the subsidy rate.
+            oldPrice:  isSub ? null : priceRevision.get(realPid)?.oldPrice ?? null,
+            newPrice:  isSub ? null : priceRevision.get(realPid)?.newPrice ?? currentPrice.get(realPid) ?? null,
+            revisedOn: isSub ? null : priceRevision.get(realPid)?.revisedOn ?? null,
           });
         }
         abstractItems.sort((a, b) => a.sortOrder - b.sortOrder);
@@ -1019,14 +1065,24 @@ export async function reportsRoutes(app: FastifyInstance) {
       // the date, and deleting the route later does not unissue the pass.
       const routes = await pgClient`
         SELECT r.id, r.code, r.name,
-               r.contractor_id, r.dispatch_time,
+               ct.id AS contractor_id,
+               -- Same as the Dispatch Sheet: the time set on the day's
+               -- dispatch (route_assignments), else the route's usual time.
+               COALESCE(ra.departure_time::text, r.dispatch_time::text) AS dispatch_time,
                (r.deleted_at IS NOT NULL) AS retired,
                ct.name           AS contractor_name,
                ct.vehicle_number AS vehicle_number,
                b.name            AS batch_name,
                b.batch_number    AS batch_code
           FROM routes r
-          LEFT JOIN contractors ct ON ct.id = r.contractor_id AND ct.deleted_at IS NULL
+          -- The contractor who held the route on the sheet's date (0084),
+          -- even if they have since been replaced or deleted.
+          LEFT JOIN contractors ct ON ct.id = route_contractor_on(r.id, ${q.date}::date)
+          LEFT JOIN LATERAL (
+            SELECT a.departure_time FROM route_assignments a
+             WHERE a.route_id = r.id AND a.date = ${q.date}::date AND a.departure_time IS NOT NULL
+             ORDER BY a.updated_at DESC NULLS LAST LIMIT 1
+          ) ra ON true
           LEFT JOIN batches b      ON b.id = r.primary_batch_id AND b.deleted_at IS NULL
          WHERE r.code <> 'DEMO'   -- Play Store / App Store review route
            AND (${routeId}::uuid IS NULL OR r.id = ${routeId ?? NIL}::uuid)

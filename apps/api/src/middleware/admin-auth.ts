@@ -113,6 +113,17 @@ export async function adminAuth(
 // `role === "super_admin"` directly (see db-status.ts / db-reconciliation.ts).
 const SUPER_ROLES: UserRole[] = ["super_admin", "call_desk"];
 
+// Permissions the call_desk super role does NOT get for free: changes in the
+// Finance module belong to Finance (accountant) and super_admin only, so the
+// Indent desk's blanket access stops at reading finance.
+const STRICT_PERMISSIONS = new Set<string>(["finance.manage"]);
+
+/** Whether `role` clears `permission` on the strength of being a super role. */
+function superBypass(role: UserRole, permission: string): boolean {
+  if (!SUPER_ROLES.includes(role)) return false;
+  return role === "super_admin" || !STRICT_PERMISSIONS.has(permission);
+}
+
 // NOTE on the `viewer` role: it is a read-only role. It is added to EVERY
 // "*.view" / read-style permission below and to NONE of the "*.manage" /
 // create / update / cancel / wallet / users permissions. Result: a viewer can
@@ -162,11 +173,15 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "dealers.manage": ["super_admin", "manager"],
   "dealers.wallet": ["super_admin", "call_desk"],
 
-  // Finance
-  // Finance. Editing / deleting a recorded receipt is narrower than
-  // finance.manage — manager / super_admin only, see requireExactRole.
+  // Finance. Every change in the Finance module (receipts, notes, refunds,
+  // cheques, credit limits, leakage runs, recoveries) is Finance's own:
+  // accountant and super_admin only. Strict, so call_desk's super-role
+  // bypass does not reach it (STRICT_PERMISSIONS). Others read.
   "finance.view":   ["super_admin", "manager", "accountant", "viewer"],
-  "finance.manage": ["super_admin", "manager", "accountant"],
+  "finance.manage": ["super_admin", "accountant"],
+  // Re-sending an invoice PDF to the dealer changes nothing in the books;
+  // kept with the roles that had it under finance.manage before.
+  "invoices.send":  ["super_admin", "manager", "accountant"],
 
   // Reports (Route Sheet + Gate Pass report pages). Route officers are scoped
   // to reports-only in the admin UI, so they need read access here.
@@ -187,7 +202,8 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // Suppliers (Masters → Suppliers) — stock vendors. FGS/dispatch roles need
   // view so they can pick a supplier when recording received stock; only
   // masters staff manage the list.
-  "suppliers.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  // Finance (accountant) reads suppliers for the purchase ledger (Finance → Supplier Ledger).
+  "suppliers.view":   ["super_admin", "manager", "dispatch_officer", "accountant", "viewer", "fgs_milk_curd", "fgs_others"],
   "suppliers.manage": ["super_admin", "manager"],
 
   // Batches (Masters → Batches) — officers need read access for the batch
@@ -247,13 +263,18 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // limited to their own routes in routes/officer-entries.ts.
   "officer_entries.view":   ["super_admin", "officer", "manager", "accountant", "viewer", "pre_auditor"],
   "officer_entries.manage": ["super_admin", "officer"],
+
+  // Product demand: dealers' "Notify" on out-of-stock products (0086).
+  // Read by the indent desk, management and the people who make / move stock.
+  "demand.view":   ["super_admin", "manager", "call_desk", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  "demand.manage": ["super_admin", "manager", "call_desk", "dispatch_officer", "fgs_milk_curd", "fgs_others"],
 };
 
 /** Same test as requireRole, for endpoints whose permission depends on the request body. */
 export function roleHasPermission(role: UserRole | string | undefined, permission: string): boolean {
   const allowed = ROLE_PERMISSIONS[permission];
   if (!allowed || !role) return false;
-  return SUPER_ROLES.includes(role as UserRole) || allowed.includes(role as UserRole);
+  return superBypass(role as UserRole, permission) || allowed.includes(role as UserRole);
 }
 
 /**
@@ -286,7 +307,7 @@ export function requireRole(permission: string) {
     // Super-user roles clear every defined permission (mirrors super_admin
     // being listed in each array). Checked after the unknown-permission guard
     // so behaviour matches super_admin exactly.
-    if (SUPER_ROLES.includes(request.admin.role)) return;
+    if (superBypass(request.admin.role, permission)) return;
 
     if (!allowedRoles.includes(request.admin.role)) {
       return reply.status(403).send({

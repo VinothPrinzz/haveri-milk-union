@@ -8,7 +8,7 @@ import {
   Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows,
   ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X, Factory, Droplets,
   Route as RouteBilling, Container, Satellite, PiggyBank, CalendarRange, CheckSquare, Landmark,
-  FileStack, Fuel, BookUser, ClipboardPen,
+  FileStack, Fuel, BookUser, ClipboardPen, PackageSearch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MODULES, moduleOfPath, allowedModulesForRole, type ModuleKey } from "@/components/AppLayout";
@@ -53,6 +53,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Record Indents",   path: "/sales/record-indents",                  icon: FileText },
     { label: "Subsidy Indents",  path: "/sales/subsidy-indents",                 icon: BadgeIndianRupee },
     { label: "Dealer Indents", path: "/sales/dealer-indents", icon: CalendarClock },
+    { label: "Product Demand",   path: "/sales/product-demand",                  icon: PackageSearch },
     { label: "All Indents",      path: "/sales/all-indents",                     icon: ClipboardCheck },
     { label: "Direct - Gate Pass", path: "/sales/direct-sales/gate-pass",        icon: ScrollText },
     { label: "Direct - Cash",    path: "/sales/direct-sales/cash-customer",      icon: CreditCard },
@@ -85,6 +86,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Refunds",           path: "/finance/refunds",         icon: RotateCcw },
     { label: "Credit/Debit Notes", path: "/finance/adjustments",    icon: FilePlus2 },
     { label: "Leakage Incentive", path: "/finance/leakage-incentive", icon: Droplets },
+    { label: "Supplier Ledger",   path: "/finance/supplier-ledger", icon: Factory },
     { label: "Day Book",          path: "/finance/day-book",        icon: BookOpen },
   ],
   dtc: [

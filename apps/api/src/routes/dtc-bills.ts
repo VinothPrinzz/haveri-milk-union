@@ -123,6 +123,7 @@ const runSummarySql = (where: ReturnType<typeof pgClient>) => pgClient`
 const BILL_COLUMNS = `
   b.id, b.run_id AS "runId", b.route_id AS "routeId", b.route_code AS "routeCode", b.route_name AS "routeName",
   b.contractor_id AS "contractorId", b.contractor_name AS "contractorName",
+  b.period_from::text AS "periodFrom", b.period_to::text AS "periodTo",
   b.vehicle_number AS "vehicleNumber", b.vehicle_capacity_mt::float8 AS "vehicleCapacityMt",
   b.billing_type AS "billingType", b.rate::float8 AS rate, b.km_per_day::float8 AS "kmPerDay",
   b.segments, b.days, b.qty_litres::float8 AS "qtyLitres",
@@ -224,7 +225,7 @@ export async function dtcBillRoutes(app: FastifyInstance) {
         LEFT JOIN contractors c ON c.id = b.contractor_id
         LEFT JOIN dtc_payments pm ON pm.bill_id = b.id AND pm.reversed_at IS NULL
        WHERE b.run_id = ${id}::uuid
-       ORDER BY b.route_code
+       ORDER BY b.route_code, b.period_from
     ` as any[];
     const lines = await linesForBills(bills.map(b => b.id));
     const events = await pgClient`
@@ -357,6 +358,10 @@ export async function dtcBillRoutes(app: FastifyInstance) {
     ` as any[];
     if (!bill) throw new HttpError(404, "Not found", "Bill not found.");
     const { start, end } = monthBounds(bill.month);
+    // A route whose contractor changed mid-month has one bill per
+    // contractor; this one covers only periodFrom..periodTo.
+    const pFrom: string = bill.periodFrom ?? start;
+    const pTo: string = bill.periodTo ?? end;
     const lines = (await linesForBills([id])).get(id) ?? [];
 
     // Which dates count as days, per segment (for the clerk to check).
@@ -372,13 +377,13 @@ export async function dtcBillRoutes(app: FastifyInstance) {
       SELECT COALESCE(SUM(x.amount), 0)::float8 AS amount FROM (
         SELECT o.grand_total AS amount FROM orders o JOIN dealers d ON d.id = o.dealer_id
          WHERE COALESCE(o.route_id, d.route_id) = ${bill.routeId}::uuid
-           AND o.delivery_date >= ${start}::date AND o.delivery_date <= ${end}::date
-           AND o.created_at >= ${start}::date - interval '31 days' AND o.created_at < ${end}::date + interval '2 days'
+           AND o.delivery_date >= ${pFrom}::date AND o.delivery_date <= ${pTo}::date
+           AND o.created_at >= ${pFrom}::date - interval '31 days' AND o.created_at < ${pTo}::date + interval '2 days'
            AND o.status IN ('confirmed', 'dispatched', 'delivered')
         UNION ALL
         SELECT ds.grand_total FROM direct_sales ds
          WHERE ds.route_id = ${bill.routeId}::uuid AND ds.status = 'confirmed'
-           AND ds.sale_date >= ${start}::date AND ds.sale_date <= ${end}::date
+           AND ds.sale_date >= ${pFrom}::date AND ds.sale_date <= ${pTo}::date
       ) x
     ` as any[];
 

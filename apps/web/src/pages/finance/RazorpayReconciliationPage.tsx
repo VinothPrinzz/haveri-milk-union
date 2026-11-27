@@ -32,6 +32,7 @@ import {
   type ReconRow,
   type ReconBucket,
 } from "@/services/api";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
 const BUCKET_META: Record<ReconBucket, {
   label: string; tone: "success" | "warning" | "danger" | "default"; desc: string;
@@ -57,6 +58,7 @@ function BucketBadge({ bucket }: { bucket: ReconBucket }) {
 }
 
 export default function RazorpayReconciliationPage() {
+  const canEdit = useCanEditFinance();
   const qc = useQueryClient();
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo,   setDateTo]   = useState("");
@@ -202,7 +204,7 @@ export default function RazorpayReconciliationPage() {
                     </td>
                     <td><BucketBadge bucket={r.bucket} /></td>
                     <td>
-                      {r.bucket === "needs_review" && (
+                      {canEdit && r.bucket === "needs_review" && (
                         <Button size="sm" variant="outline" className="h-7 text-[12px]"
                           disabled={reconcile.isPending}
                           onClick={() => reconcile.mutate(r.id)}>

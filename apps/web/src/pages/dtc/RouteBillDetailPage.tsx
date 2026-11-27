@@ -26,7 +26,7 @@ import {
 } from "@/services/dtc";
 import {
   BILLING_TYPE_LABEL, DEDUCTION_HEADS, EARNING_HEADS, HEAD_LABEL, RATE_UNIT, RunStatusBadge,
-  errMsg, fmtDMY, fmtStamp, monthLong, nice, qtyFmt, rs, rs2, useDtcPerms,
+  billPeriodNote, errMsg, fmtDMY, fmtStamp, monthLong, nice, qtyFmt, rs, rs2, useDtcPerms,
 } from "./shared";
 import { Breakdown, FieldList, InlinePanel, RecordBody, RecordHeader, Section, Summary, Timeline } from "./ui";
 
@@ -83,7 +83,7 @@ export default function RouteBillDetailPage() {
             {bill.paidOn && <span className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-success/15 text-success">Paid</span>}
           </>
         }
-        subtitle={`${bill.contractorName ?? "No contractor"} · ${monthLong(month)}`}
+        subtitle={`${bill.contractorName ?? "No contractor"} · ${monthLong(month)}${billPeriodNote(bill)}`}
         actions={
           <>
             {perms.pay && !bill.paidOn && (bill.onHold

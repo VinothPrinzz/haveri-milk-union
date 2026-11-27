@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pgClient } from "../lib/db.js";
+import { recordOrderModification } from "../lib/order-modifications.js";
 import { adminAuth, requireRole } from "../middleware/admin-auth.js";
 import { paginationSchema, paginationMeta, offsetFromPage } from "../lib/pagination.js";
 import {
@@ -1941,6 +1942,20 @@ export async function directSalesRoutes(app: FastifyInstance) {
                 updated_at  = now()
           WHERE id = ${id}
         `;
+
+        // An agent's gate pass is on their statement: log the change (0085).
+        if (isAgent && sale.customer_id && Math.abs(delta) > 0.001) {
+          const newQty = new Map(updates.map(u => [u.productId, u.quantity]));
+          await recordOrderModification(tx, {
+            source: "gate_pass", orderId: id, dealerId: sale.customer_id,
+            oldTotal: oldGrandTotal, newTotal: newGrandTotal,
+            oldItems: existingItems.map((r: any) => ({ productId: r.product_id, qty: Number(r.quantity) })),
+            newItems: existingItems.map((r: any) => ({
+              productId: r.product_id, qty: newQty.has(r.product_id) ? Number(newQty.get(r.product_id)) : Number(r.quantity),
+            })),
+            userId: request.admin!.userId,
+          });
+        }
 
         if (refundPlan) {
           for (const intent of refundPlan.intents) {

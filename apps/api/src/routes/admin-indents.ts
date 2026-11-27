@@ -43,6 +43,17 @@ import { cancelSupersededSiblings } from "../lib/supersede-orders.js";
 import { enqueuePDFInvoice } from "../lib/queue.js";
 import { resolveUnitPrice } from "../lib/rate-price.js";
 import { calcLine } from "../lib/line-totals.js";
+import { resyncEditableDrafts } from "./dealer-indents.js";
+import { istToday } from "../lib/ist-date.js";
+
+/**
+ * cancellation_reason of a day's draft deleted from Dealer Indents. The
+ * cancelled row stays as a marker for that dealer + route + date: the
+ * close-time auto-confirm skips a day whose latest order is cancelled, and
+ * the nightly materialize job (apps/worker/src/jobs/materialize-drafts.ts,
+ * same string) does not rebuild it from the standing indent.
+ */
+export const DRAFT_DELETED_REASON = "Draft deleted from Dealer Indents";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -276,7 +287,18 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
               updated_at  = now()
       `;
 
-      return reply.send({ updated: body.items.length, routeId: effectiveRoute });
+      // Same as a dealer saving their own standing indent: drafts already
+      // built for today and later (still 'draft') take the new quantities at
+      // once, so the change reaches today's order instead of waiting for the
+      // next nightly build. Placed orders are never touched. Best-effort.
+      let resyncedDrafts = 0;
+      try {
+        resyncedDrafts = await resyncEditableDrafts(dealerId, effectiveRoute);
+      } catch (err) {
+        request.log.warn({ err }, "[admin standing-indents] draft re-sync failed (template saved)");
+      }
+
+      return reply.send({ updated: body.items.length, routeId: effectiveRoute, resyncedDrafts });
     }
   );
 
@@ -322,6 +344,37 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
           paused: true,
           pausedReason: paused.reason ?? null,
           status: "draft",
+          items: [],
+          totals: { subtotal: 0, totalGst: 0, grandTotal: 0 },
+          credit: baseCredit,
+        });
+      }
+
+      // ── Deleted from this page? The marker is the latest row for the
+      //    day; anything created after it (a new draft) wins. ──
+      const [latest] = await pgClient`
+        SELECT id, status::text AS status, cancellation_reason
+          FROM orders
+         WHERE dealer_id = ${dealerId}
+           AND delivery_date = ${date}::date
+           AND NOT is_subsidy
+           AND (status <> 'cancelled' OR cancellation_reason = ${DRAFT_DELETED_REASON})
+           AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
+         ORDER BY created_at DESC
+         LIMIT 1
+      `;
+      if (latest && latest.status === "cancelled") {
+        return reply.send({
+          dealer: { id: dealer.id, name: dealer.name, code: dealer.code },
+          deliveryDate: date,
+          exists: false,
+          paused: false,
+          deleted: true,
+          deletedOrderId: latest.id,
+          status: "draft",
+          // Nothing to edit; "Restore" (POST …/restore) brings the day back.
+          editable: false,
+          restorable: date >= istToday(),
           items: [],
           totals: { subtotal: 0, totalGst: 0, grandTotal: 0 },
           credit: baseCredit,
@@ -876,6 +929,120 @@ export async function adminIndentsRoutes(app: FastifyInstance) {
         credit,
         forced: !credit.sufficient && body.force,
       });
+    }
+  );
+
+  // ┌───────────────────────────────────────────────────────────────────┐
+  // │  DELETE /api/v1/admin/dealers/:dealerId/drafts/:date?routeId=      │
+  // │  Delete the day's draft on this route, whether already built or    │
+  // │  still a preview of the standing indent. Leaves a cancelled marker │
+  // │  so neither the nightly build nor the close-time auto-confirm puts │
+  // │  it back. Refuses an order that has been placed.                   │
+  // └───────────────────────────────────────────────────────────────────┘
+  app.delete(
+    "/api/v1/admin/dealers/:dealerId/drafts/:date",
+    { preHandler: [adminAuth, requireRole("indents.manage")] },
+    async (request, reply) => {
+      const { dealerId, date } = z.object({ dealerId: uuid, date: isoDate }).parse(request.params);
+      const { routeId } = z.object({ routeId: uuid.optional() }).parse(request.query);
+      const dealer = await loadDealer(dealerId);
+      const effectiveRoute = routeId
+        ? await assertAssignedRoute(dealerId, dealer.routeId, routeId)
+        : dealer.routeId;
+      if (date < istToday()) {
+        return reply.status(400).send({ error: "Past date", message: "Drafts for past dates can't be deleted." });
+      }
+
+      const result = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        // Same lock as the draft PATCH, so a save can't slip in between.
+        await tx`
+          SELECT pg_advisory_xact_lock(hashtext(${dealerId + ":" + (effectiveRoute ?? "") + ":" + date}))
+        `;
+        const [order] = await tx`
+          SELECT id, status::text AS status
+            FROM orders
+           WHERE dealer_id = ${dealerId}
+             AND delivery_date = ${date}::date
+             AND status <> 'cancelled'
+             AND NOT is_subsidy
+             AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
+           ORDER BY created_at DESC
+           LIMIT 1
+           FOR UPDATE
+        `;
+        if (order && order.status !== "draft") {
+          return { placed: order.status as string };
+        }
+        if (order) {
+          await tx`
+            UPDATE orders SET status = 'cancelled', cancellation_reason = ${DRAFT_DELETED_REASON},
+                              cancelled_at = now(), updated_at = now()
+             WHERE id = ${order.id}::uuid AND status = 'draft'
+          `;
+          return { orderId: order.id as string };
+        }
+        // Only a preview so far: record the marker as an empty cancelled row.
+        const [marker] = await tx`
+          INSERT INTO orders (
+            dealer_id, zone_id, route_id, status, payment_mode,
+            subtotal, total_gst, grand_total, item_count,
+            delivery_date, placed_by, cancellation_reason, cancelled_at
+          ) VALUES (
+            ${dealerId}, ${dealer.zoneId}, ${effectiveRoute ?? null}::uuid, 'cancelled', 'credit',
+            0, 0, 0, 0,
+            ${date}::date, ${adminUserId(request)}, ${DRAFT_DELETED_REASON}, now()
+          )
+          RETURNING id
+        `;
+        return { orderId: marker!.id as string };
+      });
+
+      if ("placed" in result) {
+        return reply.status(409).send({
+          error: "Already placed",
+          message: `This indent is already ${String(result.placed).replace(/_/g, " ")}. Cancel it from All Indents instead.`,
+        });
+      }
+      return reply.send({ deleted: true, orderId: result.orderId, deliveryDate: date });
+    }
+  );
+
+  // ┌───────────────────────────────────────────────────────────────────┐
+  // │  POST /api/v1/admin/dealers/:dealerId/drafts/:date/restore         │
+  // │  Undo a delete: drop the marker, so the standing indent applies    │
+  // │  to the day again (preview now, built / auto-confirmed as usual).  │
+  // └───────────────────────────────────────────────────────────────────┘
+  app.post(
+    "/api/v1/admin/dealers/:dealerId/drafts/:date/restore",
+    { preHandler: [adminAuth, requireRole("indents.manage")] },
+    async (request, reply) => {
+      const { dealerId, date } = z.object({ dealerId: uuid, date: isoDate }).parse(request.params);
+      const { routeId } = z.object({ routeId: uuid.optional() }).parse(request.query);
+      const dealer = await loadDealer(dealerId);
+      const effectiveRoute = routeId
+        ? await assertAssignedRoute(dealerId, dealer.routeId, routeId)
+        : dealer.routeId;
+      // Markers (and the lines of a deleted draft) only — never a placed
+      // order: a draft never reached the ledger or an invoice.
+      const removed = await pgClient.begin(async (_tx) => {
+        const tx = _tx as unknown as typeof pgClient;
+        const rows = await tx`
+          SELECT id FROM orders
+           WHERE dealer_id = ${dealerId}
+             AND delivery_date = ${date}::date
+             AND status = 'cancelled'
+             AND cancellation_reason = ${DRAFT_DELETED_REASON}
+             AND COALESCE(route_id, ${effectiveRoute ?? null}::uuid) IS NOT DISTINCT FROM ${effectiveRoute ?? null}::uuid
+        `;
+        for (const r of rows as any[]) {
+          await tx`DELETE FROM order_items WHERE order_id = ${r.id}::uuid`;
+          await tx`DELETE FROM orders WHERE id = ${r.id}::uuid AND status = 'cancelled'`;
+        }
+        return rows.length;
+      });
+      if (removed === 0) return reply.status(404).send({ error: "Nothing to restore" });
+      return reply.send({ restored: true, deliveryDate: date });
     }
   );
 

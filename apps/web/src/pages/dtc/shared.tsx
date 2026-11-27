@@ -67,13 +67,15 @@ export const HEAD_LABEL: Record<string, string> = {
 };
 /** Columns of the consolidated sheet, in the union's order. */
 export const SHEET_DEDUCTION_COLUMNS: { key: string; label: ReactNode; heads: string[] }[] = [
-  { key: "crate", label: "Crate", heads: ["crate", "packet", "short_supply"] },
+  { key: "crate", label: "Crate", heads: ["crate"] },
   { key: "dues", label: "Dues", heads: ["dues"] },
   { key: "km", label: <>KM<br />Ded.</>, heads: ["km"] },
   { key: "sd", label: <>Sec.<br />Dep</>, heads: ["security_deposit"] },
-  { key: "gps", label: "GPS", heads: ["gps"] },
+  // Was the GPS column. Product / packet shortage and short supply found by
+  // route officers have their own column now; GPS rent, if any, is in Others.
+  { key: "product", label: <>Product<br />Shortage</>, heads: ["packet", "short_supply"] },
   { key: "tds", label: "TDS", heads: ["tds"] },
-  { key: "others", label: "Others", heads: ["penalty", "advance", "carry_forward", "other_deduction"] },
+  { key: "others", label: "Others", heads: ["gps", "penalty", "advance", "carry_forward", "other_deduction"] },
 ];
 
 export const PAY_MODES: { value: PayMode; label: string }[] = [
@@ -97,6 +99,19 @@ export const fmtDMY = (iso?: string | null) => {
   if (!iso) return "";
   const [y, m, d] = iso.slice(0, 10).split("-");
   return y && m && d ? `${d}-${m}-${y}` : iso;
+};
+/**
+ * " (01-11 to 14-11)" when a bill covers only part of its month (the route's
+ * contractor changed mid-month), else "".
+ */
+export const billPeriodNote = (b: { periodFrom?: string | null; periodTo?: string | null }) => {
+  if (!b.periodFrom || !b.periodTo) return "";
+  const [y, m, d] = b.periodFrom.split("-").map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const [, m2, d2] = b.periodTo.split("-").map(Number);
+  if (d === 1 && m2 === m && d2 === last) return "";
+  const dm = (iso: string) => { const [, mm, dd] = iso.split("-"); return `${dd}-${mm}`; };
+  return ` (${dm(b.periodFrom)} to ${dm(b.periodTo)})`;
 };
 export const fmtStamp = (ts?: string | null) =>
   ts ? new Date(ts).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
