@@ -193,9 +193,15 @@ async function computeEntry(sql: Sql, b: Body) {
       break;
     }
     case "product_shortage": {
+      if (!b.dealerId) throw bad("Pick the agent who was short.");
+      const [d] = await sql`
+        SELECT id FROM dealers WHERE id = ${b.dealerId}::uuid AND route_id = ${b.routeId}::uuid AND deleted_at IS NULL
+      `;
+      if (!d) throw bad("That agent is not on this route.");
       if (!b.reportSource || !["dispatch_check", "return_check", "on_route"].includes(b.reportSource)) {
         throw bad("Say where the shortage was found.");
       }
+      out.dealerId = b.dealerId;
       out.reportSource = b.reportSource;
       await priceItems();
       break;

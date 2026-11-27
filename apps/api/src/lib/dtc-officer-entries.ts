@@ -107,11 +107,14 @@ export function entryLine(e: EntryLineRow) {
       qty = (e.items ?? []).reduce((s, i) => s + Number(i.qty || 0), 0);
       break;
     }
-    case "product_shortage":
+    case "product_shortage": {
+      const who = [e.dealer_code, e.dealer_name].filter(Boolean).join(" ");
+      if (who) parts.push(who);
       if (e.report_source) parts.push(REPORT_SOURCE_LABEL[e.report_source] ?? e.report_source);
       parts.push(itemsText(e.items));
       qty = (e.items ?? []).reduce((s, i) => s + Number(i.qty || 0), 0);
       break;
+    }
     case "crate_shortage":
       parts.push(`${nice(e.qty)} crates short (${nice(e.crates_sent)} sent, ${nice(e.crates_returned)} returned)`);
       qty = e.qty; rate = e.rate;

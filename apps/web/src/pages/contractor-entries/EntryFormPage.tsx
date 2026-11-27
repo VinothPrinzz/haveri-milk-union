@@ -196,7 +196,7 @@ export default function EntryFormPage() {
     const list = items.filter(i => i.productId && Number(i.qty) > 0).map(i => ({ productId: i.productId!, qty: Number(i.qty) }));
     switch (type) {
       case "short_supply": return { ...base, dealerId, reportSource: ssSource, items: list };
-      case "product_shortage": return { ...base, reportSource: psSource, items: list };
+      case "product_shortage": return { ...base, dealerId, reportSource: psSource, items: list };
       case "crate_shortage": return { ...base, cratesSent: num(cratesSent), cratesReturned: num(cratesReturned) };
       case "km_short": return { ...base, kmRun: num(kmRun), reason: kmReason.trim() || null };
       case "extra_km":
@@ -243,7 +243,7 @@ export default function EntryFormPage() {
   }
 
   const canSave = !readOnly && !monthLocked && !!routeId && preview.amount > 0 && !save.isPending && !uploading
-    && (type !== "short_supply" || !!dealerId) && (type !== "penalty" || !!penaltyReason);
+    && ((type !== "short_supply" && type !== "product_shortage") || !!dealerId) && (type !== "penalty" || !!penaltyReason);
 
   return (
     <div className="h-full overflow-auto">
@@ -338,6 +338,10 @@ export default function EntryFormPage() {
                 {pick === "product_shortage" && (
                   <>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Field label="Agent who was short" required>
+                        <F9SearchSelect value={dealerId} onChange={setDealerId} options={dealerOptions}
+                          placeholder={routeId ? "Select agent" : "Pick the route first"} disabled={readOnly || !routeId} />
+                      </Field>
                       <Field label="Found at" required>
                         <select value={psSource} onChange={e => setPsSource(e.target.value as ReportSource)} className="erp-input w-full">
                           <option value="dispatch_check">Dispatch check</option>
