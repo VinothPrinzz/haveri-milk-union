@@ -41,6 +41,29 @@ import {
   type EntryItem, type EntryLineRow, type EntryType,
 } from "../lib/dtc-officer-entries.js";
 import { dtcRoute, parseWith } from "../lib/dtc-http.js";
+import { NOTIFY_ROLES, notifyStaffSafe } from "../lib/admin-notifications.js";
+
+// Entries that are shortages: staff are notified when one is saved or changed.
+const SHORTAGE_TYPES = new Set<EntryType>(["short_supply", "crate_shortage", "product_shortage", "km_short"]);
+
+/** "Shortage recorded: R12 · Ramesh Transport · Product shortage ₹432.00 (by Route Officer 3)" */
+async function notifyShortage(
+  request: FastifyRequest,
+  entry: Awaited<ReturnType<typeof loadEntries>>[number] | undefined,
+  verb: "recorded" | "changed",
+) {
+  if (!entry || !SHORTAGE_TYPES.has(entry.type)) return;
+  const by = request.admin?.name;
+  const [, m, d] = entry.entryDate.split("-");
+  await notifyStaffSafe(request.log, {
+    kind: "officer_shortage",
+    title: `Shortage ${verb}: ${entry.routeCode}${entry.contractorName ? ` · ${entry.contractorName}` : ""}`,
+    body: `${entry.headLabel} ${inr(entry.amount)} on ${d}-${m}: ${entry.detail}${by ? ` (by ${by})` : ""}`,
+    link: `/contractor-entries/${entry.id}`,
+    roles: [...NOTIFY_ROLES.officerShortage],
+    refId: entry.id,
+  });
+}
 
 const uuidParam = z.object({ id: z.string().uuid() });
 const inr = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -531,7 +554,7 @@ export async function officerEntryRoutes(app: FastifyInstance) {
     const zoneId = scopeZone(request);
     const id = await pgClient.begin(async (_tx) => {
       const tx = _tx as unknown as Sql;
-      const route = await assertRouteInScope(tx, body.routeId, zoneId);
+      const route = await assertRouteInScope(tx, body.routeId, zoneId, body.entryDate);
       const month = await lockMonth(tx, body.entryDate, "added");
       const v = await computeEntry(tx, body);
       const [row] = await tx`
@@ -552,6 +575,7 @@ export async function officerEntryRoutes(app: FastifyInstance) {
       return row.id as string;
     });
     const [entry] = await loadEntries(pgClient, { id, zoneId });
+    await notifyShortage(request, entry, "recorded");
     return reply.status(201).send({ message: `Saved: ${entry?.headLabel ?? "entry"} ${inr(entry?.amount ?? 0)}`, entry });
   });
 
@@ -570,7 +594,7 @@ export async function officerEntryRoutes(app: FastifyInstance) {
       ` as any[];
       if (!old) throw new HttpError(404, "Not found", "Entry not found.");
       await assertRouteInScope(tx, old.route_id, zoneId);
-      const route = await assertRouteInScope(tx, body.routeId, zoneId);
+      const route = await assertRouteInScope(tx, body.routeId, zoneId, body.entryDate);
       // Both months must be open: the line leaves the old month's bill and joins the new one's.
       const oldMonth = await lockMonth(tx, old.entry_date, "changed");
       const newMonth = old.entry_date.slice(0, 7) === body.entryDate.slice(0, 7)
@@ -592,6 +616,7 @@ export async function officerEntryRoutes(app: FastifyInstance) {
       if (newMonth !== oldMonth) await refreshEntryLine(tx, id, oldMonth, userId, "moved to another month");
     });
     const [entry] = await loadEntries(pgClient, { id, zoneId });
+    await notifyShortage(request, entry, "changed");
     return { message: `Updated: ${entry?.headLabel ?? "entry"} ${inr(entry?.amount ?? 0)}`, entry };
   });
 
