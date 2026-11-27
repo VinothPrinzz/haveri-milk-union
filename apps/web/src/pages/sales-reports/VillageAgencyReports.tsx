@@ -33,6 +33,15 @@ const fmtPeriod = (from: string, to: string) => `${fmtDMY(from)} to ${fmtDMY(to)
 // Ltr / Kg: blank for 0, else up to 2 decimals.
 const fmtVol = (n: number) =>
   n ? Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 }) : "";
+/** Days in an inclusive yyyy-mm-dd range (at least 1). */
+const daysInPeriod = (from: string, to: string) => {
+  const [fy, fm, fd] = from.split("-").map(Number);
+  const [ty, tm, td] = to.split("-").map(Number);
+  const n = Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000) + 1;
+  return Number.isFinite(n) && n > 0 ? n : 1;
+};
+/** Average a day over the period: Ltr / Kg to 2 decimals, blank for 0. */
+const perDay = (total: number, days: number) => (total ? Math.round((total / days) * 100) / 100 : 0);
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const fmtMonth = (ym: string) => {
   const [y, m] = ym.split("-");
@@ -119,21 +128,27 @@ export function VillageWiseSalesReport() {
     setGenerated(true);
   };
 
+  // Averages are a day over the whole period generated (calendar days).
+  const days = data ? daysInPeriod(data.from, data.to) : 1;
+  const avgNote = `Avg / day = total ÷ ${days} day${days === 1 ? "" : "s"}`;
+
   const pages: ReactNode[] = generated && data && data.villages.length > 0
     ? [
         // ── Page 1: one line per village ──
         <div key="summary">
-          <p className="report-page-note">Summary: one line per City / Village (Milk in Ltr, Curd in Kg)</p>
+          <p className="report-page-note">Summary: one line per City / Village (Milk in Ltr, Curd in Kg). {avgNote}</p>
           <table className="w-full text-[11px] border-collapse">
             <thead>
               <tr className="bg-muted/50">
                 <th className={`${th} text-right w-10`}>Sl</th>
                 <th className={`${th} text-left`}>Taluka</th>
                 <th className={`${th} text-left`}>City / Village</th>
-                <th className={`${th} text-right num w-16`}>Agents</th>
-                <th className={`${th} text-right num w-24`}>Milk (Ltr)</th>
-                <th className={`${th} text-right num w-24`}>Curd (Kg)</th>
-                <th className={`${th} text-right num w-32`}>Total Amt ₹</th>
+                <th className={`${th} text-right num w-14`}>Agents</th>
+                <th className={`${th} text-right num w-20`}>Milk (Ltr)</th>
+                <th className={`${th} text-right num w-20`}>Avg Milk<br />/ day</th>
+                <th className={`${th} text-right num w-20`}>Curd (Kg)</th>
+                <th className={`${th} text-right num w-20`}>Avg Curd<br />/ day</th>
+                <th className={`${th} text-right num w-28`}>Total Amt ₹</th>
               </tr>
             </thead>
             <tbody>
@@ -144,7 +159,9 @@ export function VillageWiseSalesReport() {
                   <td className={`${td} ${v.villageSet ? "font-medium" : "italic text-muted-foreground"}`}>{v.village}</td>
                   <td className={`${td} text-right num`}>{v.totals.customers}</td>
                   <td className={`${td} text-right num`}>{fmtVol(v.totals.milk)}</td>
+                  <td className={`${td} text-right num`}>{fmtVol(perDay(v.totals.milk, days))}</td>
                   <td className={`${td} text-right num`}>{fmtVol(v.totals.curd)}</td>
+                  <td className={`${td} text-right num`}>{fmtVol(perDay(v.totals.curd, days))}</td>
                   <td className={`${td} text-right num`}>{fmtINR(v.totals.amount)}</td>
                 </tr>
               ))}
@@ -152,7 +169,9 @@ export function VillageWiseSalesReport() {
                 <td colSpan={3} className={`${td} text-right`}>TOTAL</td>
                 <td className={`${td} text-right num`}>{data.totals.customers}</td>
                 <td className={`${td} text-right num`}>{fmtVol(data.totals.milk)}</td>
+                <td className={`${td} text-right num`}>{fmtVol(perDay(data.totals.milk, days))}</td>
                 <td className={`${td} text-right num`}>{fmtVol(data.totals.curd)}</td>
+                <td className={`${td} text-right num`}>{fmtVol(perDay(data.totals.curd, days))}</td>
                 <td className={`${td} text-right num`}>{fmtINR(data.totals.amount)}</td>
               </tr>
             </tbody>
@@ -161,23 +180,25 @@ export function VillageWiseSalesReport() {
 
         // ── Page 2: each village's agents ──
         <div key="detail">
-          <p className="report-page-note">Agents in each City / Village (Milk in Ltr, Curd in Kg)</p>
+          <p className="report-page-note">Agents in each City / Village (Milk in Ltr, Curd in Kg). {avgNote}</p>
           <table className="w-full text-[11px] border-collapse">
             <thead>
               <tr className="bg-muted/50">
                 <th className={`${th} text-right w-10`}>Sl</th>
                 <th className={`${th} text-left w-16`}>Code</th>
                 <th className={`${th} text-left`}>Customer Name</th>
-                <th className={`${th} text-right num w-24`}>Milk (Ltr)</th>
-                <th className={`${th} text-right num w-24`}>Curd (Kg)</th>
-                <th className={`${th} text-right num w-32`}>Total Amt ₹</th>
+                <th className={`${th} text-right num w-20`}>Milk (Ltr)</th>
+                <th className={`${th} text-right num w-20`}>Avg Milk<br />/ day</th>
+                <th className={`${th} text-right num w-20`}>Curd (Kg)</th>
+                <th className={`${th} text-right num w-20`}>Avg Curd<br />/ day</th>
+                <th className={`${th} text-right num w-28`}>Total Amt ₹</th>
               </tr>
             </thead>
             <tbody>
               {data.villages.map(v => (
                 <Fragment key={`${v.taluka}|${v.village}`}>
                   <tr className="bg-muted/30">
-                    <td colSpan={6} className={`${td} font-bold`}>
+                    <td colSpan={8} className={`${td} font-bold`}>
                       {v.village} <span className="font-normal text-muted-foreground">· {v.taluka}</span>
                     </td>
                   </tr>
@@ -187,14 +208,18 @@ export function VillageWiseSalesReport() {
                       <td className={`${td} font-mono`}>{c.code}</td>
                       <td className={td}>{c.name}</td>
                       <td className={`${td} text-right num`}>{fmtVol(c.milk)}</td>
+                      <td className={`${td} text-right num`}>{fmtVol(perDay(c.milk, days))}</td>
                       <td className={`${td} text-right num`}>{fmtVol(c.curd)}</td>
+                      <td className={`${td} text-right num`}>{fmtVol(perDay(c.curd, days))}</td>
                       <td className={`${td} text-right num`}>{fmtINR(c.amount)}</td>
                     </tr>
                   ))}
                   <tr className="font-semibold">
                     <td colSpan={3} className={`${td} text-right`}>{v.village} TOTAL</td>
                     <td className={`${td} text-right num`}>{fmtVol(v.totals.milk)}</td>
+                    <td className={`${td} text-right num`}>{fmtVol(perDay(v.totals.milk, days))}</td>
                     <td className={`${td} text-right num`}>{fmtVol(v.totals.curd)}</td>
+                    <td className={`${td} text-right num`}>{fmtVol(perDay(v.totals.curd, days))}</td>
                     <td className={`${td} text-right num`}>{fmtINR(v.totals.amount)}</td>
                   </tr>
                 </Fragment>
@@ -202,7 +227,9 @@ export function VillageWiseSalesReport() {
               <tr className="font-bold bg-muted/40">
                 <td colSpan={3} className={`${td} text-right`}>GRAND TOTAL</td>
                 <td className={`${td} text-right num`}>{fmtVol(data.totals.milk)}</td>
+                <td className={`${td} text-right num`}>{fmtVol(perDay(data.totals.milk, days))}</td>
                 <td className={`${td} text-right num`}>{fmtVol(data.totals.curd)}</td>
+                <td className={`${td} text-right num`}>{fmtVol(perDay(data.totals.curd, days))}</td>
                 <td className={`${td} text-right num`}>{fmtINR(data.totals.amount)}</td>
               </tr>
             </tbody>
@@ -217,16 +244,17 @@ export function VillageWiseSalesReport() {
     mimeType: "text/csv",
     build: () => {
       const out: (string | number)[][] = [
-        [`City / Village Wise Sales, ${fmtPeriod(from, to)}`, zoneName],
-        ["Taluka", "City / Village", "Code", "Customer Name", "Milk (Ltr)", "Curd (Kg)", "Total Amt"],
+        [`City / Village Wise Sales, ${fmtPeriod(data.from, data.to)}`, zoneName, avgNote],
+        ["Taluka", "City / Village", "Code", "Customer Name", "Milk (Ltr)", "Avg Milk / day", "Curd (Kg)", "Avg Curd / day", "Total Amt"],
       ];
+      const vol = (m: number, c: number) => [m, perDay(m, days), c, perDay(c, days)];
       for (const v of data.villages) {
         for (const c of v.customers) {
-          out.push([v.taluka, v.village, c.code, c.name, c.milk, c.curd, c.amount]);
+          out.push([v.taluka, v.village, c.code, c.name, ...vol(c.milk, c.curd), c.amount]);
         }
-        out.push([v.taluka, `${v.village} TOTAL`, "", `${v.totals.customers} agents`, v.totals.milk, v.totals.curd, v.totals.amount]);
+        out.push([v.taluka, `${v.village} TOTAL`, "", `${v.totals.customers} agents`, ...vol(v.totals.milk, v.totals.curd), v.totals.amount]);
       }
-      out.push(["", "GRAND TOTAL", "", `${data.totals.customers} agents`, data.totals.milk, data.totals.curd, data.totals.amount]);
+      out.push(["", "GRAND TOTAL", "", `${data.totals.customers} agents`, ...vol(data.totals.milk, data.totals.curd), data.totals.amount]);
       return toCsv(out);
     },
   }] : [];
