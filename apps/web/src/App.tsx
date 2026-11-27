@@ -35,6 +35,7 @@ import DispatchSheetOthersPage   from "@/pages/fgs/DispatchSheetOthersPage";
 import CreateDispatchPage from "@/pages/fgs/CreateDispatchPage";
 import RouteSheetPage from "@/pages/reports/RouteSheetPage";
 import ContractorEntriesListPage from "@/pages/contractor-entries/EntriesListPage";
+import ProductDemandPage from "@/pages/sales/ProductDemandPage";
 import ContractorEntryFormPage from "@/pages/contractor-entries/EntryFormPage";
 import GatePassReportPage from "@/pages/reports/GatePassReportPage";
 import IndentStatusPage from "@/pages/reports/IndentStatusPage";
@@ -172,6 +173,7 @@ function AppInner() {
           <Route path="/sales/subsidy-indents" element={<SubsidyIndentsPage />} />
           <Route path="/sales/all-indents" element={<AllIndentsPage />} />
           <Route path="/sales/dealer-indents" element={<DealerIndentsPage />} />
+          <Route path="/sales/product-demand" element={<ProductDemandPage />} />
           <Route path="/sales/direct-sales/gate-pass" element={<DirectSalesPage tab="gate-pass" />} />
           <Route path="/sales/direct-sales/cash-customer" element={<DirectSalesPage tab="cash-customer" />} />
           <Route path="/sales/direct-sales/modify" element={<DirectSalesPage tab="modify" />} />

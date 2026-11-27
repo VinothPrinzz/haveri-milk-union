@@ -12,6 +12,7 @@ import { minQtyFor, snapQtyToMin } from "../lib/minOrderQty";
 import { resolveDisplayPrice } from "../lib/ratePrice";
 import { useAuthStore } from "../store/auth";
 import QtyStepper from "./QtyStepper";
+import { useNotifiedToday, useNotifyDemand } from "../hooks/useDemand";
 
 /**
  * ProductCard — Blinkit-style 2-col grid tile.
@@ -38,8 +39,10 @@ import QtyStepper from "./QtyStepper";
  *     added the column). When the admin uploads an image, the next
  *     /products fetch returns it; this card lazy-loads with the emoji
  *     fallback until the URL is available.
- *   • Out-of-stock state: the ADD button is replaced by a muted
- *     "Out of stock" label; image is dimmed.
+ *   • Out-of-stock state: image is dimmed and the ADD button becomes
+ *     "Notify", which tells the union the dealer wants the product
+ *     (staff see it under Sales → Product Demand). Once tapped it reads
+ *     "Notified" for the rest of the day.
  *   • Low-stock badge is opt-in via the `badge` prop (the grid no
  *     longer renders it automatically — moved that logic up to
  *     HomeScreen where it can be controlled per-merchandising-block).
@@ -91,6 +94,11 @@ export default function ProductCard({
 
   const outOfStock = !product.available || product.stock === 0;
   const lowStock = !outOfStock && product.stock <= lowStockThreshold;
+
+  // "Notify" on an out-of-stock product (see header).
+  const { data: notifiedToday } = useNotifiedToday();
+  const notifyDemand = useNotifyDemand();
+  const notified = !!notifiedToday?.has(product.id);
 
   const hasImage = !!product.imageUrl && !imageError;
   const fallbackEmoji = product.icon ?? "📦";
@@ -159,7 +167,21 @@ export default function ProductCard({
             )}
           </View>
 
-          {quantity === 0 ? (
+          {quantity === 0 && outOfStock ? (
+            <TouchableOpacity
+              onPress={() => notifyDemand.mutate(product.id)}
+              disabled={notified || notifyDemand.isPending}
+              activeOpacity={0.7}
+              style={[styles.addBtn, styles.notifyBtn, notified && styles.addBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel={notified ? `${product.name}: union notified` : `Notify the union you need ${product.name}`}
+              accessibilityState={{ disabled: notified }}
+            >
+              <Text style={[styles.addBtnText, styles.notifyBtnText, notified && styles.addBtnTextDisabled]}>
+                {notified ? "Notified" : notifyDemand.isPending ? "…" : "Notify"}
+              </Text>
+            </TouchableOpacity>
+          ) : quantity === 0 ? (
             <TouchableOpacity
               onPress={() =>
                 hasMinQty && onSetQuantity ? onSetQuantity(minQty) : onAdd()
@@ -330,6 +352,13 @@ const styles = StyleSheet.create({
   },
   addBtnTextDisabled: {
     color: colors.mutedForeground,
+  },
+  // Out of stock: "Notify" stays tappable on the dimmed card.
+  notifyBtn: {
+    borderColor: colors.primary,
+  },
+  notifyBtnText: {
+    fontSize: 11,
   },
 
 });

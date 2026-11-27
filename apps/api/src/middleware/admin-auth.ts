@@ -262,6 +262,11 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // limited to their own routes in routes/officer-entries.ts.
   "officer_entries.view":   ["super_admin", "officer", "manager", "accountant", "viewer", "pre_auditor"],
   "officer_entries.manage": ["super_admin", "officer"],
+
+  // Product demand: dealers' "Notify" on out-of-stock products (0086).
+  // Read by the indent desk, management and the people who make / move stock.
+  "demand.view":   ["super_admin", "manager", "call_desk", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  "demand.manage": ["super_admin", "manager", "call_desk", "dispatch_officer", "fgs_milk_curd", "fgs_others"],
 };
 
 /** Same test as requireRole, for endpoints whose permission depends on the request body. */

@@ -27,6 +27,9 @@ export const qk = {
   categories: ["categories"] as const,
   banners:    ["banners"] as const,
 
+  // Out-of-stock products this dealer tapped "Notify" on today.
+  demandToday: ["demand", "today"] as const,
+
   // Dealer's own profile — see NOTE above (lives in Zustand, not RQ).
   profile: ["dealer", "profile"] as const,
 
