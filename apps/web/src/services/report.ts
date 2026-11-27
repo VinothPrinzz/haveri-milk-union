@@ -82,6 +82,12 @@ export interface RouteSheetAbstractItem {
   amount: number;
   pktPlus: number;
   pktMinus: number;
+  /** Dealer price before the latest revision in force on the sheet date (null: never revised). */
+  oldPrice?: number | null;
+  /** Dealer price on the sheet date. */
+  newPrice?: number | null;
+  /** When that revision took effect (YYYY-MM-DD). */
+  revisedOn?: string | null;
 }
  
 export interface RouteSheetAbstract {

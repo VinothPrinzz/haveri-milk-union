@@ -111,6 +111,37 @@ export async function reportsRoutes(app: FastifyInstance) {
           category: p.category_name ?? "",
         });
       }
+
+      // ── 2b. Price on the sheet's date, and the price before it ──
+      // The latest revision in force on the date (Masters → Price Revisions
+      // or an edit on All Products): new = the dealer price from that
+      // revision (what this sheet bills), old = the dealer price before it.
+      // Rows logged before 0075 carry only the net price: grossed up with GST.
+      const revRows = await pgClient`
+        SELECT DISTINCT ON (pr.product_id)
+               pr.product_id::text AS product_id,
+               pr.effective_from::text AS effective_from,
+               COALESCE(pr.old_dealer_price, round(pr.old_price * (1 + pr.old_gst_percent / 100), 2))::float8 AS old_price,
+               COALESCE(pr.new_dealer_price, round(pr.new_price * (1 + pr.new_gst_percent / 100), 2))::float8 AS new_price
+          FROM price_revisions pr
+         WHERE pr.effective_from <= ${q.date}::date
+         ORDER BY pr.product_id, pr.effective_from DESC, pr.created_at DESC
+      `;
+      const priceRevision = new Map<string, { oldPrice: number; newPrice: number; revisedOn: string }>();
+      for (const r of revRows as any[]) {
+        if (Number(r.old_price) !== Number(r.new_price)) {
+          priceRevision.set(r.product_id, {
+            oldPrice: Number(r.old_price), newPrice: Number(r.new_price), revisedOn: r.effective_from,
+          });
+        }
+      }
+      // Current dealer price, for products with no revision on or before the date.
+      const currentPrice = new Map<string, number>(
+        (await pgClient`
+          SELECT id::text AS id, COALESCE(dealer_price, round(base_price * (1 + gst_percent / 100), 2))::float8 AS price
+            FROM products
+        ` as any[]).map(r => [r.id as string, Number(r.price)]),
+      );
  
       // ── 3. Batch metadata (if any) ──
       let batch: any = null;
@@ -871,6 +902,11 @@ export async function reportsRoutes(app: FastifyInstance) {
             amount:       agg.amount,
             pktPlus,
             pktMinus,
+            // Old / new dealer price (see 2b). Not for "(Sub)" lines, which
+            // are billed at the subsidy rate.
+            oldPrice:  isSub ? null : priceRevision.get(realPid)?.oldPrice ?? null,
+            newPrice:  isSub ? null : priceRevision.get(realPid)?.newPrice ?? currentPrice.get(realPid) ?? null,
+            revisedOn: isSub ? null : priceRevision.get(realPid)?.revisedOn ?? null,
           });
         }
         abstractItems.sort((a, b) => a.sortOrder - b.sortOrder);

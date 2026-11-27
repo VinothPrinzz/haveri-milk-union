@@ -32,7 +32,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { fmtNum, fmtINR, fmtDate } from "@/components/PageHeader";
+import { fmtNum, fmtINR, fmtDate, fmtPrice } from "@/components/PageHeader";
 import ReportShell, { type Exporter } from "@/components/ReportShell";
 import { fetchBatches } from "@/services/api";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
@@ -52,6 +52,9 @@ import {
   type PaperId,
 } from "@/lib/print-paper";
 import { todayIST } from "@/lib/istDate";
+
+/** 2026-11-27 → 27-11-2026 */
+const fmtDMYShort = (iso: string) => iso.split("-").reverse().join("-");
 
 // ── Display order for the across-product columns ──────────────────
 // Driven by products.abstract_position, set per-product from the admin panel
@@ -580,13 +583,15 @@ function AbstractPage({
 
       <table className="report-ledger compact rs-ledger rs-abstract-table">
         <colgroup>
-          <col style={{ width: "30%" }} />
-          <col style={{ width: "12%" }} />
-          <col style={{ width: "12%" }} />
-          <col style={{ width: "14%" }} />
-          <col style={{ width: "16%" }} />
-          <col style={{ width: "8%" }} />
-          <col style={{ width: "8%" }} />
+          <col style={{ width: "24%" }} />
+          <col style={{ width: "9%" }} />
+          <col style={{ width: "9%" }} />
+          <col style={{ width: "11%" }} />
+          <col style={{ width: "9%" }} />
+          <col style={{ width: "9%" }} />
+          <col style={{ width: "15%" }} />
+          <col style={{ width: "7%" }} />
+          <col style={{ width: "7%" }} />
         </colgroup>
         <thead>
           <tr>
@@ -594,6 +599,8 @@ function AbstractPage({
             <th className="num">Crates / Boxes</th>
             <th className="num">Qty (Pkts)</th>
             <th className="num">Qty (Kg/Ltr)</th>
+            <th className="num" title="Dealer price before the latest price revision">Old Price</th>
+            <th className="num" title="Dealer price on this date">New Price</th>
             <th className="num">Amount</th>
             <th className="num">Pkt (+)</th>
             <th className="num">Pkt (−)</th>
@@ -608,6 +615,10 @@ function AbstractPage({
                 <td className="num">{fmtNum(i.crates)}</td>
                 <td className="num">{fmtNum(i.packets)}</td>
                 <td className="num">{kgLtrCorrect.toFixed(2)}</td>
+                <td className="num">{i.oldPrice != null ? fmtPrice(i.oldPrice) : ""}</td>
+                <td className="num" title={i.revisedOn ? `Revised from ${fmtDMYShort(i.revisedOn)}` : undefined}>
+                  {i.newPrice != null ? fmtPrice(i.newPrice) : ""}
+                </td>
                 <td className="num">{fmtINR(i.amount)}</td>
                 <td className="num">{i.pktPlus > 0 ? fmtNum(i.pktPlus) : ""}</td>
                 <td className="num">{i.pktMinus > 0 ? fmtNum(i.pktMinus) : ""}</td>
@@ -619,12 +630,22 @@ function AbstractPage({
             <td className="num">{fmtNum(t.crates)}</td>
             <td className="num">{fmtNum(t.packets)}</td>
             <td className="num">{totalKgLtr.toFixed(2)}</td>
+            <td className="num" />
+            <td className="num" />
             <td className="num">{fmtINR(t.amount)}</td>
             <td className="num">{t.pktPlus > 0 ? fmtNum(t.pktPlus) : ""}</td>
             <td className="num">{t.pktMinus > 0 ? fmtNum(t.pktMinus) : ""}</td>
           </tr>
         </tbody>
       </table>
+
+      {items.some(i => i.oldPrice != null) && (
+        <p className="text-[9.5px] mt-1">
+          Old Price = dealer price before the latest revision; New Price = dealer price on this date.
+          Revised: {items.filter(i => i.oldPrice != null && i.revisedOn)
+            .map(i => `${i.alias} from ${fmtDMYShort(i.revisedOn!)}`).join(", ")}.
+        </p>
+      )}
 
       {/* Cash / Bank / Credit summary line */}
       <div className="rs-abstract-money">
