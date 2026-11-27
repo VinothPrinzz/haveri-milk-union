@@ -243,7 +243,7 @@ function sheetHeader() {
   return [
     "Sl No", "Route Name", "Contractor Name", "Type", "Veh Cap (MT)", "No. of Days", "Per Day KM",
     "Rate per KM-Ltr", "Qty Milk & Prod", "Gross Payable", "Other Earnings (Qty)", "Other Earnings (Amt)",
-    "Total Earning", ...SHEET_DEDUCTION_COLUMNS.map(c => `Deduction: ${c.key === "sd" ? "Sec. Dep" : c.key === "km" ? "KM Ded." : c.key.charAt(0).toUpperCase() + c.key.slice(1)}`),
+    "Total Earning", ...SHEET_DEDUCTION_COLUMNS.map(c => `Deduction: ${c.key === "sd" ? "Sec. Dep" : c.key === "km" ? "KM Ded." : c.key === "product" ? "Product Shortage" : c.key.charAt(0).toUpperCase() + c.key.slice(1)}`),
     "Total Deduction", "Net Payable", "Cost per Ltr",
   ];
 }

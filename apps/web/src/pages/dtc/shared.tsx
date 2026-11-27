@@ -67,13 +67,15 @@ export const HEAD_LABEL: Record<string, string> = {
 };
 /** Columns of the consolidated sheet, in the union's order. */
 export const SHEET_DEDUCTION_COLUMNS: { key: string; label: ReactNode; heads: string[] }[] = [
-  { key: "crate", label: "Crate", heads: ["crate", "packet", "short_supply"] },
+  { key: "crate", label: "Crate", heads: ["crate"] },
   { key: "dues", label: "Dues", heads: ["dues"] },
   { key: "km", label: <>KM<br />Ded.</>, heads: ["km"] },
   { key: "sd", label: <>Sec.<br />Dep</>, heads: ["security_deposit"] },
-  { key: "gps", label: "GPS", heads: ["gps"] },
+  // Was the GPS column. Product / packet shortage and short supply found by
+  // route officers have their own column now; GPS rent, if any, is in Others.
+  { key: "product", label: <>Product<br />Shortage</>, heads: ["packet", "short_supply"] },
   { key: "tds", label: "TDS", heads: ["tds"] },
-  { key: "others", label: "Others", heads: ["penalty", "advance", "carry_forward", "other_deduction"] },
+  { key: "others", label: "Others", heads: ["gps", "penalty", "advance", "carry_forward", "other_deduction"] },
 ];
 
 export const PAY_MODES: { value: PayMode; label: string }[] = [
