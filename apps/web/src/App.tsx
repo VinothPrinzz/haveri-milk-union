@@ -34,6 +34,8 @@ import DispatchSheetMilkCurdPage from "@/pages/fgs/DispatchSheetMilkCurdPage";
 import DispatchSheetOthersPage   from "@/pages/fgs/DispatchSheetOthersPage";
 import CreateDispatchPage from "@/pages/fgs/CreateDispatchPage";
 import RouteSheetPage from "@/pages/reports/RouteSheetPage";
+import ContractorEntriesListPage from "@/pages/contractor-entries/EntriesListPage";
+import ContractorEntryFormPage from "@/pages/contractor-entries/EntryFormPage";
 import GatePassReportPage from "@/pages/reports/GatePassReportPage";
 import IndentStatusPage from "@/pages/reports/IndentStatusPage";
 import PriceRevisionsPage from "@/pages/masters/PriceRevisionsPage";
@@ -246,6 +248,10 @@ function AppInner() {
           <Route path="/dtc/setup/charges" element={<DtcRecurringChargesPage />} />
           <Route path="/dtc/setup/deposits" element={<DtcSecurityDepositsPage />} />
           <Route path="/dtc/setup/deposits/:contractorId/*" element={<DtcDepositRecordPage />} />
+          {/* Contractor Entries (route officers) */}
+          <Route path="/contractor-entries" element={<ContractorEntriesListPage />} />
+          <Route path="/contractor-entries/new" element={<ContractorEntryFormPage key="new" />} />
+          <Route path="/contractor-entries/:id" element={<ContractorEntryFormPage />} />
           {/* Reports */}
           <Route path="/reports/route-sheet" element={<RouteSheetPage />} />
           <Route path="/reports/gate-pass" element={<GatePassReportPage />} />

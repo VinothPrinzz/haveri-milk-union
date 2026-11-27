@@ -101,6 +101,8 @@ export interface BillLine {
   id: string; billId: string; kind: "earning" | "deduction"; head: string;
   qty: number | null; rate: number | null; amount: number; remarks: string | null;
   source: "manual" | "auto"; sourceRef: string | null; createdAt: string; createdByName: string | null;
+  /** Set when the line comes from a route officer's contractor entry. */
+  officerEntryId?: string | null;
 }
 export interface Bill {
   id: string; runId: string; routeId: string; routeCode: string; routeName: string;

@@ -9,7 +9,7 @@
 //                        Trip   days × rate per trip
 //                        Litre  litres/kg carried × rate per litre
 //   total earnings   = gross + other earnings (extra km, …)
-//   total deductions = crate + packet + short km + dues + security deposit
+//   total deductions = crate + packet + short supply + short km + dues + security deposit
 //                      + GPS + penalty + advance + carry forward + TDS + others
 //   net              = total earnings − total deductions
 //   payable          = max(net, 0); a negative net is carried forward and
@@ -32,6 +32,7 @@
 import type { FastifyRequest } from "fastify";
 import { z } from "zod";
 import { pgClient } from "./db.js";
+import { entryLine, loadEntryLineRows } from "./dtc-officer-entries.js";
 
 export type Sql = typeof pgClient;
 
@@ -54,12 +55,12 @@ export type CostBasis = "total_earnings" | "gross";
 
 export const EARNING_HEADS = ["extra_km", "extra_trip", "extra_litre", "other_earning"] as const;
 export const DEDUCTION_HEADS = [
-  "crate", "packet", "km", "dues", "security_deposit", "gps",
+  "crate", "packet", "short_supply", "km", "dues", "security_deposit", "gps",
   "penalty", "advance", "carry_forward", "tds", "other_deduction",
 ] as const;
 export const HEAD_LABELS: Record<string, string> = {
   extra_km: "Extra km", extra_trip: "Extra trips", extra_litre: "Extra litres", other_earning: "Other earning",
-  crate: "Crate shortage", packet: "Packet / product shortage", km: "Short km", dues: "Dues",
+  crate: "Crate shortage", packet: "Packet / product shortage", short_supply: "Short supply", km: "Short km", dues: "Dues",
   security_deposit: "Security deposit", gps: "GPS", penalty: "Penalty", advance: "Advance recovery",
   carry_forward: "Previous balance recovery", tds: "TDS", other_deduction: "Other deduction",
 };
@@ -391,7 +392,7 @@ export async function recomputeBill(sql: Sql, billId: string) {
 /**
  * Creates or refreshes every bill of a draft run: terms, days, litres and
  * the automatic lines (recurring charges, security deposit instalment,
- * advances, carry-forward recoveries, TDS). Manual lines and the clerk's
+ * advances, carry-forward recoveries, route officer entries, TDS). Manual lines and the clerk's
  * day overrides are kept. Must run inside a transaction holding the run row.
  */
 export async function generateRunBills(sql: Sql, runId: string, monthStart: string) {
@@ -590,6 +591,21 @@ async function refreshAutoLines(sql: Sql, runId: string, start: string) {
     lines.push({
       billId: b.id, kind: "deduction", head: "carry_forward", amount: round2(n.amount),
       remarks: `Recovery of negative balance, ${monthLabel(n.bill_month)} (${n.route_code})`, sourceRef: n.id,
+    });
+  }
+
+  // 5. Route officer entries dated in the month (short supply, crate /
+  //    product shortage, short km, extra km / trips, penalties), one line
+  //    each on the bill of the entry's route.
+  const { end } = monthBounds(start);
+  for (const e of await loadEntryLineRows(sql, start, end)) {
+    const b = billByRoute.get(e.route_id);
+    if (!b) continue;
+    const l = entryLine(e);
+    if (!(l.amount > 0)) continue;
+    lines.push({
+      billId: b.id, kind: l.kind, head: l.head as LineHead, qty: l.qty, rate: l.rate,
+      amount: l.amount, remarks: l.remarks, sourceRef: e.id,
     });
   }
 

@@ -3,7 +3,7 @@ import { useLocation, useNavigate, Outlet } from "react-router-dom";
 import {
   LayoutDashboard, Database, ShoppingCart, Truck, Boxes,
   BookOpenCheck, FileBarChart2, ShieldCheck, Search, Bell,
-  ChevronDown, LogOut, Keyboard, Wallet, KeyRound, Menu, Route as RouteIcon,
+  ChevronDown, LogOut, Keyboard, Wallet, KeyRound, Menu, Route as RouteIcon, ClipboardPen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
@@ -20,7 +20,7 @@ import { useKeyboardNav } from "@/lib/useKeyboardNav";
 
 export type ModuleKey =
   | "dashboard" | "masters" | "sales" | "fgs" | "finance"
-  | "dtc" | "reports" | "sales-reports" | "system";
+  | "dtc" | "contractor-entries" | "reports" | "sales-reports" | "system";
 
 export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType<any>; path: string }[] = [
   { key: "dashboard",      label: "Dashboard",      icon: LayoutDashboard, path: "/" },
@@ -29,6 +29,7 @@ export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType
   { key: "fgs",            label: "Stock & Dispatch", icon: Truck,         path: "/fgs/dashboard" },
   { key: "finance",        label: "Finance",        icon: Wallet,          path: "/finance/payments" },
   { key: "dtc",            label: "DTC Billing",    icon: RouteIcon,       path: "/dtc/bills" },
+  { key: "contractor-entries", label: "Contractor Entries", icon: ClipboardPen, path: "/contractor-entries" },
   { key: "reports",        label: "Route Sheets",        icon: FileBarChart2,   path: "/reports/route-sheet" },
   { key: "sales-reports",  label: "Sales Reports", icon: FileBarChart2,   path: "/sales-reports/daily-statement" },
   { key: "system",         label: "Admin",          icon: ShieldCheck,     path: "/system/users" },
@@ -39,10 +40,10 @@ export const MODULES: { key: ModuleKey; label: string; icon: React.ComponentType
 // staff shouldn't even see modules they can't use. Only roles listed here are
 // restricted; every other role sees the full module set.
 //
-//   • officer (route officer) → Route Sheets + Sales Reports only.
+//   • officer (route officer) → Contractor Entries + Route Sheets + Sales Reports only.
 //   • pre_auditor             → DTC Billing only.
 const ROLE_MODULES: Partial<Record<string, ModuleKey[]>> = {
-  officer: ["reports", "sales-reports"],
+  officer: ["contractor-entries", "reports", "sales-reports"],
   pre_auditor: ["dtc"],
 };
 
@@ -54,8 +55,11 @@ const ROLE_HOME: Partial<Record<string, string>> = {
 
 // Modules shown only to the roles listed (mirrors the API's *.view permission).
 //   • DTC Billing → dtc.view (call_desk is a super role on the API).
+//   • Contractor Entries → officer_entries.view: route officers, plus
+//     everyone who reads DTC Billing.
 const MODULE_ROLES: Partial<Record<ModuleKey, string[]>> = {
   dtc: ["super_admin", "call_desk", "manager", "accountant", "viewer", "pre_auditor"],
+  "contractor-entries": ["super_admin", "call_desk", "officer", "manager", "accountant", "viewer", "pre_auditor"],
 };
 
 /** Module keys the given role may see, in MODULES order. */
@@ -85,6 +89,7 @@ export function moduleOfPath(pathname: string): ModuleKey {
     case "fgs": return "fgs";
     case "finance": return "finance";
     case "dtc": return "dtc";
+    case "contractor-entries": return "contractor-entries";
     case "reports": return "reports";
     case "sales-reports": return "sales-reports";
     case "system": return "system";
@@ -170,6 +175,8 @@ const COMMAND_ITEMS: { label: string; path: string }[] = [
   { label: "DTC: Payments", path: "/dtc/payments" },
   { label: "DTC: Consolidated DTC Bill", path: "/dtc/reports/consolidated" },
   { label: "DTC: Cost per Litre", path: "/dtc/reports/cost-per-litre" },
+  { label: "Contractor Entries", path: "/contractor-entries" },
+  { label: "Contractor Entries: New entry", path: "/contractor-entries/new" },
   { label: "All Customers", path: "/masters/customers" },
   { label: "New Customer", path: "/masters/customers/new" },
   { label: "All Routes", path: "/masters/routes" },

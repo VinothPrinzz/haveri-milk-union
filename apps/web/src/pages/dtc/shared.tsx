@@ -49,6 +49,7 @@ export const EARNING_HEADS: { head: string; label: string; unit?: string; usesBi
 export const DEDUCTION_HEADS: { head: string; label: string; unit?: string; usesBillRate?: BillingType; usesCrateRate?: boolean }[] = [
   { head: "crate", label: "Crate shortage", unit: "crates", usesCrateRate: true },
   { head: "packet", label: "Packet / product shortage", unit: "packets" },
+  { head: "short_supply", label: "Short supply", unit: "packets" },
   { head: "km", label: "Short km", unit: "km", usesBillRate: "km" },
   { head: "dues", label: "Dues" },
   { head: "penalty", label: "Penalty (vehicle not reported / late / substitute)" },
@@ -66,7 +67,7 @@ export const HEAD_LABEL: Record<string, string> = {
 };
 /** Columns of the consolidated sheet, in the union's order. */
 export const SHEET_DEDUCTION_COLUMNS: { key: string; label: ReactNode; heads: string[] }[] = [
-  { key: "crate", label: "Crate", heads: ["crate", "packet"] },
+  { key: "crate", label: "Crate", heads: ["crate", "packet", "short_supply"] },
   { key: "dues", label: "Dues", heads: ["dues"] },
   { key: "km", label: <>KM<br />Ded.</>, heads: ["km"] },
   { key: "sd", label: <>Sec.<br />Dep</>, heads: ["security_deposit"] },

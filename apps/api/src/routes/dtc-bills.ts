@@ -139,8 +139,11 @@ async function linesForBills(billIds: string[]) {
   const rows = await pgClient`
     SELECT l.id, l.bill_id AS "billId", l.kind, l.head, l.qty::float8 AS qty, l.rate::float8 AS rate,
            l.amount::float8 AS amount, l.remarks, l.source, l.source_ref AS "sourceRef",
-           l.created_at AS "createdAt", u.name AS "createdByName"
+           l.created_at AS "createdAt", u.name AS "createdByName",
+           -- Set when the line comes from a route officer's contractor entry
+           oe.id AS "officerEntryId"
       FROM dtc_bill_lines l LEFT JOIN users u ON u.id = l.created_by
+      LEFT JOIN dtc_officer_entries oe ON oe.id = l.source_ref AND l.source = 'auto'
      WHERE l.bill_id = ANY(string_to_array(${billIds.join(",")}, ',')::uuid[])
      ORDER BY l.kind DESC, l.created_at
   `;
@@ -481,6 +484,13 @@ export async function dtcBillRoutes(app: FastifyInstance) {
       if (!line) throw new HttpError(404, "Not found", "Line not found.");
       if (line.source === "auto" && line.head === "tds") {
         throw new HttpError(400, "Automatic", "TDS is worked out from the earnings. Remove it, or change the contractor's TDS details.");
+      }
+      if (line.source === "auto" && line.source_ref) {
+        const [entry] = await tx`SELECT 1 FROM dtc_officer_entries WHERE id = ${line.source_ref}::uuid`;
+        if (entry) {
+          throw new HttpError(400, "Route officer entry",
+            "This line comes from a route officer's entry. Remove it, or ask the route officer to correct the entry.");
+        }
       }
       // An edited automatic line becomes manual, and regeneration stops re-adding it.
       if (line.source === "auto") {
