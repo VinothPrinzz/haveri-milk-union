@@ -55,6 +55,7 @@ import DealerStatementsPage       from "@/pages/finance/DealerStatementsPage";
 import ChequesPage                from "@/pages/finance/ChequesPage";
 import AdjustmentsPage            from "@/pages/finance/AdjustmentsPage";
 import LeakageIncentivePage      from "@/pages/finance/LeakageIncentivePage";
+import SupplierLedgerPage        from "@/pages/finance/SupplierLedgerPage";
 import DayBookPage                from "@/pages/finance/DayBookPage";
 import DtcBillRunsPage            from "@/pages/dtc/BillRunsPage";
 import DtcMonthlyBillSheetPage    from "@/pages/dtc/MonthlyBillSheetPage";
@@ -229,6 +230,7 @@ function AppInner() {
           <Route path="/finance/cheques" element={<ChequesPage />} />
           <Route path="/finance/adjustments" element={<AdjustmentsPage />} />
           <Route path="/finance/leakage-incentive" element={<LeakageIncentivePage />} />
+          <Route path="/finance/supplier-ledger" element={<SupplierLedgerPage />} />
           <Route path="/finance/day-book" element={<DayBookPage />} />
           {/* DTC Billing */}
           <Route path="/dtc" element={<Navigate to="/dtc/bills" replace />} />

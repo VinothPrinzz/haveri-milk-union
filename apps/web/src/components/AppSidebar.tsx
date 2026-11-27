@@ -86,6 +86,7 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "Refunds",           path: "/finance/refunds",         icon: RotateCcw },
     { label: "Credit/Debit Notes", path: "/finance/adjustments",    icon: FilePlus2 },
     { label: "Leakage Incentive", path: "/finance/leakage-incentive", icon: Droplets },
+    { label: "Supplier Ledger",   path: "/finance/supplier-ledger", icon: Factory },
     { label: "Day Book",          path: "/finance/day-book",        icon: BookOpen },
   ],
   dtc: [

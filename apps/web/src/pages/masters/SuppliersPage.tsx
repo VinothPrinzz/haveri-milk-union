@@ -4,6 +4,8 @@
 // Mirrors ContractorsPage conventions, trimmed to supplier fields.
 // ════════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/lib/auth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import PageHeader, {
@@ -248,6 +250,10 @@ function SupplierListTab({
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [viewing, setViewing] = useState<Supplier | null>(null);
   const [ratesFor, setRatesFor] = useState<Supplier | null>(null);
+  const navigate = useNavigate();
+  // The purchase ledger lives in Finance (finance.view).
+  const { user } = useAuth();
+  const canSeeLedger = ["super_admin", "manager", "accountant", "viewer"].includes(user?.role ?? "");
 
   const nameOptions: F9Option[] = useMemo(
     () => suppliers.map(s => ({ value: s.id, label: s.name, sublabel: s.code })),
@@ -354,6 +360,17 @@ function SupplierListTab({
                         >
                           Rates
                         </Button>
+                        {canSeeLedger && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2.5 text-[12px]"
+                            title="Purchase ledger: purchases, payments and balance owed"
+                            onClick={() => navigate(`/finance/supplier-ledger?supplierId=${s.id}`)}
+                          >
+                            Ledger
+                          </Button>
+                        )}
                         <Button size="sm" className="h-7 px-2.5 text-[12px]" onClick={() => setEditing(s)}>
                           Update
                         </Button>

@@ -202,7 +202,8 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   // Suppliers (Masters → Suppliers) — stock vendors. FGS/dispatch roles need
   // view so they can pick a supplier when recording received stock; only
   // masters staff manage the list.
-  "suppliers.view":   ["super_admin", "manager", "dispatch_officer", "viewer", "fgs_milk_curd", "fgs_others"],
+  // Finance (accountant) reads suppliers for the purchase ledger (Finance → Supplier Ledger).
+  "suppliers.view":   ["super_admin", "manager", "dispatch_officer", "accountant", "viewer", "fgs_milk_curd", "fgs_others"],
   "suppliers.manage": ["super_admin", "manager"],
 
   // Batches (Masters → Batches) — officers need read access for the batch
