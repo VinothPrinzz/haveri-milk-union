@@ -41,6 +41,7 @@ import {
   type OnlinePaymentRow,
   type RazorpayStatus,
 } from "@/services/api";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
 // ── Static option lists ───────────────────────────────────────────────
 const STATUS_OPTIONS: F9Option[] = [
@@ -303,6 +304,7 @@ export default function OnlinePaymentsPage() {
 
 // ── Detail dialog: payment + refunds + ledger + actions ───────────────
 function PaymentDetailDialog({ id, onClose }: { id: string; onClose: () => void }) {
+  const canEdit = useCanEditFinance();
   const qc = useQueryClient();
   const [refundOpen, setRefundOpen] = useState(false);
   const [refundAmount, setRefundAmount] = useState("");
@@ -342,7 +344,7 @@ function PaymentDetailDialog({ id, onClose }: { id: string; onClose: () => void 
   const p = data?.payment;
   // The server's refundable figure also nets out refunds still in flight.
   const remaining = p ? (p.refundableAmount ?? p.amount - p.amountRefunded) : 0;
-  const canRefund = p && p.status === "paid" && remaining > 0.001;
+  const canRefund = canEdit && p && p.status === "paid" && remaining > 0.001;
 
   return (
     <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -457,7 +459,7 @@ function PaymentDetailDialog({ id, onClose }: { id: string; onClose: () => void 
         )}
 
         <DialogFooter className="gap-2">
-          {p && (p.status === "paid" || p.status === "refunded") && (
+          {canEdit && p && (p.status === "paid" || p.status === "refunded") && (
             <Button variant="outline" size="sm" className="h-8"
               disabled={reconcile.isPending}
               onClick={() => reconcile.mutate(!p.reconciledAt)}>

@@ -18,6 +18,7 @@ import {
   fetchCustomers, type AdjustmentRow, type AdjustmentVoucherType,
 } from "@/services/api";
 import { todayIST } from "@/lib/istDate";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
 const TYPE_OPTIONS: F9Option[] = [
   { value: "Credit Note", label: "Credit Note" },
@@ -158,6 +159,7 @@ function ReverseDialog({ row, onClose }: { row: AdjustmentRow; onClose: () => vo
 }
 
 export default function AdjustmentsPage() {
+  const canEdit = useCanEditFinance();
   const [search, setSearch] = useState("");
   const [voucherType, setVoucherType] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState("");
@@ -186,7 +188,7 @@ export default function AdjustmentsPage() {
   return (
     <div className="flex flex-col h-full">
       <PageHeader title="Credit Notes & Adjustments" subtitle="Credit notes, debit notes, write-offs & reversals"
-        actions={<Button size="sm" className="h-8" onClick={() => setShowNew(true)}><Plus className="h-3.5 w-3.5 mr-1.5" />New Adjustment</Button>} />
+        actions={canEdit ? <Button size="sm" className="h-8" onClick={() => setShowNew(true)}><Plus className="h-3.5 w-3.5 mr-1.5" />New Adjustment</Button> : undefined} />
 
       <FilterBar>
         <div className="flex-1 min-w-[200px]">
@@ -248,7 +250,7 @@ export default function AdjustmentsPage() {
                         : <span className="text-success">active</span>}
                     </td>
                     <td>
-                      {!a.isReversal && !a.isReversed && (
+                      {canEdit && !a.isReversal && !a.isReversed && (
                         <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={() => setReverseRow(a)}>Reverse</Button>
                       )}
                     </td>

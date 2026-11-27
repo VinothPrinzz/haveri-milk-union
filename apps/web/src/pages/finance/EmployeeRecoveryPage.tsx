@@ -27,9 +27,9 @@ import {
   postEmployeeRecoveries, reverseEmployeeRecovery,
   type EmployeeRecoveryDueRow,
 } from "@/services/api";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
-// Same finance roles that may change employee credit limits.
-const CAN_EDIT = new Set(["accountant", "manager", "super_admin", "call_desk"]);
+// Edits: Finance and super_admin only (lib/financeAccess).
 
 const fmtDMY = (iso: string) => {
   const [y, m, d] = String(iso ?? "").slice(0, 10).split("-");
@@ -46,7 +46,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 export default function EmployeeRecoveryPage() {
   const { user } = useAuth();
-  const canEdit = CAN_EDIT.has(user?.role ?? "");
+  const canEdit = useCanEditFinance();
   const qc = useQueryClient();
 
   const today = todayIST();

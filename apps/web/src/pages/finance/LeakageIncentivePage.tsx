@@ -21,7 +21,6 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Field, fmtINR, fmtNum } from "@/components/PageHeader";
-import { useAuth } from "@/lib/auth";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import { Button } from "@/components/ui/button";
@@ -37,9 +36,9 @@ import {
   postLeakageIncentiveRun, reverseLeakageIncentiveRun,
   type LeakageIncentiveReport, type LeakageIncentiveRunSummary, type LeakageIncentiveSettings,
 } from "@/services/api";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
-// finance.manage (call_desk is a super role on the API).
-const CAN_EDIT = new Set(["accountant", "manager", "super_admin", "call_desk"]);
+// Edits: Finance and super_admin only (lib/financeAccess).
 
 const fmtDMY = (iso: string) => {
   const [y, m, d] = (iso ?? "").split("-");
@@ -102,8 +101,7 @@ function previousMonth(iso: string): { from: string; to: string } {
 }
 
 export default function LeakageIncentivePage() {
-  const { user } = useAuth();
-  const canEdit = CAN_EDIT.has(user?.role ?? "");
+  const canEdit = useCanEditFinance();
   const qc = useQueryClient();
 
   const today = todayIST();

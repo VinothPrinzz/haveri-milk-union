@@ -9,7 +9,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useAuth } from "@/lib/auth";
 import PageHeader, { FilterBar, StatCard, EmptyState, fmtINR } from "@/components/PageHeader";
 import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import { Button } from "@/components/ui/button";
@@ -21,12 +20,12 @@ import {
   updateEmployeeCreditLimit, fetchHeldEmployeeOrders, releaseEmployeeOrder,
   type EmployeeCreditRow,
 } from "@/services/api";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
-const CAN_EDIT = new Set(["accountant", "manager", "super_admin", "call_desk"]);
+// Edits: Finance and super_admin only (lib/financeAccess).
 
 export default function EmployeeCreditLimitsPage() {
-  const { user } = useAuth();
-  const canEdit = CAN_EDIT.has(user?.role ?? "");
+  const canEdit = useCanEditFinance();
   const queryClient = useQueryClient();
 
   const [search, setSearch] = useState("");

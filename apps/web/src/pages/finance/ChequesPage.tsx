@@ -18,6 +18,7 @@ import {
   printDepositSlip, type ChequeRow, type ChequeStatus,
 } from "@/services/api";
 import { todayIST } from "@/lib/istDate";
+import { useCanEditFinance } from "@/lib/financeAccess";
 
 const STATUS_OPTIONS: F9Option[] = [
   { value: "received", label: "Received (in hand)" },
@@ -123,6 +124,7 @@ function ActionDialog({ cheque, type, onClose }: { cheque: ChequeRow; type: Acti
 }
 
 export default function ChequesPage() {
+  const canEdit = useCanEditFinance();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [dateFrom, setDateFrom] = useState("");
@@ -214,11 +216,11 @@ export default function ChequesPage() {
                     </td>
                     <td>
                       <div className="flex gap-1">
-                        {c.status === "received" && (<>
+                        {canEdit && c.status === "received" && (<>
                           <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={() => setAction({ cheque: c, type: "deposit" })}>Deposit</Button>
                           <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={() => setAction({ cheque: c, type: "cancel" })}>Cancel</Button>
                         </>)}
-                        {c.status === "deposited" && (<>
+                        {canEdit && c.status === "deposited" && (<>
                           <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={() => setAction({ cheque: c, type: "clear" })}>Cleared</Button>
                           <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={() => setAction({ cheque: c, type: "bounce" })}>Bounced</Button>
                         </>)}

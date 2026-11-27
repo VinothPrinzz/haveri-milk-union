@@ -478,7 +478,7 @@ export async function financeRoutes(app: FastifyInstance) {
   // POST /api/v1/invoices/:id/send — (re-)generate PDF and notify dealer
   app.post(
     "/api/v1/invoices/:id/send",
-    { preHandler: [adminAuth, requireRole("finance.manage")] },
+    { preHandler: [adminAuth, requireRole("invoices.send")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 
@@ -1399,12 +1399,12 @@ export async function financeRoutes(app: FastifyInstance) {
   // │   PATCH /api/v1/payments/:id                      │
   // │   Correct a Record Payment receipt                │
   // └─────────────────────────────────────────────────┘
-  // Manager / super_admin only. Customer and invoices are fixed — a changed
+  // Finance (accountant) / super_admin only. Customer and invoices are fixed — a changed
   // amount is re-applied to the same invoices; to move a receipt elsewhere,
   // delete it and record it again.
   app.patch(
     "/api/v1/payments/:id",
-    { preHandler: [adminAuth, requireExactRole("super_admin", "manager")] },
+    { preHandler: [adminAuth, requireExactRole("super_admin", "accountant")] },
     async (request, reply) => {
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
       const body = z.object({
@@ -1534,14 +1534,14 @@ export async function financeRoutes(app: FastifyInstance) {
   // │   DELETE /api/v1/payments/:id                     │
   // │   Remove a Record Payment receipt                 │
   // └─────────────────────────────────────────────────┘
-  // Manager / super_admin only. Everything the receipt did comes back out:
+  // Finance (accountant) / super_admin only. Everything the receipt did comes back out:
   // the invoices it settled are reopened, a wallet top-up is taken back, and
   // the ledger credit is reversed. The payments row itself is removed — it is
   // the one receipts rail the Day Book, Dealer Statements and AR Aging read,
   // and it has no reversal concept of its own.
   app.delete(
     "/api/v1/payments/:id",
-    { preHandler: [adminAuth, requireExactRole("super_admin", "manager")] },
+    { preHandler: [adminAuth, requireExactRole("super_admin", "accountant")] },
     async (request, reply) => {
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
 
