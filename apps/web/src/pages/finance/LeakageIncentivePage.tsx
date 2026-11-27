@@ -8,6 +8,10 @@
 //   Rate per litre of milk · Total Incentive Amount
 // plus an all-taluk summary page when there is more than one taluk.
 //
+// Taluk / Agent filters narrow what is shown, printed and exported. They
+// never change what "Post Credit Notes" credits: a run always covers every
+// agent in the period, so the period stays locked as one unit.
+//
 // "Post Credit Notes" issues one credit note per agent for the period
 // (finance.manage). Once posted, the statement shows the credited figures
 // with their voucher numbers; "Reverse Run" undoes every credit note so a
@@ -16,8 +20,9 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useAuth } from "@/lib/auth";
 import { Field, fmtINR, fmtNum } from "@/components/PageHeader";
+import { useAuth } from "@/lib/auth";
+import { F9SearchSelect, type F9Option } from "@/components/F9SearchSelect";
 import ReportShell, { ReportPrintMeta, type Exporter } from "@/components/ReportShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,6 +50,46 @@ const fmtLtr = (n: number) => Number(n || 0).toLocaleString("en-IN", { maximumFr
 const fmt2 = (n: number) => fmtNum(n, 2);
 const ruleText = (r: { litresPer1000: number; ratePerLitre: number }) =>
   `${r.litresPer1000} L per 1000 L × ${fmtINR(r.ratePerLitre)}/L`;
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+const round3 = (n: number) => Math.round((n + Number.EPSILON) * 1000) / 1000;
+
+/**
+ * The report narrowed to one taluk and/or one agent, with taluk and grand
+ * totals worked out again for what is left (same rules as the API's
+ * groupByTaluka: amounts summed, incentive litres from the summed milk).
+ */
+function filterReport(report: LeakageIncentiveReport, taluk: string, dealerId: string): LeakageIncentiveReport {
+  if (!taluk && !dealerId) return report;
+  const per1000 = report.rule.litresPer1000;
+  const talukas = report.talukas
+    .filter(t => !taluk || t.name === taluk)
+    .map(t => {
+      const rows = t.rows.filter(r => !dealerId || r.dealerId === dealerId).map((r, i) => ({ ...r, sl: i + 1 }));
+      const milk = rows.reduce((s, r) => s + r.milkLitres, 0);
+      return {
+        ...t,
+        rows,
+        totals: {
+          milkLitres: round3(milk),
+          incentiveLitres: round3(milk * per1000 / 1000),
+          amount: round2(rows.reduce((s, r) => s + r.amount, 0)),
+        },
+      };
+    })
+    .filter(t => t.rows.length > 0);
+  const all = talukas.flatMap(t => t.rows);
+  const milk = all.reduce((s, r) => s + r.milkLitres, 0);
+  return {
+    ...report,
+    talukas,
+    totals: {
+      milkLitres: round3(milk),
+      incentiveLitres: round3(milk * per1000 / 1000),
+      amount: round2(all.reduce((s, r) => s + r.amount, 0)),
+      dealerCount: all.filter(r => r.amount > 0).length,
+    },
+  };
+}
 
 /** First and last day of the month before `iso`. */
 function previousMonth(iso: string): { from: string; to: string } {
@@ -67,6 +112,9 @@ export default function LeakageIncentivePage() {
   const [to, setTo] = useState(initial.to);
   const [generated, setGenerated] = useState(false);
   const [dialog, setDialog] = useState<null | "settings" | "post" | "reverse" | "history">(null);
+  // View filters: taluk name (as grouped on the statement), agent = dealer id.
+  const [taluk, setTaluk] = useState("");
+  const [agent, setAgent] = useState("");
 
   const { data: settings } = useQuery({
     queryKey: ["leakage-incentive-settings"],
@@ -79,7 +127,32 @@ export default function LeakageIncentivePage() {
     enabled: false,
   });
   // Only trust the report for the period it was generated for.
-  const report = data && data.from === from && data.to === to ? data : undefined;
+  const fullReport = data && data.from === from && data.to === to ? data : undefined;
+  // What is shown / printed / exported. Posting and the status line use
+  // fullReport: a run always credits every agent in the period.
+  const report = useMemo(
+    () => (fullReport ? filterReport(fullReport, taluk, agent) : undefined),
+    [fullReport, taluk, agent],
+  );
+  const filtered = !!(taluk || agent);
+
+  const talukOptions: F9Option[] = useMemo(
+    () => (fullReport?.talukas ?? []).map(t => ({ value: t.name, label: t.name, sublabel: `${t.rows.length} agents` })),
+    [fullReport],
+  );
+  const agentOptions: F9Option[] = useMemo(
+    () => (fullReport?.talukas ?? [])
+      .filter(t => !taluk || t.name === taluk)
+      .flatMap(t => t.rows.map(r => ({
+        value: r.dealerId,
+        label: `${r.code ? r.code + " · " : ""}${r.name}`,
+        sublabel: t.name,
+        searchText: `${r.code} ${r.name} ${t.name}`,
+      }))),
+    [fullReport, taluk],
+  );
+  const talukLabel = taluk || "All taluks";
+  const agentLabel = agent ? (agentOptions.find(o => o.value === agent)?.label ?? "") : "All agents";
 
   const handleGenerate = async () => {
     if (from > to) { toast.error("'From' must be on or before 'To'"); return; }
@@ -114,7 +187,7 @@ export default function LeakageIncentivePage() {
     build: () => {
       const r = report.rule;
       const out: (string | number | null)[][] = [
-        ["Milk Leakage Incentive", fmtPeriod(from, to), ruleText(r)],
+        ["Milk Leakage Incentive", fmtPeriod(from, to), ruleText(r), ...(filtered ? [`${talukLabel} · ${agentLabel}`] : [])],
       ];
       for (const t of report.talukas) {
         out.push([], [`${t.name} Taluk`]);
@@ -148,8 +221,8 @@ export default function LeakageIncentivePage() {
     },
   }] : [];
 
-  const canPost = canEdit && generated && !!report && report.source === "live"
-    && report.overlappingRuns.length === 0 && report.totals.amount > 0 && to <= today;
+  const canPost = canEdit && generated && !!fullReport && fullReport.source === "live"
+    && fullReport.overlappingRuns.length === 0 && fullReport.totals.amount > 0 && to <= today;
 
   return (
     <>
@@ -167,6 +240,37 @@ export default function LeakageIncentivePage() {
               <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">To</label>
               <Input type="date" value={to} onChange={e => setTo(e.target.value)} className="erp-input w-40" />
             </div>
+            <div>
+              <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Taluk</label>
+              <div className="w-44">
+                <F9SearchSelect
+                  value={taluk}
+                  onChange={v => {
+                    const next = v ?? "";
+                    setTaluk(next);
+                    // Drop a picked agent who is not in the newly picked taluk.
+                    if (next && agent && !fullReport?.talukas.find(t => t.name === next)?.rows.some(r => r.dealerId === agent)) setAgent("");
+                  }}
+                  options={talukOptions}
+                  allowAll
+                  allLabel="All taluks"
+                  placeholder={fullReport ? "All taluks" : "Generate first"}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">Agent</label>
+              <div className="w-56">
+                <F9SearchSelect
+                  value={agent}
+                  onChange={v => setAgent(v ?? "")}
+                  options={agentOptions}
+                  allowAll
+                  allLabel="All agents"
+                  placeholder={fullReport ? "All agents" : "Generate first"}
+                />
+              </div>
+            </div>
             <div className="self-end text-[12px] text-muted-foreground pb-1.5">
               {settings ? <>Rule: <span className="text-foreground font-medium">{ruleText(settings)}</span></> : "Loading rule…"}
             </div>
@@ -183,12 +287,12 @@ export default function LeakageIncentivePage() {
                 <FilePlus2 className="h-3.5 w-3.5 mr-1.5" /> Post Credit Notes
               </Button>
             )}
-            {canEdit && posted && report?.run && (
+            {canEdit && posted && fullReport?.run && (
               <Button size="sm" variant="outline" className="h-8 self-end text-destructive" onClick={() => setDialog("reverse")}>
                 <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Reverse Run
               </Button>
             )}
-            {generated && report && <StatusNote report={report} today={today} />}
+            {generated && fullReport && <StatusNote report={fullReport} today={today} />}
           </>
         }
         onGenerate={handleGenerate}
@@ -199,6 +303,7 @@ export default function LeakageIncentivePage() {
             rows={[
               { label: "Period", value: fmtPeriod(from, to) },
               ...(rule ? [{ label: "Rule", value: ruleText(rule) }] : []),
+              ...(filtered ? [{ label: "Showing", value: `${talukLabel} · ${agentLabel}` }] : []),
             ]}
           />
         }
@@ -207,7 +312,7 @@ export default function LeakageIncentivePage() {
           loading: isFetching && !report,
           pages,
           pageLabel,
-          emptyMessage: "No agent sales in this period",
+          emptyMessage: filtered ? "No agent matches the taluk / agent filter" : "No agent sales in this period",
         }}
       />
 
@@ -217,16 +322,16 @@ export default function LeakageIncentivePage() {
           if (generated) refetch();
         }} />
       )}
-      {dialog === "post" && report && (
-        <PostDialog report={report} today={today} onClose={() => setDialog(null)} onDone={afterChange} />
+      {dialog === "post" && fullReport && (
+        <PostDialog report={fullReport} today={today} filtered={filtered} onClose={() => setDialog(null)} onDone={afterChange} />
       )}
-      {dialog === "reverse" && report?.run && (
-        <ReverseDialog run={report.run} onClose={() => setDialog(null)} onDone={afterChange} />
+      {dialog === "reverse" && fullReport?.run && (
+        <ReverseDialog run={fullReport.run} onClose={() => setDialog(null)} onDone={afterChange} />
       )}
       {dialog === "history" && (
         <HistoryDialog
           onClose={() => setDialog(null)}
-          onOpen={(r) => { setFrom(r.periodFrom); setTo(r.periodTo); setGenerated(false); setDialog(null); }}
+          onOpen={(r) => { setFrom(r.periodFrom); setTo(r.periodTo); setTaluk(""); setAgent(""); setGenerated(false); setDialog(null); }}
         />
       )}
     </>
@@ -418,8 +523,8 @@ function SettingsDialog({ settings, onClose, onSaved }: {
   );
 }
 
-function PostDialog({ report, today, onClose, onDone }: {
-  report: LeakageIncentiveReport; today: string; onClose: () => void; onDone: () => void;
+function PostDialog({ report, today, filtered, onClose, onDone }: {
+  report: LeakageIncentiveReport; today: string; filtered: boolean; onClose: () => void; onDone: () => void;
 }) {
   const [voucherDate, setVoucherDate] = useState(today);
   const mut = useMutation({
@@ -445,6 +550,11 @@ function PostDialog({ report, today, onClose, onDone }: {
           <p className="text-[11.5px] text-muted-foreground">
             Each agent's account is credited with their amount. This period then stays locked; reverse the run to correct it.
           </p>
+          {filtered && (
+            <p className="text-[11.5px] text-warning">
+              The taluk / agent filter only changes what is shown. Posting credits every agent in the period, as above.
+            </p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" size="sm" className="h-8" onClick={onClose}>Cancel</Button>
