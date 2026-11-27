@@ -42,6 +42,16 @@ const paymentLabel = (i: any): string => {
   return "Wallet";
 };
 
+/** "27-11 09:42" — when the indent was placed, in IST. */
+const fmtOrderedAt = (ts: string | null | undefined) => {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: true,
+  }).replace(/\//g, "-").replace(",", "");
+};
+
 const formatIndentId = (id: string) => id ? `#HMU-${String(id).slice(-4).toUpperCase()}` : "";
 
 // One-line description of what the refund did, for the success toast.
@@ -214,6 +224,7 @@ export default function AllIndentsPage() {
                   <tr>
                     <th style={{ width: 130 }}>Indent #</th>
                     <th style={{ width: 110 }}>Date</th>
+                    <th style={{ width: 120 }} title="When the indent was placed">Ordered at</th>
                     <th>Customer</th>
                     <th>Route</th>
                     <th style={{ width: "30%" }}>Items</th>
@@ -244,6 +255,7 @@ export default function AllIndentsPage() {
                         )}
                       </td>
                       <td className="text-[12.5px]">{fmtDate(i.rawDate ?? i.date)}</td>
+                      <td className="text-[12.5px] whitespace-nowrap">{fmtOrderedAt(i.createdAt)}</td>
                       <td className="font-medium">
                         {i.dealer_name ?? i.customerName ?? i.customerId}
                         {i.partyType === "employee" && (
@@ -306,7 +318,7 @@ export default function AllIndentsPage() {
                 </tbody>
                 <tfoot>
                   <tr className="bg-muted/40">
-                    <td colSpan={5} className="text-right uppercase text-[12.5px] font-semibold tracking-wide">Page Total</td>
+                    <td colSpan={6} className="text-right uppercase text-[12.5px] font-semibold tracking-wide">Page Total</td>
                     <td className="num font-bold text-[14px]" style={{ textAlign: "right" }}>{fmtINR(grand)}</td>
                     <td colSpan={3}></td>
                   </tr>

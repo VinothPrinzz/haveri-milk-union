@@ -307,6 +307,8 @@ function normalizeIndent(d: Record<string, unknown>) {
     batchId: (d.batch_id ?? d.batchId ?? "") as string,
     date: formattedDate,
     rawDate: String(rawDate).split("T")[0],
+    /** When the indent was placed (timestamp), for the "Ordered at" column. */
+    createdAt: (d.created_at ?? d.createdAt ?? null) as string | null,
     agentCode: (d.agent_code ?? d.agentCode ?? "") as string,
     status: statusLabel,
     rawStatus,
