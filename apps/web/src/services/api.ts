@@ -3076,6 +3076,14 @@ export interface StatementRow {
   id: string; voucherDate: string; voucherNo: string | null; voucherType: string | null;
   particulars: string | null; type: "credit" | "debit"; amount: number; balanceAfter: number;
   kind: StatementKind; mode: string | null; orderId: string | null;
+  /** Changes made to the indent / gate pass behind an invoice line (information only). */
+  modifications?: StatementModification[];
+}
+export interface StatementModification {
+  id: string; modifiedAt: string; byName: string | null;
+  oldTotal: number | null; newTotal: number | null; delta: number;
+  /** "Toned 500ml 24 → 30, Curd 200g 12 → removed" ('' when unknown) */
+  changes: string;
 }
 export interface StatementDay {
   date: string; opening: number;
