@@ -2639,7 +2639,7 @@ export const saveDealerStandingIndents = (
     items: { productId: string; defaultQty: number; active: boolean }[];
     routeId?: string | null;
   },
-) => put<{ updated: number; routeId: string | null }>(
+) => put<{ updated: number; routeId: string | null; resyncedDrafts?: number }>(
   `/admin/dealers/${dealerId}/standing-indents`, body,
 );
 
@@ -2650,6 +2650,9 @@ export const fetchDealerDraft = (dealerId: string, date: string, routeId?: strin
     exists: boolean;
     paused: boolean;
     pausedReason?: string | null;
+    /** The day's draft was deleted from Dealer Indents (restorable while not past). */
+    deleted?: boolean;
+    restorable?: boolean;
     orderId?: string;
     status: string;
     editable: boolean;
@@ -2667,6 +2670,18 @@ export const patchDealerDraft = (
              itemCount: number }>(
   `/admin/dealers/${dealerId}/drafts/${date}`, body,
 );
+
+/** Delete the day's draft (built or still a standing-indent preview) on a route. */
+export const deleteDealerDraft = (dealerId: string, date: string, routeId?: string | null) =>
+  del<{ deleted: boolean; orderId: string; deliveryDate: string }>(
+    `/admin/dealers/${dealerId}/drafts/${date}${routeId ? `?routeId=${routeId}` : ""}`,
+  );
+
+/** Undo deleteDealerDraft: the standing indent applies to the day again. */
+export const restoreDealerDraft = (dealerId: string, date: string, routeId?: string | null) =>
+  post<{ restored: boolean; deliveryDate: string }>(
+    `/admin/dealers/${dealerId}/drafts/${date}/restore${routeId ? `?routeId=${routeId}` : ""}`, {},
+  );
 
 export const confirmDealerDraft = (
   dealerId: string,

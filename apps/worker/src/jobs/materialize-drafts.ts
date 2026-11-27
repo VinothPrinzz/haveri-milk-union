@@ -150,11 +150,15 @@ export async function processMaterializeDrafts() {
         // ── 2a. Skip if a draft/placed order already exists for this
         //        (dealer, route, date). COALESCE treats a legacy NULL-route
         //        row as the dealer's active route so we don't double up.
+        // A draft deleted from Dealer Indents leaves a cancelled marker with
+        // this reason (DRAFT_DELETED_REASON in api/routes/admin-indents.ts):
+        // the day stays deleted.
         const [existing] = await sql`
           SELECT 1 FROM orders
            WHERE dealer_id = ${dealer.id}::uuid
              AND delivery_date = ${deliveryDate}::date
-             AND status IN ('draft', 'pending', 'payment_required', 'confirmed')
+             AND (status IN ('draft', 'pending', 'payment_required', 'confirmed')
+                  OR (status = 'cancelled' AND cancellation_reason = 'Draft deleted from Dealer Indents'))
              AND NOT is_subsidy -- standalone subsidy orders are not the day's indent (0079)
              AND COALESCE(route_id, ${dealer.route_id}::uuid) = ${routeId}::uuid
            LIMIT 1

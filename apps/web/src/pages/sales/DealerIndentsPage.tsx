@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Save, CheckCircle2, CalendarClock } from "lucide-react";
+import { Save, CheckCircle2, CalendarClock, Trash2, RotateCcw } from "lucide-react";
 import PageHeader, {
   FilterBar,
   StatCard,
@@ -31,6 +31,8 @@ import {
   fetchDealerDraft,
   patchDealerDraft,
   confirmDealerDraft,
+  deleteDealerDraft,
+  restoreDealerDraft,
   fetchMinQtyStatus,
 } from "@/services/api";
 import { findCategoryMinShortfalls, categoryMinMessage } from "@/lib/minOrderQty";
@@ -172,8 +174,12 @@ export default function DealerIndentsPage() {
           active: template[it.productId]?.active ?? false,
         })),
       }),
-    onSuccess: () => {
-      toast.success("Standing indent saved");
+    onSuccess: (res) => {
+      // Drafts already built for today / later take the new quantities at once.
+      const n = res?.resyncedDrafts ?? 0;
+      toast.success(n > 0
+        ? `Standing indent saved; ${n} open draft${n === 1 ? "" : "s"} (today onwards) updated`
+        : "Standing indent saved");
       qc.invalidateQueries({ queryKey: ["admin-standing-indents", dealerId] });
       qc.invalidateQueries({ queryKey: ["admin-dealer-draft", dealerId] });
     },
@@ -216,6 +222,24 @@ export default function DealerIndentsPage() {
       }
       toast.error(e?.message || "Confirm failed");
     },
+  });
+
+  // Delete the day's draft (also stops the standing indent placing it) / undo.
+  const deleteDraft = useMutation({
+    mutationFn: () => deleteDealerDraft(dealerId!, date, routeId),
+    onSuccess: () => {
+      toast.success(`Draft for ${date} deleted. It won't be placed automatically.`);
+      qc.invalidateQueries({ queryKey: ["admin-dealer-draft", dealerId, date] });
+    },
+    onError: (e: any) => toast.error(e?.message || "Delete failed"),
+  });
+  const restoreDraft = useMutation({
+    mutationFn: () => restoreDealerDraft(dealerId!, date, routeId),
+    onSuccess: () => {
+      toast.success(`Draft for ${date} restored from the standing indent`);
+      qc.invalidateQueries({ queryKey: ["admin-dealer-draft", dealerId, date] });
+    },
+    onError: (e: any) => toast.error(e?.message || "Restore failed"),
   });
 
   const draft = draftQuery.data;
@@ -489,6 +513,35 @@ export default function DealerIndentsPage() {
                   {draft?.status && <StatusPill status={draft.status} />}
                 </div>
                 <div className="flex items-center gap-2">
+                  {draft?.deleted ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7"
+                      disabled={!draft.restorable || restoreDraft.isPending}
+                      onClick={() => restoreDraft.mutate()}
+                    >
+                      <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                      {restoreDraft.isPending ? "Restoring…" : "Restore Draft"}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-destructive border-destructive/40 hover:bg-destructive/10"
+                      disabled={!editable || draft?.paused || (draft?.items ?? []).length === 0 || deleteDraft.isPending}
+                      title="Delete this date's draft. The standing indent will not place it."
+                      onClick={() => {
+                        if (window.confirm(
+                          `Delete the draft for ${date}?\n\nIt will not be placed automatically from the standing indent. ` +
+                          "You can restore it from this page until the date has passed.",
+                        )) deleteDraft.mutate();
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                      {deleteDraft.isPending ? "Deleting…" : "Delete Draft"}
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -527,6 +580,13 @@ export default function DealerIndentsPage() {
                     <Skeleton key={i} className="h-8 w-full" />
                   ))}
                 </div>
+              ) : draft?.deleted ? (
+                <EmptyState
+                  title="Draft deleted for this date"
+                  hint={draft.restorable
+                    ? "Nothing will be placed for this dealer on this route. Use Restore Draft to bring the standing indent back for the day."
+                    : "Nothing was placed for this dealer on this route."}
+                />
               ) : draft?.paused ? (
                 <EmptyState
                   title="Indents paused for this date"

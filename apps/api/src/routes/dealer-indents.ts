@@ -87,7 +87,7 @@ async function dealerRateCategory(dealerId: string): Promise<string | null> {
  * orders are never mutated. Drafts whose template is now empty are left
  * empty (item_count=0); the close-time job cancels empty drafts.
  */
-async function resyncEditableDrafts(
+export async function resyncEditableDrafts(
   dealerId: string,
   routeId: string
 ): Promise<number> {
