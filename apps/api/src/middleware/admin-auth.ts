@@ -239,6 +239,14 @@ const ROLE_PERMISSIONS: Record<string, UserRole[]> = {
   "dtc.approve_mktg":    ["super_admin", "manager"],
   "dtc.approve_finance": ["super_admin", "accountant"],
   "dtc.pay":             ["super_admin", "accountant"],
+
+  // Contractor entries (short supply, crate / product shortage, short km,
+  // extra km / trips, penalties) recorded by route officers against their
+  // routes; each goes onto the route's DTC bill. Everyone who reads DTC
+  // Billing can read them; only route officers record them. An officer is
+  // limited to their own routes in routes/officer-entries.ts.
+  "officer_entries.view":   ["super_admin", "officer", "manager", "accountant", "viewer", "pre_auditor"],
+  "officer_entries.manage": ["super_admin", "officer"],
 };
 
 /** Same test as requireRole, for endpoints whose permission depends on the request body. */

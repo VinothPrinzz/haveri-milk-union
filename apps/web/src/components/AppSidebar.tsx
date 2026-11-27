@@ -8,7 +8,7 @@ import {
   Star, Briefcase, Gift, BadgePercent, CalendarClock, GitCompareArrows,
   ShieldAlert, Banknote, RotateCcw, FilePlus2, BadgeIndianRupee, X, Factory, Droplets,
   Route as RouteBilling, Container, Satellite, PiggyBank, CalendarRange, CheckSquare, Landmark,
-  FileStack, Fuel, BookUser,
+  FileStack, Fuel, BookUser, ClipboardPen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MODULES, moduleOfPath, allowedModulesForRole, type ModuleKey } from "@/components/AppLayout";
@@ -100,6 +100,10 @@ const SIDEBAR_NAV: Record<ModuleKey, NavItem[]> = {
     { label: "GPS & Fixed Charges",  path: "/dtc/setup/charges",            icon: Satellite },
     { label: "Security Deposits",    path: "/dtc/setup/deposits",           icon: PiggyBank },
   ],
+  "contractor-entries": [
+    { label: "My contractor entries", path: "/contractor-entries",     icon: ClipboardPen },
+    { label: "New entry",             path: "/contractor-entries/new", icon: Plus },
+  ],
   reports: [
     { label: "Route Sheet",      path: "/reports/route-sheet",      icon: RouteIcon },
     { label: "Gate Pass Report", path: "/reports/gate-pass",        icon: FileText },
@@ -144,6 +148,7 @@ const MODULE_LABEL: Record<ModuleKey, string> = {
   fgs: "FGS: Stock & Dispatch",
   finance: "Finance",
   dtc: "DTC Billing",
+  "contractor-entries": "Contractor Entries",
   reports: "Route Sheets",
   "sales-reports": "Sales Reports",
   system: "Admin",

@@ -346,7 +346,9 @@ function LinesSection({ kind, data, lines, editable, onSaved }: {
               <tr key={l.id}>
                 <td>
                   {HEAD_LABEL[l.head] ?? l.head}
-                  {l.source === "auto" && <span className="ml-1.5 text-[10px] rounded bg-info/15 text-info px-1" title="Added from setup; refreshed on regenerate">auto</span>}
+                  {l.officerEntryId
+                    ? <Link to={`/contractor-entries/${l.officerEntryId}`} className="ml-1.5 text-[10px] rounded bg-primary/10 text-primary px-1 hover:underline" title="Open the route officer's entry">Route officer</Link>
+                    : l.source === "auto" && <span className="ml-1.5 text-[10px] rounded bg-info/15 text-info px-1" title="Added from setup; refreshed on regenerate">auto</span>}
                 </td>
                 <td className="text-right num">{l.qty != null && l.head !== "tds" ? nice(l.qty) : ""}</td>
                 <td className="text-right num">{l.rate != null ? (l.head === "tds" ? `${l.rate}%` : rs2(l.rate)) : ""}</td>
@@ -355,12 +357,14 @@ function LinesSection({ kind, data, lines, editable, onSaved }: {
                 <td className="text-right whitespace-nowrap">
                   {editable && (
                     <>
-                      {!(l.source === "auto" && l.head === "tds") && (
+                      {!(l.source === "auto" && l.head === "tds") && !l.officerEntryId && (
                         <Button size="sm" variant="ghost" className="h-6 w-6 p-0" title="Edit" onClick={() => setEditing(l.id)}><Pencil className="h-3.5 w-3.5" /></Button>
                       )}
                       <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-destructive" title="Remove" disabled={del.isPending}
                         onClick={() => {
-                          const msg = l.source === "auto"
+                          const msg = l.officerEntryId
+                            ? `Remove this route officer entry (${HEAD_LABEL[l.head] ?? l.head} ₹${rs2(l.amount)}) from the bill? The entry stays on record, marked "Removed from bill".`
+                            : l.source === "auto"
                             ? `Remove this automatic ${HEAD_LABEL[l.head] ?? l.head} row? It stays off this bill when the month is regenerated.`
                             : `Remove ${HEAD_LABEL[l.head] ?? l.head} ₹${rs2(l.amount)}?`;
                           if (confirm(msg)) del.mutate(l);
